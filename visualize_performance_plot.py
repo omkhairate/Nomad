@@ -25,13 +25,7 @@ pio.renderers.default = "browser"
 
 def _load_perf_csv(
     path: Path,
-) -> Tuple[
-    List[int],
-    Dict[str, List[float]],
-    List[int] | None,
-    List[int] | None,
-    List[int] | None,
-]:
+) -> Tuple[List[int], Dict[str, List[float]], List[int] | None, List[int] | None]:
     """Return frame numbers, metric columns, and node counts from ``path``."""
     frames: List[int] = []
     metrics: Dict[str, List[float]] = {}
@@ -45,8 +39,7 @@ def _load_perf_csv(
                 metrics.setdefault(key, []).append(float(value))
     active = metrics.pop("active_nodes", None)
     offloaded = metrics.pop("offloaded_nodes", None)
-    evicting = metrics.pop("evicting_nodes", None)
-    return frames, metrics, active, offloaded, evicting
+    return frames, metrics, active, offloaded
 
 
 # The following helpers are adapted from ``visualize_active_nodes_plot.py``
@@ -111,35 +104,20 @@ def _create_figure(
     metrics: Dict[str, List[float]],
     active_nodes: List[int] | None,
     offloaded_nodes: List[int] | None,
-    evicting_nodes: List[int] | None,
 ) -> go.Figure:
-    # Always create with secondary axis so we can overlay node counts and ms metrics
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    if active_nodes is not None or offloaded_nodes is not None:
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+    else:
+        fig = go.Figure()
 
-    ms_metrics: Dict[str, List[float]] = {}
-    other_metrics: Dict[str, List[float]] = {}
     for name, values in metrics.items():
-        if name.endswith("ms"):
-            ms_metrics[name] = values
-        else:
-            other_metrics[name] = values
-
-    for name, values in other_metrics.items():
-        fig.add_trace(
-            go.Scatter(x=frames, y=values, mode="lines+markers", name=name),
-            secondary_y=False,
-        )
-
-    for name, values in ms_metrics.items():
-        fig.add_trace(
-            go.Scatter(
-                x=frames,
-                y=values,
-                mode="lines+markers",
-                name=name,
-                yaxis="y3",
+        if active_nodes is not None or offloaded_nodes is not None:
+            fig.add_trace(
+                go.Scatter(x=frames, y=values, mode="lines+markers", name=name),
+                secondary_y=False,
             )
-        )
+        else:
+            fig.add_trace(go.Scatter(x=frames, y=values, mode="lines+markers", name=name))
 
     if active_nodes is not None:
         fig.add_trace(
@@ -161,28 +139,11 @@ def _create_figure(
             ),
             secondary_y=True,
         )
-    if evicting_nodes is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=list(range(len(evicting_nodes))),
-                y=evicting_nodes,
-                mode="lines+markers",
-                name="evicting_nodes",
-            ),
-            secondary_y=True,
-        )
-    fig.update_yaxes(title_text="Performance", secondary_y=False)
-    fig.update_yaxes(title_text="Nodes", secondary_y=True)
-    if ms_metrics:
-        fig.update_layout(
-            yaxis3=dict(
-                title="GPU ms",
-                overlaying="y",
-                side="right",
-                anchor="free",
-                position=1.15,
-            )
-        )
+    if active_nodes is not None or offloaded_nodes is not None:
+        fig.update_yaxes(title_text="Performance", secondary_y=False)
+        fig.update_yaxes(title_text="Nodes", secondary_y=True)
+    else:
+        fig.update_yaxes(title_text="Value")
 
     fig.update_layout(title="Per-frame performance metrics", xaxis_title="Frame")
     return fig
@@ -215,13 +176,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    frames, metrics, csv_active, csv_offloaded, csv_evicting = _load_perf_csv(args.csv)
+    frames, metrics, csv_active, csv_offloaded = _load_perf_csv(args.csv)
     active = csv_active
     offloaded = csv_offloaded
-    evicting = csv_evicting
     if active is None and args.as_path is not None:
         active = _count_active_nodes(_load_frames(args.as_path))
-    fig = _create_figure(frames, metrics, active, offloaded, evicting)
+    fig = _create_figure(frames, metrics, active, offloaded)
     fig.write_html(args.output, auto_open=not args.no_open)
     print(f"Wrote {args.output}")
 
