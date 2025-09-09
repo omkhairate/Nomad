@@ -58,6 +58,7 @@ float4 fragment fragmentMain(
         primitives,       // <- Each primitive is 3 float4s
         materials,
         u.primitiveCount,
+        u.primitiveIndex,
         primitiveIndices,
         activeMask,
         seed,
