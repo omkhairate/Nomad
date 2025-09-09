@@ -25,6 +25,7 @@ private:
   std::size_t _maxFrames = 0;
   std::chrono::steady_clock::time_point _lastTime;
   std::string _dumpPath;
+  std::ofstream _gpuMemLog;
   std::ofstream _perfLog;
 };
 
