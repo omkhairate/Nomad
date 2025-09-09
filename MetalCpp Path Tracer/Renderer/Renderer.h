@@ -68,10 +68,8 @@ private:
   Scene *_pScene = nullptr;
 
   // Buffers
-  // Per-primitive geometry and material buffers stored individually to allow
-  // releasing or reloading on a per-primitive basis.
-  std::vector<MTL::Buffer *> _sphereBuffers;
-  std::vector<MTL::Buffer *> _sphereMaterialBuffers;
+  MTL::Buffer *_pSphereBuffer = nullptr;
+  MTL::Buffer *_pSphereMaterialBuffer = nullptr;
   MTL::Buffer *_pTriangleVertexBuffer = nullptr;
   MTL::Buffer *_pTriangleIndexBuffer = nullptr;
   MTL::Buffer *_pUniformsBuffer = nullptr;

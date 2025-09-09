@@ -62,9 +62,7 @@ inline intersection firstHitBVH(thread const ray &r,
                                 device const float4 *primitives,
                                 device const int *primitiveIndices,
                                 device const uchar *activeMask,
-                                int startNode,
-                                int baseIndex,
-                                int primitiveCount) {
+                                int startNode) {
   intersection in;
   in.t = INFINITY;
   in.primitiveId = -1;
@@ -91,13 +89,9 @@ inline intersection firstHitBVH(thread const ray &r,
       int count = second;
       for (int i = 0; i < count; ++i) {
         int primIdx = primitiveIndices[leftFirst + i];
-        if (primIdx < baseIndex ||
-            primIdx >= baseIndex + primitiveCount)
-          continue;
         if (!activeMask[primIdx])
           continue;
-        int localIdx = primIdx - baseIndex;
-        int base = localIdx * 3;
+        int base = primIdx * 3;
         float4 p0 = primitives[base + 0];
         float4 p1 = primitives[base + 1];
         float4 p2 = primitives[base + 2];
@@ -180,7 +174,7 @@ inline intersection firstHitBVH(thread const ray &r,
 
         if (hitThis && tHit < in.t) {
           in.t = tHit;
-          in.primitiveId = localIdx;
+          in.primitiveId = primIdx;
           in.normal = n;
           in.point = hit;
           in.isTriangle = primitiveType;
@@ -208,7 +202,7 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        uint tlasNodeCount, device const float4 *bvhNodes,
                        device const float4 *primitives,
                        device const float4 *materials, uint primitiveCount,
-                       uint baseIndex, device const int *primitiveIndices,
+                       device const int *primitiveIndices,
                        device const uchar *activeMask,
                        thread uint32_t &seed, uint maxRayDepth,
                        uint debugAS, uint blasNodeCount) {
@@ -234,9 +228,9 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
       int startNode = as_type<int>(tlasNodes[2 * i + 0].w);
       if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
         continue;
-      intersection hit = firstHitBVH(r, bvhNodes, primitives,
-                                     primitiveIndices, activeMask, startNode,
-                                     baseIndex, primitiveCount);
+      intersection hit =
+          firstHitBVH(r, bvhNodes, primitives, primitiveIndices, activeMask,
+                     startNode);
       if (hit.primitiveId != -1 && hit.t < bestHit.t)
         bestHit = hit;
     }
@@ -265,9 +259,9 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
       if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
         continue;
 
-      intersection hit = firstHitBVH(r, bvhNodes, primitives,
-                                     primitiveIndices, activeMask, startNode,
-                                     baseIndex, primitiveCount);
+      intersection hit =
+          firstHitBVH(r, bvhNodes, primitives, primitiveIndices, activeMask,
+                     startNode);
       if (hit.primitiveId != -1 && hit.t < bestHit.t)
         bestHit = hit;
     }
