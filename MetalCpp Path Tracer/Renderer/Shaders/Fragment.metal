@@ -44,13 +44,14 @@ float4 fragment fragmentMain(
     ray r{u.cameraPosition, normalize(rayDir)};
     r.min_distance = 0.0001;
     r.max_distance = INFINITY; // or INFINITY
-    
-    
 
-    
+    float3 rayDx = u.rayDx;
+    float3 rayDy = u.rayDy;
 
     float4 color = rayColor(
         r,
+        rayDx,
+        rayDy,
         tlasNodes,
         u.tlasNodeCount,
         bvhNodes,

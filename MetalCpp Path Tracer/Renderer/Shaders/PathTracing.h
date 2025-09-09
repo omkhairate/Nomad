@@ -197,7 +197,8 @@ inline intersection firstHitBVH(thread const ray &r,
   return in;
 }
 
-inline float4 rayColor(ray r, device const float4 *tlasNodes,
+inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
+                       device const float4 *tlasNodes,
                        uint tlasNodeCount, device const float4 *bvhNodes,
                        device const float4 *primitives,
                        device const float4 *materials, uint primitiveCount,
@@ -205,6 +206,8 @@ inline float4 rayColor(ray r, device const float4 *tlasNodes,
                        device const uchar *activeMask,
                        thread uint32_t &seed, uint maxRayDepth,
                        uint debugAS, uint blasNodeCount) {
+  float footprint = length(cross(rayDx, rayDy));
+  float lodAtten = 1.0 / (1.0 + footprint);
   if (debugAS == 1) {
     for (uint i = 0; i < tlasNodeCount; ++i) {
       float3 bmin = tlasNodes[2 * i + 0].xyz;
@@ -276,7 +279,7 @@ inline float4 rayColor(ray r, device const float4 *tlasNodes,
     float4 m0 = materials[matIndex + 0];
     float4 m1 = materials[matIndex + 1];
 
-    float3 albedo = m0.xyz;
+    float3 albedo = m0.xyz * lodAtten;
     float materialType = m0.w;
     float3 emissionColor = m1.xyz;
     float emissionPower = m1.w;

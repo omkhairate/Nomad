@@ -26,6 +26,8 @@ struct UniformsData {
   simd::float3 viewportU;
   simd::float3 viewportV;
   simd::float3 firstPixelPosition;
+  simd::float3 rayDx;
+  simd::float3 rayDy;
 
   simd::float3 randomSeed;
 
@@ -209,11 +211,16 @@ void Renderer::recalculateViewport() {
   simd::float3 firstPixelPosition =
       Camera::position - w - (viewportU * 0.5f) - (viewportV * 0.5f);
 
+  simd::float3 rayDx = viewportU / Camera::screenSize.x;
+  simd::float3 rayDy = viewportV / Camera::screenSize.y;
+
   UniformsData *uData = (UniformsData *)_pUniformsBuffer->contents();
   uData->cameraPosition = Camera::position;
   uData->viewportU = viewportU;
   uData->viewportV = viewportV;
   uData->firstPixelPosition = firstPixelPosition;
+  uData->rayDx = rayDx;
+  uData->rayDy = rayDy;
   uData->screenSize = Camera::screenSize;
 
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(UniformsData)));
