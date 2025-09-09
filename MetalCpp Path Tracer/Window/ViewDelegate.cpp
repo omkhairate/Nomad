@@ -36,18 +36,12 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
     std::filesystem::path perf = base / "perf.csv";
     _perfLog.open(perf);
     if (_perfLog.is_open())
-      _perfLog << "frame,fps,cpu_ms,gpu_ms,rays_per_second,active_nodes,offloaded_nodes\n";
-
-    std::filesystem::path gpu = base / "gpu_mem.csv";
-    _gpuMemLog.open(gpu);
-    if (_gpuMemLog.is_open())
-      _gpuMemLog << "frame,gpu_memory_mb\n";
+      _perfLog <<
+          "frame,fps,cpu_ms,gpu_ms,rays_per_second,active_nodes,offloaded_nodes,gpu_memory_mb\n";
   }
 }
 
 ViewDelegate::~ViewDelegate() {
-  if (_gpuMemLog.is_open())
-    _gpuMemLog.close();
   if (_perfLog.is_open())
     _perfLog.close();
   delete _pRenderer;
@@ -68,15 +62,11 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
     size_t offloaded = _pRenderer->totalNodeCount() > active
                            ? _pRenderer->totalNodeCount() - active
                            : 0;
+    double gpu_mem = _pRenderer->currentGPUMemoryMB();
     _perfLog << _frameCount << "," << fps << "," << cpu_ms << ","
              << gpu_ms << "," << rays << "," << active << "," << offloaded
-             << "\n";
+             << "," << gpu_mem << "\n";
     _perfLog.flush();
-  }
-  if (_gpuMemLog.is_open()) {
-    _gpuMemLog << _frameCount << "," << _pRenderer->currentGPUMemoryMB()
-               << "\n";
-    _gpuMemLog.flush();
   }
   if (!_dumpPath.empty()) {
     char file[256];
