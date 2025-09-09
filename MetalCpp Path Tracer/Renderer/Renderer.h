@@ -114,6 +114,11 @@ private:
   // Track how many primitives are currently resident in GPU buffers so we can
   // rebuild when the active set changes (offloading/onloading).
   size_t _bufferedPrimitiveCount = 0;
+
+  // Defer buffer compaction to avoid frame drops from frequent rebuilds.
+  bool _pendingSync = false;
+  uint32_t _framesSinceSyncRequest = 0;
+  static constexpr uint32_t kSyncDelayFrames = 30; // frames to wait before sync
 };
 
 } // namespace MetalCppPathTracer
