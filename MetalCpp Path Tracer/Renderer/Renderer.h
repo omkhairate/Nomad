@@ -98,7 +98,6 @@ private:
   std::vector<BoundingSphere> _primitiveBounds;
 
   bool isInView(const BoundingSphere &b);
-  void rebuildActiveScene();
   void rebuildAccelerationStructures();
   void updateLODByDistance();
 
