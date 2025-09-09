@@ -5,6 +5,7 @@
 #include <MetalKit/MetalKit.hpp>
 #include <cstdint>
 #include <chrono>
+#include <limits>
 #include <simd/simd.h>
 #include <vector>
 
@@ -38,6 +39,10 @@ public:
 
   // Return the amount of GPU memory currently allocated by the device in MB.
   double currentGPUMemoryMB() const;
+
+  // Set a maximum GPU memory budget in megabytes. A value of 0 disables the
+  // budget and allows unlimited allocations.
+  void setGPUMemoryBudgetMB(double mb);
 
   // Expose last recorded performance metrics.
   double lastCPUTime() const;
@@ -78,6 +83,10 @@ private:
   size_t _totalNodeCount = 0;
   // Accumulation framebuffers
   MTL::Texture *_accumulationTargets[2] = {nullptr, nullptr};
+
+  // GPU memory budgeting
+  size_t _gpuMemoryBudget = std::numeric_limits<size_t>::max();
+  bool ensureBudget(size_t bytes) const;
 
   struct BoundingSphere {
     simd::float3 center;
