@@ -38,6 +38,18 @@ def _load_perf_csv(path: Path) -> Tuple[List[int], Dict[str, List[float]]]:
     return frames, metrics
 
 
+def _load_gpu_mem_csv(path: Path) -> Tuple[List[int], List[float]]:
+    """Return frame numbers and GPU memory usage from ``path``."""
+    frames: List[int] = []
+    mem: List[float] = []
+    with path.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            frames.append(int(row["frame"]))
+            mem.append(float(row["gpu_memory_mb"]))
+    return frames, mem
+
+
 # The following helpers are adapted from ``visualize_active_nodes_plot.py``
 def _nodes_from_dump(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     nodes = data.get("blas", [])
@@ -126,6 +138,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--gpu-mem-csv",
+        type=Path,
+        default=None,
+        help="CSV file from MPT_RUNS_PATH/gpu_mem.csv to include GPU memory usage",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("performance_plots"),
@@ -139,6 +157,11 @@ def main() -> None:
     frames, metrics = _load_perf_csv(args.csv)
     if "active_nodes" not in metrics and args.as_path is not None:
         metrics["active_nodes"] = _count_active_nodes(_load_frames(args.as_path))
+    if args.gpu_mem_csv is not None:
+        mem_frames, mem = _load_gpu_mem_csv(args.gpu_mem_csv)
+        if mem_frames != frames:
+            print("Warning: frame mismatch between perf.csv and gpu_mem.csv")
+        metrics["gpu_memory_mb"] = mem
 
     args.output.mkdir(parents=True, exist_ok=True)
 

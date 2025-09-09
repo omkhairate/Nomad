@@ -473,7 +473,8 @@ void Renderer::updateLODByDistance() {
         simd::length(_primitiveBounds[g].center - Camera::position) -
         _primitiveBounds[g].radius;
     dist = std::max(dist, 0.0f);
-    bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
+    bool shouldBeActive =
+        dist < FULL_DETAIL_DISTANCE || isInView(_primitiveBounds[g]);
     if (_activePrimitive[g] != shouldBeActive) {
       _activePrimitive[g] = shouldBeActive;
       changed = true;
