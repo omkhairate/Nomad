@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Plot GPU memory usage per frame.
 
-This script reads the ``gpu_mem.csv`` log produced when the renderer is
-run with ``MPT_RUNS_PATH`` set.  The CSV should contain ``frame`` and
-``gpu_memory_mb`` columns.  An interactive Plotly plot is written to an
+This script reads the ``perf.csv`` log produced when the renderer is run
+with ``MPT_RUNS_PATH`` set. The CSV should contain ``frame`` and
+``gpu_memory_mb`` columns. An interactive Plotly plot is written to an
 HTML file for inspection.
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ def main() -> None:
         description="Plot GPU memory usage over frames"
     )
     parser.add_argument(
-        "path", type=Path, help="CSV file from MPT_RUNS_PATH/gpu_mem.csv"
+        "path", type=Path, help="CSV file from MPT_RUNS_PATH/perf.csv"
     )
     parser.add_argument(
         "--output", type=Path, default=Path("gpu_memory.html"),
