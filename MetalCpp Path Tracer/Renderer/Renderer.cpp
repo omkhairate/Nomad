@@ -582,13 +582,7 @@ void Renderer::rebuildAccelerationStructures() {
   }
   delete[] tlasData;
 
-  // The total node count should include primitives that have been
-  // offloaded from the scene.  ``_allPrimitives`` retains the full set
-  // of primitives, whereas ``_pScene->getPrimitiveCount()`` only counts
-  // those currently resident.  Using the scene's count would cause the
-  // total to shrink when primitives are offloaded, hiding the number of
-  // offloaded nodes in performance metrics.
-  _totalNodeCount = _tlasNodeCount + _allPrimitives.size();
+  _totalNodeCount = _tlasNodeCount + _pScene->getPrimitiveCount();
   size_t oldActiveCount = _activeNodeCount;
   size_t activePrim = 0;
   for (bool a : _activePrimitive)
