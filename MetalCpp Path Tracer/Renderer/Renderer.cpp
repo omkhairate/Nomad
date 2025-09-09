@@ -236,23 +236,21 @@ void Renderer::buildBuffers() {
   const size_t uniformsDataSize = sizeof(UniformsData);
 
   // Uniforms
+  MTL::Buffer *newUniform = nullptr;
+  if (ensureBudget(uniformsDataSize))
+    newUniform =
+        _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
+  if (!newUniform) {
+    // Allocate a minimal fallback so later code doesn't dereference null.
+    if (!_pUniformsBuffer)
+      _pUniformsBuffer =
+          _pDevice->newBuffer(1, MTL::ResourceStorageModeManaged);
+    return;
+  }
   if (_pUniformsBuffer)
     _pUniformsBuffer->release();
-  if (!ensureBudget(uniformsDataSize))
-    return;
-  _pUniformsBuffer =
-      _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
+  _pUniformsBuffer = newUniform;
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
-
-  // Destroy previous
-  if (_pSphereBuffer) {
-    _pSphereBuffer->release();
-    _pSphereBuffer = nullptr;
-  }
-  if (_pSphereMaterialBuffer) {
-    _pSphereMaterialBuffer->release();
-    _pSphereMaterialBuffer = nullptr;
-  }
 
   // ✅ Unified buffer
   simd::float4 *primitiveBuffer = nullptr;
@@ -270,56 +268,71 @@ void Renderer::buildBuffers() {
   size_t primitiveAlloc =
       primitiveSize > 0 ? primitiveSize : sizeof(simd::float4);
   size_t materialAlloc = materialSize > 0 ? materialSize : sizeof(simd::float4);
-  if (!ensureBudget(primitiveAlloc + materialAlloc)) {
-    delete[] primitiveBuffer;
-    delete[] materialBuffer;
-    return;
-  }
-  _pSphereBuffer =
-      _pDevice->newBuffer(primitiveAlloc, MTL::ResourceStorageModeManaged);
-  _pSphereMaterialBuffer =
-      _pDevice->newBuffer(materialAlloc, MTL::ResourceStorageModeManaged);
-
-  if (primitiveCount > 0) {
-    memcpy(_pSphereBuffer->contents(), primitiveBuffer, primitiveSize);
-    memcpy(_pSphereMaterialBuffer->contents(), materialBuffer, materialSize);
-    _pSphereBuffer->didModifyRange(NS::Range::Make(0, primitiveSize));
-    _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialSize));
+  if (ensureBudget(primitiveAlloc + materialAlloc)) {
+    MTL::Buffer *newSphere =
+        _pDevice->newBuffer(primitiveAlloc, MTL::ResourceStorageModeManaged);
+    MTL::Buffer *newMaterial =
+        _pDevice->newBuffer(materialAlloc, MTL::ResourceStorageModeManaged);
+    if (newSphere && newMaterial) {
+      if (primitiveCount > 0) {
+        memcpy(newSphere->contents(), primitiveBuffer, primitiveSize);
+        memcpy(newMaterial->contents(), materialBuffer, materialSize);
+        newSphere->didModifyRange(NS::Range::Make(0, primitiveSize));
+        newMaterial->didModifyRange(NS::Range::Make(0, materialSize));
+      }
+      if (_pSphereBuffer)
+        _pSphereBuffer->release();
+      if (_pSphereMaterialBuffer)
+        _pSphereMaterialBuffer->release();
+      _pSphereBuffer = newSphere;
+      _pSphereMaterialBuffer = newMaterial;
+    } else {
+      if (newSphere)
+        newSphere->release();
+      if (newMaterial)
+        newMaterial->release();
+    }
   }
 
   delete[] primitiveBuffer;
   delete[] materialBuffer;
 
   // Active mask buffer (1 byte per primitive)
-  if (_pActiveBuffer) {
-    _pActiveBuffer->release();
-    _pActiveBuffer = nullptr;
-  }
   size_t activeSize = primitiveCount * sizeof(uint8_t);
   size_t activeAlloc = activeSize > 0 ? activeSize : sizeof(uint8_t);
-  if (!ensureBudget(activeAlloc))
-    return;
-  _pActiveBuffer =
-      _pDevice->newBuffer(activeAlloc, MTL::ResourceStorageModeManaged);
-  if (primitiveCount > 0) {
-    std::vector<uint8_t> activeBytes(primitiveCount);
-    for (size_t i = 0; i < primitiveCount; ++i)
-      activeBytes[i] = _activePrimitive[i] ? 1 : 0;
-    memcpy(_pActiveBuffer->contents(), activeBytes.data(), activeSize);
-    _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeSize));
+  if (ensureBudget(activeAlloc)) {
+    MTL::Buffer *newActive =
+        _pDevice->newBuffer(activeAlloc, MTL::ResourceStorageModeManaged);
+    if (newActive) {
+      if (primitiveCount > 0) {
+        std::vector<uint8_t> activeBytes(primitiveCount, 1);
+        memcpy(newActive->contents(), activeBytes.data(), activeSize);
+        newActive->didModifyRange(NS::Range::Make(0, activeSize));
+      }
+      if (_pActiveBuffer)
+        _pActiveBuffer->release();
+      _pActiveBuffer = newActive;
+    } else if (!_pActiveBuffer) {
+      _pActiveBuffer =
+          _pDevice->newBuffer(1, MTL::ResourceStorageModeManaged);
+    }
   }
 
   // Dummy triangle buffer bindings
   simd::float3 dummyVertex = {0, 0, 0};
   simd::uint3 dummyIndex = {0, 0, 0};
-  if (!ensureBudget(sizeof(simd::float3)))
-    return;
-  _pTriangleVertexBuffer = _pDevice->newBuffer(
-      &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
-  if (!ensureBudget(sizeof(simd::uint3)))
-    return;
-  _pTriangleIndexBuffer = _pDevice->newBuffer(&dummyIndex, sizeof(simd::uint3),
-                                              MTL::ResourceStorageModeManaged);
+  if (ensureBudget(sizeof(simd::float3))) {
+    if (_pTriangleVertexBuffer)
+      _pTriangleVertexBuffer->release();
+    _pTriangleVertexBuffer = _pDevice->newBuffer(
+        &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
+  }
+  if (ensureBudget(sizeof(simd::uint3))) {
+    if (_pTriangleIndexBuffer)
+      _pTriangleIndexBuffer->release();
+    _pTriangleIndexBuffer = _pDevice->newBuffer(
+        &dummyIndex, sizeof(simd::uint3), MTL::ResourceStorageModeManaged);
+  }
 }
 
 void Renderer::buildTextures() {
@@ -464,14 +477,17 @@ void Renderer::updateLODByDistance() {
   // when starting far from the origin.
   const float FULL_DETAIL_DISTANCE = 250.0f;
   size_t activeCount = 0;
+  bool changed = false;
   for (size_t g = 0; g < _allPrimitives.size(); ++g) {
     float dist =
         simd::length(_primitiveBounds[g].center - Camera::position) -
         _primitiveBounds[g].radius;
     dist = std::max(dist, 0.0f);
     bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
-    if (_activePrimitive[g] != shouldBeActive)
+    if (_activePrimitive[g] != shouldBeActive) {
       setPrimitiveActive(g, shouldBeActive);
+      changed = true;
+    }
     if (_activePrimitive[g])
       activeCount++;
   }
@@ -480,13 +496,36 @@ void Renderer::updateLODByDistance() {
     // Ensure at least one primitive remains visible to avoid a blank scene
     setPrimitiveActive(0, true);
     activeCount = 1;
+    changed = true;
   }
 
+  if (changed)
+    rebuildActiveScene();
+
+  activeCount = _pScene->getPrimitiveCount();
   size_t newActiveNodes = _tlasNodeCount + activeCount;
   if (newActiveNodes != _activeNodeCount) {
     _activeNodeCount = newActiveNodes;
     printf("Active nodes: %zu\n", _activeNodeCount);
   }
+}
+
+void Renderer::rebuildActiveScene() {
+  auto savedPath = _pScene->cameraPath;
+  simd::float2 savedSize = _pScene->screenSize;
+  uint32_t savedDepth = _pScene->maxRayDepth;
+
+  _pScene->clear();
+  _pScene->screenSize = savedSize;
+  _pScene->maxRayDepth = savedDepth;
+  _pScene->cameraPath = savedPath;
+
+  for (size_t i = 0; i < _allPrimitives.size(); ++i)
+    if (_activePrimitive[i])
+      _pScene->addPrimitive(_allPrimitives[i]);
+
+  rebuildAccelerationStructures();
+  buildBuffers();
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -505,39 +544,45 @@ bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
 void Renderer::setPrimitiveActive(size_t index, bool active) {
   if (index >= _activePrimitive.size())
     return;
-  if (_activePrimitive[index] == active)
-    return;
   _activePrimitive[index] = active;
-  if (_pActiveBuffer) {
-    uint8_t *mask = static_cast<uint8_t *>(_pActiveBuffer->contents());
-    mask[index] = active ? 1 : 0;
-    _pActiveBuffer->didModifyRange(NS::Range::Make(index, 1));
-  }
 }
 
 void Renderer::rebuildAccelerationStructures() {
   _pScene->buildBVH();
 
   size_t newBlasCount = _pScene->getBVHNodeCount();
-  _blasNodeCount = newBlasCount;
-
   simd::float4 *bvhData = _pScene->createBVHBuffer();
-  if (_pBVHBuffer)
-    _pBVHBuffer->release();
   size_t bvhSize = sizeof(simd::float4) * newBlasCount * 2;
-  if (!ensureBudget(bvhSize)) {
-    delete[] bvhData;
-    return;
+  if (ensureBudget(bvhSize)) {
+    MTL::Buffer *newBVH =
+        _pDevice->newBuffer(bvhData, bvhSize, MTL::ResourceStorageModeManaged);
+    if (newBVH) {
+      if (_pBVHBuffer)
+        _pBVHBuffer->release();
+      _pBVHBuffer = newBVH;
+      _pBVHBuffer->didModifyRange(NS::Range::Make(0, bvhSize));
+      _blasNodeCount = newBlasCount;
+    }
   }
-  _pBVHBuffer =
-      _pDevice->newBuffer(bvhData, bvhSize, MTL::ResourceStorageModeManaged);
-  _pBVHBuffer->didModifyRange(NS::Range::Make(0, _pBVHBuffer->length()));
   delete[] bvhData;
 
   size_t tlasCount = 0;
   simd::float4 *tlasData = _pScene->createTLASBuffer(tlasCount);
-  _tlasNodeCount = tlasCount;
-  _totalNodeCount = _tlasNodeCount + _allPrimitives.size();
+  size_t tlasSize = tlasCount > 0 ? sizeof(simd::float4) * tlasCount * 2 : 1;
+  if (ensureBudget(tlasSize)) {
+    MTL::Buffer *newTLAS =
+        _pDevice->newBuffer(tlasData, tlasSize, MTL::ResourceStorageModeManaged);
+    if (newTLAS) {
+      if (_pTLASBuffer)
+        _pTLASBuffer->release();
+      _pTLASBuffer = newTLAS;
+      _pTLASBuffer->didModifyRange(NS::Range::Make(0, tlasSize));
+      _tlasNodeCount = tlasCount;
+    }
+  }
+  delete[] tlasData;
+
+  _totalNodeCount = _tlasNodeCount + _pScene->getPrimitiveCount();
   size_t oldActiveCount = _activeNodeCount;
   size_t activePrim = 0;
   for (bool a : _activePrimitive)
@@ -547,43 +592,23 @@ void Renderer::rebuildAccelerationStructures() {
   if (_activeNodeCount != oldActiveCount) {
     printf("Active nodes: %zu\n", _activeNodeCount);
   }
-  if (_pTLASBuffer)
-    _pTLASBuffer->release();
-  if (tlasData && tlasCount > 0) {
-    size_t tlasSize = sizeof(simd::float4) * tlasCount * 2;
-    if (!ensureBudget(tlasSize)) {
-      delete[] tlasData;
-      return;
-    }
-    _pTLASBuffer =
-        _pDevice->newBuffer(tlasData, tlasSize, MTL::ResourceStorageModeManaged);
-    _pTLASBuffer->didModifyRange(NS::Range::Make(0, _pTLASBuffer->length()));
-  } else {
-    if (!ensureBudget(1)) {
-      delete[] tlasData;
-      return;
-    }
-    _pTLASBuffer = _pDevice->newBuffer(1, MTL::ResourceStorageModeManaged);
-  }
-  delete[] tlasData;
 
   size_t indexCount = _pScene->getPrimitiveCount();
-  size_t indexSize = indexCount * sizeof(int);
-  if (_pPrimitiveIndexBuffer)
-    _pPrimitiveIndexBuffer->release();
-  if (indexCount > 0) {
-    if (!ensureBudget(indexSize))
-      return;
-    int *rawIndices = _pScene->createPrimitiveIndexBuffer();
-    _pPrimitiveIndexBuffer = _pDevice->newBuffer(
-        rawIndices, indexSize, MTL::ResourceStorageModeManaged);
-    _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
-    delete[] rawIndices;
-  } else {
-    if (!ensureBudget(sizeof(int)))
-      return;
-    _pPrimitiveIndexBuffer =
-        _pDevice->newBuffer(sizeof(int), MTL::ResourceStorageModeManaged);
+  size_t indexAlloc = indexCount > 0 ? indexCount * sizeof(int) : sizeof(int);
+  if (ensureBudget(indexAlloc)) {
+    int *rawIndices = indexCount > 0 ? _pScene->createPrimitiveIndexBuffer() : nullptr;
+    int dummy = 0;
+    MTL::Buffer *newIndex = _pDevice->newBuffer(
+        rawIndices ? rawIndices : &dummy, indexAlloc,
+        MTL::ResourceStorageModeManaged);
+    if (newIndex) {
+      if (_pPrimitiveIndexBuffer)
+        _pPrimitiveIndexBuffer->release();
+      _pPrimitiveIndexBuffer = newIndex;
+      _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(0, indexAlloc));
+    }
+    if (rawIndices)
+      delete[] rawIndices;
   }
 }
 
