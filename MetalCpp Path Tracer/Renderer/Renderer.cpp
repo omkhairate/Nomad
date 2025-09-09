@@ -302,9 +302,7 @@ void Renderer::buildBuffers() {
   _pActiveBuffer =
       _pDevice->newBuffer(activeAlloc, MTL::ResourceStorageModeManaged);
   if (primitiveCount > 0) {
-    std::vector<uint8_t> activeBytes(primitiveCount);
-    for (size_t i = 0; i < primitiveCount; ++i)
-      activeBytes[i] = _activePrimitive[i] ? 1 : 0;
+    std::vector<uint8_t> activeBytes(primitiveCount, 1);
     memcpy(_pActiveBuffer->contents(), activeBytes.data(), activeSize);
     _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeSize));
   }
@@ -464,14 +462,17 @@ void Renderer::updateLODByDistance() {
   // when starting far from the origin.
   const float FULL_DETAIL_DISTANCE = 250.0f;
   size_t activeCount = 0;
+  bool changed = false;
   for (size_t g = 0; g < _allPrimitives.size(); ++g) {
     float dist =
         simd::length(_primitiveBounds[g].center - Camera::position) -
         _primitiveBounds[g].radius;
     dist = std::max(dist, 0.0f);
     bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
-    if (_activePrimitive[g] != shouldBeActive)
+    if (_activePrimitive[g] != shouldBeActive) {
       setPrimitiveActive(g, shouldBeActive);
+      changed = true;
+    }
     if (_activePrimitive[g])
       activeCount++;
   }
@@ -480,13 +481,36 @@ void Renderer::updateLODByDistance() {
     // Ensure at least one primitive remains visible to avoid a blank scene
     setPrimitiveActive(0, true);
     activeCount = 1;
+    changed = true;
   }
 
+  if (changed)
+    rebuildActiveScene();
+
+  activeCount = _pScene->getPrimitiveCount();
   size_t newActiveNodes = _tlasNodeCount + activeCount;
   if (newActiveNodes != _activeNodeCount) {
     _activeNodeCount = newActiveNodes;
     printf("Active nodes: %zu\n", _activeNodeCount);
   }
+}
+
+void Renderer::rebuildActiveScene() {
+  auto savedPath = _pScene->cameraPath;
+  simd::float2 savedSize = _pScene->screenSize;
+  uint32_t savedDepth = _pScene->maxRayDepth;
+
+  _pScene->clear();
+  _pScene->screenSize = savedSize;
+  _pScene->maxRayDepth = savedDepth;
+  _pScene->cameraPath = savedPath;
+
+  for (size_t i = 0; i < _allPrimitives.size(); ++i)
+    if (_activePrimitive[i])
+      _pScene->addPrimitive(_allPrimitives[i]);
+
+  rebuildAccelerationStructures();
+  buildBuffers();
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -505,14 +529,7 @@ bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
 void Renderer::setPrimitiveActive(size_t index, bool active) {
   if (index >= _activePrimitive.size())
     return;
-  if (_activePrimitive[index] == active)
-    return;
   _activePrimitive[index] = active;
-  if (_pActiveBuffer) {
-    uint8_t *mask = static_cast<uint8_t *>(_pActiveBuffer->contents());
-    mask[index] = active ? 1 : 0;
-    _pActiveBuffer->didModifyRange(NS::Range::Make(index, 1));
-  }
 }
 
 void Renderer::rebuildAccelerationStructures() {
@@ -537,7 +554,7 @@ void Renderer::rebuildAccelerationStructures() {
   size_t tlasCount = 0;
   simd::float4 *tlasData = _pScene->createTLASBuffer(tlasCount);
   _tlasNodeCount = tlasCount;
-  _totalNodeCount = _tlasNodeCount + _allPrimitives.size();
+  _totalNodeCount = _tlasNodeCount + _pScene->getPrimitiveCount();
   size_t oldActiveCount = _activeNodeCount;
   size_t activePrim = 0;
   for (bool a : _activePrimitive)
