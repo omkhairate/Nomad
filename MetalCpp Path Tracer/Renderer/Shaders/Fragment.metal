@@ -7,7 +7,7 @@ using metal::raytracing::ray;
 
 float4 fragment fragmentMain(
     v2f in [[stage_in]],
-    device const float4* bvhNodes [[buffer(0)]],
+    device const float4* bvhNodes [[buffer(0)]],          // <--- ADD THIS LINE
     device const float4* primitives [[buffer(1)]],
     device const float4* materials [[buffer(2)]],
     device const UniformsData* uniforms [[buffer(3)]],
@@ -58,6 +58,7 @@ float4 fragment fragmentMain(
         primitives,       // <- Each primitive is 3 float4s
         materials,
         u.primitiveCount,
+        u.primitiveIndex,
         primitiveIndices,
         activeMask,
         seed,
