@@ -462,13 +462,19 @@ void Renderer::draw(MTK::View *pView) {
 }
 
 void Renderer::updateLODByDistance() {
-  // Determine residency based solely on whether primitives are visible.
-  // Primitives outside the camera frustum are offloaded and will be
-  // reloaded once they come back into view.
+  // Keep primitives active until the camera is reasonably far away.
+  // Using a larger threshold prevents the entire scene from being culled
+  // when starting far from the origin.
+  const float FULL_DETAIL_DISTANCE = 250.0f;
   bool changed = false;
   size_t activeCount = 0;
   for (size_t g = 0; g < _allPrimitives.size(); ++g) {
-    bool shouldBeActive = isInView(_primitiveBounds[g]);
+    float dist =
+        simd::length(_primitiveBounds[g].center - Camera::position) -
+        _primitiveBounds[g].radius;
+    dist = std::max(dist, 0.0f);
+    bool shouldBeActive =
+        dist < FULL_DETAIL_DISTANCE || isInView(_primitiveBounds[g]);
     if (_activePrimitive[g] != shouldBeActive) {
       _activePrimitive[g] = shouldBeActive;
       changed = true;

@@ -6,8 +6,7 @@ with ``MPT_RUNS_PATH`` set. The CSV must contain a ``frame`` column and
 may contain additional metrics such as ``fps`` or ``rays_per_second``.
 If a directory or JSON file of acceleration-structure dumps is supplied,
 the number of loaded BLAS nodes per frame is computed and plotted as the
-``active_nodes`` metric. Each metric, including GPU memory usage if the
-``gpu_memory_mb`` column is present, is written to its own interactive
+``active_nodes`` metric. Each metric is written to its own interactive
 Plotly HTML file for easy comparison.
 """
 from __future__ import annotations
@@ -37,6 +36,18 @@ def _load_perf_csv(path: Path) -> Tuple[List[int], Dict[str, List[float]]]:
                     continue
                 metrics.setdefault(key, []).append(float(value))
     return frames, metrics
+
+
+def _load_gpu_mem_csv(path: Path) -> Tuple[List[int], List[float]]:
+    """Return frame numbers and GPU memory usage from ``path``."""
+    frames: List[int] = []
+    mem: List[float] = []
+    with path.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            frames.append(int(row["frame"]))
+            mem.append(float(row["gpu_memory_mb"]))
+    return frames, mem
 
 
 # The following helpers are adapted from ``visualize_active_nodes_plot.py``
@@ -127,6 +138,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--gpu-mem-csv",
+        type=Path,
+        default=None,
+        help="CSV file from MPT_RUNS_PATH/gpu_mem.csv to include GPU memory usage",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("performance_plots"),
@@ -140,6 +157,11 @@ def main() -> None:
     frames, metrics = _load_perf_csv(args.csv)
     if "active_nodes" not in metrics and args.as_path is not None:
         metrics["active_nodes"] = _count_active_nodes(_load_frames(args.as_path))
+    if args.gpu_mem_csv is not None:
+        mem_frames, mem = _load_gpu_mem_csv(args.gpu_mem_csv)
+        if mem_frames != frames:
+            print("Warning: frame mismatch between perf.csv and gpu_mem.csv")
+        metrics["gpu_memory_mb"] = mem
 
     args.output.mkdir(parents=True, exist_ok=True)
 
