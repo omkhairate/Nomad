@@ -414,10 +414,6 @@ void Renderer::updateUniforms() {
 
 void Renderer::draw(MTK::View *pView) {
   updateLODByDistance();
-  if (_pendingSync && ++_framesSinceSyncRequest >= kSyncDelayFrames) {
-    syncBuffersToActive();
-    _pendingSync = false;
-  }
   updateUniforms();
   beginFrameMetrics();
   std::swap(_accumulationTargets[0], _accumulationTargets[1]);
@@ -488,10 +484,8 @@ void Renderer::updateLODByDistance() {
     changed = true;
   }
 
-  if (changed && activeCount != _bufferedPrimitiveCount) {
-    _pendingSync = true;
-    _framesSinceSyncRequest = 0;
-  }
+  if (changed && activeCount != _bufferedPrimitiveCount)
+    syncBuffersToActive();
 }
 
 void Renderer::syncBuffersToActive() {
