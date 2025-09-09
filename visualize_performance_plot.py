@@ -3,7 +3,8 @@
 
 This script reads the ``perf.csv`` log produced when the renderer is run
 with ``MPT_RUNS_PATH`` set. The CSV must contain a ``frame`` column and
-may contain additional metrics such as ``fps`` or ``rays_per_second``.
+may contain additional metrics such as ``fps``, ``rays_per_second``, or
+``gpu_memory_mb`` for GPU memory usage.
 If a directory or JSON file of acceleration-structure dumps is supplied,
 the number of loaded BLAS nodes per frame is computed and plotted as the
 ``active_nodes`` metric. Each metric is written to its own interactive
