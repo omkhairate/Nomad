@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Plot per-frame performance metrics with optional active node counts.
+"""Plot per-frame performance metrics, one plot per metric.
 
 This script reads the ``perf.csv`` log produced when the renderer is run
 with ``MPT_RUNS_PATH`` set. The CSV must contain a ``frame`` column and
 may contain additional metrics such as ``fps`` or ``rays_per_second``.
 If a directory or JSON file of acceleration-structure dumps is supplied,
-the number of loaded BLAS nodes per frame is computed and plotted on a
-secondary axis for comparison.
+the number of loaded BLAS nodes per frame is computed and plotted as the
+``active_nodes`` metric. Each metric is written to its own interactive
+Plotly HTML file for easy comparison.
 """
 from __future__ import annotations
 
@@ -18,15 +19,12 @@ from typing import Any, Dict, List, Tuple
 
 import plotly.graph_objects as go
 import plotly.io as pio
-from plotly.subplots import make_subplots
 
 pio.renderers.default = "browser"
 
 
-def _load_perf_csv(
-    path: Path,
-) -> Tuple[List[int], Dict[str, List[float]], List[int] | None, List[int] | None]:
-    """Return frame numbers, metric columns, and node counts from ``path``."""
+def _load_perf_csv(path: Path) -> Tuple[List[int], Dict[str, List[float]]]:
+    """Return frame numbers and metric columns from ``path``."""
     frames: List[int] = []
     metrics: Dict[str, List[float]] = {}
     with path.open("r", encoding="utf-8") as f:
@@ -37,9 +35,7 @@ def _load_perf_csv(
                 if key == "frame":
                     continue
                 metrics.setdefault(key, []).append(float(value))
-    active = metrics.pop("active_nodes", None)
-    offloaded = metrics.pop("offloaded_nodes", None)
-    return frames, metrics, active, offloaded
+    return frames, metrics
 
 
 # The following helpers are adapted from ``visualize_active_nodes_plot.py``
@@ -99,53 +95,17 @@ def _count_active_nodes(frames: List[Dict[str, Any]]) -> List[int]:
     return [sum(1 for n in f.get("nodes", []) if n.get("loaded", True)) for f in frames]
 
 
-def _create_figure(
-    frames: List[int],
-    metrics: Dict[str, List[float]],
-    active_nodes: List[int] | None,
-    offloaded_nodes: List[int] | None,
+def _create_metric_figure(
+    frames: List[int], values: List[float], name: str
 ) -> go.Figure:
-    if active_nodes is not None or offloaded_nodes is not None:
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-    else:
-        fig = go.Figure()
-
-    for name, values in metrics.items():
-        if active_nodes is not None or offloaded_nodes is not None:
-            fig.add_trace(
-                go.Scatter(x=frames, y=values, mode="lines+markers", name=name),
-                secondary_y=False,
-            )
-        else:
-            fig.add_trace(go.Scatter(x=frames, y=values, mode="lines+markers", name=name))
-
-    if active_nodes is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=list(range(len(active_nodes))),
-                y=active_nodes,
-                mode="lines+markers",
-                name="active_nodes",
-            ),
-            secondary_y=True,
-        )
-    if offloaded_nodes is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=list(range(len(offloaded_nodes))),
-                y=offloaded_nodes,
-                mode="lines+markers",
-                name="offloaded_nodes",
-            ),
-            secondary_y=True,
-        )
-    if active_nodes is not None or offloaded_nodes is not None:
-        fig.update_yaxes(title_text="Performance", secondary_y=False)
-        fig.update_yaxes(title_text="Nodes", secondary_y=True)
-    else:
-        fig.update_yaxes(title_text="Value")
-
-    fig.update_layout(title="Per-frame performance metrics", xaxis_title="Frame")
+    """Return a Plotly line chart for a single metric."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=frames, y=values, mode="lines+markers", name=name))
+    fig.update_layout(
+        title=f"{name} per frame",
+        xaxis_title="Frame",
+        yaxis_title=name,
+    )
     return fig
 
 
@@ -168,22 +128,27 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("performance.html"),
-        help="Output HTML file",
+        default=Path("performance_plots"),
+        help="Output directory for HTML files",
     )
     parser.add_argument(
         "--no-open", action="store_true", help="Do not automatically open the browser"
     )
     args = parser.parse_args()
 
-    frames, metrics, csv_active, csv_offloaded = _load_perf_csv(args.csv)
-    active = csv_active
-    offloaded = csv_offloaded
-    if active is None and args.as_path is not None:
-        active = _count_active_nodes(_load_frames(args.as_path))
-    fig = _create_figure(frames, metrics, active, offloaded)
-    fig.write_html(args.output, auto_open=not args.no_open)
-    print(f"Wrote {args.output}")
+    frames, metrics = _load_perf_csv(args.csv)
+    if "active_nodes" not in metrics and args.as_path is not None:
+        metrics["active_nodes"] = _count_active_nodes(_load_frames(args.as_path))
+
+    args.output.mkdir(parents=True, exist_ok=True)
+
+    print("Metrics:", ", ".join(metrics.keys()))
+
+    for name, values in metrics.items():
+        fig = _create_metric_figure(frames, values, name)
+        out_file = args.output / f"{name}.html"
+        fig.write_html(out_file, auto_open=not args.no_open)
+        print(f"Wrote {out_file} for metric '{name}'")
 
 
 if __name__ == "__main__":

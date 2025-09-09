@@ -238,6 +238,8 @@ void Renderer::buildBuffers() {
   // Uniforms
   if (_pUniformsBuffer)
     _pUniformsBuffer->release();
+  if (!ensureBudget(uniformsDataSize))
+    return;
   _pUniformsBuffer =
       _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
@@ -268,7 +270,11 @@ void Renderer::buildBuffers() {
   size_t primitiveAlloc =
       primitiveSize > 0 ? primitiveSize : sizeof(simd::float4);
   size_t materialAlloc = materialSize > 0 ? materialSize : sizeof(simd::float4);
-
+  if (!ensureBudget(primitiveAlloc + materialAlloc)) {
+    delete[] primitiveBuffer;
+    delete[] materialBuffer;
+    return;
+  }
   _pSphereBuffer =
       _pDevice->newBuffer(primitiveAlloc, MTL::ResourceStorageModeManaged);
   _pSphereMaterialBuffer =
@@ -291,6 +297,8 @@ void Renderer::buildBuffers() {
   }
   size_t activeSize = primitiveCount * sizeof(uint8_t);
   size_t activeAlloc = activeSize > 0 ? activeSize : sizeof(uint8_t);
+  if (!ensureBudget(activeAlloc))
+    return;
   _pActiveBuffer =
       _pDevice->newBuffer(activeAlloc, MTL::ResourceStorageModeManaged);
   if (primitiveCount > 0) {
@@ -304,9 +312,12 @@ void Renderer::buildBuffers() {
   // Dummy triangle buffer bindings
   simd::float3 dummyVertex = {0, 0, 0};
   simd::uint3 dummyIndex = {0, 0, 0};
-
+  if (!ensureBudget(sizeof(simd::float3)))
+    return;
   _pTriangleVertexBuffer = _pDevice->newBuffer(
       &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
+  if (!ensureBudget(sizeof(simd::uint3)))
+    return;
   _pTriangleIndexBuffer = _pDevice->newBuffer(&dummyIndex, sizeof(simd::uint3),
                                               MTL::ResourceStorageModeManaged);
 }
@@ -322,9 +333,16 @@ void Renderer::buildTextures() {
   textureDescriptor->setStorageMode(MTL::StorageMode::StorageModePrivate);
   textureDescriptor->setUsage(MTL::TextureUsageShaderRead |
                               MTL::TextureUsageShaderWrite);
-
-  for (uint i = 0; i < 2; i++)
+  size_t texSize = static_cast<size_t>(Camera::screenSize.x * Camera::screenSize.y *
+                                       4 * sizeof(float));
+  for (uint i = 0; i < 2; i++) {
+    if (!ensureBudget(texSize)) {
+      textureDescriptor->release();
+      return;
+    }
     _accumulationTargets[i] = _pDevice->newTexture(textureDescriptor);
+  }
+  textureDescriptor->release();
 }
 
 bool Renderer::updateCamera() {
@@ -506,9 +524,13 @@ void Renderer::rebuildAccelerationStructures() {
   simd::float4 *bvhData = _pScene->createBVHBuffer();
   if (_pBVHBuffer)
     _pBVHBuffer->release();
+  size_t bvhSize = sizeof(simd::float4) * newBlasCount * 2;
+  if (!ensureBudget(bvhSize)) {
+    delete[] bvhData;
+    return;
+  }
   _pBVHBuffer =
-      _pDevice->newBuffer(bvhData, sizeof(simd::float4) * newBlasCount * 2,
-                          MTL::ResourceStorageModeManaged);
+      _pDevice->newBuffer(bvhData, bvhSize, MTL::ResourceStorageModeManaged);
   _pBVHBuffer->didModifyRange(NS::Range::Make(0, _pBVHBuffer->length()));
   delete[] bvhData;
 
@@ -528,11 +550,19 @@ void Renderer::rebuildAccelerationStructures() {
   if (_pTLASBuffer)
     _pTLASBuffer->release();
   if (tlasData && tlasCount > 0) {
+    size_t tlasSize = sizeof(simd::float4) * tlasCount * 2;
+    if (!ensureBudget(tlasSize)) {
+      delete[] tlasData;
+      return;
+    }
     _pTLASBuffer =
-        _pDevice->newBuffer(tlasData, sizeof(simd::float4) * tlasCount * 2,
-                            MTL::ResourceStorageModeManaged);
+        _pDevice->newBuffer(tlasData, tlasSize, MTL::ResourceStorageModeManaged);
     _pTLASBuffer->didModifyRange(NS::Range::Make(0, _pTLASBuffer->length()));
   } else {
+    if (!ensureBudget(1)) {
+      delete[] tlasData;
+      return;
+    }
     _pTLASBuffer = _pDevice->newBuffer(1, MTL::ResourceStorageModeManaged);
   }
   delete[] tlasData;
@@ -542,12 +572,16 @@ void Renderer::rebuildAccelerationStructures() {
   if (_pPrimitiveIndexBuffer)
     _pPrimitiveIndexBuffer->release();
   if (indexCount > 0) {
+    if (!ensureBudget(indexSize))
+      return;
     int *rawIndices = _pScene->createPrimitiveIndexBuffer();
     _pPrimitiveIndexBuffer = _pDevice->newBuffer(
         rawIndices, indexSize, MTL::ResourceStorageModeManaged);
     _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
     delete[] rawIndices;
   } else {
+    if (!ensureBudget(sizeof(int)))
+      return;
     _pPrimitiveIndexBuffer =
         _pDevice->newBuffer(sizeof(int), MTL::ResourceStorageModeManaged);
   }
@@ -614,6 +648,25 @@ void Renderer::dumpAccelerationStructure(const std::string &path) {
 double Renderer::currentGPUMemoryMB() const {
   return static_cast<double>(_pDevice->currentAllocatedSize()) /
          (1024.0 * 1024.0);
+}
+
+void Renderer::setGPUMemoryBudgetMB(double mb) {
+  if (mb <= 0.0)
+    _gpuMemoryBudget = std::numeric_limits<size_t>::max();
+  else
+    _gpuMemoryBudget = static_cast<size_t>(mb * 1024.0 * 1024.0);
+}
+
+bool Renderer::ensureBudget(size_t bytes) const {
+  if (_gpuMemoryBudget == std::numeric_limits<size_t>::max())
+    return true;
+  size_t current = _pDevice->currentAllocatedSize();
+  if (current + bytes > _gpuMemoryBudget) {
+    printf("GPU memory budget exceeded: requested %zu bytes (current %zu, budget %zu)\n",
+           bytes, current, _gpuMemoryBudget);
+    return false;
+  }
+  return true;
 }
 
 void Renderer::beginFrameMetrics() {
