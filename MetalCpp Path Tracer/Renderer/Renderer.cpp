@@ -78,14 +78,15 @@ Renderer::Renderer(MTL::Device *pDevice)
   buildTextures();
 
   recalculateViewport();
-  _bufferedPrimitiveCount = _pScene->getPrimitiveCount();
 }
 
 Renderer::~Renderer() {
-  if (_pSphereBuffer)
-    _pSphereBuffer->release();
-  if (_pSphereMaterialBuffer)
-    _pSphereMaterialBuffer->release();
+  for (MTL::Buffer *b : _sphereBuffers)
+    if (b)
+      b->release();
+  for (MTL::Buffer *b : _sphereMaterialBuffers)
+    if (b)
+      b->release();
   if (_pTriangleVertexBuffer)
     _pTriangleVertexBuffer->release();
   if (_pTriangleIndexBuffer)
@@ -194,7 +195,6 @@ void Renderer::updateVisibleScene() {
 
   rebuildAccelerationStructures();
   buildBuffers();
-  _bufferedPrimitiveCount = _pScene->getPrimitiveCount();
 }
 
 void Renderer::recalculateViewport() {
@@ -247,49 +247,65 @@ void Renderer::buildBuffers() {
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
 
   // Destroy previous
-  if (_pSphereBuffer) {
-    _pSphereBuffer->release();
-    _pSphereBuffer = nullptr;
-  }
-  if (_pSphereMaterialBuffer) {
-    _pSphereMaterialBuffer->release();
-    _pSphereMaterialBuffer = nullptr;
-  }
+  for (MTL::Buffer *b : _sphereBuffers)
+    if (b)
+      b->release();
+  for (MTL::Buffer *b : _sphereMaterialBuffers)
+    if (b)
+      b->release();
+  _sphereBuffers.clear();
+  _sphereMaterialBuffers.clear();
 
-  simd::float4 *primitiveBuffer = nullptr;
-  simd::float4 *materialBuffer = nullptr;
-  if (primitiveCount > 0) {
-    primitiveBuffer =
-        _pScene->createTransformsBuffer(); // 3 float4s per primitive
-    materialBuffer =
-        _pScene->createMaterialsBuffer(); // 2 float4s per primitive
+  // Allocate per-primitive buffers
+  _sphereBuffers.resize(primitiveCount, nullptr);
+  _sphereMaterialBuffers.resize(primitiveCount, nullptr);
+  for (size_t i = 0; i < primitiveCount; ++i) {
+    if (!_activePrimitive[i])
+      continue;
+
+    const Primitive &p = _allPrimitives[i];
+    simd::float4 transform[3];
+    if (p.type == PrimitiveType::Sphere) {
+      transform[0] = simd::make_float4(p.sphere.center,
+                                       static_cast<float>(p.type));
+      transform[1] =
+          simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
+      transform[2] = simd::make_float4(simd::float3(0), 0);
+    } else if (p.type == PrimitiveType::Rectangle) {
+      transform[0] =
+          simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+      transform[1] = simd::make_float4(p.rectangle.u, 0);
+      transform[2] = simd::make_float4(p.rectangle.v, 0);
+    } else {
+      transform[0] =
+          simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+      transform[1] = simd::make_float4(p.triangle.v1, 0);
+      transform[2] = simd::make_float4(p.triangle.v2, 0);
+    }
+
+    simd::float4 material[2];
+    material[0] =
+        simd::make_float4(p.material.albedo, p.material.materialType);
+    material[1] = simd::make_float4(p.material.emissionColor,
+                                    p.material.emissionPower);
+
+    size_t tSize = sizeof(transform);
+    size_t mSize = sizeof(material);
+    if (!ensureBudget(tSize + mSize))
+      return;
+
+    MTL::Buffer *tb =
+        _pDevice->newBuffer(tSize, MTL::ResourceStorageModeManaged);
+    memcpy(tb->contents(), transform, tSize);
+    tb->didModifyRange(NS::Range::Make(0, tSize));
+    _sphereBuffers[i] = tb;
+
+    MTL::Buffer *mb =
+        _pDevice->newBuffer(mSize, MTL::ResourceStorageModeManaged);
+    memcpy(mb->contents(), material, mSize);
+    mb->didModifyRange(NS::Range::Make(0, mSize));
+    _sphereMaterialBuffers[i] = mb;
   }
-
-  const size_t primitiveSize = primitiveCount * 3 * sizeof(simd::float4);
-  const size_t materialSize = primitiveCount * 2 * sizeof(simd::float4);
-
-  size_t primitiveAlloc =
-      primitiveSize > 0 ? primitiveSize : sizeof(simd::float4);
-  size_t materialAlloc = materialSize > 0 ? materialSize : sizeof(simd::float4);
-  if (!ensureBudget(primitiveAlloc + materialAlloc)) {
-    delete[] primitiveBuffer;
-    delete[] materialBuffer;
-    return;
-  }
-  _pSphereBuffer =
-      _pDevice->newBuffer(primitiveAlloc, MTL::ResourceStorageModeManaged);
-  _pSphereMaterialBuffer =
-      _pDevice->newBuffer(materialAlloc, MTL::ResourceStorageModeManaged);
-
-  if (primitiveCount > 0) {
-    memcpy(_pSphereBuffer->contents(), primitiveBuffer, primitiveSize);
-    memcpy(_pSphereMaterialBuffer->contents(), materialBuffer, materialSize);
-    _pSphereBuffer->didModifyRange(NS::Range::Make(0, primitiveSize));
-    _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialSize));
-  }
-
-  delete[] primitiveBuffer;
-  delete[] materialBuffer;
 
   // Active mask buffer (1 byte per primitive)
   if (_pActiveBuffer) {
@@ -303,7 +319,9 @@ void Renderer::buildBuffers() {
   _pActiveBuffer =
       _pDevice->newBuffer(activeAlloc, MTL::ResourceStorageModeManaged);
   if (primitiveCount > 0) {
-    std::vector<uint8_t> activeBytes(primitiveCount, 1);
+    std::vector<uint8_t> activeBytes(primitiveCount);
+    for (size_t i = 0; i < primitiveCount; ++i)
+      activeBytes[i] = _activePrimitive[i] ? 1 : 0;
     memcpy(_pActiveBuffer->contents(), activeBytes.data(), activeSize);
     _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeSize));
   }
@@ -429,10 +447,8 @@ void Renderer::draw(MTK::View *pView) {
 
   pEnc->setRenderPipelineState(_pPSO);
 
-  // Always bind something for each slot
+  // Always bind static buffers
   pEnc->setFragmentBuffer(_pBVHBuffer, 0, 0); // New!
-  pEnc->setFragmentBuffer(_pSphereBuffer, 0, 1);
-  pEnc->setFragmentBuffer(_pSphereMaterialBuffer, 0, 2);
   pEnc->setFragmentBuffer(_pUniformsBuffer, 0, 3);
   pEnc->setFragmentBuffer(_pTriangleVertexBuffer, 0, 4);
   pEnc->setFragmentBuffer(_pTriangleIndexBuffer, 0, 5);
@@ -443,8 +459,24 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
 
-  pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
-                       NS::UInteger(0), NS::UInteger(6));
+  // Render each active primitive buffer individually
+  for (size_t i = 0; i < _sphereBuffers.size(); ++i) {
+    if (!_activePrimitive[i] || !_sphereBuffers[i] ||
+        !_sphereMaterialBuffers[i])
+      continue;
+
+    UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
+    u.primitiveIndex = static_cast<int>(i);
+    u.primitiveCount = 1;
+    _pUniformsBuffer->didModifyRange(
+        NS::Range::Make(0, sizeof(UniformsData)));
+
+    pEnc->setFragmentBuffer(_sphereBuffers[i], 0, 1);
+    pEnc->setFragmentBuffer(_sphereMaterialBuffers[i], 0, 2);
+
+    pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
+                         NS::UInteger(0), NS::UInteger(6));
+  }
 
   pEnc->endEncoding();
 
@@ -462,7 +494,6 @@ void Renderer::updateLODByDistance() {
   // Using a larger threshold prevents the entire scene from being culled
   // when starting far from the origin.
   const float FULL_DETAIL_DISTANCE = 250.0f;
-  bool changed = false;
   size_t activeCount = 0;
   for (size_t g = 0; g < _allPrimitives.size(); ++g) {
     float dist =
@@ -470,40 +501,23 @@ void Renderer::updateLODByDistance() {
         _primitiveBounds[g].radius;
     dist = std::max(dist, 0.0f);
     bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
-    if (_activePrimitive[g] != shouldBeActive) {
-      _activePrimitive[g] = shouldBeActive;
-      changed = true;
-    }
+    if (_activePrimitive[g] != shouldBeActive)
+      setPrimitiveActive(g, shouldBeActive);
     if (_activePrimitive[g])
       activeCount++;
   }
 
   if (activeCount == 0 && !_activePrimitive.empty()) {
-    _activePrimitive[0] = true;
+    // Ensure at least one primitive remains visible to avoid a blank scene
+    setPrimitiveActive(0, true);
     activeCount = 1;
-    changed = true;
   }
 
-  if (changed && activeCount != _bufferedPrimitiveCount)
-    syncBuffersToActive();
-}
-
-void Renderer::syncBuffersToActive() {
-  Scene *newScene = new Scene();
-  newScene->screenSize = _pScene->screenSize;
-  newScene->maxRayDepth = _pScene->maxRayDepth;
-  newScene->cameraPath = _pScene->cameraPath;
-
-  for (size_t i = 0; i < _allPrimitives.size(); ++i)
-    if (_activePrimitive[i])
-      newScene->addPrimitive(_allPrimitives[i]);
-
-  delete _pScene;
-  _pScene = newScene;
-
-  rebuildAccelerationStructures();
-  buildBuffers();
-  _bufferedPrimitiveCount = _pScene->getPrimitiveCount();
+  size_t newActiveNodes = _tlasNodeCount + activeCount;
+  if (newActiveNodes != _activeNodeCount) {
+    _activeNodeCount = newActiveNodes;
+    printf("Active nodes: %zu\n", _activeNodeCount);
+  }
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -518,6 +532,75 @@ void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 }
 
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
+
+void Renderer::setPrimitiveActive(size_t index, bool active) {
+  if (index >= _activePrimitive.size())
+    return;
+  if (_activePrimitive[index] == active)
+    return;
+  _activePrimitive[index] = active;
+  if (_pActiveBuffer) {
+    uint8_t *mask = static_cast<uint8_t *>(_pActiveBuffer->contents());
+    mask[index] = active ? 1 : 0;
+    _pActiveBuffer->didModifyRange(NS::Range::Make(index, 1));
+  }
+
+  if (active) {
+    if (!_sphereBuffers[index] || !_sphereMaterialBuffers[index]) {
+      const Primitive &p = _allPrimitives[index];
+      simd::float4 transform[3];
+      if (p.type == PrimitiveType::Sphere) {
+        transform[0] =
+            simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+        transform[1] =
+            simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
+        transform[2] = simd::make_float4(simd::float3(0), 0);
+      } else if (p.type == PrimitiveType::Rectangle) {
+        transform[0] =
+            simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+        transform[1] = simd::make_float4(p.rectangle.u, 0);
+        transform[2] = simd::make_float4(p.rectangle.v, 0);
+      } else {
+        transform[0] =
+            simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+        transform[1] = simd::make_float4(p.triangle.v1, 0);
+        transform[2] = simd::make_float4(p.triangle.v2, 0);
+      }
+
+      simd::float4 material[2];
+      material[0] =
+          simd::make_float4(p.material.albedo, p.material.materialType);
+      material[1] = simd::make_float4(p.material.emissionColor,
+                                      p.material.emissionPower);
+
+      size_t tSize = sizeof(transform);
+      size_t mSize = sizeof(material);
+      if (!ensureBudget(tSize + mSize))
+        return;
+
+      MTL::Buffer *tb =
+          _pDevice->newBuffer(tSize, MTL::ResourceStorageModeManaged);
+      memcpy(tb->contents(), transform, tSize);
+      tb->didModifyRange(NS::Range::Make(0, tSize));
+      _sphereBuffers[index] = tb;
+
+      MTL::Buffer *mb =
+          _pDevice->newBuffer(mSize, MTL::ResourceStorageModeManaged);
+      memcpy(mb->contents(), material, mSize);
+      mb->didModifyRange(NS::Range::Make(0, mSize));
+      _sphereMaterialBuffers[index] = mb;
+    }
+  } else {
+    if (_sphereBuffers[index]) {
+      _sphereBuffers[index]->release();
+      _sphereBuffers[index] = nullptr;
+    }
+    if (_sphereMaterialBuffers[index]) {
+      _sphereMaterialBuffers[index]->release();
+      _sphereMaterialBuffers[index] = nullptr;
+    }
+  }
+}
 
 void Renderer::rebuildAccelerationStructures() {
   _pScene->buildBVH();

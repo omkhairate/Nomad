@@ -31,6 +31,8 @@ public:
   void drawableSizeWillChange(MTK::View *pView, CGSize size);
 
   bool hasKeyframes() const;
+  // Toggle visibility of an individual primitive without rebuilding TLAS.
+  void setPrimitiveActive(size_t index, bool active);
 
   // Dump acceleration structure to a JSON file for debugging.
   void dumpAccelerationStructure(const std::string &path);
@@ -66,8 +68,10 @@ private:
   Scene *_pScene = nullptr;
 
   // Buffers
-  MTL::Buffer *_pSphereBuffer = nullptr;
-  MTL::Buffer *_pSphereMaterialBuffer = nullptr;
+  // Per-primitive geometry and material buffers stored individually to allow
+  // releasing or reloading on a per-primitive basis.
+  std::vector<MTL::Buffer *> _sphereBuffers;
+  std::vector<MTL::Buffer *> _sphereMaterialBuffers;
   MTL::Buffer *_pTriangleVertexBuffer = nullptr;
   MTL::Buffer *_pTriangleIndexBuffer = nullptr;
   MTL::Buffer *_pUniformsBuffer = nullptr;
@@ -98,7 +102,6 @@ private:
   bool isInView(const BoundingSphere &b);
   void rebuildAccelerationStructures();
   void updateLODByDistance();
-  void syncBuffersToActive();
 
   // Performance metrics
   void beginFrameMetrics();
@@ -110,10 +113,6 @@ private:
   size_t _lastRayCount = 0;
 
   size_t _animationFrame = 0;
-
-  // Track how many primitives are currently resident in GPU buffers so we can
-  // rebuild when the active set changes (offloading/onloading).
-  size_t _bufferedPrimitiveCount = 0;
 };
 
 } // namespace MetalCppPathTracer
