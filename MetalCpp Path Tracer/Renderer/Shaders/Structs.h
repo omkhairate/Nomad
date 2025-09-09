@@ -30,6 +30,8 @@ struct UniformsData
     simd::float3 viewportU;
     simd::float3 viewportV;
     simd::float3 firstPixelPosition;
+    simd::float3 rayDx;
+    simd::float3 rayDy;
 
     simd::float3 randomSeed;
 
