@@ -42,7 +42,7 @@ struct InstanceResources
 
 struct InstanceArgumentBuffer
 {
-    array<InstanceResources, MAX_INSTANCE_COUNT> instances;
+    metal::array<InstanceResources, MAX_INSTANCE_COUNT> instances;
 };
 
 
