@@ -13,7 +13,6 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
-#include <limits>
 #include <simd/simd.h>
 #include <string>
 
@@ -66,26 +65,6 @@ bool Renderer::isInView(const BoundingSphere &b) {
   float halfFov = (Camera::verticalFov * M_PI / 180.0f) * 0.5f;
   float radiusAngle = asinf(std::min(b.radius / dist, 1.0f));
   return angle <= halfFov + radiusAngle;
-}
-
-float Renderer::estimatePixelFootprint(const BoundingSphere &b) const {
-  if (Camera::screenSize.y <= 0.0f)
-    return std::numeric_limits<float>::infinity();
-
-  simd::float3 toCenter = b.center - Camera::position;
-  float forwardDist = simd::dot(simd::normalize(Camera::forward), toCenter);
-  if (forwardDist <= 0.0f)
-    return 0.0f;
-
-  float halfFov = (Camera::verticalFov * M_PI / 180.0f) * 0.5f;
-  float tanHalfFov = tanf(halfFov);
-  if (tanHalfFov <= 0.0f)
-    return std::numeric_limits<float>::infinity();
-
-  float pixelsPerWorldUnit = Camera::screenSize.y /
-                             (2.0f * forwardDist * tanHalfFov);
-  float radiusPixels = b.radius * pixelsPerWorldUnit;
-  return static_cast<float>(M_PI) * radiusPixels * radiusPixels;
 }
 
 Renderer::Renderer(MTL::Device *pDevice)
@@ -480,27 +459,17 @@ void Renderer::draw(MTK::View *pView) {
 }
 
 void Renderer::updateLODByDistance() {
-  // Maintain full detail for nearby primitives, otherwise fall back to an
-  // estimate of the primitive's screen-space footprint.
+  // Keep primitives active until the camera is reasonably far away.
+  // Using a larger threshold prevents the entire scene from being culled
+  // when starting far from the origin.
   const float FULL_DETAIL_DISTANCE = 250.0f;
-  const float MIN_PIXEL_FOOTPRINT = 1.0f; // area in pixels^2
-
   size_t activeCount = 0;
   for (size_t g = 0; g < _allPrimitives.size(); ++g) {
-    const BoundingSphere &bound = _primitiveBounds[g];
-
-    float distToSurface =
-        simd::length(bound.center - Camera::position) - bound.radius;
-    distToSurface = std::max(distToSurface, 0.0f);
-
-    bool shouldBeActive = true;
-    if (!isInView(bound)) {
-      shouldBeActive = false;
-    } else if (distToSurface > FULL_DETAIL_DISTANCE) {
-      float footprint = estimatePixelFootprint(bound);
-      shouldBeActive = footprint >= MIN_PIXEL_FOOTPRINT;
-    }
-
+    float dist =
+        simd::length(_primitiveBounds[g].center - Camera::position) -
+        _primitiveBounds[g].radius;
+    dist = std::max(dist, 0.0f);
+    bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
     if (_activePrimitive[g] != shouldBeActive)
       setPrimitiveActive(g, shouldBeActive);
     if (_activePrimitive[g])
