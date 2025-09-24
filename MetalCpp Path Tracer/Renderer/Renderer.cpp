@@ -569,6 +569,7 @@ void Renderer::initializeInstances() {
   _tlasNodeCount = 0;
   _activeNodeCount = 0;
   _blasNodeCount = 0;
+  _cpuBlasNodeCount = 0;
   _totalNodeCount = 0;
   _minInstanceFootprint = 0;
 
@@ -586,19 +587,111 @@ void Renderer::initializeInstances() {
   auto finalizeInstance = [](InstanceRecord &inst) {
     if (inst.cpuPrimitiveCount == 0)
       return;
+
     inst.bounds.center = (inst.aabbMin + inst.aabbMax) * 0.5f;
     inst.bounds.radius =
         simd::length(inst.aabbMax - inst.bounds.center);
-    inst.blasNodes.resize(2);
-    int leftFirst = 0;
-    int count = static_cast<int>(inst.cpuPrimitiveCount);
-    float leftBits = 0.0f;
-    float countBits = 0.0f;
-    std::memcpy(&leftBits, &leftFirst, sizeof(float));
-    std::memcpy(&countBits, &count, sizeof(float));
-    inst.blasNodes[0] = simd::make_float4(inst.aabbMin, leftBits);
-    inst.blasNodes[1] = simd::make_float4(inst.aabbMax, countBits);
-    inst.cpuBlasNodeCount = 1;
+
+    struct BuildPrim {
+      int index;
+      simd::float3 min;
+      simd::float3 max;
+      simd::float3 centroid;
+    };
+
+    struct BlasNodeCPU {
+      simd::float3 min;
+      simd::float3 max;
+      int leftFirst = 0;
+      int second = 0;
+    };
+
+    std::vector<BuildPrim> refs;
+    refs.reserve(inst.cpuPrimitiveCount);
+    for (uint32_t i = 0; i < inst.cpuPrimitiveCount; ++i) {
+      BuildPrim ref;
+      ref.index = inst.primitiveIndices[i];
+      ref.min = inst.primitiveBoundsMin[i];
+      ref.max = inst.primitiveBoundsMax[i];
+      ref.centroid = (ref.min + ref.max) * 0.5f;
+      refs.push_back(ref);
+    }
+
+    std::vector<BlasNodeCPU> nodes;
+    nodes.reserve(inst.cpuPrimitiveCount * 2);
+    std::vector<int> ordered;
+    ordered.reserve(inst.cpuPrimitiveCount);
+
+    auto buildNode = [&](auto &&self, size_t begin, size_t end) -> int {
+      size_t count = end - begin;
+      if (count == 0)
+        return -1;
+
+      simd::float3 bmin = refs[begin].min;
+      simd::float3 bmax = refs[begin].max;
+      simd::float3 cmin = refs[begin].centroid;
+      simd::float3 cmax = refs[begin].centroid;
+      for (size_t i = begin + 1; i < end; ++i) {
+        bmin = simd::min(bmin, refs[i].min);
+        bmax = simd::max(bmax, refs[i].max);
+        cmin = simd::min(cmin, refs[i].centroid);
+        cmax = simd::max(cmax, refs[i].centroid);
+      }
+
+      int nodeIndex = static_cast<int>(nodes.size());
+      nodes.push_back({});
+      nodes[nodeIndex].min = bmin;
+      nodes[nodeIndex].max = bmax;
+
+      constexpr size_t kLeafSize = 4;
+      if (count <= kLeafSize) {
+        int start = static_cast<int>(ordered.size());
+        for (size_t i = begin; i < end; ++i)
+          ordered.push_back(refs[i].index);
+        nodes[nodeIndex].leftFirst = start;
+        nodes[nodeIndex].second = static_cast<int>(count);
+      } else {
+        simd::float3 extent = cmax - cmin;
+        int axis = 0;
+        if (extent.y > extent.x && extent.y >= extent.z)
+          axis = 1;
+        else if (extent.z > extent.x && extent.z > extent.y)
+          axis = 2;
+
+        float split = (cmin[axis] + cmax[axis]) * 0.5f;
+        auto midIter = std::partition(refs.begin() + begin, refs.begin() + end,
+                                      [axis, split](const BuildPrim &ref) {
+                                        return ref.centroid[axis] < split;
+                                      });
+        size_t mid = static_cast<size_t>(midIter - refs.begin());
+        if (mid == begin || mid == end)
+          mid = begin + count / 2;
+
+        int left = self(self, begin, mid);
+        int right = self(self, mid, end);
+        nodes[nodeIndex].leftFirst = left;
+        nodes[nodeIndex].second = -right;
+      }
+
+      return nodeIndex;
+    };
+
+    if (!refs.empty())
+      buildNode(buildNode, 0, refs.size());
+
+    inst.cpuBlasNodeCount = static_cast<uint32_t>(nodes.size());
+    inst.blasNodes.resize(nodes.size() * 2);
+    for (size_t i = 0; i < nodes.size(); ++i) {
+      float leftBits = 0.0f;
+      float secondBits = 0.0f;
+      std::memcpy(&leftBits, &nodes[i].leftFirst, sizeof(float));
+      std::memcpy(&secondBits, &nodes[i].second, sizeof(float));
+      inst.blasNodes[2 * i] = simd::make_float4(nodes[i].min, leftBits);
+      inst.blasNodes[2 * i + 1] = simd::make_float4(nodes[i].max, secondBits);
+    }
+
+    inst.primitiveIndices = std::move(ordered);
+
     inst.state = ResidencyState::NotResident;
     inst.gpu = InstanceGPU{};
   };
@@ -659,6 +752,8 @@ void Renderer::initializeInstances() {
       inst.aabbMax = simd::max(inst.aabbMax, pMax);
     }
 
+    inst.primitiveBoundsMin.push_back(pMin);
+    inst.primitiveBoundsMax.push_back(pMax);
     inst.materialData.push_back(
         simd::make_float4(p.material.albedo, p.material.materialType));
     inst.materialData.push_back(
@@ -707,7 +802,8 @@ void Renderer::initializeInstances() {
   size_t totalBlas = 0;
   for (const auto &inst : _instances)
     totalBlas += inst.cpuBlasNodeCount;
-  _totalNodeCount = _instances.size() + totalBlas;
+  _cpuBlasNodeCount = totalBlas;
+  _totalNodeCount = _tlasNodeCount + _cpuBlasNodeCount;
   _pendingAccumulationReset = true;
 }
 
@@ -746,20 +842,79 @@ bool Renderer::streamInInstance(size_t index) {
 
   inst.state = ResidencyState::StreamingIn;
 
-  if (!createPrivateBuffer(inst.primitiveData, &inst.gpu.primitives))
-    return false;
-  if (!createPrivateBuffer(inst.materialData, &inst.gpu.materials)) {
-    releaseInstanceResources(index);
+  std::vector<MTL::Buffer *> stagingBuffers;
+  stagingBuffers.reserve(4);
+
+  auto cleanupStaging = [&]() {
+    for (MTL::Buffer *buffer : stagingBuffers)
+      buffer->release();
+    stagingBuffers.clear();
+  };
+
+  MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
+  if (!cmd) {
+    inst.state = ResidencyState::NotResident;
     return false;
   }
-  if (!createPrivateBuffer(inst.primitiveIndices, &inst.gpu.primitiveIndices)) {
-    releaseInstanceResources(index);
+
+  MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
+  if (!blit) {
+    inst.state = ResidencyState::NotResident;
     return false;
   }
-  if (!createPrivateBuffer(inst.blasNodes, &inst.gpu.blasNodes)) {
+
+  auto enqueueCopy = [&](const void *src, size_t size, MTL::Buffer **dst) {
+    if (*dst) {
+      (*dst)->release();
+      *dst = nullptr;
+    }
+    if (size == 0)
+      return true;
+    if (!ensureBudget(size))
+      return false;
+    MTL::Buffer *staging =
+        _pDevice->newBuffer(size, MTL::ResourceStorageModeShared);
+    std::memcpy(staging->contents(), src, size);
+    if (!ensureBudget(size)) {
+      staging->release();
+      return false;
+    }
+    MTL::Buffer *gpu =
+        _pDevice->newBuffer(size, MTL::ResourceStorageModePrivate);
+    blit->copyFromBuffer(staging, 0, gpu, 0, size);
+    stagingBuffers.push_back(staging);
+    *dst = gpu;
+    return true;
+  };
+
+  bool success = enqueueCopy(inst.primitiveData.data(),
+                             inst.primitiveData.size() * sizeof(simd::float4),
+                             &inst.gpu.primitives);
+  success = success &&
+            enqueueCopy(inst.materialData.data(),
+                        inst.materialData.size() * sizeof(simd::float4),
+                        &inst.gpu.materials);
+  success = success && enqueueCopy(inst.primitiveIndices.data(),
+                                   inst.primitiveIndices.size() * sizeof(int),
+                                   &inst.gpu.primitiveIndices);
+  success = success &&
+            enqueueCopy(inst.blasNodes.data(),
+                        inst.blasNodes.size() * sizeof(simd::float4),
+                        &inst.gpu.blasNodes);
+
+  blit->endEncoding();
+
+  if (!success) {
+    cleanupStaging();
     releaseInstanceResources(index);
+    inst.state = ResidencyState::NotResident;
     return false;
   }
+
+  cmd->commit();
+  cmd->waitUntilCompleted();
+
+  cleanupStaging();
 
   inst.gpu.primitiveCount = inst.cpuPrimitiveCount;
   inst.gpu.blasNodeCount = inst.cpuBlasNodeCount;
@@ -877,8 +1032,14 @@ void Renderer::updateInstanceMetadata(size_t index) {
 void Renderer::refreshActiveNodeCount() {
   size_t previousActive = _activeNodeCount;
   _activeNodeCount = _tlasNodeCount + _currentBlasNodeCount;
-  if (_activeNodeCount != previousActive)
-    printf("Active nodes: %zu\n", _activeNodeCount);
+  size_t total = _tlasNodeCount + _cpuBlasNodeCount;
+  if (_totalNodeCount != total)
+    _totalNodeCount = total;
+  if (_activeNodeCount != previousActive) {
+    size_t offloaded = total > _activeNodeCount ? total - _activeNodeCount : 0;
+    printf("Active nodes: %zu (offloaded: %zu)\n", _activeNodeCount,
+           offloaded);
+  }
 }
 
 void Renderer::rebuildTLAS() {
@@ -985,11 +1146,7 @@ void Renderer::rebuildTLAS() {
   }
 
   _tlasNodeCount = nodes.size();
-
-  size_t totalBlas = 0;
-  for (const auto &inst : _instances)
-    totalBlas += inst.cpuBlasNodeCount;
-  _totalNodeCount = _tlasNodeCount + totalBlas;
+  _totalNodeCount = _tlasNodeCount + _cpuBlasNodeCount;
 
   size_t nodeByteCount =
       !tlasData.empty() ? tlasData.size() * sizeof(simd::float4)
@@ -1011,9 +1168,12 @@ void Renderer::rebuildTLAS() {
     size_t previousActive = _activeNodeCount;
     _tlasNodeCount = 0;
     _activeNodeCount = 0;
-    _totalNodeCount = totalBlas;
-    if (_activeNodeCount != previousActive)
-      printf("Active nodes: %zu\n", _activeNodeCount);
+    _totalNodeCount = _cpuBlasNodeCount;
+    if (_activeNodeCount != previousActive) {
+      size_t offloaded = _totalNodeCount;
+      printf("Active nodes: %zu (offloaded: %zu)\n", _activeNodeCount,
+             offloaded);
+    }
     return;
   }
 
