@@ -704,26 +704,37 @@ void Renderer::initializeInstances() {
 
     switch (p.type) {
     case PrimitiveType::Sphere: {
+      const float radius = p.sphere.radius;
+      const float radiusSq = radius * radius;
       simd::float3 center = p.sphere.center;
-      simd::float3 radius =
-          simd::make_float3(p.sphere.radius, p.sphere.radius, p.sphere.radius);
-      pMin = center - radius;
-      pMax = center + radius;
+      simd::float3 radiusVec = simd::make_float3(radius, radius, radius);
+      pMin = center - radiusVec;
+      pMax = center + radiusVec;
       inst.primitiveData.push_back(
           simd::make_float4(center, static_cast<float>(p.type)));
       inst.primitiveData.push_back(
-          simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0));
-      inst.primitiveData.push_back(simd::make_float4(simd::float3(0), 0));
+          simd::make_float4(radius, radiusSq, 0.0f, 0.0f));
+      inst.primitiveData.push_back(simd::make_float4(simd::float3(0.0f), 0.0f));
+      inst.primitiveData.push_back(simd::make_float4(simd::float3(0.0f), 0.0f));
       break;
     }
     case PrimitiveType::Triangle: {
       const auto &tri = p.triangle;
       pMin = simd::min(tri.v0, simd::min(tri.v1, tri.v2));
       pMax = simd::max(tri.v0, simd::max(tri.v1, tri.v2));
+      simd::float3 edge1 = tri.v1 - tri.v0;
+      simd::float3 edge2 = tri.v2 - tri.v0;
+      simd::float3 normal = simd::cross(edge1, edge2);
+      float lenSq = simd::dot(normal, normal);
+      if (lenSq > 1e-12f)
+        normal *= 1.0f / std::sqrt(lenSq);
+      else
+        normal = simd::make_float3(0.0f, 0.0f, 0.0f);
       inst.primitiveData.push_back(
           simd::make_float4(tri.v0, static_cast<float>(p.type)));
-      inst.primitiveData.push_back(simd::make_float4(tri.v1, 0));
-      inst.primitiveData.push_back(simd::make_float4(tri.v2, 0));
+      inst.primitiveData.push_back(simd::make_float4(edge1, 0.0f));
+      inst.primitiveData.push_back(simd::make_float4(edge2, 0.0f));
+      inst.primitiveData.push_back(simd::make_float4(normal, 0.0f));
       break;
     }
     case PrimitiveType::Rectangle: {
@@ -738,10 +749,25 @@ void Renderer::initializeInstances() {
         pMin = simd::min(pMin, corners[k]);
         pMax = simd::max(pMax, corners[k]);
       }
+      simd::float3 normal = simd::cross(rect.u, rect.v);
+      float lenSq = simd::dot(normal, normal);
+      if (lenSq > 1e-12f)
+        normal *= 1.0f / std::sqrt(lenSq);
+      else
+        normal = simd::make_float3(0.0f, 0.0f, 0.0f);
+      float invDotU = 0.0f;
+      float invDotV = 0.0f;
+      float dotU = simd::dot(rect.u, rect.u);
+      float dotV = simd::dot(rect.v, rect.v);
+      if (dotU > 1e-12f)
+        invDotU = 1.0f / dotU;
+      if (dotV > 1e-12f)
+        invDotV = 1.0f / dotV;
       inst.primitiveData.push_back(
           simd::make_float4(rect.center, static_cast<float>(p.type)));
-      inst.primitiveData.push_back(simd::make_float4(rect.u, 0));
-      inst.primitiveData.push_back(simd::make_float4(rect.v, 0));
+      inst.primitiveData.push_back(simd::make_float4(rect.u, invDotU));
+      inst.primitiveData.push_back(simd::make_float4(rect.v, invDotV));
+      inst.primitiveData.push_back(simd::make_float4(normal, 0.0f));
       break;
     }
     }
