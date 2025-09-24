@@ -64,6 +64,7 @@ private:
   MTL::Buffer *_pTriangleIndexBuffer = nullptr;
   MTL::Buffer *_pUniformsBuffer = nullptr;
   MTL::Buffer *_pTLASBuffer = nullptr;
+  MTL::Buffer *_pTLASInstanceIndexBuffer = nullptr;
   MTL::Buffer *_pInstanceMetaBuffer = nullptr;
   MTL::Buffer *_pInstanceArgBuffer = nullptr;
   MTL::ArgumentEncoder *_pInstanceArgEncoder = nullptr;

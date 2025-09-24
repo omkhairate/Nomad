@@ -20,7 +20,9 @@
 using namespace MetalCppPathTracer;
 
 static constexpr size_t kMaxInstanceCapacity = 16384;
+static constexpr size_t kMaxPrimitivesPerInstance = 64;
 static constexpr size_t kTLASNodeFootprintBytes = sizeof(simd::float4) * 2;
+static constexpr int kMaxTLASLeafInstances = 8;
 
 struct UniformsData {
   int primitiveIndex;
@@ -98,6 +100,8 @@ Renderer::~Renderer() {
     _pUniformsBuffer->release();
   if (_pTLASBuffer)
     _pTLASBuffer->release();
+  if (_pTLASInstanceIndexBuffer)
+    _pTLASInstanceIndexBuffer->release();
   if (_pInstanceMetaBuffer)
     _pInstanceMetaBuffer->release();
   if (_pInstanceArgBuffer)
@@ -425,6 +429,7 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pTLASBuffer, 0, 1);
   pEnc->setFragmentBuffer(_pInstanceMetaBuffer, 0, 2);
   pEnc->setFragmentBuffer(_pInstanceArgBuffer, 0, 3);
+  pEnc->setFragmentBuffer(_pTLASInstanceIndexBuffer, 0, 4);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -555,90 +560,15 @@ void Renderer::initializeInstances() {
 
   _instances.reserve(primitiveCount);
 
-  for (size_t i = 0; i < primitiveCount; ++i) {
-    const Primitive &p = _allPrimitives[i];
-    InstanceRecord inst;
-    inst.primitiveIndex = i;
-
-    if (p.type == PrimitiveType::Sphere) {
-      inst.bounds = {p.sphere.center, p.sphere.radius};
-      simd::float3 radius =
-          simd::make_float3(p.sphere.radius, p.sphere.radius, p.sphere.radius);
-      inst.aabbMin = p.sphere.center - radius;
-      inst.aabbMax = p.sphere.center + radius;
-    } else if (p.type == PrimitiveType::Triangle) {
-      simd::float3 v0 = p.triangle.v0;
-      simd::float3 v1 = p.triangle.v1;
-      simd::float3 v2 = p.triangle.v2;
-      inst.bounds.center = (v0 + v1 + v2) / 3.0f;
-      float r = simd::length(v0 - inst.bounds.center);
-      r = std::max(r, (float)simd::length(v1 - inst.bounds.center));
-      r = std::max(r, (float)simd::length(v2 - inst.bounds.center));
-      inst.bounds.radius = r;
-      inst.aabbMin = {
-          std::min({v0.x, v1.x, v2.x}),
-          std::min({v0.y, v1.y, v2.y}),
-          std::min({v0.z, v1.z, v2.z}),
-      };
-      inst.aabbMax = {
-          std::max({v0.x, v1.x, v2.x}),
-          std::max({v0.y, v1.y, v2.y}),
-          std::max({v0.z, v1.z, v2.z}),
-      };
-    } else {
-      simd::float3 c = p.rectangle.center;
-      simd::float3 u = p.rectangle.u;
-      simd::float3 v = p.rectangle.v;
-      inst.bounds.center = c;
-      inst.bounds.radius = simd::length(u) + simd::length(v);
-      simd::float3 corners[4] = {c + u + v, c + u - v, c - u + v, c - u - v};
-      inst.aabbMin = corners[0];
-      inst.aabbMax = corners[0];
-      for (int k = 1; k < 4; ++k) {
-        inst.aabbMin = {
-            std::min(inst.aabbMin.x, corners[k].x),
-            std::min(inst.aabbMin.y, corners[k].y),
-            std::min(inst.aabbMin.z, corners[k].z),
-        };
-        inst.aabbMax = {
-            std::max(inst.aabbMax.x, corners[k].x),
-            std::max(inst.aabbMax.y, corners[k].y),
-            std::max(inst.aabbMax.z, corners[k].z),
-        };
-      }
-    }
-
-    inst.primitiveData.resize(3);
-    if (p.type == PrimitiveType::Sphere) {
-      inst.primitiveData[0] =
-          simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-      inst.primitiveData[1] =
-          simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
-      inst.primitiveData[2] = simd::make_float4(simd::float3(0), 0);
-    } else if (p.type == PrimitiveType::Rectangle) {
-      inst.primitiveData[0] =
-          simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-      inst.primitiveData[1] = simd::make_float4(p.rectangle.u, 0);
-      inst.primitiveData[2] = simd::make_float4(p.rectangle.v, 0);
-    } else {
-      inst.primitiveData[0] =
-          simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-      inst.primitiveData[1] = simd::make_float4(p.triangle.v1, 0);
-      inst.primitiveData[2] = simd::make_float4(p.triangle.v2, 0);
-    }
-
-    inst.materialData.resize(2);
-    inst.materialData[0] =
-        simd::make_float4(p.material.albedo, p.material.materialType);
-    inst.materialData[1] =
-        simd::make_float4(p.material.emissionColor, p.material.emissionPower);
-
-    inst.primitiveIndices = {0};
-    inst.cpuPrimitiveCount = 1;
-
+  auto finalizeInstance = [](InstanceRecord &inst) {
+    if (inst.cpuPrimitiveCount == 0)
+      return;
+    inst.bounds.center = (inst.aabbMin + inst.aabbMax) * 0.5f;
+    inst.bounds.radius =
+        simd::length(inst.aabbMax - inst.bounds.center);
     inst.blasNodes.resize(2);
     int leftFirst = 0;
-    int count = 1;
+    int count = static_cast<int>(inst.cpuPrimitiveCount);
     float leftBits = 0.0f;
     float countBits = 0.0f;
     std::memcpy(&leftBits, &leftFirst, sizeof(float));
@@ -648,9 +578,108 @@ void Renderer::initializeInstances() {
     inst.cpuBlasNodeCount = 1;
     inst.state = ResidencyState::NotResident;
     inst.gpu = InstanceGPU{};
+  };
 
-    _instances.push_back(std::move(inst));
+  auto appendPrimitive = [&](InstanceRecord &inst, const Primitive &p) {
+    simd::float3 pMin(0.0f);
+    simd::float3 pMax(0.0f);
+
+    switch (p.type) {
+    case PrimitiveType::Sphere: {
+      simd::float3 center = p.sphere.center;
+      simd::float3 radius =
+          simd::make_float3(p.sphere.radius, p.sphere.radius, p.sphere.radius);
+      pMin = center - radius;
+      pMax = center + radius;
+      inst.primitiveData.push_back(
+          simd::make_float4(center, static_cast<float>(p.type)));
+      inst.primitiveData.push_back(
+          simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0));
+      inst.primitiveData.push_back(simd::make_float4(simd::float3(0), 0));
+      break;
+    }
+    case PrimitiveType::Triangle: {
+      const auto &tri = p.triangle;
+      pMin = simd::min(tri.v0, simd::min(tri.v1, tri.v2));
+      pMax = simd::max(tri.v0, simd::max(tri.v1, tri.v2));
+      inst.primitiveData.push_back(
+          simd::make_float4(tri.v0, static_cast<float>(p.type)));
+      inst.primitiveData.push_back(simd::make_float4(tri.v1, 0));
+      inst.primitiveData.push_back(simd::make_float4(tri.v2, 0));
+      break;
+    }
+    case PrimitiveType::Rectangle: {
+      const auto &rect = p.rectangle;
+      simd::float3 corners[4] = {rect.center + rect.u + rect.v,
+                                 rect.center + rect.u - rect.v,
+                                 rect.center - rect.u + rect.v,
+                                 rect.center - rect.u - rect.v};
+      pMin = corners[0];
+      pMax = corners[0];
+      for (int k = 1; k < 4; ++k) {
+        pMin = simd::min(pMin, corners[k]);
+        pMax = simd::max(pMax, corners[k]);
+      }
+      inst.primitiveData.push_back(
+          simd::make_float4(rect.center, static_cast<float>(p.type)));
+      inst.primitiveData.push_back(simd::make_float4(rect.u, 0));
+      inst.primitiveData.push_back(simd::make_float4(rect.v, 0));
+      break;
+    }
+    }
+
+    if (inst.cpuPrimitiveCount == 0) {
+      inst.aabbMin = pMin;
+      inst.aabbMax = pMax;
+    } else {
+      inst.aabbMin = simd::min(inst.aabbMin, pMin);
+      inst.aabbMax = simd::max(inst.aabbMax, pMax);
+    }
+
+    inst.materialData.push_back(
+        simd::make_float4(p.material.albedo, p.material.materialType));
+    inst.materialData.push_back(
+        simd::make_float4(p.material.emissionColor,
+                           p.material.emissionPower));
+    inst.primitiveIndices.push_back(static_cast<int>(inst.cpuPrimitiveCount));
+    inst.cpuPrimitiveCount++;
+  };
+
+  InstanceRecord triangleBatch;
+  size_t batchSize = 0;
+
+  auto flushTriangleBatch = [&]() {
+    if (batchSize == 0)
+      return;
+    finalizeInstance(triangleBatch);
+    _instances.push_back(std::move(triangleBatch));
+    triangleBatch = InstanceRecord{};
+    batchSize = 0;
+  };
+
+  for (size_t i = 0; i < primitiveCount; ++i) {
+    const Primitive &p = _allPrimitives[i];
+    if (p.type == PrimitiveType::Triangle) {
+      if (batchSize == 0) {
+        triangleBatch = InstanceRecord{};
+        triangleBatch.primitiveIndex = i;
+      }
+      appendPrimitive(triangleBatch, p);
+      batchSize++;
+      if (batchSize >= kMaxPrimitivesPerInstance) {
+        flushTriangleBatch();
+      }
+    } else {
+      flushTriangleBatch();
+      InstanceRecord inst;
+      inst.primitiveIndex = i;
+      appendPrimitive(inst, p);
+      finalizeInstance(inst);
+      _instances.push_back(std::move(inst));
+    }
   }
+
+  flushTriangleBatch();
 
   size_t totalBlas = 0;
   for (const auto &inst : _instances)
@@ -823,8 +852,22 @@ void Renderer::updateInstanceMetadata(size_t index) {
 }
 
 void Renderer::rebuildTLAS() {
-  std::vector<simd::float4> tlasEntries;
-  tlasEntries.reserve(_instances.size() * 2);
+  struct TLASNodeCPU {
+    simd::float3 min;
+    simd::float3 max;
+    int leftFirst = 0;
+    int second = 0;
+  };
+
+  struct BuildRef {
+    size_t instanceIndex;
+    simd::float3 min;
+    simd::float3 max;
+    simd::float3 centroid;
+  };
+
+  std::vector<size_t> residentIndices;
+  residentIndices.reserve(_instances.size());
 
   size_t previousActive = _activeNodeCount;
   _currentBlasNodeCount = 0;
@@ -833,43 +876,154 @@ void Renderer::rebuildTLAS() {
     const InstanceRecord &inst = _instances[i];
     if (inst.state != ResidencyState::Resident)
       continue;
-    float instanceBits = 0.0f;
-    int instanceId = static_cast<int>(i);
-    std::memcpy(&instanceBits, &instanceId, sizeof(float));
-    tlasEntries.push_back(simd::make_float4(inst.aabbMin, instanceBits));
-    tlasEntries.push_back(simd::make_float4(inst.aabbMax, 0.0f));
+    residentIndices.push_back(i);
     _currentBlasNodeCount += inst.gpu.blasNodeCount;
   }
 
-  _residentInstanceCount = tlasEntries.size() / 2;
+  _residentInstanceCount = residentIndices.size();
   _blasNodeCount = _currentBlasNodeCount;
-  _tlasNodeCount = _residentInstanceCount;
+
+  std::vector<TLASNodeCPU> nodes;
+  std::vector<int> instanceIndices;
+
+  if (!residentIndices.empty()) {
+    std::vector<BuildRef> refs;
+    refs.reserve(residentIndices.size());
+    for (size_t index : residentIndices) {
+      const InstanceRecord &inst = _instances[index];
+      BuildRef ref;
+      ref.instanceIndex = index;
+      ref.min = inst.aabbMin;
+      ref.max = inst.aabbMax;
+      ref.centroid = (inst.aabbMin + inst.aabbMax) * 0.5f;
+      refs.push_back(ref);
+    }
+
+    nodes.reserve(refs.size() * 2);
+    instanceIndices.reserve(refs.size());
+
+    auto buildNode = [&](auto &&self, size_t begin, size_t end) -> int {
+      size_t count = end - begin;
+      if (count == 0)
+        return -1;
+
+      simd::float3 bmin = refs[begin].min;
+      simd::float3 bmax = refs[begin].max;
+      simd::float3 cmin = refs[begin].centroid;
+      simd::float3 cmax = refs[begin].centroid;
+      for (size_t i = begin + 1; i < end; ++i) {
+        bmin = simd::min(bmin, refs[i].min);
+        bmax = simd::max(bmax, refs[i].max);
+        cmin = simd::min(cmin, refs[i].centroid);
+        cmax = simd::max(cmax, refs[i].centroid);
+      }
+
+      int nodeIndex = static_cast<int>(nodes.size());
+      nodes.push_back({});
+      nodes[nodeIndex].min = bmin;
+      nodes[nodeIndex].max = bmax;
+
+      if (count <= static_cast<size_t>(kMaxTLASLeafInstances)) {
+        int start = static_cast<int>(instanceIndices.size());
+        for (size_t i = begin; i < end; ++i) {
+          instanceIndices.push_back(static_cast<int>(refs[i].instanceIndex));
+        }
+        nodes[nodeIndex].leftFirst = start;
+        nodes[nodeIndex].second = static_cast<int>(count);
+      } else {
+        simd::float3 extent = cmax - cmin;
+        int axis = 0;
+        if (extent.y > extent.x && extent.y >= extent.z)
+          axis = 1;
+        else if (extent.z > extent.x && extent.z > extent.y)
+          axis = 2;
+
+        size_t mid = begin + count / 2;
+        auto comparator = [axis](const BuildRef &a, const BuildRef &b) {
+          return a.centroid[axis] < b.centroid[axis];
+        };
+        std::nth_element(refs.begin() + begin, refs.begin() + mid,
+                         refs.begin() + end, comparator);
+
+        int leftChild = self(self, begin, mid);
+        int rightChild = self(self, mid, end);
+        nodes[nodeIndex].leftFirst = leftChild;
+        nodes[nodeIndex].second = -rightChild;
+      }
+
+      return nodeIndex;
+    };
+
+    buildNode(buildNode, 0, refs.size());
+  }
+
+  std::vector<simd::float4> tlasData;
+  tlasData.reserve(nodes.size() * 2);
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    float leftBits = 0.0f;
+    float secondBits = 0.0f;
+    std::memcpy(&leftBits, &nodes[i].leftFirst, sizeof(int));
+    std::memcpy(&secondBits, &nodes[i].second, sizeof(int));
+    tlasData.push_back(simd::make_float4(nodes[i].min, leftBits));
+    tlasData.push_back(simd::make_float4(nodes[i].max, secondBits));
+  }
+
+  _tlasNodeCount = nodes.size();
   _activeNodeCount = _tlasNodeCount + _currentBlasNodeCount;
 
   size_t totalBlas = 0;
   for (const auto &inst : _instances)
     totalBlas += inst.cpuBlasNodeCount;
-  _totalNodeCount = _instances.size() + totalBlas;
+  _totalNodeCount = _tlasNodeCount + totalBlas;
 
-  size_t requiredCount = tlasEntries.size();
-  size_t byteCount =
-      requiredCount > 0 ? requiredCount * sizeof(simd::float4)
+  size_t nodeByteCount =
+      !tlasData.empty() ? tlasData.size() * sizeof(simd::float4)
                         : sizeof(simd::float4) * 2;
+  size_t indexByteCount =
+      !instanceIndices.empty() ? instanceIndices.size() * sizeof(int)
+                               : sizeof(int);
 
   if (_pTLASBuffer) {
     _pTLASBuffer->release();
     _pTLASBuffer = nullptr;
   }
-  if (!ensureBudget(byteCount))
+  if (_pTLASInstanceIndexBuffer) {
+    _pTLASInstanceIndexBuffer->release();
+    _pTLASInstanceIndexBuffer = nullptr;
+  }
+
+  if (!ensureBudget(nodeByteCount + indexByteCount)) {
+    _tlasNodeCount = 0;
+    _residentInstanceCount = 0;
+    _currentBlasNodeCount = 0;
+    _blasNodeCount = 0;
+    _activeNodeCount = 0;
+    _totalNodeCount = totalBlas;
+    if (_activeNodeCount != previousActive)
+      printf("Active nodes: %zu\n", _activeNodeCount);
     return;
-  _pTLASBuffer = _pDevice->newBuffer(byteCount, MTL::ResourceStorageModeManaged);
-  simd::float4 *dst =
+  }
+
+  _pTLASBuffer =
+      _pDevice->newBuffer(nodeByteCount, MTL::ResourceStorageModeManaged);
+  simd::float4 *nodeDst =
       reinterpret_cast<simd::float4 *>(_pTLASBuffer->contents());
-  if (requiredCount > 0)
-    std::memcpy(dst, tlasEntries.data(), byteCount);
+  if (!tlasData.empty())
+    std::memcpy(nodeDst, tlasData.data(), tlasData.size() * sizeof(simd::float4));
   else
-    std::memset(dst, 0, byteCount);
-  _pTLASBuffer->didModifyRange(NS::Range::Make(0, byteCount));
+    std::memset(nodeDst, 0, nodeByteCount);
+  _pTLASBuffer->didModifyRange(NS::Range::Make(0, nodeByteCount));
+
+  _pTLASInstanceIndexBuffer =
+      _pDevice->newBuffer(indexByteCount, MTL::ResourceStorageModeManaged);
+  int *indexDst = reinterpret_cast<int *>(_pTLASInstanceIndexBuffer->contents());
+  if (!instanceIndices.empty())
+    std::memcpy(indexDst, instanceIndices.data(),
+                instanceIndices.size() * sizeof(int));
+  else
+    std::memset(indexDst, 0, indexByteCount);
+  _pTLASInstanceIndexBuffer->didModifyRange(
+      NS::Range::Make(0, indexByteCount));
 
   if (_activeNodeCount != previousActive)
     printf("Active nodes: %zu\n", _activeNodeCount);

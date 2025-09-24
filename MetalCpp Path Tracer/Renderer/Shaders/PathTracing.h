@@ -201,6 +201,7 @@ inline intersection firstHitBVH(thread const ray &r,
 
 inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        device const float4 *tlasNodes,
+                       device const int *tlasInstanceIndices,
                        uint tlasNodeCount,
                        device InstanceArgumentBuffer &instanceArgs,
                        constant InstanceMetadata *instanceMetadata,
@@ -209,12 +210,30 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
   float footprint = length(cross(rayDx, rayDy));
   float lodAtten = 1.0 / (1.0 + footprint);
   if (debugAS == 1) {
-    for (uint i = 0; i < tlasNodeCount; ++i) {
-      float3 bmin = tlasNodes[2 * i + 0].xyz;
-      float3 bmax = tlasNodes[2 * i + 1].xyz;
-      if (intersectAABB(r, bmin, bmax, 0.0001, INFINITY)) {
-        float t = (tlasNodeCount > 1) ? float(i) / float(tlasNodeCount - 1) : 0.0;
+    if (tlasNodeCount == 0)
+      return float4(0.0, 0.0, 0.0, 1.0);
+    constexpr int stackSize = 128;
+    int stack[stackSize];
+    int stackPtr = 0;
+    if (stackPtr < stackSize)
+      stack[stackPtr++] = 0;
+    while (stackPtr > 0) {
+      int nodeIdx = stack[--stackPtr];
+      float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
+      float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
+      int leftFirst = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
+      int second = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
+      if (!intersectAABB(r, bmin, bmax, 0.0001, INFINITY))
+        continue;
+      if (second > 0) {
+        float t = (tlasNodeCount > 1) ? float(nodeIdx) / float(tlasNodeCount - 1)
+                                      : 0.0;
         return float4(t, 1.0 - t, 0.0, 1.0);
+      }
+      int rightChild = -second;
+      if (stackPtr + 2 <= stackSize) {
+        stack[stackPtr++] = leftFirst;
+        stack[stackPtr++] = rightChild;
       }
     }
     return float4(0.0, 0.0, 0.0, 1.0);
@@ -222,23 +241,48 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     intersection bestHit;
     bestHit.t = INFINITY;
     bestHit.primitiveId = -1;
-    for (uint i = 0; i < tlasNodeCount; ++i) {
-      float3 bmin = tlasNodes[2 * i + 0].xyz;
-      float3 bmax = tlasNodes[2 * i + 1].xyz;
-      int instanceId = as_type<int>(tlasNodes[2 * i + 0].w);
-      const constant InstanceMetadata &meta = instanceMetadata[instanceId];
-      if (meta.primitiveCount == 0)
-        continue;
-      const device InstanceResources &resources =
-          instanceArgs.instances[instanceId];
+    bestHit.nodeIndex = -1;
+    bestHit.instanceId = -1;
+    if (tlasNodeCount == 0)
+      return float4(0.0, 0.0, 0.0, 1.0);
+    constexpr int stackSize = 128;
+    int stack[stackSize];
+    int stackPtr = 0;
+    if (stackPtr < stackSize)
+      stack[stackPtr++] = 0;
+    while (stackPtr > 0) {
+      int nodeIdx = stack[--stackPtr];
+      float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
+      float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
+      int leftFirst = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
+      int second = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
       if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
         continue;
-      intersection hit =
-          firstHitBVH(r, resources.blasNodes, resources.primitives,
-                     resources.primitiveIndices, meta.primitiveCount,
-                     int(meta.rootNodeIndex), instanceId);
-      if (hit.primitiveId != -1 && hit.t < bestHit.t)
-        bestHit = hit;
+      if (second > 0) {
+        for (int i = 0; i < second; ++i) {
+          int instanceId = tlasInstanceIndices[leftFirst + i];
+          if (instanceId < 0 || instanceId >= MAX_INSTANCE_COUNT)
+            continue;
+          const constant InstanceMetadata &meta = instanceMetadata[instanceId];
+          if (meta.primitiveCount == 0)
+            continue;
+          const device InstanceResources &resources =
+              instanceArgs.instances[instanceId];
+          intersection hit = firstHitBVH(r, resources.blasNodes,
+                                         resources.primitives,
+                                         resources.primitiveIndices,
+                                         meta.primitiveCount,
+                                         int(meta.rootNodeIndex), instanceId);
+          if (hit.primitiveId != -1 && hit.t < bestHit.t)
+            bestHit = hit;
+        }
+      } else {
+        int rightChild = -second;
+        if (stackPtr + 2 <= stackSize) {
+          stack[stackPtr++] = leftFirst;
+          stack[stackPtr++] = rightChild;
+        }
+      }
     }
     if (bestHit.primitiveId != -1) {
       float t = (blasNodeCount > 1)
@@ -256,26 +300,53 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     intersection bestHit;
     bestHit.t = INFINITY;
     bestHit.primitiveId = -1;
+    bestHit.nodeIndex = -1;
+    bestHit.instanceId = -1;
 
-    for (uint i = 0; i < tlasNodeCount; ++i) {
-      float3 bmin = tlasNodes[2 * i + 0].xyz;
-      float3 bmax = tlasNodes[2 * i + 1].xyz;
-      int instanceId = as_type<int>(tlasNodes[2 * i + 0].w);
-      const constant InstanceMetadata &meta = instanceMetadata[instanceId];
-      if (meta.primitiveCount == 0)
-        continue;
-      const device InstanceResources &resources =
-          instanceArgs.instances[instanceId];
+    if (tlasNodeCount > 0) {
+      constexpr int stackSize = 128;
+      int stack[stackSize];
+      int stackPtr = 0;
+      if (stackPtr < stackSize)
+        stack[stackPtr++] = 0;
 
-      if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
-        continue;
+      while (stackPtr > 0) {
+        int nodeIdx = stack[--stackPtr];
+        float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
+        float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
+        int leftFirst = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
+        int second = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
+        if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
+          continue;
+        if (second > 0) {
+          for (int i = 0; i < second; ++i) {
+            int instanceId = tlasInstanceIndices[leftFirst + i];
+            if (instanceId < 0 || instanceId >= MAX_INSTANCE_COUNT)
+              continue;
+            const constant InstanceMetadata &meta =
+                instanceMetadata[instanceId];
+            if (meta.primitiveCount == 0)
+              continue;
+            const device InstanceResources &resources =
+                instanceArgs.instances[instanceId];
 
-      intersection hit =
-          firstHitBVH(r, resources.blasNodes, resources.primitives,
-                     resources.primitiveIndices, meta.primitiveCount,
-                     int(meta.rootNodeIndex), instanceId);
-      if (hit.primitiveId != -1 && hit.t < bestHit.t)
-        bestHit = hit;
+            intersection hit = firstHitBVH(r, resources.blasNodes,
+                                           resources.primitives,
+                                           resources.primitiveIndices,
+                                           meta.primitiveCount,
+                                           int(meta.rootNodeIndex),
+                                           instanceId);
+            if (hit.primitiveId != -1 && hit.t < bestHit.t)
+              bestHit = hit;
+          }
+        } else {
+          int rightChild = -second;
+          if (stackPtr + 2 <= stackSize) {
+            stack[stackPtr++] = leftFirst;
+            stack[stackPtr++] = rightChild;
+          }
+        }
+      }
     }
 
     if (bestHit.primitiveId == -1) {
