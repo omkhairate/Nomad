@@ -143,7 +143,7 @@ void Renderer::buildShaders() {
     _pInstanceArgEncoder = nullptr;
   }
   _pInstanceArgEncoder =
-      pFragFn->newArgumentEncoderWithBufferIndex(NS::UInteger(3));
+      pFragFn->newArgumentEncoder(NS::UInteger(3));
 
   pVertexFn->release();
   pFragFn->release();
@@ -660,23 +660,20 @@ void Renderer::updateInstanceArgument(size_t index) {
   if (index >= kMaxInstanceCapacity)
     return;
 
-  _pInstanceArgEncoder->setArgumentBuffer(_pInstanceArgBuffer, 0);
-  const InstanceRecord &inst = _instances[index];
   NS::UInteger arrayIndex = NS::UInteger(index);
+  _pInstanceArgEncoder->setArgumentBuffer(_pInstanceArgBuffer, 0, arrayIndex);
+  const InstanceRecord &inst = _instances[index];
   if (inst.state == ResidencyState::Resident) {
-    _pInstanceArgEncoder->setBuffer(inst.gpu.blasNodes, 0, NS::UInteger(0),
-                                    arrayIndex);
-    _pInstanceArgEncoder->setBuffer(inst.gpu.primitives, 0, NS::UInteger(1),
-                                    arrayIndex);
-    _pInstanceArgEncoder->setBuffer(inst.gpu.materials, 0, NS::UInteger(2),
-                                    arrayIndex);
+    _pInstanceArgEncoder->setBuffer(inst.gpu.blasNodes, 0, NS::UInteger(0));
+    _pInstanceArgEncoder->setBuffer(inst.gpu.primitives, 0, NS::UInteger(1));
+    _pInstanceArgEncoder->setBuffer(inst.gpu.materials, 0, NS::UInteger(2));
     _pInstanceArgEncoder->setBuffer(inst.gpu.primitiveIndices, 0,
-                                    NS::UInteger(3), arrayIndex);
+                                    NS::UInteger(3));
   } else {
-    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(0), arrayIndex);
-    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(1), arrayIndex);
-    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(2), arrayIndex);
-    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(3), arrayIndex);
+    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(0));
+    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(1));
+    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(2));
+    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(3));
   }
 }
 
