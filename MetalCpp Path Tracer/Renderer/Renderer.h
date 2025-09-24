@@ -74,6 +74,7 @@ private:
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
   size_t _totalNodeCount = 0;
+  size_t _cpuBlasNodeCount = 0;
   size_t _residentInstanceCount = 0;
   size_t _currentBlasNodeCount = 0;
   size_t _recommendedBudget = std::numeric_limits<size_t>::max();
@@ -121,6 +122,8 @@ private:
     std::vector<simd::float4> materialData;
     std::vector<int> primitiveIndices;
     std::vector<simd::float4> blasNodes;
+    std::vector<simd::float3> primitiveBoundsMin;
+    std::vector<simd::float3> primitiveBoundsMax;
     uint32_t cpuPrimitiveCount = 0;
     uint32_t cpuBlasNodeCount = 0;
     ResidencyState state = ResidencyState::NotResident;
