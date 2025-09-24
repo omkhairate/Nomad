@@ -20,6 +20,7 @@
 using namespace MetalCppPathTracer;
 
 static constexpr size_t kMaxInstanceCapacity = 16384;
+static constexpr size_t kMaxPrimitivesPerInstance = 64;
 static constexpr size_t kTLASNodeFootprintBytes = sizeof(simd::float4) * 2;
 
 struct UniformsData {
@@ -555,90 +556,15 @@ void Renderer::initializeInstances() {
 
   _instances.reserve(primitiveCount);
 
-  for (size_t i = 0; i < primitiveCount; ++i) {
-    const Primitive &p = _allPrimitives[i];
-    InstanceRecord inst;
-    inst.primitiveIndex = i;
-
-    if (p.type == PrimitiveType::Sphere) {
-      inst.bounds = {p.sphere.center, p.sphere.radius};
-      simd::float3 radius =
-          simd::make_float3(p.sphere.radius, p.sphere.radius, p.sphere.radius);
-      inst.aabbMin = p.sphere.center - radius;
-      inst.aabbMax = p.sphere.center + radius;
-    } else if (p.type == PrimitiveType::Triangle) {
-      simd::float3 v0 = p.triangle.v0;
-      simd::float3 v1 = p.triangle.v1;
-      simd::float3 v2 = p.triangle.v2;
-      inst.bounds.center = (v0 + v1 + v2) / 3.0f;
-      float r = simd::length(v0 - inst.bounds.center);
-      r = std::max(r, (float)simd::length(v1 - inst.bounds.center));
-      r = std::max(r, (float)simd::length(v2 - inst.bounds.center));
-      inst.bounds.radius = r;
-      inst.aabbMin = {
-          std::min({v0.x, v1.x, v2.x}),
-          std::min({v0.y, v1.y, v2.y}),
-          std::min({v0.z, v1.z, v2.z}),
-      };
-      inst.aabbMax = {
-          std::max({v0.x, v1.x, v2.x}),
-          std::max({v0.y, v1.y, v2.y}),
-          std::max({v0.z, v1.z, v2.z}),
-      };
-    } else {
-      simd::float3 c = p.rectangle.center;
-      simd::float3 u = p.rectangle.u;
-      simd::float3 v = p.rectangle.v;
-      inst.bounds.center = c;
-      inst.bounds.radius = simd::length(u) + simd::length(v);
-      simd::float3 corners[4] = {c + u + v, c + u - v, c - u + v, c - u - v};
-      inst.aabbMin = corners[0];
-      inst.aabbMax = corners[0];
-      for (int k = 1; k < 4; ++k) {
-        inst.aabbMin = {
-            std::min(inst.aabbMin.x, corners[k].x),
-            std::min(inst.aabbMin.y, corners[k].y),
-            std::min(inst.aabbMin.z, corners[k].z),
-        };
-        inst.aabbMax = {
-            std::max(inst.aabbMax.x, corners[k].x),
-            std::max(inst.aabbMax.y, corners[k].y),
-            std::max(inst.aabbMax.z, corners[k].z),
-        };
-      }
-    }
-
-    inst.primitiveData.resize(3);
-    if (p.type == PrimitiveType::Sphere) {
-      inst.primitiveData[0] =
-          simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-      inst.primitiveData[1] =
-          simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
-      inst.primitiveData[2] = simd::make_float4(simd::float3(0), 0);
-    } else if (p.type == PrimitiveType::Rectangle) {
-      inst.primitiveData[0] =
-          simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-      inst.primitiveData[1] = simd::make_float4(p.rectangle.u, 0);
-      inst.primitiveData[2] = simd::make_float4(p.rectangle.v, 0);
-    } else {
-      inst.primitiveData[0] =
-          simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-      inst.primitiveData[1] = simd::make_float4(p.triangle.v1, 0);
-      inst.primitiveData[2] = simd::make_float4(p.triangle.v2, 0);
-    }
-
-    inst.materialData.resize(2);
-    inst.materialData[0] =
-        simd::make_float4(p.material.albedo, p.material.materialType);
-    inst.materialData[1] =
-        simd::make_float4(p.material.emissionColor, p.material.emissionPower);
-
-    inst.primitiveIndices = {0};
-    inst.cpuPrimitiveCount = 1;
-
+  auto finalizeInstance = [](InstanceRecord &inst) {
+    if (inst.cpuPrimitiveCount == 0)
+      return;
+    inst.bounds.center = (inst.aabbMin + inst.aabbMax) * 0.5f;
+    inst.bounds.radius =
+        simd::length(inst.aabbMax - inst.bounds.center);
     inst.blasNodes.resize(2);
     int leftFirst = 0;
-    int count = 1;
+    int count = static_cast<int>(inst.cpuPrimitiveCount);
     float leftBits = 0.0f;
     float countBits = 0.0f;
     std::memcpy(&leftBits, &leftFirst, sizeof(float));
@@ -648,9 +574,108 @@ void Renderer::initializeInstances() {
     inst.cpuBlasNodeCount = 1;
     inst.state = ResidencyState::NotResident;
     inst.gpu = InstanceGPU{};
+  };
 
-    _instances.push_back(std::move(inst));
+  auto appendPrimitive = [&](InstanceRecord &inst, const Primitive &p) {
+    simd::float3 pMin(0.0f);
+    simd::float3 pMax(0.0f);
+
+    switch (p.type) {
+    case PrimitiveType::Sphere: {
+      simd::float3 center = p.sphere.center;
+      simd::float3 radius =
+          simd::make_float3(p.sphere.radius, p.sphere.radius, p.sphere.radius);
+      pMin = center - radius;
+      pMax = center + radius;
+      inst.primitiveData.push_back(
+          simd::make_float4(center, static_cast<float>(p.type)));
+      inst.primitiveData.push_back(
+          simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0));
+      inst.primitiveData.push_back(simd::make_float4(simd::float3(0), 0));
+      break;
+    }
+    case PrimitiveType::Triangle: {
+      const auto &tri = p.triangle;
+      pMin = simd::min(tri.v0, simd::min(tri.v1, tri.v2));
+      pMax = simd::max(tri.v0, simd::max(tri.v1, tri.v2));
+      inst.primitiveData.push_back(
+          simd::make_float4(tri.v0, static_cast<float>(p.type)));
+      inst.primitiveData.push_back(simd::make_float4(tri.v1, 0));
+      inst.primitiveData.push_back(simd::make_float4(tri.v2, 0));
+      break;
+    }
+    case PrimitiveType::Rectangle: {
+      const auto &rect = p.rectangle;
+      simd::float3 corners[4] = {rect.center + rect.u + rect.v,
+                                 rect.center + rect.u - rect.v,
+                                 rect.center - rect.u + rect.v,
+                                 rect.center - rect.u - rect.v};
+      pMin = corners[0];
+      pMax = corners[0];
+      for (int k = 1; k < 4; ++k) {
+        pMin = simd::min(pMin, corners[k]);
+        pMax = simd::max(pMax, corners[k]);
+      }
+      inst.primitiveData.push_back(
+          simd::make_float4(rect.center, static_cast<float>(p.type)));
+      inst.primitiveData.push_back(simd::make_float4(rect.u, 0));
+      inst.primitiveData.push_back(simd::make_float4(rect.v, 0));
+      break;
+    }
+    }
+
+    if (inst.cpuPrimitiveCount == 0) {
+      inst.aabbMin = pMin;
+      inst.aabbMax = pMax;
+    } else {
+      inst.aabbMin = simd::min(inst.aabbMin, pMin);
+      inst.aabbMax = simd::max(inst.aabbMax, pMax);
+    }
+
+    inst.materialData.push_back(
+        simd::make_float4(p.material.albedo, p.material.materialType));
+    inst.materialData.push_back(
+        simd::make_float4(p.material.emissionColor,
+                           p.material.emissionPower));
+    inst.primitiveIndices.push_back(static_cast<int>(inst.cpuPrimitiveCount));
+    inst.cpuPrimitiveCount++;
+  };
+
+  InstanceRecord triangleBatch;
+  size_t batchSize = 0;
+
+  auto flushTriangleBatch = [&]() {
+    if (batchSize == 0)
+      return;
+    finalizeInstance(triangleBatch);
+    _instances.push_back(std::move(triangleBatch));
+    triangleBatch = InstanceRecord{};
+    batchSize = 0;
+  };
+
+  for (size_t i = 0; i < primitiveCount; ++i) {
+    const Primitive &p = _allPrimitives[i];
+    if (p.type == PrimitiveType::Triangle) {
+      if (batchSize == 0) {
+        triangleBatch = InstanceRecord{};
+        triangleBatch.primitiveIndex = i;
+      }
+      appendPrimitive(triangleBatch, p);
+      batchSize++;
+      if (batchSize >= kMaxPrimitivesPerInstance) {
+        flushTriangleBatch();
+      }
+    } else {
+      flushTriangleBatch();
+      InstanceRecord inst;
+      inst.primitiveIndex = i;
+      appendPrimitive(inst, p);
+      finalizeInstance(inst);
+      _instances.push_back(std::move(inst));
+    }
   }
+
+  flushTriangleBatch();
 
   size_t totalBlas = 0;
   for (const auto &inst : _instances)
