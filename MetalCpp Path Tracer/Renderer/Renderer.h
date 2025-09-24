@@ -136,6 +136,7 @@ private:
   void updateInstanceArgument(size_t index);
   void updateInstanceMetadata(size_t index);
   void rebuildTLAS();
+  void refreshActiveNodeCount();
   void initializeInstances();
   void processPendingReleases();
   size_t instanceFootprintBytes(const InstanceRecord &inst) const;

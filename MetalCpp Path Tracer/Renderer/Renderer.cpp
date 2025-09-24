@@ -529,19 +529,19 @@ void Renderer::updateLODByDistance() {
     keep[closestIndex] = true;
   }
 
-  bool tlasDirty = false;
+  bool residencyChanged = false;
 
   for (size_t i = 0; i < _instances.size(); ++i) {
     if (!keep[i] && _instances[i].state == ResidencyState::Resident) {
       streamOutInstance(i);
-      tlasDirty = true;
+      residencyChanged = true;
     }
   }
 
   for (size_t i = 0; i < _instances.size(); ++i) {
     if (keep[i]) {
       if (streamInInstance(i))
-        tlasDirty = true;
+        residencyChanged = true;
     }
   }
 
@@ -550,11 +550,13 @@ void Renderer::updateLODByDistance() {
                                ? 0
                                : closestIndex;
     if (streamInInstance(fallbackIndex))
-      tlasDirty = true;
+      residencyChanged = true;
   }
 
-  if (tlasDirty)
-    rebuildTLAS();
+  if (residencyChanged) {
+    _blasNodeCount = _currentBlasNodeCount;
+    refreshActiveNodeCount();
+  }
 }
 
 void Renderer::initializeInstances() {
@@ -872,6 +874,13 @@ void Renderer::updateInstanceMetadata(size_t index) {
                       sizeof(InstanceMetadataCPU)));
 }
 
+void Renderer::refreshActiveNodeCount() {
+  size_t previousActive = _activeNodeCount;
+  _activeNodeCount = _tlasNodeCount + _currentBlasNodeCount;
+  if (_activeNodeCount != previousActive)
+    printf("Active nodes: %zu\n", _activeNodeCount);
+}
+
 void Renderer::rebuildTLAS() {
   struct TLASNodeCPU {
     simd::float3 min;
@@ -887,31 +896,16 @@ void Renderer::rebuildTLAS() {
     simd::float3 centroid;
   };
 
-  std::vector<size_t> residentIndices;
-  residentIndices.reserve(_instances.size());
-
-  size_t previousActive = _activeNodeCount;
-  _currentBlasNodeCount = 0;
-
-  for (size_t i = 0; i < _instances.size(); ++i) {
-    const InstanceRecord &inst = _instances[i];
-    if (inst.state != ResidencyState::Resident)
-      continue;
-    residentIndices.push_back(i);
-    _currentBlasNodeCount += inst.gpu.blasNodeCount;
-  }
-
-  _residentInstanceCount = residentIndices.size();
-  _blasNodeCount = _currentBlasNodeCount;
-
   std::vector<TLASNodeCPU> nodes;
   std::vector<int> instanceIndices;
 
-  if (!residentIndices.empty()) {
+  if (!_instances.empty()) {
     std::vector<BuildRef> refs;
-    refs.reserve(residentIndices.size());
-    for (size_t index : residentIndices) {
+    refs.reserve(_instances.size());
+    for (size_t index = 0; index < _instances.size(); ++index) {
       const InstanceRecord &inst = _instances[index];
+      if (inst.cpuPrimitiveCount == 0)
+        continue;
       BuildRef ref;
       ref.instanceIndex = index;
       ref.min = inst.aabbMin;
@@ -975,7 +969,8 @@ void Renderer::rebuildTLAS() {
       return nodeIndex;
     };
 
-    buildNode(buildNode, 0, refs.size());
+    if (!refs.empty())
+      buildNode(buildNode, 0, refs.size());
   }
 
   std::vector<simd::float4> tlasData;
@@ -990,7 +985,6 @@ void Renderer::rebuildTLAS() {
   }
 
   _tlasNodeCount = nodes.size();
-  _activeNodeCount = _tlasNodeCount + _currentBlasNodeCount;
 
   size_t totalBlas = 0;
   for (const auto &inst : _instances)
@@ -1014,10 +1008,8 @@ void Renderer::rebuildTLAS() {
   }
 
   if (!ensureBudget(nodeByteCount + indexByteCount)) {
+    size_t previousActive = _activeNodeCount;
     _tlasNodeCount = 0;
-    _residentInstanceCount = 0;
-    _currentBlasNodeCount = 0;
-    _blasNodeCount = 0;
     _activeNodeCount = 0;
     _totalNodeCount = totalBlas;
     if (_activeNodeCount != previousActive)
@@ -1046,8 +1038,7 @@ void Renderer::rebuildTLAS() {
   _pTLASInstanceIndexBuffer->didModifyRange(
       NS::Range::Make(0, indexByteCount));
 
-  if (_activeNodeCount != previousActive)
-    printf("Active nodes: %zu\n", _activeNodeCount);
+  refreshActiveNodeCount();
 }
 
 void Renderer::processPendingReleases() {
