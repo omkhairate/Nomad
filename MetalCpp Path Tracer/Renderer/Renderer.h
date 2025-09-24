@@ -93,12 +93,30 @@ private:
     float radius;
   };
 
+  struct BLASCPUData {
+    simd::float4 nodeMin;
+    simd::float4 nodeMax;
+  };
+
+  struct BLASInstance {
+    MTL::Buffer *buffer = nullptr;
+    uint32_t nodeCount = 0;
+    uint32_t nodeOffset = 0;
+  };
+
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
   std::vector<BoundingSphere> _primitiveBounds;
+  std::vector<BLASCPUData> _blasCPUData;
+  std::vector<BLASInstance> _blasInstances;
+  std::vector<simd::float4> _tlasCPUData;
+  bool _tlasDirty = false;
 
   bool isInView(const BoundingSphere &b);
   void rebuildAccelerationStructures();
+  void rebuildTLAS();
+  bool ensureBLASResident(size_t index);
+  void releaseBLAS(size_t index);
   void updateLODByDistance();
 
   // Performance metrics

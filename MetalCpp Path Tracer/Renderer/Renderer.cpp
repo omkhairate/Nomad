@@ -100,6 +100,11 @@ Renderer::~Renderer() {
   if (_pActiveBuffer)
     _pActiveBuffer->release();
 
+  for (auto &inst : _blasInstances) {
+    if (inst.buffer)
+      inst.buffer->release();
+  }
+
   for (int i = 0; i < 2; i++)
     if (_accumulationTargets[i])
       _accumulationTargets[i]->release();
@@ -487,6 +492,9 @@ void Renderer::updateLODByDistance() {
     _activeNodeCount = newActiveNodes;
     printf("Active nodes: %zu\n", _activeNodeCount);
   }
+
+  if (_tlasDirty)
+    rebuildTLAS();
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -502,12 +510,158 @@ void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
 
+bool Renderer::ensureBLASResident(size_t index) {
+  if (index >= _blasInstances.size())
+    return false;
+
+  BLASInstance &inst = _blasInstances[index];
+  if (inst.buffer)
+    return true;
+
+  if (inst.nodeCount == 0)
+    return false;
+
+  size_t nodeBytes = sizeof(simd::float4) * inst.nodeCount * 2;
+  if (nodeBytes == 0)
+    nodeBytes = sizeof(simd::float4);
+
+  if (!ensureBudget(nodeBytes))
+    return false;
+
+  inst.buffer =
+      _pDevice->newBuffer(nodeBytes, MTL::ResourceStorageModeManaged);
+  if (!inst.buffer)
+    return false;
+
+  if (index < _blasCPUData.size()) {
+    simd::float4 *dst = static_cast<simd::float4 *>(inst.buffer->contents());
+    dst[0] = _blasCPUData[index].nodeMin;
+    dst[1] = _blasCPUData[index].nodeMax;
+    inst.buffer->didModifyRange(NS::Range::Make(0, nodeBytes));
+  }
+
+  return true;
+}
+
+void Renderer::releaseBLAS(size_t index) {
+  if (index >= _blasInstances.size())
+    return;
+
+  BLASInstance &inst = _blasInstances[index];
+  if (inst.buffer) {
+    inst.buffer->release();
+    inst.buffer = nullptr;
+  }
+  inst.nodeOffset = 0;
+}
+
+void Renderer::rebuildTLAS() {
+  std::vector<simd::float4> aggregatedNodes;
+  std::vector<simd::float4> tlasData;
+  size_t totalNodes = 0;
+  size_t activeCount = 0;
+  size_t previousActiveNodes = _activeNodeCount;
+
+  aggregatedNodes.reserve(_activePrimitive.size() * 2);
+  tlasData.reserve(_activePrimitive.size() * 2);
+
+  for (size_t i = 0; i < _activePrimitive.size(); ++i) {
+    if (!_activePrimitive[i])
+      continue;
+
+    if (!ensureBLASResident(i))
+      continue;
+
+    BLASInstance &inst = _blasInstances[i];
+    if (!inst.buffer)
+      continue;
+
+    inst.nodeOffset = static_cast<uint32_t>(totalNodes);
+
+    simd::float4 *src =
+        static_cast<simd::float4 *>(inst.buffer->contents());
+    for (uint32_t n = 0; n < inst.nodeCount; ++n) {
+      aggregatedNodes.push_back(src[2 * n + 0]);
+      aggregatedNodes.push_back(src[2 * n + 1]);
+    }
+
+    simd::float4 minNode = src[0];
+    uint32_t offset = inst.nodeOffset;
+    std::memcpy(&minNode.w, &offset, sizeof(uint32_t));
+    simd::float4 maxNode = src[1];
+    maxNode.w = 0.0f;
+
+    tlasData.push_back(minNode);
+    tlasData.push_back(maxNode);
+
+    totalNodes += inst.nodeCount;
+    activeCount++;
+  }
+
+  if (_pBVHBuffer) {
+    _pBVHBuffer->release();
+    _pBVHBuffer = nullptr;
+  }
+
+  size_t bvhSize = aggregatedNodes.size() * sizeof(simd::float4);
+  if (bvhSize == 0)
+    bvhSize = sizeof(simd::float4);
+  if (!ensureBudget(bvhSize))
+    bvhSize = sizeof(simd::float4);
+
+  _pBVHBuffer =
+      _pDevice->newBuffer(bvhSize, MTL::ResourceStorageModeManaged);
+  if (!aggregatedNodes.empty()) {
+    memcpy(_pBVHBuffer->contents(), aggregatedNodes.data(),
+           aggregatedNodes.size() * sizeof(simd::float4));
+    _pBVHBuffer->didModifyRange(
+        NS::Range::Make(0, aggregatedNodes.size() * sizeof(simd::float4)));
+  }
+
+  if (_pTLASBuffer) {
+    _pTLASBuffer->release();
+    _pTLASBuffer = nullptr;
+  }
+
+  size_t tlasSize = tlasData.size() * sizeof(simd::float4);
+  if (tlasSize == 0)
+    tlasSize = sizeof(simd::float4);
+  if (!ensureBudget(tlasSize))
+    tlasSize = sizeof(simd::float4);
+
+  _pTLASBuffer =
+      _pDevice->newBuffer(tlasSize, MTL::ResourceStorageModeManaged);
+  if (!tlasData.empty()) {
+    memcpy(_pTLASBuffer->contents(), tlasData.data(),
+           tlasData.size() * sizeof(simd::float4));
+    _pTLASBuffer->didModifyRange(
+        NS::Range::Make(0, tlasData.size() * sizeof(simd::float4)));
+  }
+
+  _tlasCPUData = tlasData;
+
+  _blasNodeCount = totalNodes;
+  _tlasNodeCount = activeCount;
+  _totalNodeCount = _tlasNodeCount + _allPrimitives.size();
+  _activeNodeCount = _tlasNodeCount + activeCount;
+  if (_activeNodeCount != previousActiveNodes)
+    printf("Active nodes: %zu\n", _activeNodeCount);
+  _tlasDirty = false;
+}
+
 void Renderer::setPrimitiveActive(size_t index, bool active) {
   if (index >= _activePrimitive.size())
     return;
   if (_activePrimitive[index] == active)
     return;
+  if (active) {
+    if (!ensureBLASResident(index))
+      return;
+  } else {
+    releaseBLAS(index);
+  }
   _activePrimitive[index] = active;
+  _tlasDirty = true;
   if (_pActiveBuffer) {
     uint8_t *mask = static_cast<uint8_t *>(_pActiveBuffer->contents());
     mask[index] = active ? 1 : 0;
@@ -518,56 +672,87 @@ void Renderer::setPrimitiveActive(size_t index, bool active) {
 void Renderer::rebuildAccelerationStructures() {
   _pScene->buildBVH();
 
-  size_t newBlasCount = _pScene->getBVHNodeCount();
-  _blasNodeCount = newBlasCount;
-
-  simd::float4 *bvhData = _pScene->createBVHBuffer();
-  if (_pBVHBuffer)
-    _pBVHBuffer->release();
-  size_t bvhSize = sizeof(simd::float4) * newBlasCount * 2;
-  if (!ensureBudget(bvhSize)) {
-    delete[] bvhData;
-    return;
+  for (auto &inst : _blasInstances) {
+    if (inst.buffer)
+      inst.buffer->release();
   }
-  _pBVHBuffer =
-      _pDevice->newBuffer(bvhData, bvhSize, MTL::ResourceStorageModeManaged);
-  _pBVHBuffer->didModifyRange(NS::Range::Make(0, _pBVHBuffer->length()));
-  delete[] bvhData;
+  _blasInstances.clear();
+  _blasCPUData.clear();
 
-  size_t tlasCount = 0;
-  simd::float4 *tlasData = _pScene->createTLASBuffer(tlasCount);
-  _tlasNodeCount = tlasCount;
-  _totalNodeCount = _tlasNodeCount + _allPrimitives.size();
-  size_t oldActiveCount = _activeNodeCount;
-  size_t activePrim = 0;
-  for (bool a : _activePrimitive)
-    if (a)
-      activePrim++;
-  _activeNodeCount = _tlasNodeCount + activePrim;
-  if (_activeNodeCount != oldActiveCount) {
-    printf("Active nodes: %zu\n", _activeNodeCount);
-  }
-  if (_pTLASBuffer)
-    _pTLASBuffer->release();
-  if (tlasData && tlasCount > 0) {
-    size_t tlasSize = sizeof(simd::float4) * tlasCount * 2;
-    if (!ensureBudget(tlasSize)) {
-      delete[] tlasData;
-      return;
+  size_t primitiveCount = _pScene->getPrimitiveCount();
+  const auto &scenePrims = _pScene->getPrimitives();
+  _allPrimitives = scenePrims;
+  _primitiveBounds.resize(primitiveCount);
+  _activePrimitive.resize(primitiveCount, true);
+  _blasCPUData.resize(primitiveCount);
+  _blasInstances.resize(primitiveCount);
+
+  auto encodeInt = [](int value) {
+    float encoded;
+    std::memcpy(&encoded, &value, sizeof(int));
+    return encoded;
+  };
+
+  for (size_t i = 0; i < primitiveCount; ++i) {
+    const Primitive &p = scenePrims[i];
+
+    simd::float3 bMin = simd::make_float3(0.0f, 0.0f, 0.0f);
+    simd::float3 bMax = simd::make_float3(0.0f, 0.0f, 0.0f);
+    BoundingSphere bounds{};
+
+    if (p.type == PrimitiveType::Sphere) {
+      const auto &s = p.sphere;
+      simd::float3 radius =
+          simd::make_float3(s.radius, s.radius, s.radius);
+      bMin = s.center - radius;
+      bMax = s.center + radius;
+      bounds.center = s.center;
+      bounds.radius = s.radius;
+    } else if (p.type == PrimitiveType::Triangle) {
+      bMin = simd::min(p.triangle.v0,
+                       simd::min(p.triangle.v1, p.triangle.v2));
+      bMax = simd::max(p.triangle.v0,
+                       simd::max(p.triangle.v1, p.triangle.v2));
+      simd::float3 center =
+          (p.triangle.v0 + p.triangle.v1 + p.triangle.v2) / 3.0f;
+      float r = simd::length(p.triangle.v0 - center);
+      r = std::max(r, (float)simd::length(p.triangle.v1 - center));
+      r = std::max(r, (float)simd::length(p.triangle.v2 - center));
+      bounds.center = center;
+      bounds.radius = r;
+    } else {
+      const auto &r = p.rectangle;
+      simd::float3 c1 = r.center - r.u - r.v;
+      simd::float3 c2 = r.center - r.u + r.v;
+      simd::float3 c3 = r.center + r.u - r.v;
+      simd::float3 c4 = r.center + r.u + r.v;
+      bMin = simd::min(simd::min(c1, c2), simd::min(c3, c4));
+      bMax = simd::max(simd::max(c1, c2), simd::max(c3, c4));
+      bounds.center = r.center;
+      bounds.radius = simd::length(r.u) + simd::length(r.v);
     }
-    _pTLASBuffer =
-        _pDevice->newBuffer(tlasData, tlasSize, MTL::ResourceStorageModeManaged);
-    _pTLASBuffer->didModifyRange(NS::Range::Make(0, _pTLASBuffer->length()));
-  } else {
-    if (!ensureBudget(1)) {
-      delete[] tlasData;
-      return;
-    }
-    _pTLASBuffer = _pDevice->newBuffer(1, MTL::ResourceStorageModeManaged);
-  }
-  delete[] tlasData;
 
-  size_t indexCount = _pScene->getPrimitiveCount();
+    int leftFirst = static_cast<int>(i);
+    int count = 1;
+
+    _blasCPUData[i].nodeMin =
+        simd::make_float4(bMin, encodeInt(leftFirst));
+    _blasCPUData[i].nodeMax = simd::make_float4(bMax, encodeInt(count));
+
+    _blasInstances[i].nodeCount = 1;
+    _blasInstances[i].nodeOffset = 0;
+
+    if (i < _primitiveBounds.size())
+      _primitiveBounds[i] = bounds;
+
+    if (i < _activePrimitive.size() && _activePrimitive[i])
+      ensureBLASResident(i);
+  }
+
+  _tlasDirty = true;
+  rebuildTLAS();
+
+  size_t indexCount = primitiveCount;
   size_t indexSize = indexCount * sizeof(int);
   if (_pPrimitiveIndexBuffer)
     _pPrimitiveIndexBuffer->release();
@@ -596,33 +781,39 @@ void Renderer::dumpAccelerationStructure(const std::string &path) {
 
   out << "{\n";
 
-  size_t tlasCount = 0;
-  simd::float4 *tlasData = _pScene->createTLASBuffer(tlasCount);
+  size_t tlasCount = _tlasCPUData.size() / 2;
   out << "  \"tlas\": [\n";
   for (size_t i = 0; i < tlasCount; ++i) {
-    simd::float4 bmin = tlasData[2 * i];
-    simd::float4 bmax = tlasData[2 * i + 1];
-    int childIndex = reinterpret_cast<const int *>(&bmin)[3];
-    out << "    {\"child\":" << childIndex << ",\"min\":[" << bmin.x << ","
-        << bmin.y << "," << bmin.z << "],\"max\":[" << bmax.x << "," << bmax.y
-        << "," << bmax.z << "]}";
+    const simd::float4 &bmin = _tlasCPUData[2 * i];
+    const simd::float4 &bmax = _tlasCPUData[2 * i + 1];
+    uint32_t offset = 0;
+    std::memcpy(&offset, &bmin.w, sizeof(uint32_t));
+    out << "    {\"index\":" << i << ",\"offset\":" << offset
+        << ",\"min\":[" << bmin.x << "," << bmin.y << "," << bmin.z
+        << "],\"max\":[" << bmax.x << "," << bmax.y << "," << bmax.z
+        << "]}";
     if (i + 1 < tlasCount)
       out << ",\n";
     else
       out << "\n";
   }
   out << "  ],\n";
-  delete[] tlasData;
 
-  const auto &nodes = _pScene->getBVHNodes();
   out << "  \"blas\": [\n";
-  for (size_t i = 0; i < nodes.size(); ++i) {
-    const auto &n = nodes[i];
-    out << "    {\"index\":" << i << ",\"min\":[" << n.boundsMin.x << ","
-        << n.boundsMin.y << "," << n.boundsMin.z << "],\"max\":["
-        << n.boundsMax.x << "," << n.boundsMax.y << "," << n.boundsMax.z
-        << "],\"leftFirst\":" << n.leftFirst << ",\"count\":" << n.count << "}";
-    if (i + 1 < nodes.size())
+  for (size_t i = 0; i < _blasCPUData.size(); ++i) {
+    const auto &n = _blasCPUData[i];
+    int leftFirst = 0;
+    int count = 0;
+    std::memcpy(&leftFirst, &n.nodeMin.w, sizeof(int));
+    std::memcpy(&count, &n.nodeMax.w, sizeof(int));
+    bool resident = i < _blasInstances.size() && _blasInstances[i].buffer;
+    out << "    {\"index\":" << i << ",\"leftFirst\":" << leftFirst
+        << ",\"count\":" << count << ",\"resident\":"
+        << (resident ? "true" : "false") << ",\"min\":[" << n.nodeMin.x
+        << "," << n.nodeMin.y << "," << n.nodeMin.z << "],\"max\":["
+        << n.nodeMax.x << "," << n.nodeMax.y << "," << n.nodeMax.z
+        << "]}";
+    if (i + 1 < _blasCPUData.size())
       out << ",\n";
     else
       out << "\n";
