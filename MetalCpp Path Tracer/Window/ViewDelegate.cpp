@@ -59,9 +59,7 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
     double gpu_ms = _pRenderer->lastGPUTime() * 1000.0;
     double rays = _pRenderer->lastRaysPerSecond();
     size_t active = _pRenderer->activeNodeCount();
-    size_t offloaded = _pRenderer->totalNodeCount() > active
-                           ? _pRenderer->totalNodeCount() - active
-                           : 0;
+    size_t offloaded = _pRenderer->offloadedNodeCount();
     double gpu_mem = _pRenderer->currentGPUMemoryMB();
     _perfLog << _frameCount << "," << fps << "," << cpu_ms << ","
              << gpu_ms << "," << rays << "," << active << "," << offloaded

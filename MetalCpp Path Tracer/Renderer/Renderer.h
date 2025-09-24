@@ -7,6 +7,7 @@
 #include <chrono>
 #include <limits>
 #include <simd/simd.h>
+#include <utility>
 #include <vector>
 
 #include "Scene.h"
@@ -50,6 +51,8 @@ public:
   double lastRaysPerSecond() const;
   size_t activeNodeCount() const;
   size_t totalNodeCount() const;
+  size_t offloadedNodeCount() const;
+  size_t offloadedInstanceCount() const;
 
 private:
   MTL::Device *_pDevice = nullptr;
@@ -140,6 +143,7 @@ private:
   void updateInstanceMetadata(size_t index);
   void rebuildTLAS();
   void refreshActiveNodeCount();
+  std::pair<size_t, size_t> calculateOffloadedResidency() const;
   void initializeInstances();
   void processPendingReleases();
   size_t instanceFootprintBytes(const InstanceRecord &inst) const;
@@ -162,6 +166,8 @@ private:
   double _lastGPUTime = 0.0;
   double _lastRaysPerSecond = 0.0;
   size_t _lastRayCount = 0;
+  size_t _lastOffloadedNodeCount = 0;
+  size_t _lastOffloadedInstanceCount = 0;
 
   size_t _animationFrame = 0;
 };
