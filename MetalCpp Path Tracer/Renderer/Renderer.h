@@ -67,6 +67,8 @@ private:
   MTL::Buffer *_pInstanceMetaBuffer = nullptr;
   MTL::Buffer *_pInstanceArgBuffer = nullptr;
   MTL::ArgumentEncoder *_pInstanceArgEncoder = nullptr;
+  MTL::ArgumentEncoder *_pInstanceArgElementEncoder = nullptr;
+  size_t _instanceArgStride = 0;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
