@@ -51,14 +51,6 @@ public:
   size_t activeNodeCount() const;
   size_t totalNodeCount() const;
 
-  std::vector<std::pair<simd::float3, float>> _allSpheres;
-
-  struct Chunk {
-    std::vector<std::pair<simd::float4, simd::float4>>
-        spheres; // (transform, material)
-    simd::int3 chunkCoords;
-  };
-
 private:
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -68,19 +60,19 @@ private:
   Scene *_pScene = nullptr;
 
   // Buffers
-  MTL::Buffer *_pSphereBuffer = nullptr;
-  MTL::Buffer *_pSphereMaterialBuffer = nullptr;
   MTL::Buffer *_pTriangleVertexBuffer = nullptr;
   MTL::Buffer *_pTriangleIndexBuffer = nullptr;
   MTL::Buffer *_pUniformsBuffer = nullptr;
-  MTL::Buffer *_pBVHBuffer = nullptr;
-  MTL::Buffer *_pPrimitiveIndexBuffer = nullptr;
   MTL::Buffer *_pTLASBuffer = nullptr;
-  MTL::Buffer *_pActiveBuffer = nullptr;
+  MTL::Buffer *_pInstanceMetaBuffer = nullptr;
+  MTL::Buffer *_pInstanceArgBuffer = nullptr;
+  MTL::ArgumentEncoder *_pInstanceArgEncoder = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
   size_t _totalNodeCount = 0;
+  size_t _residentInstanceCount = 0;
+  size_t _currentBlasNodeCount = 0;
   // Accumulation framebuffers
   MTL::Texture *_accumulationTargets[2] = {nullptr, nullptr};
 
@@ -94,11 +86,59 @@ private:
   };
 
   std::vector<Primitive> _allPrimitives;
-  std::vector<bool> _activePrimitive;
-  std::vector<BoundingSphere> _primitiveBounds;
 
-  bool isInView(const BoundingSphere &b);
-  void rebuildAccelerationStructures();
+  enum class ResidencyState {
+    NotResident,
+    StreamingIn,
+    Resident,
+    StreamingOut,
+  };
+
+  struct InstanceGPU {
+    MTL::Buffer *blasNodes = nullptr;
+    MTL::Buffer *primitives = nullptr;
+    MTL::Buffer *materials = nullptr;
+    MTL::Buffer *primitiveIndices = nullptr;
+    uint32_t primitiveCount = 0;
+    uint32_t blasNodeCount = 0;
+    uint32_t rootNodeIndex = 0;
+  };
+
+  struct InstanceRecord {
+    size_t primitiveIndex = 0;
+    BoundingSphere bounds;
+    simd::float3 aabbMin;
+    simd::float3 aabbMax;
+    std::vector<simd::float4> primitiveData;
+    std::vector<simd::float4> materialData;
+    std::vector<int> primitiveIndices;
+    std::vector<simd::float4> blasNodes;
+    uint32_t cpuPrimitiveCount = 0;
+    uint32_t cpuBlasNodeCount = 0;
+    ResidencyState state = ResidencyState::NotResident;
+    InstanceGPU gpu;
+  };
+
+  std::vector<InstanceRecord> _instances;
+  std::vector<size_t> _instancesPendingRelease;
+
+  bool streamInInstance(size_t index);
+  void streamOutInstance(size_t index);
+  void releaseInstanceResources(size_t index);
+  void updateInstanceArgument(size_t index);
+  void updateInstanceMetadata(size_t index);
+  void rebuildTLAS();
+  void initializeInstances();
+  void processPendingReleases();
+  bool createPrivateBuffer(const void *data, size_t size,
+                           MTL::Buffer **outBuffer);
+  bool createPrivateBuffer(const std::vector<simd::float4> &data,
+                           MTL::Buffer **outBuffer);
+  bool createPrivateBuffer(const std::vector<int> &data,
+                           MTL::Buffer **outBuffer);
+
+  bool _pendingAccumulationReset = false;
+
   void updateLODByDistance();
 
   // Performance metrics

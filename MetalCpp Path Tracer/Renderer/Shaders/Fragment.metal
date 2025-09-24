@@ -7,15 +7,10 @@ using metal::raytracing::ray;
 
 float4 fragment fragmentMain(
     v2f in [[stage_in]],
-    device const float4* bvhNodes [[buffer(0)]],          // <--- ADD THIS LINE
-    device const float4* primitives [[buffer(1)]],
-    device const float4* materials [[buffer(2)]],
-    device const UniformsData* uniforms [[buffer(3)]],
-    device const float3* vertexBuffer [[buffer(4)]],
-    device const uint3* indexBuffer [[buffer(5)]],
-    device const int* primitiveIndices [[buffer(6)]],
-    device const float4* tlasNodes [[buffer(7)]],
-    device const uchar* activeMask [[buffer(8)]],
+    device const UniformsData* uniforms [[buffer(0)]],
+    device const float4* tlasNodes [[buffer(1)]],
+    constant InstanceMetadata* instanceMetadata [[buffer(2)]],
+    device InstanceArgumentBuffer& instanceArgs [[buffer(3)]],
     texture2d<float, access::read_write> lastFrame [[texture(0)]],
     texture2d<float, access::read_write> currentFrame [[texture(1)]])
 
@@ -54,12 +49,8 @@ float4 fragment fragmentMain(
         rayDy,
         tlasNodes,
         u.tlasNodeCount,
-        bvhNodes,
-        primitives,       // <- Each primitive is 3 float4s
-        materials,
-        u.primitiveCount,
-        primitiveIndices,
-        activeMask,
+        instanceArgs,
+        instanceMetadata,
         seed,
         u.maxRayDepth,
         u.debugAS,
