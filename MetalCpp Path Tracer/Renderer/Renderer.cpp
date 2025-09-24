@@ -20,6 +20,7 @@
 using namespace MetalCppPathTracer;
 
 static constexpr size_t kMaxInstanceCapacity = 16384;
+static constexpr size_t kTLASNodeFootprintBytes = sizeof(simd::float4) * 2;
 
 struct UniformsData {
   int primitiveIndex;
@@ -67,6 +68,14 @@ inline float randomFloat() {
 Renderer::Renderer(MTL::Device *pDevice)
     : _pDevice(pDevice->retain()), _pScene(new Scene()) {
   _pCommandQueue = _pDevice->newCommandQueue();
+
+  uint64_t recommended = _pDevice->recommendedMaxWorkingSetSize();
+  if (recommended > 0 &&
+      recommended < std::numeric_limits<uint64_t>::max()) {
+    _gpuMemoryBudget = static_cast<size_t>(recommended);
+    double mb = static_cast<double>(_gpuMemoryBudget) / (1024.0 * 1024.0);
+    printf("GPU memory budget defaulting to %.2f MB (recommended).\n", mb);
+  }
 
   Camera::reset();
 
@@ -436,27 +445,86 @@ void Renderer::draw(MTK::View *pView) {
 
 void Renderer::updateLODByDistance() {
   const float FULL_DETAIL_DISTANCE = 250.0f;
-  bool tlasDirty = false;
+
+  if (_instances.empty())
+    return;
+
+  struct Candidate {
+    size_t index;
+    float distance;
+    bool withinDistance;
+  };
+
+  std::vector<Candidate> candidates;
+  candidates.reserve(_instances.size());
 
   for (size_t i = 0; i < _instances.size(); ++i) {
     const auto &bounds = _instances[i].bounds;
     float dist = simd::length(bounds.center - Camera::position) - bounds.radius;
     dist = std::max(dist, 0.0f);
-    bool shouldBeResident = dist < FULL_DETAIL_DISTANCE;
+    bool within = dist < FULL_DETAIL_DISTANCE;
+    candidates.push_back({i, dist, within});
+  }
 
-    if (shouldBeResident) {
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate &a, const Candidate &b) {
+              if (a.distance == b.distance)
+                return a.index < b.index;
+              return a.distance < b.distance;
+            });
+
+  std::vector<bool> keep(_instances.size(), false);
+  size_t usedBudget = 0;
+  bool hasBudget = _gpuMemoryBudget != std::numeric_limits<size_t>::max();
+  size_t closestIndex =
+      candidates.empty() ? std::numeric_limits<size_t>::max()
+                         : candidates.front().index;
+
+  for (const Candidate &candidate : candidates) {
+    if (!candidate.withinDistance)
+      continue;
+
+    size_t footprint =
+        instanceFootprintBytes(_instances[candidate.index]) +
+        kTLASNodeFootprintBytes;
+
+    if (hasBudget) {
+      if (footprint > _gpuMemoryBudget)
+        continue;
+      if (usedBudget + footprint > _gpuMemoryBudget)
+        continue;
+    }
+
+    keep[candidate.index] = true;
+    usedBudget += footprint;
+  }
+
+  if (!candidates.empty() &&
+      std::none_of(keep.begin(), keep.end(), [](bool value) { return value; })) {
+    keep[closestIndex] = true;
+  }
+
+  bool tlasDirty = false;
+
+  for (size_t i = 0; i < _instances.size(); ++i) {
+    if (!keep[i] && _instances[i].state == ResidencyState::Resident) {
+      streamOutInstance(i);
+      tlasDirty = true;
+    }
+  }
+
+  for (size_t i = 0; i < _instances.size(); ++i) {
+    if (keep[i]) {
       if (streamInInstance(i))
         tlasDirty = true;
-    } else {
-      if (_instances[i].state == ResidencyState::Resident) {
-        streamOutInstance(i);
-        tlasDirty = true;
-      }
     }
   }
 
   if (_residentInstanceCount == 0 && !_instances.empty()) {
-    if (streamInInstance(0))
+    size_t fallbackIndex = closestIndex == std::numeric_limits<size_t>::max()
+                               ? 0
+                               : closestIndex;
+    if (streamInInstance(fallbackIndex))
       tlasDirty = true;
   }
 
@@ -589,6 +657,14 @@ void Renderer::initializeInstances() {
     totalBlas += inst.cpuBlasNodeCount;
   _totalNodeCount = _instances.size() + totalBlas;
   _pendingAccumulationReset = true;
+}
+
+size_t Renderer::instanceFootprintBytes(const InstanceRecord &inst) const {
+  size_t bytes = inst.primitiveData.size() * sizeof(simd::float4);
+  bytes += inst.materialData.size() * sizeof(simd::float4);
+  bytes += inst.primitiveIndices.size() * sizeof(int);
+  bytes += inst.blasNodes.size() * sizeof(simd::float4);
+  return bytes;
 }
 
 bool Renderer::streamInInstance(size_t index) {

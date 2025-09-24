@@ -132,6 +132,7 @@ private:
   void rebuildTLAS();
   void initializeInstances();
   void processPendingReleases();
+  size_t instanceFootprintBytes(const InstanceRecord &inst) const;
   bool createPrivateBuffer(const void *data, size_t size,
                            MTL::Buffer **outBuffer);
   bool createPrivateBuffer(const std::vector<simd::float4> &data,
