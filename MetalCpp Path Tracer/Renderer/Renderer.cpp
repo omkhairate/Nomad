@@ -23,6 +23,11 @@ static constexpr size_t kMaxInstanceCapacity = 16384;
 static constexpr size_t kMaxPrimitivesPerInstance = 64;
 static constexpr size_t kTLASNodeFootprintBytes = sizeof(simd::float4) * 2;
 static constexpr int kMaxTLASLeafInstances = 8;
+static constexpr size_t kDefaultBudgetBytes = 256ull * 1024ull * 1024ull;
+static constexpr double kBudgetDecreaseFactor = 0.8;
+static constexpr double kBudgetIncreaseFactor = 1.1;
+static constexpr double kBudgetIncreaseThreshold = 0.6;
+static constexpr double kBudgetDecreaseThreshold = 1.2;
 
 struct UniformsData {
   int primitiveIndex;
@@ -74,9 +79,15 @@ Renderer::Renderer(MTL::Device *pDevice)
   uint64_t recommended = _pDevice->recommendedMaxWorkingSetSize();
   if (recommended > 0 &&
       recommended < std::numeric_limits<uint64_t>::max()) {
-    _gpuMemoryBudget = static_cast<size_t>(recommended);
+    _recommendedBudget = static_cast<size_t>(recommended);
+    _gpuMemoryBudget = _recommendedBudget;
     double mb = static_cast<double>(_gpuMemoryBudget) / (1024.0 * 1024.0);
     printf("GPU memory budget defaulting to %.2f MB (recommended).\n", mb);
+  } else {
+    _recommendedBudget = kDefaultBudgetBytes;
+    _gpuMemoryBudget = _recommendedBudget;
+    double mb = static_cast<double>(_gpuMemoryBudget) / (1024.0 * 1024.0);
+    printf("GPU memory budget defaulting to %.2f MB (fallback).\n", mb);
   }
 
   Camera::reset();
@@ -451,8 +462,10 @@ void Renderer::draw(MTK::View *pView) {
 void Renderer::updateLODByDistance() {
   const float FULL_DETAIL_DISTANCE = 250.0f;
 
-  if (_instances.empty())
+  if (_instances.empty()) {
+    _minInstanceFootprint = 0;
     return;
+  }
 
   struct Candidate {
     size_t index;
@@ -483,15 +496,17 @@ void Renderer::updateLODByDistance() {
   bool hasBudget = _gpuMemoryBudget != std::numeric_limits<size_t>::max();
   size_t closestIndex =
       candidates.empty() ? std::numeric_limits<size_t>::max()
-                         : candidates.front().index;
+                           : candidates.front().index;
+  size_t minFootprint = std::numeric_limits<size_t>::max();
 
   for (const Candidate &candidate : candidates) {
-    if (!candidate.withinDistance)
-      continue;
-
     size_t footprint =
         instanceFootprintBytes(_instances[candidate.index]) +
         kTLASNodeFootprintBytes;
+    if (footprint > 0)
+      minFootprint = std::min(minFootprint, footprint);
+    if (!candidate.withinDistance)
+      continue;
 
     if (hasBudget) {
       if (footprint > _gpuMemoryBudget)
@@ -503,6 +518,11 @@ void Renderer::updateLODByDistance() {
     keep[candidate.index] = true;
     usedBudget += footprint;
   }
+
+  if (minFootprint == std::numeric_limits<size_t>::max())
+    _minInstanceFootprint = 0;
+  else
+    _minInstanceFootprint = minFootprint;
 
   if (!candidates.empty() &&
       std::none_of(keep.begin(), keep.end(), [](bool value) { return value; })) {
@@ -548,6 +568,7 @@ void Renderer::initializeInstances() {
   _activeNodeCount = 0;
   _blasNodeCount = 0;
   _totalNodeCount = 0;
+  _minInstanceFootprint = 0;
 
   size_t primitiveCount = _allPrimitives.size();
   if (primitiveCount > kMaxInstanceCapacity) {
@@ -1162,10 +1183,14 @@ double Renderer::currentGPUMemoryMB() const {
 }
 
 void Renderer::setGPUMemoryBudgetMB(double mb) {
-  if (mb <= 0.0)
+  _manualBudget = true;
+  if (mb <= 0.0) {
     _gpuMemoryBudget = std::numeric_limits<size_t>::max();
-  else
+    _recommendedBudget = _gpuMemoryBudget;
+  } else {
     _gpuMemoryBudget = static_cast<size_t>(mb * 1024.0 * 1024.0);
+    _recommendedBudget = _gpuMemoryBudget;
+  }
 }
 
 bool Renderer::ensureBudget(size_t bytes) const {
@@ -1178,6 +1203,51 @@ bool Renderer::ensureBudget(size_t bytes) const {
     return false;
   }
   return true;
+}
+
+void Renderer::adjustBudgetForPerformance() {
+  if (_manualBudget)
+    return;
+  if (_gpuMemoryBudget == std::numeric_limits<size_t>::max())
+    return;
+  if (_minInstanceFootprint == 0)
+    return;
+  if (_lastGPUTime <= 0.0)
+    return;
+
+  size_t minBudget = std::max(_minInstanceFootprint, size_t(16 * 1024 * 1024));
+  size_t maxBudget = _recommendedBudget != std::numeric_limits<size_t>::max()
+                         ? std::max(_recommendedBudget, minBudget)
+                         : std::max(_gpuMemoryBudget, minBudget);
+
+  size_t newBudget = _gpuMemoryBudget;
+
+  if (_lastGPUTime > _targetFrameTime * kBudgetDecreaseThreshold &&
+      _gpuMemoryBudget > minBudget) {
+    size_t scaled = static_cast<size_t>(
+        static_cast<double>(_gpuMemoryBudget) * kBudgetDecreaseFactor);
+    if (scaled < minBudget)
+      scaled = minBudget;
+    if (scaled < newBudget)
+      newBudget = scaled;
+  } else if (_lastGPUTime < _targetFrameTime * kBudgetIncreaseThreshold &&
+             _gpuMemoryBudget < maxBudget) {
+    size_t scaled = static_cast<size_t>(
+        static_cast<double>(_gpuMemoryBudget) * kBudgetIncreaseFactor);
+    if (scaled < _gpuMemoryBudget + _minInstanceFootprint)
+      scaled = _gpuMemoryBudget + _minInstanceFootprint;
+    if (scaled > maxBudget)
+      scaled = maxBudget;
+    if (scaled > newBudget)
+      newBudget = scaled;
+  }
+
+  if (newBudget != _gpuMemoryBudget) {
+    _gpuMemoryBudget = newBudget;
+    double mb = static_cast<double>(_gpuMemoryBudget) / (1024.0 * 1024.0);
+    printf("Dynamic GPU budget adjusted to %.2f MB (GPU %.2f ms)\n", mb,
+           _lastGPUTime * 1000.0);
+  }
 }
 
 void Renderer::beginFrameMetrics() {
@@ -1195,6 +1265,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
     _lastRaysPerSecond = 0.0;
   }
   processPendingReleases();
+  adjustBudgetForPerformance();
   size_t offloaded = _totalNodeCount > _activeNodeCount ?
                          _totalNodeCount - _activeNodeCount :
                          0;
