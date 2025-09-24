@@ -1,0 +1,278 @@
+<Scene width="1600" height="900" maxRayDepth="32">
+  <!-- House-like layout: 4 rooms connected by 2 corridors. Many small spheres to stress LOD. -->
+  <!-- Materials legend:
+       materialType 0 = diffuse, 1 = mirror (if supported in your shader)
+  -->
+
+  <!-- ===================== -->
+  <!-- Room A (center around (0,0)) -->
+  <!-- Room size: 10x10, height 3 -->
+  <!-- Floor/ceiling -->
+  <Rectangle position="0,0,0" u="5,0,0" v="0,0,5" albedo="0.75,0.75,0.78" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="0,3,0" u="5,0,0" v="0,0,5" albedo="0.75,0.75,0.78" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <!-- Walls X -->
+  <Rectangle position="5,1.5,0" u="0,1.5,0" v="0,0,5" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="-5,1.5,0" u="0,1.5,0" v="0,0,5" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <!-- Walls Z (leave a gap on +Z for corridor by omitting that wall) -->
+  <Rectangle position="0,1.5,-5" u="5,0,0" v="0,1.5,0" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Emissive ceiling panels (lights) in Room A -->
+  <Rectangle position="-2,2.9,-2" u="1,0,0" v="0,0,0.6" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="10"/>
+  <Rectangle position="2,2.9,2" u="1,0,0" v="0,0,0.6" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="10"/>
+
+  <!-- ===================== -->
+  <!-- Corridor A->C (along +Z from Room A) width 4, depth 6, height 3 -->
+  <!-- Center at (0,7,0) in world Z (Room A is at z≈0) so corridor center z=7 -->
+  <Rectangle position="0,0,7" u="2,0,0" v="0,0,3" albedo="0.72,0.72,0.75" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="0,3,7" u="2,0,0" v="0,0,3" albedo="0.72,0.72,0.75" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="2,1.5,7" u="0,1.5,0" v="0,0,3" albedo="0.76,0.76,0.79" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="-2,1.5,7" u="0,1.5,0" v="0,0,3" albedo="0.76,0.76,0.79" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <!-- End caps of corridor left open to connect rooms -->
+
+  <!-- Corridor light -->
+  <Rectangle position="0,2.9,7" u="1.5,0,0" v="0,0,0.4" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="8"/>
+
+  <!-- ===================== -->
+  <!-- Room C (at +Z from Room A), center around (0,14) -->
+  <Rectangle position="0,0,14" u="5,0,0" v="0,0,5" albedo="0.75,0.75,0.78" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="0,3,14" u="5,0,0" v="0,0,5" albedo="0.75,0.75,0.78" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="5,1.5,14" u="0,1.5,0" v="0,0,5" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="-5,1.5,14" u="0,1.5,0" v="0,0,5" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <!-- Leave -Z wall open for corridor connection; keep +Z wall -->
+  <Rectangle position="0,1.5,19" u="5,0,0" v="0,1.5,0" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Room C lights -->
+  <Rectangle position="-2,2.9,16" u="1,0,0" v="0,0,0.6" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="10"/>
+  <Rectangle position="2,2.9,12" u="1,0,0" v="0,0,0.6" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="10"/>
+
+  <!-- ===================== -->
+  <!-- Corridor A->B (along +X from Room A), width 4, depth 6, height 3 -->
+  <!-- Center at (7,0,0) in world X so corridor center x=7 -->
+  <Rectangle position="7,0,0" u="2,0,0" v="0,0,3" albedo="0.72,0.72,0.75" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="7,3,0" u="2,0,0" v="0,0,3" albedo="0.72,0.72,0.75" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="9,1.5,0" u="0,1.5,0" v="0,0,3" albedo="0.76,0.76,0.79" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="5,1.5,0" u="0,1.5,0" v="0,0,3" albedo="0.76,0.76,0.79" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Corridor light -->
+  <Rectangle position="7,2.9,0" u="1.5,0,0" v="0,0,0.4" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="8"/>
+
+  <!-- ===================== -->
+  <!-- Room B (at +X from Room A), center around (14,0) -->
+  <Rectangle position="14,0,0" u="5,0,0" v="0,0,5" albedo="0.75,0.75,0.78" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="14,3,0" u="5,0,0" v="0,0,5" albedo="0.75,0.75,0.78" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="19,1.5,0" u="0,1.5,0" v="0,0,5" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="9,1.5,0" u="0,1.5,0" v="0,0,5" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="14,1.5,5" u="5,0,0" v="0,1.5,0" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="14,1.5,-5" u="5,0,0" v="0,1.5,0" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Room B lights -->
+  <Rectangle position="12,2.9,-2" u="1,0,0" v="0,0,0.6" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="10"/>
+  <Rectangle position="16,2.9,2" u="1,0,0" v="0,0,0.6" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="10"/>
+
+  <!-- ===================== -->
+  <!-- Corridor C->D (along +X from Room C), width 4, depth 6, height 3 -->
+  <Rectangle position="7,0,14" u="2,0,0" v="0,0,3" albedo="0.72,0.72,0.75" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="7,3,14" u="2,0,0" v="0,0,3" albedo="0.72,0.72,0.75" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="9,1.5,14" u="0,1.5,0" v="0,0,3" albedo="0.76,0.76,0.79" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="5,1.5,14" u="0,1.5,0" v="0,0,3" albedo="0.76,0.76,0.79" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="7,2.9,14" u="1.5,0,0" v="0,0,0.4" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="8"/>
+
+  <!-- ===================== -->
+  <!-- Room D (at +X from Room C), center around (14,14) -->
+  <Rectangle position="14,0,14" u="5,0,0" v="0,0,5" albedo="0.75,0.75,0.78" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="14,3,14" u="5,0,0" v="0,0,5" albedo="0.75,0.75,0.78" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="19,1.5,14" u="0,1.5,0" v="0,0,5" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="9,1.5,14" u="0,1.5,0" v="0,0,5" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="14,1.5,19" u="5,0,0" v="0,1.5,0" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Rectangle position="14,1.5,9" u="5,0,0" v="0,1.5,0" albedo="0.80,0.80,0.82" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Room D lights -->
+  <Rectangle position="12,2.9,12" u="1,0,0" v="0,0,0.6" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="10"/>
+  <Rectangle position="16,2.9,16" u="1,0,0" v="0,0,0.6" albedo="1,1,1" emission="1,1,1" materialType="0" emissionPower="10"/>
+
+  <!-- ===================== -->
+  <!-- Spheres grid in Room A (25 spheres) -->
+  <!-- x,z in {-4,-2,0,2,4} at y=0.5, radius=0.35 -->
+  <!-- Colors vary slightly per column/row to create contrast -->
+  <Sphere position="-4,0.5,-4" radius="0.35" albedo="0.9,0.4,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,-4" radius="0.35" albedo="0.9,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,-4" radius="0.35" albedo="0.9,0.8,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,-4" radius="0.35" albedo="0.4,0.9,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,-4" radius="0.35" albedo="0.4,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="-4,0.5,-2" radius="0.35" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,-2" radius="0.35" albedo="0.8,0.8,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,-2" radius="0.35" albedo="0.5,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,-2" radius="0.35" albedo="0.6,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,-2" radius="0.35" albedo="0.9,0.5,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="-4,0.5,0" radius="0.35" albedo="0.7,0.9,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,0" radius="0.35" albedo="0.5,0.9,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,0" radius="0.35" albedo="0.7,0.7,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,0" radius="0.35" albedo="0.9,0.7,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,0" radius="0.35" albedo="0.5,0.7,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="-4,0.5,2" radius="0.35" albedo="0.5,0.5,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,2" radius="0.35" albedo="0.6,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,2" radius="0.35" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,2" radius="0.35" albedo="0.6,0.9,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,2" radius="0.35" albedo="0.8,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="-4,0.5,4" radius="0.35" albedo="0.9,0.4,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,4" radius="0.35" albedo="0.4,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,4" radius="0.35" albedo="0.6,0.4,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,4" radius="0.35" albedo="0.4,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,4" radius="0.35" albedo="0.6,0.9,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Spheres grid in Room B (25 spheres) offset by +14 in X -->
+  <Sphere position="10,0.5,-4" radius="0.35" albedo="0.9,0.4,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,-4" radius="0.35" albedo="0.9,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,-4" radius="0.35" albedo="0.9,0.8,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,-4" radius="0.35" albedo="0.4,0.9,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,-4" radius="0.35" albedo="0.4,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="10,0.5,-2" radius="0.35" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,-2" radius="0.35" albedo="0.8,0.8,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,-2" radius="0.35" albedo="0.5,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,-2" radius="0.35" albedo="0.6,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,-2" radius="0.35" albedo="0.9,0.5,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="10,0.5,0" radius="0.35" albedo="0.7,0.9,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,0" radius="0.35" albedo="0.5,0.9,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,0" radius="0.35" albedo="0.7,0.7,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,0" radius="0.35" albedo="0.9,0.7,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,0" radius="0.35" albedo="0.5,0.7,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="10,0.5,2" radius="0.35" albedo="0.5,0.5,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,2" radius="0.35" albedo="0.6,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,2" radius="0.35" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,2" radius="0.35" albedo="0.6,0.9,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,2" radius="0.35" albedo="0.8,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="10,0.5,4" radius="0.35" albedo="0.9,0.4,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,4" radius="0.35" albedo="0.4,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,4" radius="0.35" albedo="0.6,0.4,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,4" radius="0.35" albedo="0.4,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,4" radius="0.35" albedo="0.6,0.9,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Spheres grid in Room C (25 spheres) offset by +14 in Z -->
+  <Sphere position="-4,0.5,10" radius="0.35" albedo="0.9,0.4,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,10" radius="0.35" albedo="0.9,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,10" radius="0.35" albedo="0.9,0.8,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,10" radius="0.35" albedo="0.4,0.9,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,10" radius="0.35" albedo="0.4,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="-4,0.5,12" radius="0.35" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,12" radius="0.35" albedo="0.8,0.8,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,12" radius="0.35" albedo="0.5,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,12" radius="0.35" albedo="0.6,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,12" radius="0.35" albedo="0.9,0.5,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="-4,0.5,14" radius="0.35" albedo="0.7,0.9,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,14" radius="0.35" albedo="0.5,0.9,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,14" radius="0.35" albedo="0.7,0.7,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,14" radius="0.35" albedo="0.9,0.7,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,14" radius="0.35" albedo="0.5,0.7,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="-4,0.5,16" radius="0.35" albedo="0.5,0.5,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,16" radius="0.35" albedo="0.6,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,16" radius="0.35" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,16" radius="0.35" albedo="0.6,0.9,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,16" radius="0.35" albedo="0.8,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="-4,0.5,18" radius="0.35" albedo="0.9,0.4,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-2,0.5,18" radius="0.35" albedo="0.4,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.5,18" radius="0.35" albedo="0.6,0.4,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="2,0.5,18" radius="0.35" albedo="0.4,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="4,0.5,18" radius="0.35" albedo="0.6,0.9,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Spheres grid in Room D (25 spheres) offset by +14 in X and +14 in Z -->
+  <Sphere position="10,0.5,10" radius="0.35" albedo="0.9,0.4,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,10" radius="0.35" albedo="0.9,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,10" radius="0.35" albedo="0.9,0.8,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,10" radius="0.35" albedo="0.4,0.9,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,10" radius="0.35" albedo="0.4,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="10,0.5,12" radius="0.35" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,12" radius="0.35" albedo="0.8,0.8,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,12" radius="0.35" albedo="0.5,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,12" radius="0.35" albedo="0.6,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,12" radius="0.35" albedo="0.9,0.5,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="10,0.5,14" radius="0.35" albedo="0.7,0.9,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,14" radius="0.35" albedo="0.5,0.9,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,14" radius="0.35" albedo="0.7,0.7,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,14" radius="0.35" albedo="0.9,0.7,0.5" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,14" radius="0.35" albedo="0.5,0.7,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="10,0.5,16" radius="0.35" albedo="0.5,0.5,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,16" radius="0.35" albedo="0.6,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,16" radius="0.35" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,16" radius="0.35" albedo="0.6,0.9,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,16" radius="0.35" albedo="0.8,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="10,0.5,18" radius="0.35" albedo="0.9,0.4,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="12,0.5,18" radius="0.35" albedo="0.4,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="14,0.5,18" radius="0.35" albedo="0.6,0.4,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="16,0.5,18" radius="0.35" albedo="0.4,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="18,0.5,18" radius="0.35" albedo="0.6,0.9,0.4" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- Corridor spheres (8 each corridor) small radius to add density -->
+  <Sphere position="0,0.4,5" radius="0.25" albedo="0.7,0.7,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="1,0.4,6" radius="0.25" albedo="0.7,0.9,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-1,0.4,6" radius="0.25" albedo="0.9,0.7,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0.5,0.4,7" radius="0.25" albedo="0.9,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-0.5,0.4,7" radius="0.25" albedo="0.6,0.9,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="1,0.4,8" radius="0.25" albedo="0.9,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="-1,0.4,8" radius="0.25" albedo="0.6,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="0,0.4,9" radius="0.25" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <Sphere position="5,0.4,0" radius="0.25" albedo="0.7,0.7,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="6,0.4,1" radius="0.25" albedo="0.7,0.9,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="6,0.4,-1" radius="0.25" albedo="0.9,0.7,0.7" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="7,0.4,0.5" radius="0.25" albedo="0.9,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="7,0.4,-0.5" radius="0.25" albedo="0.6,0.9,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="8,0.4,1" radius="0.25" albedo="0.9,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="8,0.4,-1" radius="0.25" albedo="0.6,0.9,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+  <Sphere position="9,0.4,0" radius="0.25" albedo="0.9,0.6,0.6" emission="0,0,0" materialType="0" emissionPower="0"/>
+
+  <!-- ===================== -->
+  <!-- Camera path weaving through rooms and corridors, with in/out and up/down motion -->
+  <CameraPath>
+    <!-- Start outside Room A looking in -->
+    <Keyframe frame="0" position="0,1.6,-8" lookAt="0,1.5,-2"/>
+    <Keyframe frame="60" position="0,1.6,-2" lookAt="0,1.4,0"/>
+    <Keyframe frame="120" position="-3,1.7,0" lookAt="0,1.5,0"/>
+    <Keyframe frame="180" position="3,1.7,0" lookAt="0,1.3,0"/>
+
+    <!-- Move toward corridor to C (+Z) and enter -->
+    <Keyframe frame="240" position="0,1.6,3" lookAt="0,1.5,6"/>
+    <Keyframe frame="300" position="0,1.6,7" lookAt="0,1.5,10"/>
+
+    <!-- Room C exploration with vertical motion -->
+    <Keyframe frame="360" position="-3,1.6,14" lookAt="0,1.5,14"/>
+    <Keyframe frame="420" position="0,2.4,14" lookAt="0,1.2,14"/>
+    <Keyframe frame="480" position="3,1.2,14" lookAt="0,1.6,14"/>
+
+    <!-- Move along corridor C->D (+X) into Room D -->
+    <Keyframe frame="540" position="5,1.6,14" lookAt="7,1.5,14"/>
+    <Keyframe frame="600" position="7,1.6,14" lookAt="10,1.5,14"/>
+    <Keyframe frame="660" position="12,1.6,14" lookAt="14,1.5,14"/>
+
+    <!-- Room D sweep and pull-back -->
+    <Keyframe frame="720" position="14,1.6,12" lookAt="14,1.5,14"/>
+    <Keyframe frame="780" position="14,2.6,16" lookAt="14,1.2,14"/>
+    <Keyframe frame="840" position="14,1.2,10" lookAt="14,1.6,14"/>
+
+    <!-- Backtrack to Room A via corridors -->
+    <Keyframe frame="900" position="7,1.6,14" lookAt="0,1.5,14"/>
+    <Keyframe frame="960" position="0,1.6,7" lookAt="0,1.5,0"/>
+    <Keyframe frame="1020" position="0,1.6,0" lookAt="0,1.5,-2"/>
+
+    <!-- Across to Room B (+X) and out -->
+    <Keyframe frame="1080" position="5,1.6,0" lookAt="7,1.5,0"/>
+    <Keyframe frame="1140" position="7,1.6,0" lookAt="12,1.5,0"/>
+    <Keyframe frame="1200" position="14,1.6,0" lookAt="16,1.5,0"/>
+    <Keyframe frame="1260" position="20,1.6,0" lookAt="14,1.5,0"/>
+  </CameraPath>
+</Scene>

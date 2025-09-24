@@ -15,6 +15,7 @@
 #include <chrono>
 #include <simd/simd.h>
 #include <string>
+#include <CoreFoundation/CoreFoundation.h>
 
 using namespace MetalCppPathTracer;
 
@@ -149,11 +150,29 @@ void Renderer::buildShaders() {
     _pInstanceArgElementEncoder = nullptr;
   }
   _instanceArgStride = 0;
-  _pInstanceArgEncoder =
-      pFragFn->newArgumentEncoder(NS::UInteger(3));
+  _pInstanceArgEncoder = pFragFn->newArgumentEncoder(NS::UInteger(3));
   if (_pInstanceArgEncoder) {
-    _pInstanceArgElementEncoder =
-        _pInstanceArgEncoder->newArgumentEncoder(NS::UInteger(0));
+    // Build an element encoder that matches InstanceResources { id(0)..id(3) }
+    MTL::ArgumentDescriptor* d0 = MTL::ArgumentDescriptor::argumentDescriptor();
+    d0->setIndex(NS::UInteger(0));
+    d0->setDataType(MTL::DataType::DataTypePointer);
+    d0->setAccess(MTL::BindingAccess::ArgumentAccessReadOnly);
+    MTL::ArgumentDescriptor* d1 = MTL::ArgumentDescriptor::argumentDescriptor();
+    d1->setIndex(NS::UInteger(1));
+    d1->setDataType(MTL::DataType::DataTypePointer);
+    d1->setAccess(MTL::BindingAccess::ArgumentAccessReadOnly);
+    MTL::ArgumentDescriptor* d2 = MTL::ArgumentDescriptor::argumentDescriptor();
+    d2->setIndex(NS::UInteger(2));
+    d2->setDataType(MTL::DataType::DataTypePointer);
+    d2->setAccess(MTL::BindingAccess::ArgumentAccessReadOnly);
+    MTL::ArgumentDescriptor* d3 = MTL::ArgumentDescriptor::argumentDescriptor();
+    d3->setIndex(NS::UInteger(3));
+    d3->setDataType(MTL::DataType::DataTypePointer);
+    d3->setAccess(MTL::BindingAccess::ArgumentAccessReadOnly);
+    CFTypeRef descs[] = { (CFTypeRef)d0, (CFTypeRef)d1, (CFTypeRef)d2, (CFTypeRef)d3 };
+    NS::Array* descArray = (NS::Array*)CFArrayCreate(kCFAllocatorDefault, descs, 4, &kCFTypeArrayCallBacks);
+    _pInstanceArgElementEncoder = _pDevice->newArgumentEncoder(descArray);
+    descArray->release();
     if (_pInstanceArgElementEncoder) {
       size_t elementLength = _pInstanceArgElementEncoder->encodedLength();
       size_t elementAlignment = _pInstanceArgElementEncoder->alignment();
@@ -960,3 +979,4 @@ double Renderer::lastGPUTime() const { return _lastGPUTime; }
 double Renderer::lastRaysPerSecond() const { return _lastRaysPerSecond; }
 size_t Renderer::activeNodeCount() const { return _activeNodeCount; }
 size_t Renderer::totalNodeCount() const { return _totalNodeCount; }
+

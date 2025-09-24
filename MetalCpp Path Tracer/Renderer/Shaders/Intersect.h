@@ -7,7 +7,7 @@ using namespace metal;
 #include "Structs.h"
 
 // Sphere intersection (your original function)
-inline float sphereIntersection(thread const ray &ray, device const float4 &sphere)
+inline float sphereIntersection(thread const ray &ray, float4 sphere)
 {
     const float3 sphereCenter = sphere.xyz;
     const float r = sphere.w;
@@ -112,5 +112,6 @@ inline bool rectangleIntersection(
 }
 
 #endif
+
 
 
