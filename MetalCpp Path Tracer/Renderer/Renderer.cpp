@@ -572,6 +572,8 @@ void Renderer::initializeInstances() {
   _cpuBlasNodeCount = 0;
   _totalNodeCount = 0;
   _minInstanceFootprint = 0;
+  _lastOffloadedNodeCount = 0;
+  _lastOffloadedInstanceCount = 0;
 
   size_t primitiveCount = _allPrimitives.size();
   if (primitiveCount > kMaxInstanceCapacity) {
@@ -1029,16 +1031,34 @@ void Renderer::updateInstanceMetadata(size_t index) {
                       sizeof(InstanceMetadataCPU)));
 }
 
+std::pair<size_t, size_t> Renderer::calculateOffloadedResidency() const {
+  size_t offloadedNodes = 0;
+  size_t offloadedInstances = 0;
+  for (const auto &inst : _instances) {
+    if (inst.state != ResidencyState::Resident) {
+      offloadedNodes += inst.cpuBlasNodeCount;
+      offloadedInstances++;
+    }
+  }
+  return {offloadedNodes, offloadedInstances};
+}
+
 void Renderer::refreshActiveNodeCount() {
   size_t previousActive = _activeNodeCount;
+  size_t previousOffloadedNodes = _lastOffloadedNodeCount;
+  size_t previousOffloadedInstances = _lastOffloadedInstanceCount;
   _activeNodeCount = _tlasNodeCount + _currentBlasNodeCount;
   size_t total = _tlasNodeCount + _cpuBlasNodeCount;
   if (_totalNodeCount != total)
     _totalNodeCount = total;
-  if (_activeNodeCount != previousActive) {
-    size_t offloaded = total > _activeNodeCount ? total - _activeNodeCount : 0;
-    printf("Active nodes: %zu (offloaded: %zu)\n", _activeNodeCount,
-           offloaded);
+  auto [offloadedNodes, offloadedInstances] = calculateOffloadedResidency();
+  _lastOffloadedNodeCount = offloadedNodes;
+  _lastOffloadedInstanceCount = offloadedInstances;
+  if (_activeNodeCount != previousActive ||
+      offloadedNodes != previousOffloadedNodes ||
+      offloadedInstances != previousOffloadedInstances) {
+    printf("Active nodes: %zu (offloaded: %zu across %zu instances)\n",
+           _activeNodeCount, offloadedNodes, offloadedInstances);
   }
 }
 
@@ -1417,13 +1437,11 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   }
   processPendingReleases();
   adjustBudgetForPerformance();
-  size_t offloaded = _totalNodeCount > _activeNodeCount ?
-                         _totalNodeCount - _activeNodeCount :
-                         0;
+  auto [offloadedNodes, offloadedInstances] = calculateOffloadedResidency();
   printf(
-      "Nodes active: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
-      _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
-      _lastGPUTime * 1000.0, _lastRaysPerSecond);
+      "Nodes active: %zu offloaded: %zu (instances: %zu) CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+      _activeNodeCount, offloadedNodes, offloadedInstances,
+      _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond);
 }
 
 double Renderer::lastCPUTime() const { return _lastCPUTime; }
@@ -1431,4 +1449,11 @@ double Renderer::lastGPUTime() const { return _lastGPUTime; }
 double Renderer::lastRaysPerSecond() const { return _lastRaysPerSecond; }
 size_t Renderer::activeNodeCount() const { return _activeNodeCount; }
 size_t Renderer::totalNodeCount() const { return _totalNodeCount; }
+size_t Renderer::offloadedNodeCount() const {
+  return calculateOffloadedResidency().first;
+}
+
+size_t Renderer::offloadedInstanceCount() const {
+  return calculateOffloadedResidency().second;
+}
 
