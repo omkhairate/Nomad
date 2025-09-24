@@ -98,6 +98,7 @@ private:
   std::vector<BoundingSphere> _primitiveBounds;
 
   bool isInView(const BoundingSphere &b);
+  float estimatePixelFootprint(const BoundingSphere &b) const;
   void rebuildAccelerationStructures();
   void updateLODByDistance();
 
