@@ -18,6 +18,8 @@
 
 using namespace MetalCppPathTracer;
 
+static constexpr size_t kMaxInstanceCapacity = 16384;
+
 struct UniformsData {
   int primitiveIndex;
   simd::float3 cameraPosition;
@@ -39,6 +41,15 @@ struct UniformsData {
   uint64_t blasNodeCount;
   uint32_t maxRayDepth;
   uint32_t debugAS;
+  uint32_t residentInstanceCount;
+  uint32_t totalInstanceCount;
+};
+
+struct InstanceMetadataCPU {
+  uint32_t primitiveCount;
+  uint32_t blasNodeCount;
+  uint32_t rootNodeIndex;
+  uint32_t padding;
 };
 
 inline uint32_t bitm_random() {
@@ -52,53 +63,37 @@ inline float randomFloat() {
   return (float)bitm_random() / (float)std::numeric_limits<uint32_t>::max();
 }
 
-bool Renderer::isInView(const BoundingSphere &b) {
-  simd::float3 toCenter = b.center - Camera::position;
-  float dist = simd::length(toCenter);
-  if (dist < 1e-5f)
-    return true;
-  simd::float3 dir = toCenter / dist;
-  float cosAngle = simd::dot(simd::normalize(Camera::forward), dir);
-  if (cosAngle <= 0.0f)
-    return false;
-  float angle = acosf(cosAngle);
-  float halfFov = (Camera::verticalFov * M_PI / 180.0f) * 0.5f;
-  float radiusAngle = asinf(std::min(b.radius / dist, 1.0f));
-  return angle <= halfFov + radiusAngle;
-}
-
 Renderer::Renderer(MTL::Device *pDevice)
     : _pDevice(pDevice->retain()), _pScene(new Scene()) {
   _pCommandQueue = _pDevice->newCommandQueue();
 
   Camera::reset();
 
-  updateVisibleScene();
   buildShaders();
+  updateVisibleScene();
   buildTextures();
 
   recalculateViewport();
 }
 
 Renderer::~Renderer() {
-  if (_pSphereBuffer)
-    _pSphereBuffer->release();
-  if (_pSphereMaterialBuffer)
-    _pSphereMaterialBuffer->release();
+  for (size_t i = 0; i < _instances.size(); ++i)
+    releaseInstanceResources(i);
+
   if (_pTriangleVertexBuffer)
     _pTriangleVertexBuffer->release();
   if (_pTriangleIndexBuffer)
     _pTriangleIndexBuffer->release();
   if (_pUniformsBuffer)
     _pUniformsBuffer->release();
-  if (_pBVHBuffer)
-    _pBVHBuffer->release();
-  if (_pPrimitiveIndexBuffer)
-    _pPrimitiveIndexBuffer->release();
   if (_pTLASBuffer)
     _pTLASBuffer->release();
-  if (_pActiveBuffer)
-    _pActiveBuffer->release();
+  if (_pInstanceMetaBuffer)
+    _pInstanceMetaBuffer->release();
+  if (_pInstanceArgBuffer)
+    _pInstanceArgBuffer->release();
+  if (_pInstanceArgEncoder)
+    _pInstanceArgEncoder->release();
 
   for (int i = 0; i < 2; i++)
     if (_accumulationTargets[i])
@@ -143,6 +138,13 @@ void Renderer::buildShaders() {
     assert(false);
   }
 
+  if (_pInstanceArgEncoder) {
+    _pInstanceArgEncoder->release();
+    _pInstanceArgEncoder = nullptr;
+  }
+  _pInstanceArgEncoder =
+      pFragFn->newArgumentEncoderWithBufferIndex(NS::UInteger(3));
+
   pVertexFn->release();
   pFragFn->release();
   pDesc->release();
@@ -170,28 +172,9 @@ void Renderer::updateVisibleScene() {
          _pScene->getPrimitiveCount(), _pScene->getSphereCount(),
          _pScene->getTriangleCount(), _pScene->getRectangleCount());
 
-  // Store full primitive list and initialize tracking
+  // Store full primitive list and initialize per-instance data
   _allPrimitives = _pScene->getPrimitives();
-  size_t primCount = _allPrimitives.size();
-  _activePrimitive.assign(primCount, true);
-  _primitiveBounds.resize(primCount);
-  for (size_t i = 0; i < primCount; ++i) {
-    const Primitive &p = _allPrimitives[i];
-    if (p.type == PrimitiveType::Sphere) {
-      _primitiveBounds[i] = {p.sphere.center, p.sphere.radius};
-    } else if (p.type == PrimitiveType::Triangle) {
-      simd::float3 c = (p.triangle.v0 + p.triangle.v1 + p.triangle.v2) / 3.0f;
-      float r = simd::length(p.triangle.v0 - c);
-      r = std::max(r, (float)simd::length(p.triangle.v1 - c));
-      r = std::max(r, (float)simd::length(p.triangle.v2 - c));
-      _primitiveBounds[i] = {c, r};
-    } else {
-      float r = simd::length(p.rectangle.u) + simd::length(p.rectangle.v);
-      _primitiveBounds[i] = {p.rectangle.center, r};
-    }
-  }
-
-  rebuildAccelerationStructures();
+  initializeInstances();
   buildBuffers();
 }
 
@@ -232,7 +215,6 @@ void Renderer::recalculateViewport() {
 }
 
 void Renderer::buildBuffers() {
-  const size_t primitiveCount = _pScene->getPrimitiveCount();
   const size_t uniformsDataSize = sizeof(UniformsData);
 
   // Uniforms
@@ -244,82 +226,35 @@ void Renderer::buildBuffers() {
       _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
 
-  // Destroy previous
-  if (_pSphereBuffer) {
-    _pSphereBuffer->release();
-    _pSphereBuffer = nullptr;
+  if (_pInstanceMetaBuffer) {
+    _pInstanceMetaBuffer->release();
+    _pInstanceMetaBuffer = nullptr;
   }
-  if (_pSphereMaterialBuffer) {
-    _pSphereMaterialBuffer->release();
-    _pSphereMaterialBuffer = nullptr;
-  }
-
-  // ✅ Unified buffer
-  simd::float4 *primitiveBuffer = nullptr;
-  simd::float4 *materialBuffer = nullptr;
-  if (primitiveCount > 0) {
-    primitiveBuffer =
-        _pScene->createTransformsBuffer(); // 3 float4s per primitive
-    materialBuffer =
-        _pScene->createMaterialsBuffer(); // 2 float4s per primitive
-  }
-
-  const size_t primitiveSize = primitiveCount * 3 * sizeof(simd::float4);
-  const size_t materialSize = primitiveCount * 2 * sizeof(simd::float4);
-
-  size_t primitiveAlloc =
-      primitiveSize > 0 ? primitiveSize : sizeof(simd::float4);
-  size_t materialAlloc = materialSize > 0 ? materialSize : sizeof(simd::float4);
-  if (!ensureBudget(primitiveAlloc + materialAlloc)) {
-    delete[] primitiveBuffer;
-    delete[] materialBuffer;
+  size_t instanceCount = _instances.size();
+  size_t metaCount = instanceCount > 0 ? instanceCount : 1;
+  size_t metaSize = metaCount * sizeof(InstanceMetadataCPU);
+  if (!ensureBudget(metaSize))
     return;
-  }
-  _pSphereBuffer =
-      _pDevice->newBuffer(primitiveAlloc, MTL::ResourceStorageModeManaged);
-  _pSphereMaterialBuffer =
-      _pDevice->newBuffer(materialAlloc, MTL::ResourceStorageModeManaged);
+  _pInstanceMetaBuffer =
+      _pDevice->newBuffer(metaSize, MTL::ResourceStorageModeManaged);
+  std::memset(_pInstanceMetaBuffer->contents(), 0, metaSize);
+  _pInstanceMetaBuffer->didModifyRange(NS::Range::Make(0, metaSize));
 
-  if (primitiveCount > 0) {
-    memcpy(_pSphereBuffer->contents(), primitiveBuffer, primitiveSize);
-    memcpy(_pSphereMaterialBuffer->contents(), materialBuffer, materialSize);
-    _pSphereBuffer->didModifyRange(NS::Range::Make(0, primitiveSize));
-    _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialSize));
+  if (_pInstanceArgBuffer) {
+    _pInstanceArgBuffer->release();
+    _pInstanceArgBuffer = nullptr;
   }
-
-  delete[] primitiveBuffer;
-  delete[] materialBuffer;
-
-  // Active mask buffer (1 byte per primitive)
-  if (_pActiveBuffer) {
-    _pActiveBuffer->release();
-    _pActiveBuffer = nullptr;
-  }
-  size_t activeSize = primitiveCount * sizeof(uint8_t);
-  size_t activeAlloc = activeSize > 0 ? activeSize : sizeof(uint8_t);
-  if (!ensureBudget(activeAlloc))
-    return;
-  _pActiveBuffer =
-      _pDevice->newBuffer(activeAlloc, MTL::ResourceStorageModeManaged);
-  if (primitiveCount > 0) {
-    std::vector<uint8_t> activeBytes(primitiveCount);
-    for (size_t i = 0; i < primitiveCount; ++i)
-      activeBytes[i] = _activePrimitive[i] ? 1 : 0;
-    memcpy(_pActiveBuffer->contents(), activeBytes.data(), activeSize);
-    _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeSize));
+  if (_pInstanceArgEncoder) {
+    size_t argLength = _pInstanceArgEncoder->encodedLength();
+    if (!ensureBudget(argLength))
+      return;
+    _pInstanceArgBuffer =
+        _pDevice->newBuffer(argLength, MTL::ResourceStorageModeShared);
+    std::memset(_pInstanceArgBuffer->contents(), 0, argLength);
+    _pInstanceArgEncoder->setArgumentBuffer(_pInstanceArgBuffer, 0);
   }
 
-  // Dummy triangle buffer bindings
-  simd::float3 dummyVertex = {0, 0, 0};
-  simd::uint3 dummyIndex = {0, 0, 0};
-  if (!ensureBudget(sizeof(simd::float3)))
-    return;
-  _pTriangleVertexBuffer = _pDevice->newBuffer(
-      &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
-  if (!ensureBudget(sizeof(simd::uint3)))
-    return;
-  _pTriangleIndexBuffer = _pDevice->newBuffer(&dummyIndex, sizeof(simd::uint3),
-                                              MTL::ResourceStorageModeManaged);
+  rebuildTLAS();
 }
 
 void Renderer::buildTextures() {
@@ -393,11 +328,16 @@ bool Renderer::updateCamera() {
 }
 
 void Renderer::updateUniforms() {
+  if (!_pUniformsBuffer)
+    return;
+
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
-  if (updateCamera()) {
+  bool cameraChanged = updateCamera();
+  if (cameraChanged || _pendingAccumulationReset) {
     u.frameCount = 0;
     u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
+    _pendingAccumulationReset = false;
   } else {
     u.frameCount++;
   }
@@ -406,9 +346,11 @@ void Renderer::updateUniforms() {
   u.triangleCount = _pScene->getTriangleCount();
   u.totalPrimitiveCount = _allPrimitives.size();
   u.tlasNodeCount = _tlasNodeCount;
-  u.blasNodeCount = _blasNodeCount;
+  u.blasNodeCount = _currentBlasNodeCount;
   u.maxRayDepth = _pScene->maxRayDepth;
   u.debugAS = InputSystem::debugAS;
+  u.residentInstanceCount = static_cast<uint32_t>(_residentInstanceCount);
+  u.totalInstanceCount = static_cast<uint32_t>(_instances.size());
 
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(UniformsData)));
 }
@@ -430,16 +372,10 @@ void Renderer::draw(MTK::View *pView) {
 
   pEnc->setRenderPipelineState(_pPSO);
 
-  // Always bind something for each slot
-  pEnc->setFragmentBuffer(_pBVHBuffer, 0, 0); // New!
-  pEnc->setFragmentBuffer(_pSphereBuffer, 0, 1);
-  pEnc->setFragmentBuffer(_pSphereMaterialBuffer, 0, 2);
-  pEnc->setFragmentBuffer(_pUniformsBuffer, 0, 3);
-  pEnc->setFragmentBuffer(_pTriangleVertexBuffer, 0, 4);
-  pEnc->setFragmentBuffer(_pTriangleIndexBuffer, 0, 5);
-  pEnc->setFragmentBuffer(_pPrimitiveIndexBuffer, 0, 6);
-  pEnc->setFragmentBuffer(_pTLASBuffer, 0, 7);
-  pEnc->setFragmentBuffer(_pActiveBuffer, 0, 8);
+  pEnc->setFragmentBuffer(_pUniformsBuffer, 0, 0);
+  pEnc->setFragmentBuffer(_pTLASBuffer, 0, 1);
+  pEnc->setFragmentBuffer(_pInstanceMetaBuffer, 0, 2);
+  pEnc->setFragmentBuffer(_pInstanceArgBuffer, 0, 3);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -459,34 +395,415 @@ void Renderer::draw(MTK::View *pView) {
 }
 
 void Renderer::updateLODByDistance() {
-  // Keep primitives active until the camera is reasonably far away.
-  // Using a larger threshold prevents the entire scene from being culled
-  // when starting far from the origin.
   const float FULL_DETAIL_DISTANCE = 250.0f;
-  size_t activeCount = 0;
-  for (size_t g = 0; g < _allPrimitives.size(); ++g) {
-    float dist =
-        simd::length(_primitiveBounds[g].center - Camera::position) -
-        _primitiveBounds[g].radius;
+  bool tlasDirty = false;
+
+  for (size_t i = 0; i < _instances.size(); ++i) {
+    const auto &bounds = _instances[i].bounds;
+    float dist = simd::length(bounds.center - Camera::position) - bounds.radius;
     dist = std::max(dist, 0.0f);
-    bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
-    if (_activePrimitive[g] != shouldBeActive)
-      setPrimitiveActive(g, shouldBeActive);
-    if (_activePrimitive[g])
-      activeCount++;
+    bool shouldBeResident = dist < FULL_DETAIL_DISTANCE;
+
+    if (shouldBeResident) {
+      if (streamInInstance(i))
+        tlasDirty = true;
+    } else {
+      if (_instances[i].state == ResidencyState::Resident) {
+        streamOutInstance(i);
+        tlasDirty = true;
+      }
+    }
   }
 
-  if (activeCount == 0 && !_activePrimitive.empty()) {
-    // Ensure at least one primitive remains visible to avoid a blank scene
-    setPrimitiveActive(0, true);
-    activeCount = 1;
+  if (_residentInstanceCount == 0 && !_instances.empty()) {
+    if (streamInInstance(0))
+      tlasDirty = true;
   }
 
-  size_t newActiveNodes = _tlasNodeCount + activeCount;
-  if (newActiveNodes != _activeNodeCount) {
-    _activeNodeCount = newActiveNodes;
+  if (tlasDirty)
+    rebuildTLAS();
+}
+
+void Renderer::initializeInstances() {
+  for (size_t i = 0; i < _instances.size(); ++i)
+    releaseInstanceResources(i);
+  _instances.clear();
+  _instancesPendingRelease.clear();
+  _residentInstanceCount = 0;
+  _currentBlasNodeCount = 0;
+  _tlasNodeCount = 0;
+  _activeNodeCount = 0;
+  _blasNodeCount = 0;
+  _totalNodeCount = 0;
+
+  size_t primitiveCount = _allPrimitives.size();
+  if (primitiveCount > kMaxInstanceCapacity) {
+    printf(
+        "Warning: Scene has %zu primitives but only %zu instances are supported; "
+        "excess primitives will be ignored.\n",
+        primitiveCount, kMaxInstanceCapacity);
+    primitiveCount = kMaxInstanceCapacity;
+  }
+
+  _instances.reserve(primitiveCount);
+
+  for (size_t i = 0; i < primitiveCount; ++i) {
+    const Primitive &p = _allPrimitives[i];
+    InstanceRecord inst;
+    inst.primitiveIndex = i;
+
+    if (p.type == PrimitiveType::Sphere) {
+      inst.bounds = {p.sphere.center, p.sphere.radius};
+      simd::float3 radius =
+          simd::make_float3(p.sphere.radius, p.sphere.radius, p.sphere.radius);
+      inst.aabbMin = p.sphere.center - radius;
+      inst.aabbMax = p.sphere.center + radius;
+    } else if (p.type == PrimitiveType::Triangle) {
+      simd::float3 v0 = p.triangle.v0;
+      simd::float3 v1 = p.triangle.v1;
+      simd::float3 v2 = p.triangle.v2;
+      inst.bounds.center = (v0 + v1 + v2) / 3.0f;
+      float r = simd::length(v0 - inst.bounds.center);
+      r = std::max(r, (float)simd::length(v1 - inst.bounds.center));
+      r = std::max(r, (float)simd::length(v2 - inst.bounds.center));
+      inst.bounds.radius = r;
+      inst.aabbMin = {
+          std::min({v0.x, v1.x, v2.x}),
+          std::min({v0.y, v1.y, v2.y}),
+          std::min({v0.z, v1.z, v2.z}),
+      };
+      inst.aabbMax = {
+          std::max({v0.x, v1.x, v2.x}),
+          std::max({v0.y, v1.y, v2.y}),
+          std::max({v0.z, v1.z, v2.z}),
+      };
+    } else {
+      simd::float3 c = p.rectangle.center;
+      simd::float3 u = p.rectangle.u;
+      simd::float3 v = p.rectangle.v;
+      inst.bounds.center = c;
+      inst.bounds.radius = simd::length(u) + simd::length(v);
+      simd::float3 corners[4] = {c + u + v, c + u - v, c - u + v, c - u - v};
+      inst.aabbMin = corners[0];
+      inst.aabbMax = corners[0];
+      for (int k = 1; k < 4; ++k) {
+        inst.aabbMin = {
+            std::min(inst.aabbMin.x, corners[k].x),
+            std::min(inst.aabbMin.y, corners[k].y),
+            std::min(inst.aabbMin.z, corners[k].z),
+        };
+        inst.aabbMax = {
+            std::max(inst.aabbMax.x, corners[k].x),
+            std::max(inst.aabbMax.y, corners[k].y),
+            std::max(inst.aabbMax.z, corners[k].z),
+        };
+      }
+    }
+
+    inst.primitiveData.resize(3);
+    if (p.type == PrimitiveType::Sphere) {
+      inst.primitiveData[0] =
+          simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+      inst.primitiveData[1] =
+          simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
+      inst.primitiveData[2] = simd::make_float4(simd::float3(0), 0);
+    } else if (p.type == PrimitiveType::Rectangle) {
+      inst.primitiveData[0] =
+          simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+      inst.primitiveData[1] = simd::make_float4(p.rectangle.u, 0);
+      inst.primitiveData[2] = simd::make_float4(p.rectangle.v, 0);
+    } else {
+      inst.primitiveData[0] =
+          simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+      inst.primitiveData[1] = simd::make_float4(p.triangle.v1, 0);
+      inst.primitiveData[2] = simd::make_float4(p.triangle.v2, 0);
+    }
+
+    inst.materialData.resize(2);
+    inst.materialData[0] =
+        simd::make_float4(p.material.albedo, p.material.materialType);
+    inst.materialData[1] =
+        simd::make_float4(p.material.emissionColor, p.material.emissionPower);
+
+    inst.primitiveIndices = {0};
+    inst.cpuPrimitiveCount = 1;
+
+    inst.blasNodes.resize(2);
+    int leftFirst = 0;
+    int count = 1;
+    float leftBits = 0.0f;
+    float countBits = 0.0f;
+    std::memcpy(&leftBits, &leftFirst, sizeof(float));
+    std::memcpy(&countBits, &count, sizeof(float));
+    inst.blasNodes[0] = simd::make_float4(inst.aabbMin, leftBits);
+    inst.blasNodes[1] = simd::make_float4(inst.aabbMax, countBits);
+    inst.cpuBlasNodeCount = 1;
+    inst.state = ResidencyState::NotResident;
+    inst.gpu = InstanceGPU{};
+
+    _instances.push_back(std::move(inst));
+  }
+
+  size_t totalBlas = 0;
+  for (const auto &inst : _instances)
+    totalBlas += inst.cpuBlasNodeCount;
+  _totalNodeCount = _instances.size() + totalBlas;
+  _pendingAccumulationReset = true;
+}
+
+bool Renderer::streamInInstance(size_t index) {
+  if (index >= _instances.size())
+    return false;
+
+  InstanceRecord &inst = _instances[index];
+  if (inst.state == ResidencyState::Resident)
+    return false;
+
+  if (inst.state == ResidencyState::StreamingOut) {
+    auto it = std::find(_instancesPendingRelease.begin(),
+                        _instancesPendingRelease.end(), index);
+    if (it != _instancesPendingRelease.end())
+      _instancesPendingRelease.erase(it);
+    inst.state = ResidencyState::Resident;
+    inst.gpu.primitiveCount = inst.cpuPrimitiveCount;
+    inst.gpu.blasNodeCount = inst.cpuBlasNodeCount;
+    inst.gpu.rootNodeIndex = 0;
+    _residentInstanceCount++;
+    _currentBlasNodeCount += inst.gpu.blasNodeCount;
+    updateInstanceArgument(index);
+    updateInstanceMetadata(index);
+    _pendingAccumulationReset = true;
+    return true;
+  }
+
+  inst.state = ResidencyState::StreamingIn;
+
+  if (!createPrivateBuffer(inst.primitiveData, &inst.gpu.primitives))
+    return false;
+  if (!createPrivateBuffer(inst.materialData, &inst.gpu.materials)) {
+    releaseInstanceResources(index);
+    return false;
+  }
+  if (!createPrivateBuffer(inst.primitiveIndices, &inst.gpu.primitiveIndices)) {
+    releaseInstanceResources(index);
+    return false;
+  }
+  if (!createPrivateBuffer(inst.blasNodes, &inst.gpu.blasNodes)) {
+    releaseInstanceResources(index);
+    return false;
+  }
+
+  inst.gpu.primitiveCount = inst.cpuPrimitiveCount;
+  inst.gpu.blasNodeCount = inst.cpuBlasNodeCount;
+  inst.gpu.rootNodeIndex = 0;
+  inst.state = ResidencyState::Resident;
+  _residentInstanceCount++;
+  _currentBlasNodeCount += inst.gpu.blasNodeCount;
+
+  updateInstanceArgument(index);
+  updateInstanceMetadata(index);
+  _pendingAccumulationReset = true;
+  return true;
+}
+
+void Renderer::streamOutInstance(size_t index) {
+  if (index >= _instances.size())
+    return;
+
+  InstanceRecord &inst = _instances[index];
+  if (inst.state != ResidencyState::Resident)
+    return;
+
+  inst.state = ResidencyState::StreamingOut;
+  if (_residentInstanceCount > 0)
+    _residentInstanceCount--;
+  if (_currentBlasNodeCount >= inst.gpu.blasNodeCount)
+    _currentBlasNodeCount -= inst.gpu.blasNodeCount;
+  updateInstanceArgument(index);
+  updateInstanceMetadata(index);
+  if (std::find(_instancesPendingRelease.begin(), _instancesPendingRelease.end(),
+                index) == _instancesPendingRelease.end())
+    _instancesPendingRelease.push_back(index);
+  _pendingAccumulationReset = true;
+}
+
+void Renderer::releaseInstanceResources(size_t index) {
+  if (index >= _instances.size())
+    return;
+
+  InstanceRecord &inst = _instances[index];
+  if (inst.gpu.blasNodes) {
+    inst.gpu.blasNodes->release();
+    inst.gpu.blasNodes = nullptr;
+  }
+  if (inst.gpu.primitives) {
+    inst.gpu.primitives->release();
+    inst.gpu.primitives = nullptr;
+  }
+  if (inst.gpu.materials) {
+    inst.gpu.materials->release();
+    inst.gpu.materials = nullptr;
+  }
+  if (inst.gpu.primitiveIndices) {
+    inst.gpu.primitiveIndices->release();
+    inst.gpu.primitiveIndices = nullptr;
+  }
+  inst.gpu.primitiveCount = 0;
+  inst.gpu.blasNodeCount = 0;
+  inst.gpu.rootNodeIndex = 0;
+  inst.state = ResidencyState::NotResident;
+}
+
+void Renderer::updateInstanceArgument(size_t index) {
+  if (!_pInstanceArgEncoder || !_pInstanceArgBuffer)
+    return;
+  if (index >= kMaxInstanceCapacity)
+    return;
+
+  _pInstanceArgEncoder->setArgumentBuffer(_pInstanceArgBuffer, 0);
+  const InstanceRecord &inst = _instances[index];
+  NS::UInteger arrayIndex = NS::UInteger(index);
+  if (inst.state == ResidencyState::Resident) {
+    _pInstanceArgEncoder->setBuffer(inst.gpu.blasNodes, 0, NS::UInteger(0),
+                                    arrayIndex);
+    _pInstanceArgEncoder->setBuffer(inst.gpu.primitives, 0, NS::UInteger(1),
+                                    arrayIndex);
+    _pInstanceArgEncoder->setBuffer(inst.gpu.materials, 0, NS::UInteger(2),
+                                    arrayIndex);
+    _pInstanceArgEncoder->setBuffer(inst.gpu.primitiveIndices, 0,
+                                    NS::UInteger(3), arrayIndex);
+  } else {
+    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(0), arrayIndex);
+    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(1), arrayIndex);
+    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(2), arrayIndex);
+    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(3), arrayIndex);
+  }
+}
+
+void Renderer::updateInstanceMetadata(size_t index) {
+  if (!_pInstanceMetaBuffer)
+    return;
+  if (index >= _instances.size())
+    return;
+
+  InstanceMetadataCPU *meta =
+      reinterpret_cast<InstanceMetadataCPU *>(_pInstanceMetaBuffer->contents());
+  InstanceMetadataCPU data{};
+  const InstanceRecord &inst = _instances[index];
+  if (inst.state == ResidencyState::Resident) {
+    data.primitiveCount = inst.gpu.primitiveCount;
+    data.blasNodeCount = inst.gpu.blasNodeCount;
+    data.rootNodeIndex = inst.gpu.rootNodeIndex;
+  }
+  meta[index] = data;
+  _pInstanceMetaBuffer->didModifyRange(
+      NS::Range::Make(index * sizeof(InstanceMetadataCPU),
+                      sizeof(InstanceMetadataCPU)));
+}
+
+void Renderer::rebuildTLAS() {
+  std::vector<simd::float4> tlasEntries;
+  tlasEntries.reserve(_instances.size() * 2);
+
+  size_t previousActive = _activeNodeCount;
+  _currentBlasNodeCount = 0;
+
+  for (size_t i = 0; i < _instances.size(); ++i) {
+    const InstanceRecord &inst = _instances[i];
+    if (inst.state != ResidencyState::Resident)
+      continue;
+    float instanceBits = 0.0f;
+    int instanceId = static_cast<int>(i);
+    std::memcpy(&instanceBits, &instanceId, sizeof(float));
+    tlasEntries.push_back(simd::make_float4(inst.aabbMin, instanceBits));
+    tlasEntries.push_back(simd::make_float4(inst.aabbMax, 0.0f));
+    _currentBlasNodeCount += inst.gpu.blasNodeCount;
+  }
+
+  _residentInstanceCount = tlasEntries.size() / 2;
+  _blasNodeCount = _currentBlasNodeCount;
+  _tlasNodeCount = _residentInstanceCount;
+  _activeNodeCount = _tlasNodeCount + _currentBlasNodeCount;
+
+  size_t totalBlas = 0;
+  for (const auto &inst : _instances)
+    totalBlas += inst.cpuBlasNodeCount;
+  _totalNodeCount = _instances.size() + totalBlas;
+
+  size_t requiredCount = tlasEntries.size();
+  size_t byteCount =
+      requiredCount > 0 ? requiredCount * sizeof(simd::float4)
+                        : sizeof(simd::float4) * 2;
+
+  if (_pTLASBuffer) {
+    _pTLASBuffer->release();
+    _pTLASBuffer = nullptr;
+  }
+  if (!ensureBudget(byteCount))
+    return;
+  _pTLASBuffer = _pDevice->newBuffer(byteCount, MTL::ResourceStorageModeManaged);
+  simd::float4 *dst =
+      reinterpret_cast<simd::float4 *>(_pTLASBuffer->contents());
+  if (requiredCount > 0)
+    std::memcpy(dst, tlasEntries.data(), byteCount);
+  else
+    std::memset(dst, 0, byteCount);
+  _pTLASBuffer->didModifyRange(NS::Range::Make(0, byteCount));
+
+  if (_activeNodeCount != previousActive)
     printf("Active nodes: %zu\n", _activeNodeCount);
+}
+
+void Renderer::processPendingReleases() {
+  for (size_t index : _instancesPendingRelease)
+    releaseInstanceResources(index);
+  _instancesPendingRelease.clear();
+}
+
+bool Renderer::createPrivateBuffer(const void *data, size_t size,
+                                   MTL::Buffer **outBuffer) {
+  if (*outBuffer) {
+    (*outBuffer)->release();
+    *outBuffer = nullptr;
   }
+  if (size == 0)
+    return true;
+  if (!ensureBudget(size))
+    return false;
+
+  MTL::Buffer *staging =
+      _pDevice->newBuffer(size, MTL::ResourceStorageModeShared);
+  std::memcpy(staging->contents(), data, size);
+
+  if (!ensureBudget(size)) {
+    staging->release();
+    return false;
+  }
+  MTL::Buffer *gpu =
+      _pDevice->newBuffer(size, MTL::ResourceStorageModePrivate);
+  MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
+  MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
+  blit->copyFromBuffer(staging, 0, gpu, 0, size);
+  blit->endEncoding();
+  cmd->commit();
+  cmd->waitUntilCompleted();
+
+  staging->release();
+  *outBuffer = gpu;
+  return true;
+}
+
+bool Renderer::createPrivateBuffer(const std::vector<simd::float4> &data,
+                                   MTL::Buffer **outBuffer) {
+  const void *ptr = data.empty() ? nullptr : data.data();
+  return createPrivateBuffer(ptr, data.size() * sizeof(simd::float4),
+                             outBuffer);
+}
+
+bool Renderer::createPrivateBuffer(const std::vector<int> &data,
+                                   MTL::Buffer **outBuffer) {
+  const void *ptr = data.empty() ? nullptr : data.data();
+  return createPrivateBuffer(ptr, data.size() * sizeof(int), outBuffer);
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -502,91 +819,6 @@ void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
 
-void Renderer::setPrimitiveActive(size_t index, bool active) {
-  if (index >= _activePrimitive.size())
-    return;
-  if (_activePrimitive[index] == active)
-    return;
-  _activePrimitive[index] = active;
-  if (_pActiveBuffer) {
-    uint8_t *mask = static_cast<uint8_t *>(_pActiveBuffer->contents());
-    mask[index] = active ? 1 : 0;
-    _pActiveBuffer->didModifyRange(NS::Range::Make(index, 1));
-  }
-}
-
-void Renderer::rebuildAccelerationStructures() {
-  _pScene->buildBVH();
-
-  size_t newBlasCount = _pScene->getBVHNodeCount();
-  _blasNodeCount = newBlasCount;
-
-  simd::float4 *bvhData = _pScene->createBVHBuffer();
-  if (_pBVHBuffer)
-    _pBVHBuffer->release();
-  size_t bvhSize = sizeof(simd::float4) * newBlasCount * 2;
-  if (!ensureBudget(bvhSize)) {
-    delete[] bvhData;
-    return;
-  }
-  _pBVHBuffer =
-      _pDevice->newBuffer(bvhData, bvhSize, MTL::ResourceStorageModeManaged);
-  _pBVHBuffer->didModifyRange(NS::Range::Make(0, _pBVHBuffer->length()));
-  delete[] bvhData;
-
-  size_t tlasCount = 0;
-  simd::float4 *tlasData = _pScene->createTLASBuffer(tlasCount);
-  _tlasNodeCount = tlasCount;
-  _totalNodeCount = _tlasNodeCount + _allPrimitives.size();
-  size_t oldActiveCount = _activeNodeCount;
-  size_t activePrim = 0;
-  for (bool a : _activePrimitive)
-    if (a)
-      activePrim++;
-  _activeNodeCount = _tlasNodeCount + activePrim;
-  if (_activeNodeCount != oldActiveCount) {
-    printf("Active nodes: %zu\n", _activeNodeCount);
-  }
-  if (_pTLASBuffer)
-    _pTLASBuffer->release();
-  if (tlasData && tlasCount > 0) {
-    size_t tlasSize = sizeof(simd::float4) * tlasCount * 2;
-    if (!ensureBudget(tlasSize)) {
-      delete[] tlasData;
-      return;
-    }
-    _pTLASBuffer =
-        _pDevice->newBuffer(tlasData, tlasSize, MTL::ResourceStorageModeManaged);
-    _pTLASBuffer->didModifyRange(NS::Range::Make(0, _pTLASBuffer->length()));
-  } else {
-    if (!ensureBudget(1)) {
-      delete[] tlasData;
-      return;
-    }
-    _pTLASBuffer = _pDevice->newBuffer(1, MTL::ResourceStorageModeManaged);
-  }
-  delete[] tlasData;
-
-  size_t indexCount = _pScene->getPrimitiveCount();
-  size_t indexSize = indexCount * sizeof(int);
-  if (_pPrimitiveIndexBuffer)
-    _pPrimitiveIndexBuffer->release();
-  if (indexCount > 0) {
-    if (!ensureBudget(indexSize))
-      return;
-    int *rawIndices = _pScene->createPrimitiveIndexBuffer();
-    _pPrimitiveIndexBuffer = _pDevice->newBuffer(
-        rawIndices, indexSize, MTL::ResourceStorageModeManaged);
-    _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
-    delete[] rawIndices;
-  } else {
-    if (!ensureBudget(sizeof(int)))
-      return;
-    _pPrimitiveIndexBuffer =
-        _pDevice->newBuffer(sizeof(int), MTL::ResourceStorageModeManaged);
-  }
-}
-
 void Renderer::dumpAccelerationStructure(const std::string &path) {
   std::filesystem::create_directories(
       std::filesystem::path(path).parent_path());
@@ -596,46 +828,50 @@ void Renderer::dumpAccelerationStructure(const std::string &path) {
 
   out << "{\n";
 
-  size_t tlasCount = 0;
-  simd::float4 *tlasData = _pScene->createTLASBuffer(tlasCount);
   out << "  \"tlas\": [\n";
-  for (size_t i = 0; i < tlasCount; ++i) {
-    simd::float4 bmin = tlasData[2 * i];
-    simd::float4 bmax = tlasData[2 * i + 1];
-    int childIndex = reinterpret_cast<const int *>(&bmin)[3];
-    out << "    {\"child\":" << childIndex << ",\"min\":[" << bmin.x << ","
-        << bmin.y << "," << bmin.z << "],\"max\":[" << bmax.x << "," << bmax.y
-        << "," << bmax.z << "]}";
-    if (i + 1 < tlasCount)
+  bool wroteAny = false;
+  for (size_t i = 0; i < _instances.size(); ++i) {
+    const auto &inst = _instances[i];
+    if (inst.state != ResidencyState::Resident)
+      continue;
+    if (wroteAny)
       out << ",\n";
-    else
-      out << "\n";
+    out << "    {\"instance\":" << i << ",\"min\":[" << inst.aabbMin.x << ","
+        << inst.aabbMin.y << "," << inst.aabbMin.z << "],\"max\":["
+        << inst.aabbMax.x << "," << inst.aabbMax.y << "," << inst.aabbMax.z
+        << "]}";
+    wroteAny = true;
   }
-  out << "  ],\n";
-  delete[] tlasData;
-
-  const auto &nodes = _pScene->getBVHNodes();
-  out << "  \"blas\": [\n";
-  for (size_t i = 0; i < nodes.size(); ++i) {
-    const auto &n = nodes[i];
-    out << "    {\"index\":" << i << ",\"min\":[" << n.boundsMin.x << ","
-        << n.boundsMin.y << "," << n.boundsMin.z << "],\"max\":["
-        << n.boundsMax.x << "," << n.boundsMax.y << "," << n.boundsMax.z
-        << "],\"leftFirst\":" << n.leftFirst << ",\"count\":" << n.count << "}";
-    if (i + 1 < nodes.size())
-      out << ",\n";
-    else
-      out << "\n";
-  }
+  if (wroteAny)
+    out << "\n";
   out << "  ],\n";
 
-  out << "  \"primitives\": [\n";
-  size_t primCount = std::min(_allPrimitives.size(), _activePrimitive.size());
-  for (size_t i = 0; i < primCount; ++i) {
-    out << "    {\"index\":" << i
-        << ",\"active\":" << (_activePrimitive[i] ? "true" : "false")
+  out << "  \"instances\": [\n";
+  for (size_t i = 0; i < _instances.size(); ++i) {
+    const auto &inst = _instances[i];
+    const char *stateStr = "notResident";
+    switch (inst.state) {
+    case ResidencyState::NotResident:
+      stateStr = "notResident";
+      break;
+    case ResidencyState::StreamingIn:
+      stateStr = "streamingIn";
+      break;
+    case ResidencyState::Resident:
+      stateStr = "resident";
+      break;
+    case ResidencyState::StreamingOut:
+      stateStr = "streamingOut";
+      break;
+    }
+    out << "    {\"index\":" << i << ",\"state\":\"" << stateStr
+        << "\",\"cpuPrimitiveCount\":" << inst.cpuPrimitiveCount
+        << ",\"bounds\":[" << inst.bounds.center.x << ","
+        << inst.bounds.center.y << "," << inst.bounds.center.z << ","
+        << inst.bounds.radius << "],\"resident\":"
+        << (inst.state == ResidencyState::Resident ? "true" : "false")
         << "}";
-    if (i + 1 < primCount)
+    if (i + 1 < _instances.size())
       out << ",\n";
     else
       out << "\n";
@@ -683,6 +919,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   } else {
     _lastRaysPerSecond = 0.0;
   }
+  processPendingReleases();
   size_t offloaded = _totalNodeCount > _activeNodeCount ?
                          _totalNodeCount - _activeNodeCount :
                          0;

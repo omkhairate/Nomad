@@ -61,13 +61,15 @@ inline intersection firstHitBVH(thread const ray &r,
                                 device const float4 *bvhNodes,
                                 device const float4 *primitives,
                                 device const int *primitiveIndices,
-                                device const uchar *activeMask,
-                                int startNode) {
+                                uint primitiveCount,
+                                int startNode,
+                                int instanceId) {
   intersection in;
   in.t = INFINITY;
   in.primitiveId = -1;
   in.isTriangle = 0;
   in.nodeIndex = -1;
+  in.instanceId = instanceId;
 
   constexpr int stackSize = 64;
   int stack[stackSize];
@@ -89,7 +91,7 @@ inline intersection firstHitBVH(thread const ray &r,
       int count = second;
       for (int i = 0; i < count; ++i) {
         int primIdx = primitiveIndices[leftFirst + i];
-        if (!activeMask[primIdx])
+        if (primIdx >= int(primitiveCount))
           continue;
         int base = primIdx * 3;
         float4 p0 = primitives[base + 0];
@@ -199,11 +201,9 @@ inline intersection firstHitBVH(thread const ray &r,
 
 inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        device const float4 *tlasNodes,
-                       uint tlasNodeCount, device const float4 *bvhNodes,
-                       device const float4 *primitives,
-                       device const float4 *materials, uint primitiveCount,
-                       device const int *primitiveIndices,
-                       device const uchar *activeMask,
+                       uint tlasNodeCount,
+                       device InstanceArgumentBuffer &instanceArgs,
+                       constant InstanceMetadata *instanceMetadata,
                        thread uint32_t &seed, uint maxRayDepth,
                        uint debugAS, uint blasNodeCount) {
   float footprint = length(cross(rayDx, rayDy));
@@ -225,12 +225,18 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     for (uint i = 0; i < tlasNodeCount; ++i) {
       float3 bmin = tlasNodes[2 * i + 0].xyz;
       float3 bmax = tlasNodes[2 * i + 1].xyz;
-      int startNode = as_type<int>(tlasNodes[2 * i + 0].w);
+      int instanceId = as_type<int>(tlasNodes[2 * i + 0].w);
+      const constant InstanceMetadata &meta = instanceMetadata[instanceId];
+      if (meta.primitiveCount == 0)
+        continue;
+      const device InstanceResources &resources =
+          instanceArgs.instances[instanceId];
       if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
         continue;
       intersection hit =
-          firstHitBVH(r, bvhNodes, primitives, primitiveIndices, activeMask,
-                     startNode);
+          firstHitBVH(r, resources.blasNodes, resources.primitives,
+                     resources.primitiveIndices, meta.primitiveCount,
+                     int(meta.rootNodeIndex), instanceId);
       if (hit.primitiveId != -1 && hit.t < bestHit.t)
         bestHit = hit;
     }
@@ -254,14 +260,20 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     for (uint i = 0; i < tlasNodeCount; ++i) {
       float3 bmin = tlasNodes[2 * i + 0].xyz;
       float3 bmax = tlasNodes[2 * i + 1].xyz;
-      int startNode = as_type<int>(tlasNodes[2 * i + 0].w);
+      int instanceId = as_type<int>(tlasNodes[2 * i + 0].w);
+      const constant InstanceMetadata &meta = instanceMetadata[instanceId];
+      if (meta.primitiveCount == 0)
+        continue;
+      const device InstanceResources &resources =
+          instanceArgs.instances[instanceId];
 
       if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
         continue;
 
       intersection hit =
-          firstHitBVH(r, bvhNodes, primitives, primitiveIndices, activeMask,
-                     startNode);
+          firstHitBVH(r, resources.blasNodes, resources.primitives,
+                     resources.primitiveIndices, meta.primitiveCount,
+                     int(meta.rootNodeIndex), instanceId);
       if (hit.primitiveId != -1 && hit.t < bestHit.t)
         bestHit = hit;
     }
@@ -274,10 +286,14 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
       break;
     }
     int matIndex = bestHit.primitiveId * 2;
-    if (matIndex + 1 >= int(primitiveCount) * 2)
+    const constant InstanceMetadata &hitMeta =
+        instanceMetadata[bestHit.instanceId];
+    if (matIndex + 1 >= int(hitMeta.primitiveCount) * 2)
       break;
-    float4 m0 = materials[matIndex + 0];
-    float4 m1 = materials[matIndex + 1];
+    const device InstanceResources &hitResources =
+        instanceArgs.instances[bestHit.instanceId];
+    float4 m0 = hitResources.materials[matIndex + 0];
+    float4 m1 = hitResources.materials[matIndex + 1];
 
     float3 albedo = m0.xyz * lodAtten;
     float materialType = m0.w;
