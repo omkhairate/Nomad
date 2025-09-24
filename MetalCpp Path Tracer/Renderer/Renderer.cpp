@@ -92,6 +92,8 @@ Renderer::~Renderer() {
     _pInstanceMetaBuffer->release();
   if (_pInstanceArgBuffer)
     _pInstanceArgBuffer->release();
+  if (_pInstanceArgElementEncoder)
+    _pInstanceArgElementEncoder->release();
   if (_pInstanceArgEncoder)
     _pInstanceArgEncoder->release();
 
@@ -142,8 +144,27 @@ void Renderer::buildShaders() {
     _pInstanceArgEncoder->release();
     _pInstanceArgEncoder = nullptr;
   }
+  if (_pInstanceArgElementEncoder) {
+    _pInstanceArgElementEncoder->release();
+    _pInstanceArgElementEncoder = nullptr;
+  }
+  _instanceArgStride = 0;
   _pInstanceArgEncoder =
       pFragFn->newArgumentEncoder(NS::UInteger(3));
+  if (_pInstanceArgEncoder) {
+    _pInstanceArgElementEncoder =
+        _pInstanceArgEncoder->newArgumentEncoder(NS::UInteger(0));
+    if (_pInstanceArgElementEncoder) {
+      size_t elementLength = _pInstanceArgElementEncoder->encodedLength();
+      size_t elementAlignment = _pInstanceArgElementEncoder->alignment();
+      if (elementAlignment > 0) {
+        size_t remainder = elementLength % elementAlignment;
+        if (remainder != 0)
+          elementLength += elementAlignment - remainder;
+      }
+      _instanceArgStride = elementLength;
+    }
+  }
 
   pVertexFn->release();
   pFragFn->release();
@@ -655,25 +676,33 @@ void Renderer::releaseInstanceResources(size_t index) {
 }
 
 void Renderer::updateInstanceArgument(size_t index) {
-  if (!_pInstanceArgEncoder || !_pInstanceArgBuffer)
+  if (!_pInstanceArgEncoder || !_pInstanceArgElementEncoder ||
+      !_pInstanceArgBuffer || _instanceArgStride == 0)
     return;
   if (index >= kMaxInstanceCapacity)
     return;
 
-  NS::UInteger arrayIndex = NS::UInteger(index);
-  _pInstanceArgEncoder->setArgumentBuffer(_pInstanceArgBuffer, 0, arrayIndex);
+  size_t offset = index * _instanceArgStride;
+  if (offset + _instanceArgStride > _pInstanceArgEncoder->encodedLength())
+    return;
+
+  _pInstanceArgElementEncoder->setArgumentBuffer(_pInstanceArgBuffer,
+                                                 NS::UInteger(offset));
   const InstanceRecord &inst = _instances[index];
   if (inst.state == ResidencyState::Resident) {
-    _pInstanceArgEncoder->setBuffer(inst.gpu.blasNodes, 0, NS::UInteger(0));
-    _pInstanceArgEncoder->setBuffer(inst.gpu.primitives, 0, NS::UInteger(1));
-    _pInstanceArgEncoder->setBuffer(inst.gpu.materials, 0, NS::UInteger(2));
-    _pInstanceArgEncoder->setBuffer(inst.gpu.primitiveIndices, 0,
-                                    NS::UInteger(3));
+    _pInstanceArgElementEncoder->setBuffer(inst.gpu.blasNodes, 0,
+                                           NS::UInteger(0));
+    _pInstanceArgElementEncoder->setBuffer(inst.gpu.primitives, 0,
+                                           NS::UInteger(1));
+    _pInstanceArgElementEncoder->setBuffer(inst.gpu.materials, 0,
+                                           NS::UInteger(2));
+    _pInstanceArgElementEncoder->setBuffer(inst.gpu.primitiveIndices, 0,
+                                           NS::UInteger(3));
   } else {
-    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(0));
-    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(1));
-    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(2));
-    _pInstanceArgEncoder->setBuffer(nullptr, 0, NS::UInteger(3));
+    _pInstanceArgElementEncoder->setBuffer(nullptr, 0, NS::UInteger(0));
+    _pInstanceArgElementEncoder->setBuffer(nullptr, 0, NS::UInteger(1));
+    _pInstanceArgElementEncoder->setBuffer(nullptr, 0, NS::UInteger(2));
+    _pInstanceArgElementEncoder->setBuffer(nullptr, 0, NS::UInteger(3));
   }
 }
 
