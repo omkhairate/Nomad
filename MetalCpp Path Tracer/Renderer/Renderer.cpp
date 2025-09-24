@@ -22,6 +22,7 @@ using namespace MetalCppPathTracer;
 static constexpr size_t kMaxInstanceCapacity = 16384;
 static constexpr size_t kMaxPrimitivesPerInstance = 64;
 static constexpr size_t kTLASNodeFootprintBytes = sizeof(simd::float4) * 2;
+static constexpr int kMaxTLASLeafInstances = 8;
 
 struct UniformsData {
   int primitiveIndex;
@@ -99,6 +100,8 @@ Renderer::~Renderer() {
     _pUniformsBuffer->release();
   if (_pTLASBuffer)
     _pTLASBuffer->release();
+  if (_pTLASInstanceIndexBuffer)
+    _pTLASInstanceIndexBuffer->release();
   if (_pInstanceMetaBuffer)
     _pInstanceMetaBuffer->release();
   if (_pInstanceArgBuffer)
@@ -426,6 +429,7 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pTLASBuffer, 0, 1);
   pEnc->setFragmentBuffer(_pInstanceMetaBuffer, 0, 2);
   pEnc->setFragmentBuffer(_pInstanceArgBuffer, 0, 3);
+  pEnc->setFragmentBuffer(_pTLASInstanceIndexBuffer, 0, 4);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -848,8 +852,22 @@ void Renderer::updateInstanceMetadata(size_t index) {
 }
 
 void Renderer::rebuildTLAS() {
-  std::vector<simd::float4> tlasEntries;
-  tlasEntries.reserve(_instances.size() * 2);
+  struct TLASNodeCPU {
+    simd::float3 min;
+    simd::float3 max;
+    int leftFirst = 0;
+    int second = 0;
+  };
+
+  struct BuildRef {
+    size_t instanceIndex;
+    simd::float3 min;
+    simd::float3 max;
+    simd::float3 centroid;
+  };
+
+  std::vector<size_t> residentIndices;
+  residentIndices.reserve(_instances.size());
 
   size_t previousActive = _activeNodeCount;
   _currentBlasNodeCount = 0;
@@ -858,43 +876,154 @@ void Renderer::rebuildTLAS() {
     const InstanceRecord &inst = _instances[i];
     if (inst.state != ResidencyState::Resident)
       continue;
-    float instanceBits = 0.0f;
-    int instanceId = static_cast<int>(i);
-    std::memcpy(&instanceBits, &instanceId, sizeof(float));
-    tlasEntries.push_back(simd::make_float4(inst.aabbMin, instanceBits));
-    tlasEntries.push_back(simd::make_float4(inst.aabbMax, 0.0f));
+    residentIndices.push_back(i);
     _currentBlasNodeCount += inst.gpu.blasNodeCount;
   }
 
-  _residentInstanceCount = tlasEntries.size() / 2;
+  _residentInstanceCount = residentIndices.size();
   _blasNodeCount = _currentBlasNodeCount;
-  _tlasNodeCount = _residentInstanceCount;
+
+  std::vector<TLASNodeCPU> nodes;
+  std::vector<int> instanceIndices;
+
+  if (!residentIndices.empty()) {
+    std::vector<BuildRef> refs;
+    refs.reserve(residentIndices.size());
+    for (size_t index : residentIndices) {
+      const InstanceRecord &inst = _instances[index];
+      BuildRef ref;
+      ref.instanceIndex = index;
+      ref.min = inst.aabbMin;
+      ref.max = inst.aabbMax;
+      ref.centroid = (inst.aabbMin + inst.aabbMax) * 0.5f;
+      refs.push_back(ref);
+    }
+
+    nodes.reserve(refs.size() * 2);
+    instanceIndices.reserve(refs.size());
+
+    auto buildNode = [&](auto &&self, size_t begin, size_t end) -> int {
+      size_t count = end - begin;
+      if (count == 0)
+        return -1;
+
+      simd::float3 bmin = refs[begin].min;
+      simd::float3 bmax = refs[begin].max;
+      simd::float3 cmin = refs[begin].centroid;
+      simd::float3 cmax = refs[begin].centroid;
+      for (size_t i = begin + 1; i < end; ++i) {
+        bmin = simd::min(bmin, refs[i].min);
+        bmax = simd::max(bmax, refs[i].max);
+        cmin = simd::min(cmin, refs[i].centroid);
+        cmax = simd::max(cmax, refs[i].centroid);
+      }
+
+      int nodeIndex = static_cast<int>(nodes.size());
+      nodes.push_back({});
+      nodes[nodeIndex].min = bmin;
+      nodes[nodeIndex].max = bmax;
+
+      if (count <= static_cast<size_t>(kMaxTLASLeafInstances)) {
+        int start = static_cast<int>(instanceIndices.size());
+        for (size_t i = begin; i < end; ++i) {
+          instanceIndices.push_back(static_cast<int>(refs[i].instanceIndex));
+        }
+        nodes[nodeIndex].leftFirst = start;
+        nodes[nodeIndex].second = static_cast<int>(count);
+      } else {
+        simd::float3 extent = cmax - cmin;
+        int axis = 0;
+        if (extent.y > extent.x && extent.y >= extent.z)
+          axis = 1;
+        else if (extent.z > extent.x && extent.z > extent.y)
+          axis = 2;
+
+        size_t mid = begin + count / 2;
+        auto comparator = [axis](const BuildRef &a, const BuildRef &b) {
+          return a.centroid[axis] < b.centroid[axis];
+        };
+        std::nth_element(refs.begin() + begin, refs.begin() + mid,
+                         refs.begin() + end, comparator);
+
+        int leftChild = self(self, begin, mid);
+        int rightChild = self(self, mid, end);
+        nodes[nodeIndex].leftFirst = leftChild;
+        nodes[nodeIndex].second = -rightChild;
+      }
+
+      return nodeIndex;
+    };
+
+    buildNode(buildNode, 0, refs.size());
+  }
+
+  std::vector<simd::float4> tlasData;
+  tlasData.reserve(nodes.size() * 2);
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    float leftBits = 0.0f;
+    float secondBits = 0.0f;
+    std::memcpy(&leftBits, &nodes[i].leftFirst, sizeof(int));
+    std::memcpy(&secondBits, &nodes[i].second, sizeof(int));
+    tlasData.push_back(simd::make_float4(nodes[i].min, leftBits));
+    tlasData.push_back(simd::make_float4(nodes[i].max, secondBits));
+  }
+
+  _tlasNodeCount = nodes.size();
   _activeNodeCount = _tlasNodeCount + _currentBlasNodeCount;
 
   size_t totalBlas = 0;
   for (const auto &inst : _instances)
     totalBlas += inst.cpuBlasNodeCount;
-  _totalNodeCount = _instances.size() + totalBlas;
+  _totalNodeCount = _tlasNodeCount + totalBlas;
 
-  size_t requiredCount = tlasEntries.size();
-  size_t byteCount =
-      requiredCount > 0 ? requiredCount * sizeof(simd::float4)
+  size_t nodeByteCount =
+      !tlasData.empty() ? tlasData.size() * sizeof(simd::float4)
                         : sizeof(simd::float4) * 2;
+  size_t indexByteCount =
+      !instanceIndices.empty() ? instanceIndices.size() * sizeof(int)
+                               : sizeof(int);
 
   if (_pTLASBuffer) {
     _pTLASBuffer->release();
     _pTLASBuffer = nullptr;
   }
-  if (!ensureBudget(byteCount))
+  if (_pTLASInstanceIndexBuffer) {
+    _pTLASInstanceIndexBuffer->release();
+    _pTLASInstanceIndexBuffer = nullptr;
+  }
+
+  if (!ensureBudget(nodeByteCount + indexByteCount)) {
+    _tlasNodeCount = 0;
+    _residentInstanceCount = 0;
+    _currentBlasNodeCount = 0;
+    _blasNodeCount = 0;
+    _activeNodeCount = 0;
+    _totalNodeCount = totalBlas;
+    if (_activeNodeCount != previousActive)
+      printf("Active nodes: %zu\n", _activeNodeCount);
     return;
-  _pTLASBuffer = _pDevice->newBuffer(byteCount, MTL::ResourceStorageModeManaged);
-  simd::float4 *dst =
+  }
+
+  _pTLASBuffer =
+      _pDevice->newBuffer(nodeByteCount, MTL::ResourceStorageModeManaged);
+  simd::float4 *nodeDst =
       reinterpret_cast<simd::float4 *>(_pTLASBuffer->contents());
-  if (requiredCount > 0)
-    std::memcpy(dst, tlasEntries.data(), byteCount);
+  if (!tlasData.empty())
+    std::memcpy(nodeDst, tlasData.data(), tlasData.size() * sizeof(simd::float4));
   else
-    std::memset(dst, 0, byteCount);
-  _pTLASBuffer->didModifyRange(NS::Range::Make(0, byteCount));
+    std::memset(nodeDst, 0, nodeByteCount);
+  _pTLASBuffer->didModifyRange(NS::Range::Make(0, nodeByteCount));
+
+  _pTLASInstanceIndexBuffer =
+      _pDevice->newBuffer(indexByteCount, MTL::ResourceStorageModeManaged);
+  int *indexDst = reinterpret_cast<int *>(_pTLASInstanceIndexBuffer->contents());
+  if (!instanceIndices.empty())
+    std::memcpy(indexDst, instanceIndices.data(),
+                instanceIndices.size() * sizeof(int));
+  else
+    std::memset(indexDst, 0, indexByteCount);
+  _pTLASInstanceIndexBuffer->didModifyRange(
+      NS::Range::Make(0, indexByteCount));
 
   if (_activeNodeCount != previousActive)
     printf("Active nodes: %zu\n", _activeNodeCount);

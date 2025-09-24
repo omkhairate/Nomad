@@ -11,6 +11,7 @@ float4 fragment fragmentMain(
     device const float4* tlasNodes [[buffer(1)]],
     constant InstanceMetadata* instanceMetadata [[buffer(2)]],
     device InstanceArgumentBuffer& instanceArgs [[buffer(3)]],
+    device const int* tlasInstanceIndices [[buffer(4)]],
     texture2d<float, access::read_write> lastFrame [[texture(0)]],
     texture2d<float, access::read_write> currentFrame [[texture(1)]])
 
@@ -48,6 +49,7 @@ float4 fragment fragmentMain(
         rayDx,
         rayDy,
         tlasNodes,
+        tlasInstanceIndices,
         u.tlasNodeCount,
         instanceArgs,
         instanceMetadata,
