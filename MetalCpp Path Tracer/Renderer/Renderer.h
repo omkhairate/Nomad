@@ -76,12 +76,17 @@ private:
   size_t _totalNodeCount = 0;
   size_t _residentInstanceCount = 0;
   size_t _currentBlasNodeCount = 0;
+  size_t _recommendedBudget = std::numeric_limits<size_t>::max();
+  size_t _minInstanceFootprint = 0;
+  bool _manualBudget = false;
+  double _targetFrameTime = 1.0 / 30.0;
   // Accumulation framebuffers
   MTL::Texture *_accumulationTargets[2] = {nullptr, nullptr};
 
   // GPU memory budgeting
   size_t _gpuMemoryBudget = std::numeric_limits<size_t>::max();
   bool ensureBudget(size_t bytes) const;
+  void adjustBudgetForPerformance();
 
   struct BoundingSphere {
     simd::float3 center;
