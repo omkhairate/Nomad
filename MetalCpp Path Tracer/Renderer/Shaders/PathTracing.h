@@ -5,7 +5,6 @@
 #include <metal_stdlib>
 
 #define M_PI 3.14159265358979323846
-#define PRIMITIVE_STRIDE 4
 
 #include "Intersect.h"
 #include "Random.h"
@@ -62,18 +61,13 @@ inline intersection firstHitBVH(thread const ray &r,
                                 device const float4 *bvhNodes,
                                 device const float4 *primitives,
                                 device const int *primitiveIndices,
-                                uint primitiveCount,
-                                int startNode,
-                                int instanceId,
-                                float tMax = INFINITY) {
+                                device const uchar *activeMask,
+                                int startNode) {
   intersection in;
-  in.t = tMax;
+  in.t = INFINITY;
   in.primitiveId = -1;
   in.isTriangle = 0;
   in.nodeIndex = -1;
-  in.instanceId = instanceId;
-
-  bool foundHit = false;
 
   constexpr int stackSize = 64;
   int stack[stackSize];
@@ -88,21 +82,19 @@ inline intersection firstHitBVH(thread const ray &r,
     int leftFirst = as_type<int>(bvhNodes[2 * nodeIdx + 0].w);
     int second = as_type<int>(bvhNodes[2 * nodeIdx + 1].w);
 
-    float currentMax = foundHit ? in.t : tMax;
-    if (!intersectAABB(r, bmin, bmax, 0.0001, currentMax))
+    if (!intersectAABB(r, bmin, bmax, 0.0001, in.t))
       continue;
 
     if (second > 0) {
       int count = second;
       for (int i = 0; i < count; ++i) {
         int primIdx = primitiveIndices[leftFirst + i];
-        if (primIdx >= int(primitiveCount))
+        if (!activeMask[primIdx])
           continue;
-        int base = primIdx * PRIMITIVE_STRIDE;
+        int base = primIdx * 3;
         float4 p0 = primitives[base + 0];
         float4 p1 = primitives[base + 1];
         float4 p2 = primitives[base + 2];
-        float4 p3 = primitives[base + 3];
 
         int primitiveType = int(p0.w);
         float tHit = INFINITY;
@@ -113,11 +105,10 @@ inline intersection firstHitBVH(thread const ray &r,
         if (primitiveType == 0) {
           float3 center = p0.xyz;
           float radius = p1.x;
-          float radiusSq = p1.y > 0.0 ? p1.y : radius * radius;
           float3 oc = r.origin - center;
           float a = dot(r.direction, r.direction);
           float b = dot(oc, r.direction);
-          float c = dot(oc, oc) - radiusSq;
+          float c = dot(oc, oc) - radius * radius;
           float discriminant = b * b - a * c;
 
           if (discriminant > 0.0) {
@@ -132,9 +123,11 @@ inline intersection firstHitBVH(thread const ray &r,
           }
         } else if (primitiveType == 1) {
           float3 v0 = p0.xyz;
-          float3 edge1 = p1.xyz;
-          float3 edge2 = p2.xyz;
-          float3 storedNormal = p3.xyz;
+          float3 v1 = p1.xyz;
+          float3 v2 = p2.xyz;
+
+          float3 edge1 = v1 - v0;
+          float3 edge2 = v2 - v0;
           float3 h = cross(r.direction, edge2);
           float a = dot(edge1, h);
           if (abs(a) > 1e-5) {
@@ -149,11 +142,7 @@ inline intersection firstHitBVH(thread const ray &r,
                 if (tt > 0.0001 && tt < in.t) {
                   tHit = tt;
                   hit = r.origin + tHit * r.direction;
-                  float normalLenSq = dot(storedNormal, storedNormal);
-                  if (normalLenSq > 1e-12)
-                    n = storedNormal;
-                  else
-                    n = normalize(cross(edge1, edge2));
+                  n = normalize(cross(edge1, edge2));
                   hitThis = true;
                   in.isTriangle = 1;
                 }
@@ -164,20 +153,15 @@ inline intersection firstHitBVH(thread const ray &r,
           float3 center = p0.xyz;
           float3 e1 = p1.xyz;
           float3 e2 = p2.xyz;
-          float invDotU = p1.w;
-          float invDotV = p2.w;
-          float3 normal = p3.xyz;
-          float normalLenSq = dot(normal, normal);
-          if (normalLenSq < 1e-12)
-            normal = normalize(cross(e1, e2));
+          float3 normal = normalize(cross(e1, e2));
           float denom = dot(normal, r.direction);
           if (fabs(denom) > 1e-5) {
             float tt = dot(center - r.origin, normal) / denom;
             if (tt > 0.0001 && tt < in.t) {
               float3 hitPoint = r.origin + tt * r.direction;
               float3 rel = hitPoint - center;
-              float u = invDotU > 0.0 ? dot(rel, e1) * invDotU : 0.0;
-              float v = invDotV > 0.0 ? dot(rel, e2) * invDotV : 0.0;
+              float u = dot(rel, e1) / dot(e1, e1);
+              float v = dot(rel, e2) / dot(e2, e2);
               if (fabs(u) <= 1.0 && fabs(v) <= 1.0) {
                 tHit = tt;
                 hit = hitPoint;
@@ -188,14 +172,13 @@ inline intersection firstHitBVH(thread const ray &r,
           }
         }
 
-        if (hitThis && tHit < in.t && tHit < tMax) {
+        if (hitThis && tHit < in.t) {
           in.t = tHit;
           in.primitiveId = primIdx;
           in.normal = n;
           in.point = hit;
           in.isTriangle = primitiveType;
           in.nodeIndex = nodeIdx;
-          foundHit = true;
         }
       }
     } else {
@@ -203,10 +186,6 @@ inline intersection firstHitBVH(thread const ray &r,
       stack[stackPtr++] = leftFirst;
       stack[stackPtr++] = rightChild;
     }
-  }
-
-  if (!foundHit) {
-    in.t = INFINITY;
   }
 
   if (in.primitiveId != -1) {
@@ -218,176 +197,24 @@ inline intersection firstHitBVH(thread const ray &r,
   return in;
 }
 
-inline bool isOccluded(thread const ray &shadowRay, float maxDistance,
-                       device const float4 *tlasNodes,
-                       device const int *tlasInstanceIndices,
-                       uint tlasNodeCount,
-                       device InstanceArgumentBuffer &instanceArgs,
-                       constant InstanceMetadata *instanceMetadata,
-                       uint targetInstance,
-                       int targetPrimitive) {
-  if (tlasNodeCount == 0)
-    return false;
-
-  constexpr int stackSize = 128;
-  int stack[stackSize];
-  int stackPtr = 0;
-  stack[stackPtr++] = 0;
-
-  while (stackPtr > 0) {
-    int nodeIdx = stack[--stackPtr];
-    float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
-    float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
-    int leftFirst = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
-    int second = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
-
-    if (!intersectAABB(shadowRay, bmin, bmax, 0.0001, maxDistance))
-      continue;
-
-    if (second > 0) {
-      for (int i = 0; i < second; ++i) {
-        int instanceId = tlasInstanceIndices[leftFirst + i];
-        if (instanceId < 0 || instanceId >= MAX_INSTANCE_COUNT)
-          continue;
-        const constant InstanceMetadata &meta = instanceMetadata[instanceId];
-        if (meta.primitiveCount == 0)
-          continue;
-        const device InstanceResources &resources =
-            instanceArgs.instances[instanceId];
-
-        intersection hit = firstHitBVH(shadowRay, resources.blasNodes,
-                                       resources.primitives,
-                                       resources.primitiveIndices,
-                                       meta.primitiveCount,
-                                       int(meta.rootNodeIndex), instanceId,
-                                       maxDistance);
-        if (hit.primitiveId != -1) {
-          if (instanceId == int(targetInstance) &&
-              targetPrimitive >= 0 &&
-              hit.primitiveId == targetPrimitive) {
-            // Ignore the sampled light itself when it is exactly at the
-            // maximum distance.
-            if (hit.t >= maxDistance * 0.999f)
-              continue;
-          }
-          return true;
-        }
-      }
-    } else {
-      int rightChild = -second;
-      stack[stackPtr++] = leftFirst;
-      stack[stackPtr++] = rightChild;
-    }
-  }
-
-  return false;
-}
-
-inline bool sampleLightPrimitive(int primitiveType,
-                                 device const float4 *primitives,
-                                 int baseIndex,
-                                 thread uint32_t &seed,
-                                 thread float3 &position,
-                                 thread float3 &normal) {
-  float4 p0 = primitives[baseIndex + 0];
-  float4 p1 = primitives[baseIndex + 1];
-  float4 p2 = primitives[baseIndex + 2];
-  float4 p3 = primitives[baseIndex + 3];
-
-  if (primitiveType == 0) {
-    float3 center = p0.xyz;
-    float radius = p1.x;
-    float u1 = randomFloat(seed);
-    seed = random(seed);
-    float u2 = randomFloat(seed);
-    seed = random(seed);
-    float z = 1.0 - 2.0 * u1;
-    float r = sqrt(fmax(0.0, 1.0 - z * z));
-    float phi = 2.0 * M_PI * u2;
-    float x = r * cos(phi);
-    float y = r * sin(phi);
-    normal = normalize(float3(x, y, z));
-    position = center + radius * normal;
-    return true;
-  } else if (primitiveType == 1) {
-    float3 v0 = p0.xyz;
-    float3 edge1 = p1.xyz;
-    float3 edge2 = p2.xyz;
-    float u1 = randomFloat(seed);
-    seed = random(seed);
-    float u2 = randomFloat(seed);
-    seed = random(seed);
-    float su1 = sqrt(u1);
-    float b1 = su1 * (1.0 - u2);
-    float b2 = su1 * u2;
-    position = v0 + b1 * edge1 + b2 * edge2;
-    normal = p3.xyz;
-    float lenSq = dot(normal, normal);
-    if (lenSq < 1e-12)
-      normal = normalize(cross(edge1, edge2));
-    else
-      normal = normalize(normal);
-    return true;
-  } else if (primitiveType == 2) {
-    float3 center = p0.xyz;
-    float3 u = p1.xyz;
-    float3 v = p2.xyz;
-    float u1 = randomFloat(seed);
-    seed = random(seed);
-    float u2 = randomFloat(seed);
-    seed = random(seed);
-    float sx = 2.0 * u1 - 1.0;
-    float sy = 2.0 * u2 - 1.0;
-    position = center + sx * u + sy * v;
-    normal = p3.xyz;
-    float lenSq = dot(normal, normal);
-    if (lenSq < 1e-12)
-      normal = normalize(cross(u, v));
-    else
-      normal = normalize(normal);
-    return true;
-  }
-
-  return false;
-}
-
 inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        device const float4 *tlasNodes,
-                       device const int *tlasInstanceIndices,
-                       uint tlasNodeCount,
-                       device InstanceArgumentBuffer &instanceArgs,
-                       constant InstanceMetadata *instanceMetadata,
-                       device const Light *lights,
-                       uint lightCount,
+                       uint tlasNodeCount, device const float4 *bvhNodes,
+                       device const float4 *primitives,
+                       device const float4 *materials, uint primitiveCount,
+                       device const int *primitiveIndices,
+                       device const uchar *activeMask,
                        thread uint32_t &seed, uint maxRayDepth,
                        uint debugAS, uint blasNodeCount) {
   float footprint = length(cross(rayDx, rayDy));
   float lodAtten = 1.0 / (1.0 + footprint);
   if (debugAS == 1) {
-    if (tlasNodeCount == 0)
-      return float4(0.0, 0.0, 0.0, 1.0);
-    constexpr int stackSize = 128;
-    int stack[stackSize];
-    int stackPtr = 0;
-    if (stackPtr < stackSize)
-      stack[stackPtr++] = 0;
-    while (stackPtr > 0) {
-      int nodeIdx = stack[--stackPtr];
-      float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
-      float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
-      int leftFirst = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
-      int second = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
-      if (!intersectAABB(r, bmin, bmax, 0.0001, INFINITY))
-        continue;
-      if (second > 0) {
-        float t = (tlasNodeCount > 1) ? float(nodeIdx) / float(tlasNodeCount - 1)
-                                      : 0.0;
+    for (uint i = 0; i < tlasNodeCount; ++i) {
+      float3 bmin = tlasNodes[2 * i + 0].xyz;
+      float3 bmax = tlasNodes[2 * i + 1].xyz;
+      if (intersectAABB(r, bmin, bmax, 0.0001, INFINITY)) {
+        float t = (tlasNodeCount > 1) ? float(i) / float(tlasNodeCount - 1) : 0.0;
         return float4(t, 1.0 - t, 0.0, 1.0);
-      }
-      int rightChild = -second;
-      if (stackPtr + 2 <= stackSize) {
-        stack[stackPtr++] = leftFirst;
-        stack[stackPtr++] = rightChild;
       }
     }
     return float4(0.0, 0.0, 0.0, 1.0);
@@ -395,48 +222,17 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     intersection bestHit;
     bestHit.t = INFINITY;
     bestHit.primitiveId = -1;
-    bestHit.nodeIndex = -1;
-    bestHit.instanceId = -1;
-    if (tlasNodeCount == 0)
-      return float4(0.0, 0.0, 0.0, 1.0);
-    constexpr int stackSize = 128;
-    int stack[stackSize];
-    int stackPtr = 0;
-    if (stackPtr < stackSize)
-      stack[stackPtr++] = 0;
-    while (stackPtr > 0) {
-      int nodeIdx = stack[--stackPtr];
-      float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
-      float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
-      int leftFirst = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
-      int second = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
+    for (uint i = 0; i < tlasNodeCount; ++i) {
+      float3 bmin = tlasNodes[2 * i + 0].xyz;
+      float3 bmax = tlasNodes[2 * i + 1].xyz;
+      int startNode = as_type<int>(tlasNodes[2 * i + 0].w);
       if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
         continue;
-      if (second > 0) {
-        for (int i = 0; i < second; ++i) {
-          int instanceId = tlasInstanceIndices[leftFirst + i];
-          if (instanceId < 0 || instanceId >= MAX_INSTANCE_COUNT)
-            continue;
-          const constant InstanceMetadata &meta = instanceMetadata[instanceId];
-          if (meta.primitiveCount == 0)
-            continue;
-          const device InstanceResources &resources =
-              instanceArgs.instances[instanceId];
-          intersection hit = firstHitBVH(r, resources.blasNodes,
-                                         resources.primitives,
-                                         resources.primitiveIndices,
-                                         meta.primitiveCount,
-                                         int(meta.rootNodeIndex), instanceId);
-          if (hit.primitiveId != -1 && hit.t < bestHit.t)
-            bestHit = hit;
-        }
-      } else {
-        int rightChild = -second;
-        if (stackPtr + 2 <= stackSize) {
-          stack[stackPtr++] = leftFirst;
-          stack[stackPtr++] = rightChild;
-        }
-      }
+      intersection hit =
+          firstHitBVH(r, bvhNodes, primitives, primitiveIndices, activeMask,
+                     startNode);
+      if (hit.primitiveId != -1 && hit.t < bestHit.t)
+        bestHit = hit;
     }
     if (bestHit.primitiveId != -1) {
       float t = (blasNodeCount > 1)
@@ -447,201 +243,68 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     return float4(0.0, 0.0, 0.0, 1.0);
   }
 
-  float3 throughput = float3(1.0);
-  float3 radiance = float3(0.0);
+  float4 absorption = float4(1.0);
+  float4 light = float4(0.0);
 
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
     intersection bestHit;
     bestHit.t = INFINITY;
     bestHit.primitiveId = -1;
-    bestHit.nodeIndex = -1;
-    bestHit.instanceId = -1;
 
-    if (tlasNodeCount > 0) {
-      constexpr int stackSize = 128;
-      int stack[stackSize];
-      int stackPtr = 0;
-      if (stackPtr < stackSize)
-        stack[stackPtr++] = 0;
+    for (uint i = 0; i < tlasNodeCount; ++i) {
+      float3 bmin = tlasNodes[2 * i + 0].xyz;
+      float3 bmax = tlasNodes[2 * i + 1].xyz;
+      int startNode = as_type<int>(tlasNodes[2 * i + 0].w);
 
-      while (stackPtr > 0) {
-        int nodeIdx = stack[--stackPtr];
-        float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
-        float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
-        int leftFirst = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
-        int second = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
-        if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
-          continue;
-        if (second > 0) {
-          for (int i = 0; i < second; ++i) {
-            int instanceId = tlasInstanceIndices[leftFirst + i];
-            if (instanceId < 0 || instanceId >= MAX_INSTANCE_COUNT)
-              continue;
-            const constant InstanceMetadata &meta =
-                instanceMetadata[instanceId];
-            if (meta.primitiveCount == 0)
-              continue;
-            const device InstanceResources &resources =
-                instanceArgs.instances[instanceId];
+      if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
+        continue;
 
-            intersection hit = firstHitBVH(r, resources.blasNodes,
-                                           resources.primitives,
-                                           resources.primitiveIndices,
-                                           meta.primitiveCount,
-                                           int(meta.rootNodeIndex),
-                                           instanceId);
-            if (hit.primitiveId != -1 && hit.t < bestHit.t)
-              bestHit = hit;
-          }
-        } else {
-          int rightChild = -second;
-          if (stackPtr + 2 <= stackSize) {
-            stack[stackPtr++] = leftFirst;
-            stack[stackPtr++] = rightChild;
-          }
-        }
-      }
+      intersection hit =
+          firstHitBVH(r, bvhNodes, primitives, primitiveIndices, activeMask,
+                     startNode);
+      if (hit.primitiveId != -1 && hit.t < bestHit.t)
+        bestHit = hit;
     }
 
     if (bestHit.primitiveId == -1) {
       float3 unitDir = normalize(r.direction);
       float t = 0.5 * (unitDir.y + 1.0);
       float3 skyColor = mix(float3(1.0), float3(0.6, 0.7, 1.0), t);
-      radiance += throughput * skyColor;
+      light += absorption * float4(skyColor, 1.0);
       break;
     }
     int matIndex = bestHit.primitiveId * 2;
-    const constant InstanceMetadata &hitMeta =
-        instanceMetadata[bestHit.instanceId];
-    if (matIndex + 1 >= int(hitMeta.primitiveCount) * 2)
+    if (matIndex + 1 >= int(primitiveCount) * 2)
       break;
-    const device InstanceResources &hitResources =
-        instanceArgs.instances[bestHit.instanceId];
-    float4 m0 = hitResources.materials[matIndex + 0];
-    float4 m1 = hitResources.materials[matIndex + 1];
+    float4 m0 = materials[matIndex + 0];
+    float4 m1 = materials[matIndex + 1];
 
     float3 albedo = m0.xyz * lodAtten;
     float materialType = m0.w;
     float3 emissionColor = m1.xyz;
     float emissionPower = m1.w;
 
-    bool isEmitter = (emissionPower > 0.0 || materialType == 2);
-    if (isEmitter) {
-      radiance += throughput * (emissionColor * emissionPower);
-    }
-
-    if (lightCount > 0 && lights != nullptr && materialType == 0.0 &&
-        !isEmitter) {
-      float selectXi = randomFloat(seed);
-      seed = random(seed);
-
-      uint chosen = 0;
-      if (lightCount > 1) {
-        uint left = 0;
-        uint right = lightCount;
-        while (left < right) {
-          uint mid = (left + right) / 2;
-          float cdf = lights[mid].cdf.x;
-          if (selectXi < cdf)
-            right = mid;
-          else
-            left = mid + 1;
-        }
-        chosen = min(left, lightCount - 1);
-      }
-
-      const device Light &lightEntry = lights[chosen];
-      float lightPdf = lightEntry.meta.w;
-      float area = lightEntry.meta.z;
-      if (lightPdf > 0.0 && area > 0.0) {
-        uint lightInstance = as_type<uint>(lightEntry.meta.x);
-        uint lightPrimitive = as_type<uint>(lightEntry.meta.y);
-        if (lightInstance < MAX_INSTANCE_COUNT) {
-          const constant InstanceMetadata &lightMeta =
-              instanceMetadata[lightInstance];
-          if (lightPrimitive < lightMeta.primitiveCount) {
-            const device InstanceResources &lightResources =
-                instanceArgs.instances[lightInstance];
-            if (lightResources.primitives != nullptr &&
-                lightResources.materials != nullptr) {
-              int baseIndex = int(lightPrimitive) * PRIMITIVE_STRIDE;
-              int maxIndex = int(lightMeta.primitiveCount) * PRIMITIVE_STRIDE;
-              if (baseIndex + 3 < maxIndex) {
-                float3 lightPos;
-                float3 lightNormal;
-                bool sampled = sampleLightPrimitive(
-                    int(lightResources.primitives[baseIndex].w),
-                    lightResources.primitives, baseIndex, seed, lightPos,
-                    lightNormal);
-                if (sampled) {
-                  float3 toLight = lightPos - bestHit.point;
-                  float distSq = dot(toLight, toLight);
-                  float dist = sqrt(distSq);
-                  if (dist > 1e-4) {
-                    float3 wi = toLight / dist;
-                    float cosSurface = fmax(0.0, dot(bestHit.normal, wi));
-                    float cosLight = fmax(0.0, dot(lightNormal, -wi));
-                    if (cosSurface > 0.0 && cosLight > 0.0) {
-                      float shadowMax = dist - 0.001;
-                      bool blocked = false;
-                      if (shadowMax > 0.0) {
-                        ray shadowRay{bestHit.point + bestHit.normal * 0.0005f,
-                                      wi};
-                        shadowRay.min_distance = 0.0001f;
-                        shadowRay.max_distance = shadowMax;
-                        blocked = isOccluded(
-                            shadowRay, shadowMax, tlasNodes, tlasInstanceIndices,
-                            tlasNodeCount, instanceArgs, instanceMetadata,
-                            lightInstance, int(lightPrimitive));
-                      }
-                      if (!blocked) {
-                        float3 emission = lightEntry.emission.xyz *
-                                          lightEntry.emission.w;
-                        float pdfArea = lightPdf / area;
-                        if (pdfArea > 0.0) {
-                          float3 bsdfVal = evaluateBSDF(-r.direction, wi,
-                                                        bestHit.normal,
-                                                        materialType, albedo);
-                          float geometry = cosLight / max(distSq, 1e-6f);
-                          float3 direct = emission * bsdfVal * cosSurface *
-                                          geometry / pdfArea;
-                          radiance += throughput * direct;
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+    if (emissionPower > 0.0 || materialType == 2) {
+      light += absorption * float4(emissionColor, 1.0) * emissionPower;
     }
 
     float3 offsetNormal = bestHit.frontFace ? bestHit.normal : -bestHit.normal;
     r.origin = bestHit.point + 0.0001 * offsetNormal;
-    BSDFSample sample = sampleBSDF(r.direction, bestHit.normal,
-                                   bestHit.frontFace, materialType, albedo,
-                                   seed);
-    if (sample.pdf <= 0.0 || all(sample.weight <= float3(0.0)))
-      break;
-
-    throughput *= sample.weight;
-    r.direction = sample.direction;
-    r.min_distance = 0.0001;
-    r.max_distance = INFINITY;
+    scatter(r, bestHit, materialType, seed);
+    seed = random(seed);
+    absorption *= float4(albedo, 1.0);
 
     if (depth >= 5) {
-      float p = max(throughput.x, max(throughput.y, throughput.z));
+      float p = max(absorption.x, max(absorption.y, absorption.z));
       float randVal = randomFloat(seed);
       seed = random(seed);
       if (randVal >= p)
         break;
-      throughput /= p;
+      absorption /= p;
     }
   }
 
-  return float4(clamp(radiance, 0.0, 1.0), 1.0);
+  return clamp(light, 0.0, 1.0);
 }
 
 #endif

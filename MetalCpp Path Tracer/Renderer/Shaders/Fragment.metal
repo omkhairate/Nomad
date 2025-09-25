@@ -7,12 +7,15 @@ using metal::raytracing::ray;
 
 float4 fragment fragmentMain(
     v2f in [[stage_in]],
-    device const UniformsData* uniforms [[buffer(0)]],
-    device const float4* tlasNodes [[buffer(1)]],
-    constant InstanceMetadata* instanceMetadata [[buffer(2)]],
-    device InstanceArgumentBuffer& instanceArgs [[buffer(3)]],
-    device const int* tlasInstanceIndices [[buffer(4)]],
-    device const Light* lights [[buffer(5)]],
+    device const float4* bvhNodes [[buffer(0)]],          // <--- ADD THIS LINE
+    device const float4* primitives [[buffer(1)]],
+    device const float4* materials [[buffer(2)]],
+    device const UniformsData* uniforms [[buffer(3)]],
+    device const float3* vertexBuffer [[buffer(4)]],
+    device const uint3* indexBuffer [[buffer(5)]],
+    device const int* primitiveIndices [[buffer(6)]],
+    device const float4* tlasNodes [[buffer(7)]],
+    device const uchar* activeMask [[buffer(8)]],
     texture2d<float, access::read_write> lastFrame [[texture(0)]],
     texture2d<float, access::read_write> currentFrame [[texture(1)]])
 
@@ -25,12 +28,7 @@ float4 fragment fragmentMain(
         lastFrame.write(0, coord);
     }
 
-    uint seed = uint(random(in.uv, u.randomSeed.xyz) * 4294967295.0);
-
-    ulong frameIndex = u.frameCount;
-    uint frameHash = uint((frameIndex & 0xfffffffful) ^ (frameIndex >> 32));
-    seed ^= frameHash * 747796405u + 2891336453u;
-    seed = random(seed);
+    uint32_t seed = random(in.uv, u.randomSeed.xyz) * ((uint32_t)-1);
 
     float xOff = (randomFloat(seed) - 0.5) / u.screenSize.x;
     seed = random(seed);
@@ -55,12 +53,13 @@ float4 fragment fragmentMain(
         rayDx,
         rayDy,
         tlasNodes,
-        tlasInstanceIndices,
         u.tlasNodeCount,
-        instanceArgs,
-        instanceMetadata,
-        lights,
-        u.lightCount,
+        bvhNodes,
+        primitives,       // <- Each primitive is 3 float4s
+        materials,
+        u.primitiveCount,
+        primitiveIndices,
+        activeMask,
         seed,
         u.maxRayDepth,
         u.debugAS,
