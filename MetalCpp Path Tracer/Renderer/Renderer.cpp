@@ -596,6 +596,7 @@ void Renderer::draw(MTK::View *pView) {
 
 void Renderer::updateLODByDistance() {
   const float FULL_DETAIL_DISTANCE = 250.0f;
+  const float EVICT_DISTANCE = FULL_DETAIL_DISTANCE * 1.5f;
 
   if (_instances.empty()) {
     _minInstanceFootprint = 0;
@@ -617,12 +618,12 @@ void Renderer::updateLODByDistance() {
     dist = std::max(dist, 0.0f);
     bool within = dist < FULL_DETAIL_DISTANCE;
     if (!within && _instances[i].state == ResidencyState::Resident) {
-      // Keep instances that are already resident even if they fall outside of
-      // the full-detail distance. Without this, meshes that were streamed in
-      // during preload immediately become candidates for eviction on the next
-      // frame and disappear even when there is enough budget to keep them
-      // resident.
-      within = true;
+      // Allow previously resident instances to linger while the camera remains
+      // nearby, but release them once they move far enough away. This
+      // hysteresis avoids thrashing at the distance threshold yet enables large
+      // memory drops after the viewer travels to a different region.
+      if (dist <= EVICT_DISTANCE)
+        within = true;
     }
     candidates.push_back({i, dist, within});
   }
