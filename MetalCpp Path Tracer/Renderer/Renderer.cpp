@@ -77,18 +77,6 @@ constexpr float SCREEN_FOOTPRINT_MIN_PIXEL_COVERAGE = 32.0f;
 constexpr size_t SCREEN_FOOTPRINT_MIN_ACTIVE_PRIMITIVES = 16;
 constexpr size_t SCREEN_FOOTPRINT_MAX_TOGGLES_PER_FRAME = 10;
 
-constexpr uint64_t UploadSphere = 1ull << 0;
-constexpr uint64_t UploadSphereMaterial = 1ull << 1;
-constexpr uint64_t UploadTriangleVertex = 1ull << 2;
-constexpr uint64_t UploadTriangleIndex = 1ull << 3;
-constexpr uint64_t UploadLightIndex = 1ull << 4;
-constexpr uint64_t UploadLightCdf = 1ull << 5;
-constexpr uint64_t UploadActive = 1ull << 6;
-constexpr uint64_t UploadBVH = 1ull << 7;
-constexpr uint64_t UploadTLAS = 1ull << 8;
-constexpr uint64_t UploadPrimitiveIndex = 1ull << 9;
-constexpr uint64_t UploadPrimitiveRemap = 1ull << 10;
-
 float luminance(const simd::float3 &c) {
   return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 }
@@ -178,28 +166,6 @@ Renderer::~Renderer() {
     _pLightIndexBuffer->release();
   if (_pLightCdfBuffer)
     _pLightCdfBuffer->release();
-  if (_pSphereStagingBuffer)
-    _pSphereStagingBuffer->release();
-  if (_pSphereMaterialStagingBuffer)
-    _pSphereMaterialStagingBuffer->release();
-  if (_pTriangleVertexStagingBuffer)
-    _pTriangleVertexStagingBuffer->release();
-  if (_pTriangleIndexStagingBuffer)
-    _pTriangleIndexStagingBuffer->release();
-  if (_pBVHStagingBuffer)
-    _pBVHStagingBuffer->release();
-  if (_pPrimitiveIndexStagingBuffer)
-    _pPrimitiveIndexStagingBuffer->release();
-  if (_pTLASStagingBuffer)
-    _pTLASStagingBuffer->release();
-  if (_pActiveStagingBuffer)
-    _pActiveStagingBuffer->release();
-  if (_pPrimitiveRemapStagingBuffer)
-    _pPrimitiveRemapStagingBuffer->release();
-  if (_pLightIndexStagingBuffer)
-    _pLightIndexStagingBuffer->release();
-  if (_pLightCdfStagingBuffer)
-    _pLightCdfStagingBuffer->release();
 
   for (int i = 0; i < 2; i++)
     if (_accumulationTargets[i])
@@ -406,22 +372,14 @@ void Renderer::buildBuffers(const Scene &scene) {
     _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
   }
 
-  auto recreateBufferPair = [&](MTL::Buffer *&gpu, MTL::Buffer *&staging,
-                               size_t size, uint64_t uploadBit) {
-    if (gpu) {
-      gpu->release();
-      gpu = nullptr;
-    }
-    if (staging) {
-      staging->release();
-      staging = nullptr;
-    }
-    size_t allocSize = size > 0 ? size : size_t(1);
-    gpu = _pDevice->newBuffer(allocSize, MTL::ResourceStorageModePrivate);
-    staging =
-        _pDevice->newBuffer(allocSize, MTL::ResourceStorageModeShared);
-    _pendingUploads |= uploadBit;
-  };
+  if (_pSphereBuffer) {
+    _pSphereBuffer->release();
+    _pSphereBuffer = nullptr;
+  }
+  if (_pSphereMaterialBuffer) {
+    _pSphereMaterialBuffer->release();
+    _pSphereMaterialBuffer = nullptr;
+  }
 
   simd::float4 *primitiveBuffer = nullptr;
   simd::float4 *materialBuffer = nullptr;
@@ -437,33 +395,29 @@ void Renderer::buildBuffers(const Scene &scene) {
       primitiveSize > 0 ? primitiveSize : sizeof(simd::float4);
   size_t materialAlloc = materialSize > 0 ? materialSize : sizeof(simd::float4);
 
-  recreateBufferPair(_pSphereBuffer, _pSphereStagingBuffer, primitiveAlloc,
-                     UploadSphere);
-  recreateBufferPair(_pSphereMaterialBuffer, _pSphereMaterialStagingBuffer,
-                     materialAlloc, UploadSphereMaterial);
+  _pSphereBuffer =
+      _pDevice->newBuffer(primitiveAlloc, MTL::ResourceStorageModeManaged);
+  _pSphereMaterialBuffer =
+      _pDevice->newBuffer(materialAlloc, MTL::ResourceStorageModeManaged);
 
-  if (_pSphereStagingBuffer) {
-    void *dst = _pSphereStagingBuffer->contents();
-    size_t copySize = primitiveCount > 0 ? primitiveSize : sizeof(simd::float4);
-    if (primitiveCount > 0 && primitiveBuffer)
-      std::memcpy(dst, primitiveBuffer, primitiveSize);
-    else
-      std::memset(dst, 0, copySize);
-    _pSphereStagingBuffer->didModifyRange(NS::Range::Make(0, copySize));
-  }
-  if (_pSphereMaterialStagingBuffer) {
-    void *dst = _pSphereMaterialStagingBuffer->contents();
-    size_t copySize = materialSize > 0 ? materialSize : sizeof(simd::float4);
-    if (primitiveCount > 0 && materialBuffer)
-      std::memcpy(dst, materialBuffer, materialSize);
-    else
-      std::memset(dst, 0, copySize);
-    _pSphereMaterialStagingBuffer->didModifyRange(
-        NS::Range::Make(0, copySize));
+  if (primitiveCount > 0) {
+    memcpy(_pSphereBuffer->contents(), primitiveBuffer, primitiveSize);
+    memcpy(_pSphereMaterialBuffer->contents(), materialBuffer, materialSize);
+    _pSphereBuffer->didModifyRange(NS::Range::Make(0, primitiveSize));
+    _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialSize));
   }
 
   delete[] primitiveBuffer;
   delete[] materialBuffer;
+
+  if (_pLightIndexBuffer) {
+    _pLightIndexBuffer->release();
+    _pLightIndexBuffer = nullptr;
+  }
+  if (_pLightCdfBuffer) {
+    _pLightCdfBuffer->release();
+    _pLightCdfBuffer = nullptr;
+  }
 
   std::vector<uint32_t> lightIndices;
   std::vector<float> lightCdf;
@@ -499,81 +453,85 @@ void Renderer::buildBuffers(const Scene &scene) {
   _lightTotalWeight = totalWeight;
 
   size_t lightCount = _lightCount > 0 ? _lightCount : 1;
-  recreateBufferPair(_pLightIndexBuffer, _pLightIndexStagingBuffer,
-                     lightCount * sizeof(uint32_t), UploadLightIndex);
-  recreateBufferPair(_pLightCdfBuffer, _pLightCdfStagingBuffer,
-                     lightCount * sizeof(float), UploadLightCdf);
+  _pLightIndexBuffer =
+      _pDevice->newBuffer(lightCount * sizeof(uint32_t),
+                          MTL::ResourceStorageModeManaged);
+  _pLightCdfBuffer =
+      _pDevice->newBuffer(lightCount * sizeof(float),
+                          MTL::ResourceStorageModeManaged);
 
-  if (_pLightIndexStagingBuffer && _pLightCdfStagingBuffer) {
-    size_t indexBytes = lightCount * sizeof(uint32_t);
-    size_t cdfBytes = lightCount * sizeof(float);
-    if (_lightCount > 0) {
-      std::memcpy(_pLightIndexStagingBuffer->contents(), lightIndices.data(),
-                  indexBytes);
-      std::memcpy(_pLightCdfStagingBuffer->contents(), lightCdf.data(),
-                  cdfBytes);
-    } else {
-      uint32_t dummyIndex = 0;
-      float dummyCdf = 0.0f;
-      std::memcpy(_pLightIndexStagingBuffer->contents(), &dummyIndex,
-                  sizeof(uint32_t));
-      std::memcpy(_pLightCdfStagingBuffer->contents(), &dummyCdf,
-                  sizeof(float));
-    }
-    _pLightIndexStagingBuffer->didModifyRange(
-        NS::Range::Make(0, indexBytes));
-    _pLightCdfStagingBuffer->didModifyRange(NS::Range::Make(0, cdfBytes));
+  if (_lightCount > 0) {
+    memcpy(_pLightIndexBuffer->contents(), lightIndices.data(),
+           _lightCount * sizeof(uint32_t));
+    _pLightIndexBuffer->didModifyRange(
+        NS::Range::Make(0, _lightCount * sizeof(uint32_t)));
+
+    memcpy(_pLightCdfBuffer->contents(), lightCdf.data(),
+           _lightCount * sizeof(float));
+    _pLightCdfBuffer->didModifyRange(
+        NS::Range::Make(0, _lightCount * sizeof(float)));
+  } else {
+    uint32_t dummyIndex = 0;
+    float dummyCdf = 0.0f;
+    memcpy(_pLightIndexBuffer->contents(), &dummyIndex, sizeof(uint32_t));
+    memcpy(_pLightCdfBuffer->contents(), &dummyCdf, sizeof(float));
+    _pLightIndexBuffer->didModifyRange(NS::Range::Make(0, sizeof(uint32_t)));
+    _pLightCdfBuffer->didModifyRange(NS::Range::Make(0, sizeof(float)));
   }
 
+  if (_pActiveBuffer) {
+    _pActiveBuffer->release();
+    _pActiveBuffer = nullptr;
+  }
   size_t activeAlloc = primitiveCount > 0 ? primitiveCount : 1;
-  recreateBufferPair(_pActiveBuffer, _pActiveStagingBuffer,
-                     activeAlloc * sizeof(uint8_t), UploadActive);
-  if (_pActiveStagingBuffer) {
-    void *dst = _pActiveStagingBuffer->contents();
-    size_t uploadBytes =
-        primitiveCount > 0 ? primitiveCount * sizeof(uint8_t) : sizeof(uint8_t);
-    if (primitiveCount > 0) {
-      std::memset(dst, 1, uploadBytes);
-    } else {
-      std::memset(dst, 0, uploadBytes);
-    }
-    _pActiveStagingBuffer->didModifyRange(NS::Range::Make(0, uploadBytes));
+  _pActiveBuffer =
+      _pDevice->newBuffer(activeAlloc * sizeof(uint8_t),
+                          MTL::ResourceStorageModeManaged);
+  if (primitiveCount > 0) {
+    std::vector<uint8_t> activeBytes(primitiveCount, 1);
+    memcpy(_pActiveBuffer->contents(), activeBytes.data(),
+           primitiveCount * sizeof(uint8_t));
+    _pActiveBuffer->didModifyRange(
+        NS::Range::Make(0, primitiveCount * sizeof(uint8_t)));
+  } else {
+    uint8_t inactive = 0;
+    memcpy(_pActiveBuffer->contents(), &inactive, sizeof(uint8_t));
+    _pActiveBuffer->didModifyRange(NS::Range::Make(0, sizeof(uint8_t)));
   }
 
   std::vector<simd::float3> vertices;
   std::vector<simd::uint3> indices;
   scene.createTriangleBuffers(vertices, indices);
 
-  size_t vertexAlloc =
-      !vertices.empty() ? vertices.size() * sizeof(simd::float3)
-                        : sizeof(simd::float3);
-  size_t indexAlloc =
-      !indices.empty() ? indices.size() * sizeof(simd::uint3)
-                       : sizeof(simd::uint3);
-
-  recreateBufferPair(_pTriangleVertexBuffer, _pTriangleVertexStagingBuffer,
-                     vertexAlloc, UploadTriangleVertex);
-  recreateBufferPair(_pTriangleIndexBuffer, _pTriangleIndexStagingBuffer,
-                     indexAlloc, UploadTriangleIndex);
-
-  if (_pTriangleVertexStagingBuffer) {
-    void *dst = _pTriangleVertexStagingBuffer->contents();
-    if (!vertices.empty()) {
-      std::memcpy(dst, vertices.data(), vertexAlloc);
-    } else {
-      std::memset(dst, 0, vertexAlloc);
-    }
-    _pTriangleVertexStagingBuffer->didModifyRange(
-        NS::Range::Make(0, vertexAlloc));
+  if (_pTriangleVertexBuffer) {
+    _pTriangleVertexBuffer->release();
+    _pTriangleVertexBuffer = nullptr;
   }
-  if (_pTriangleIndexStagingBuffer) {
-    void *dst = _pTriangleIndexStagingBuffer->contents();
-    if (!indices.empty()) {
-      std::memcpy(dst, indices.data(), indexAlloc);
-    } else {
-      std::memset(dst, 0, indexAlloc);
-    }
-    _pTriangleIndexStagingBuffer->didModifyRange(NS::Range::Make(0, indexAlloc));
+  if (_pTriangleIndexBuffer) {
+    _pTriangleIndexBuffer->release();
+    _pTriangleIndexBuffer = nullptr;
+  }
+
+  if (!vertices.empty()) {
+    size_t vertexSize = vertices.size() * sizeof(simd::float3);
+    _pTriangleVertexBuffer = _pDevice->newBuffer(
+        vertices.data(), vertexSize, MTL::ResourceStorageModeManaged);
+    _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(0, vertexSize));
+  } else {
+    simd::float3 dummyVertex = {0, 0, 0};
+    _pTriangleVertexBuffer = _pDevice->newBuffer(
+        &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
+  }
+
+  if (!indices.empty()) {
+    size_t indexSize = indices.size() * sizeof(simd::uint3);
+    _pTriangleIndexBuffer = _pDevice->newBuffer(
+        indices.data(), indexSize, MTL::ResourceStorageModeManaged);
+    _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
+  } else {
+    simd::uint3 dummyIndex = {0, 0, 0};
+    _pTriangleIndexBuffer = _pDevice->newBuffer(
+        &dummyIndex, sizeof(simd::uint3), MTL::ResourceStorageModeManaged);
   }
 }
 
@@ -609,39 +567,26 @@ void Renderer::rebuildResidentResources() {
   rebuildAccelerationStructures(activeScene);
   buildBuffers(activeScene);
 
-  auto recreateBufferPair = [&](MTL::Buffer *&gpu, MTL::Buffer *&staging,
-                               size_t size, uint64_t uploadBit) {
-    if (gpu) {
-      gpu->release();
-      gpu = nullptr;
-    }
-    if (staging) {
-      staging->release();
-      staging = nullptr;
-    }
-    size_t allocSize = size > 0 ? size : size_t(1);
-    gpu = _pDevice->newBuffer(allocSize, MTL::ResourceStorageModePrivate);
-    staging =
-        _pDevice->newBuffer(allocSize, MTL::ResourceStorageModeShared);
-    _pendingUploads |= uploadBit;
-  };
+  if (_pPrimitiveRemapBuffer) {
+    _pPrimitiveRemapBuffer->release();
+    _pPrimitiveRemapBuffer = nullptr;
+  }
 
   size_t remapCount = remap.empty() ? 1 : remap.size();
-  recreateBufferPair(_pPrimitiveRemapBuffer, _pPrimitiveRemapStagingBuffer,
-                     remapCount * sizeof(uint32_t), UploadPrimitiveRemap);
-
-  if (_pPrimitiveRemapStagingBuffer) {
-    uint32_t *remapPtr = static_cast<uint32_t *>(
-        _pPrimitiveRemapStagingBuffer->contents());
-    if (remapPtr) {
-      if (!remap.empty()) {
-        std::memcpy(remapPtr, remap.data(), remap.size() * sizeof(uint32_t));
-      } else {
-        uint32_t zero = 0;
-        std::memcpy(remapPtr, &zero, sizeof(uint32_t));
-      }
-      _pPrimitiveRemapStagingBuffer->didModifyRange(
-          NS::Range::Make(0, remapCount * sizeof(uint32_t)));
+  _pPrimitiveRemapBuffer =
+      _pDevice->newBuffer(remapCount * sizeof(uint32_t),
+                          MTL::ResourceStorageModeManaged);
+  if (uint32_t *remapPtr =
+          static_cast<uint32_t *>(_pPrimitiveRemapBuffer->contents())) {
+    if (!remap.empty()) {
+      std::memcpy(remapPtr, remap.data(), remap.size() * sizeof(uint32_t));
+      _pPrimitiveRemapBuffer->didModifyRange(
+          NS::Range::Make(0, remap.size() * sizeof(uint32_t)));
+    } else {
+      uint32_t zero = 0;
+      std::memcpy(remapPtr, &zero, sizeof(uint32_t));
+      _pPrimitiveRemapBuffer->didModifyRange(
+          NS::Range::Make(0, sizeof(uint32_t)));
     }
   }
 
@@ -747,39 +692,6 @@ void Renderer::draw(MTK::View *pView) {
   pCmd->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
     this->completeFrameMetrics(cmd);
   });
-  if (_pendingUploads) {
-    MTL::BlitCommandEncoder *uploadBlit = pCmd->blitCommandEncoder();
-    auto uploadBuffer = [&](MTL::Buffer *&staging, MTL::Buffer *gpu,
-                            uint64_t bit) {
-      if ((_pendingUploads & bit) && staging && gpu) {
-        uploadBlit->copyFromBuffer(staging, 0, gpu, 0, staging->length());
-        staging->release();
-        staging = nullptr;
-      }
-    };
-
-    uploadBuffer(_pSphereStagingBuffer, _pSphereBuffer, UploadSphere);
-    uploadBuffer(_pSphereMaterialStagingBuffer, _pSphereMaterialBuffer,
-                 UploadSphereMaterial);
-    uploadBuffer(_pTriangleVertexStagingBuffer, _pTriangleVertexBuffer,
-                 UploadTriangleVertex);
-    uploadBuffer(_pTriangleIndexStagingBuffer, _pTriangleIndexBuffer,
-                 UploadTriangleIndex);
-    uploadBuffer(_pLightIndexStagingBuffer, _pLightIndexBuffer,
-                 UploadLightIndex);
-    uploadBuffer(_pLightCdfStagingBuffer, _pLightCdfBuffer, UploadLightCdf);
-    uploadBuffer(_pActiveStagingBuffer, _pActiveBuffer, UploadActive);
-    uploadBuffer(_pBVHStagingBuffer, _pBVHBuffer, UploadBVH);
-    uploadBuffer(_pTLASStagingBuffer, _pTLASBuffer, UploadTLAS);
-    uploadBuffer(_pPrimitiveIndexStagingBuffer, _pPrimitiveIndexBuffer,
-                 UploadPrimitiveIndex);
-    uploadBuffer(_pPrimitiveRemapStagingBuffer, _pPrimitiveRemapBuffer,
-                 UploadPrimitiveRemap);
-
-    uploadBlit->endEncoding();
-    _pendingUploads = 0;
-  }
-
   MTL::RenderPassDescriptor *pRpd = pView->currentRenderPassDescriptor();
   MTL::RenderCommandEncoder *pEnc = pCmd->renderCommandEncoder(pRpd);
 
@@ -1167,84 +1079,59 @@ void Renderer::rebuildAccelerationStructures(const Scene &scene) {
   size_t newBlasCount = scene.getBVHNodeCount();
   _blasNodeCount = newBlasCount;
 
-  auto recreateBufferPair = [&](MTL::Buffer *&gpu, MTL::Buffer *&staging,
-                               size_t size, uint64_t uploadBit) {
-    if (gpu) {
-      gpu->release();
-      gpu = nullptr;
-    }
-    if (staging) {
-      staging->release();
-      staging = nullptr;
-    }
-    size_t allocSize = size > 0 ? size : size_t(1);
-    gpu = _pDevice->newBuffer(allocSize, MTL::ResourceStorageModePrivate);
-    staging =
-        _pDevice->newBuffer(allocSize, MTL::ResourceStorageModeShared);
-    _pendingUploads |= uploadBit;
-  };
+  if (_pBVHBuffer) {
+    _pBVHBuffer->release();
+    _pBVHBuffer = nullptr;
+  }
 
   if (newBlasCount > 0) {
     simd::float4 *bvhData = scene.createBVHBuffer();
-    size_t bvhSize = sizeof(simd::float4) * newBlasCount * 2;
-    recreateBufferPair(_pBVHBuffer, _pBVHStagingBuffer, bvhSize, UploadBVH);
-    if (_pBVHStagingBuffer && bvhData) {
-      std::memcpy(_pBVHStagingBuffer->contents(), bvhData, bvhSize);
-      _pBVHStagingBuffer->didModifyRange(NS::Range::Make(0, bvhSize));
-    }
+    _pBVHBuffer = _pDevice->newBuffer(
+        bvhData, sizeof(simd::float4) * newBlasCount * 2,
+        MTL::ResourceStorageModeManaged);
+    _pBVHBuffer->didModifyRange(NS::Range::Make(0, _pBVHBuffer->length()));
     delete[] bvhData;
   } else {
-    size_t bvhSize = sizeof(simd::float4);
-    recreateBufferPair(_pBVHBuffer, _pBVHStagingBuffer, bvhSize, UploadBVH);
-    if (_pBVHStagingBuffer) {
-      std::memset(_pBVHStagingBuffer->contents(), 0, bvhSize);
-      _pBVHStagingBuffer->didModifyRange(NS::Range::Make(0, bvhSize));
-    }
+    _pBVHBuffer =
+        _pDevice->newBuffer(sizeof(simd::float4), MTL::ResourceStorageModeManaged);
   }
 
   size_t tlasCount = 0;
   simd::float4 *tlasData = scene.createTLASBuffer(tlasCount);
   _tlasNodeCount = tlasCount;
 
+  if (_pTLASBuffer) {
+    _pTLASBuffer->release();
+    _pTLASBuffer = nullptr;
+  }
+
   if (tlasData && tlasCount > 0) {
-    size_t tlasSize = sizeof(simd::float4) * tlasCount * 2;
-    recreateBufferPair(_pTLASBuffer, _pTLASStagingBuffer, tlasSize, UploadTLAS);
-    if (_pTLASStagingBuffer && tlasData) {
-      std::memcpy(_pTLASStagingBuffer->contents(), tlasData, tlasSize);
-      _pTLASStagingBuffer->didModifyRange(NS::Range::Make(0, tlasSize));
-    }
+    _pTLASBuffer = _pDevice->newBuffer(
+        tlasData, sizeof(simd::float4) * tlasCount * 2,
+        MTL::ResourceStorageModeManaged);
+    _pTLASBuffer->didModifyRange(NS::Range::Make(0, _pTLASBuffer->length()));
   } else {
-    size_t tlasSize = sizeof(simd::float4);
-    recreateBufferPair(_pTLASBuffer, _pTLASStagingBuffer, tlasSize, UploadTLAS);
-    if (_pTLASStagingBuffer) {
-      std::memset(_pTLASStagingBuffer->contents(), 0, tlasSize);
-      _pTLASStagingBuffer->didModifyRange(NS::Range::Make(0, tlasSize));
-    }
+    _pTLASBuffer =
+        _pDevice->newBuffer(sizeof(simd::float4), MTL::ResourceStorageModeManaged);
   }
   delete[] tlasData;
+
+  if (_pPrimitiveIndexBuffer) {
+    _pPrimitiveIndexBuffer->release();
+    _pPrimitiveIndexBuffer = nullptr;
+  }
 
   size_t indexCount = scene.getPrimitiveIndices().size();
   if (indexCount > 0) {
     int *rawIndices = scene.createPrimitiveIndexBuffer();
     size_t indexSize = indexCount * sizeof(int);
-    recreateBufferPair(_pPrimitiveIndexBuffer, _pPrimitiveIndexStagingBuffer,
-                       indexSize, UploadPrimitiveIndex);
-    if (_pPrimitiveIndexStagingBuffer && rawIndices) {
-      std::memcpy(_pPrimitiveIndexStagingBuffer->contents(), rawIndices,
-                  indexSize);
-      _pPrimitiveIndexStagingBuffer->didModifyRange(
-          NS::Range::Make(0, indexSize));
-    }
+    _pPrimitiveIndexBuffer = _pDevice->newBuffer(
+        rawIndices, indexSize, MTL::ResourceStorageModeManaged);
+    _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
     delete[] rawIndices;
   } else {
-    size_t indexSize = sizeof(int);
-    recreateBufferPair(_pPrimitiveIndexBuffer, _pPrimitiveIndexStagingBuffer,
-                       indexSize, UploadPrimitiveIndex);
-    if (_pPrimitiveIndexStagingBuffer) {
-      std::memset(_pPrimitiveIndexStagingBuffer->contents(), 0, indexSize);
-      _pPrimitiveIndexStagingBuffer->didModifyRange(
-          NS::Range::Make(0, indexSize));
-    }
+    _pPrimitiveIndexBuffer =
+        _pDevice->newBuffer(sizeof(int), MTL::ResourceStorageModeManaged);
   }
 
   size_t newActiveCount = _tlasNodeCount + scene.getPrimitiveCount();
