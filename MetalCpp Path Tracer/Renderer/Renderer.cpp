@@ -1083,6 +1083,12 @@ bool Renderer::streamInInstance(size_t index) {
     return true;
   }
 
+  size_t gpuFootprint = instanceFootprintBytes(inst);
+  if (gpuFootprint > 0 && !ensureBudget(gpuFootprint)) {
+    inst.state = ResidencyState::NotResident;
+    return false;
+  }
+
   inst.state = ResidencyState::StreamingIn;
 
   std::vector<MTL::Buffer *> stagingBuffers;
@@ -1113,15 +1119,9 @@ bool Renderer::streamInInstance(size_t index) {
     }
     if (size == 0)
       return true;
-    if (!ensureBudget(size))
-      return false;
     MTL::Buffer *staging =
         _pDevice->newBuffer(size, MTL::ResourceStorageModeShared);
     std::memcpy(staging->contents(), src, size);
-    if (!ensureBudget(size)) {
-      staging->release();
-      return false;
-    }
     MTL::Buffer *gpu =
         _pDevice->newBuffer(size, MTL::ResourceStorageModePrivate);
     blit->copyFromBuffer(staging, 0, gpu, 0, size);
@@ -1482,11 +1482,6 @@ bool Renderer::createPrivateBuffer(const void *data, size_t size,
   MTL::Buffer *staging =
       _pDevice->newBuffer(size, MTL::ResourceStorageModeShared);
   std::memcpy(staging->contents(), data, size);
-
-  if (!ensureBudget(size)) {
-    staging->release();
-    return false;
-  }
   MTL::Buffer *gpu =
       _pDevice->newBuffer(size, MTL::ResourceStorageModePrivate);
   MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
