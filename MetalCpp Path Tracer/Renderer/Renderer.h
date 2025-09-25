@@ -126,6 +126,10 @@ private:
     MTL::Buffer *primitives = nullptr;
     MTL::Buffer *materials = nullptr;
     MTL::Buffer *primitiveIndices = nullptr;
+    size_t blasNodesBytes = 0;
+    size_t primitiveBytes = 0;
+    size_t materialBytes = 0;
+    size_t primitiveIndicesBytes = 0;
     uint32_t primitiveCount = 0;
     uint32_t blasNodeCount = 0;
     uint32_t rootNodeIndex = 0;
@@ -159,6 +163,15 @@ private:
   std::vector<size_t> _instancesPendingRelease;
   std::vector<GPULightData> _lightTable;
 
+  size_t _trackedAllocatedBytes = 0;
+  size_t _uniformsBufferSize = 0;
+  size_t _tlasBufferSize = 0;
+  size_t _tlasInstanceIndexBufferSize = 0;
+  size_t _instanceMetaBufferSize = 0;
+  size_t _instanceArgBufferSize = 0;
+  size_t _lightBufferSize = 0;
+  size_t _accumulationTargetSizes[2] = {0, 0};
+
   bool streamInInstance(size_t index);
   void streamOutInstance(size_t index);
   void releaseInstanceResources(size_t index);
@@ -174,11 +187,19 @@ private:
   void processPendingReleases();
   size_t instanceFootprintBytes(const InstanceRecord &inst) const;
   bool createPrivateBuffer(const void *data, size_t size,
-                           MTL::Buffer **outBuffer);
+                           MTL::Buffer **outBuffer,
+                           size_t &sizeTracker);
   bool createPrivateBuffer(const std::vector<simd::float4> &data,
-                           MTL::Buffer **outBuffer);
+                           MTL::Buffer **outBuffer,
+                           size_t &sizeTracker);
   bool createPrivateBuffer(const std::vector<int> &data,
-                           MTL::Buffer **outBuffer);
+                           MTL::Buffer **outBuffer,
+                           size_t &sizeTracker);
+
+  void trackAllocation(size_t bytes);
+  void trackDeallocation(size_t bytes);
+  void releaseBuffer(MTL::Buffer *&buffer, size_t &sizeTracker);
+  void releaseTexture(MTL::Texture *&texture, size_t &sizeTracker);
 
   bool _pendingAccumulationReset = false;
   bool _lightTableDirty = true;
