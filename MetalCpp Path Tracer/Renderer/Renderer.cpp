@@ -104,6 +104,19 @@ Renderer::Renderer(MTL::Device *pDevice)
 }
 
 Renderer::~Renderer() {
+  for (PendingStreamIn &pending : _pendingStreamIns) {
+    for (MTL::Buffer *buffer : pending.stagingBuffers) {
+      if (buffer)
+        buffer->release();
+    }
+    pending.stagingBuffers.clear();
+    if (pending.commandBuffer) {
+      pending.commandBuffer->waitUntilCompleted();
+      pending.commandBuffer->release();
+    }
+  }
+  _pendingStreamIns.clear();
+
   for (size_t i = 0; i < _instances.size(); ++i)
     releaseInstanceResources(i);
 
@@ -611,6 +624,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
 }
 
 void Renderer::draw(MTK::View *pView) {
+  processPendingStreamIns();
   bool cameraChanged = updateCamera();
   updateLODByDistance();
   updateUniforms(cameraChanged);
@@ -1148,6 +1162,8 @@ bool Renderer::streamInInstance(size_t index) {
   InstanceRecord &inst = _instances[index];
   if (inst.state == ResidencyState::Resident)
     return false;
+  if (inst.state == ResidencyState::StreamingIn)
+    return false;
 
   if (inst.state == ResidencyState::StreamingOut) {
     auto it = std::find(_instancesPendingRelease.begin(),
@@ -1252,22 +1268,15 @@ bool Renderer::streamInInstance(size_t index) {
     return false;
   }
 
+  PendingStreamIn pending;
+  pending.instanceIndex = index;
+  pending.commandBuffer = cmd;
+  cmd->retain();
+  pending.stagingBuffers = std::move(stagingBuffers);
+
   cmd->commit();
-  cmd->waitUntilCompleted();
 
-  cleanupStaging();
-
-  inst.gpu.primitiveCount = inst.cpuPrimitiveCount;
-  inst.gpu.blasNodeCount = inst.cpuBlasNodeCount;
-  inst.gpu.rootNodeIndex = 0;
-  inst.state = ResidencyState::Resident;
-  _residentInstanceCount++;
-  _currentBlasNodeCount += inst.gpu.blasNodeCount;
-
-  updateInstanceArgument(index);
-  updateInstanceMetadata(index);
-  _pendingAccumulationReset = true;
-  markLightTableDirty();
+  _pendingStreamIns.push_back(std::move(pending));
   return true;
 }
 
@@ -1744,6 +1753,59 @@ void Renderer::processPendingReleases() {
   for (size_t index : _instancesPendingRelease)
     releaseInstanceResources(index);
   _instancesPendingRelease.clear();
+}
+
+void Renderer::processPendingStreamIns() {
+  if (_pendingStreamIns.empty())
+    return;
+
+  bool residencyChanged = false;
+
+  for (size_t i = 0; i < _pendingStreamIns.size();) {
+    PendingStreamIn &pending = _pendingStreamIns[i];
+    if (!pending.commandBuffer) {
+      _pendingStreamIns.erase(_pendingStreamIns.begin() + i);
+      continue;
+    }
+
+    MTL::CommandBufferStatus status = pending.commandBuffer->status();
+    if (status == MTL::CommandBufferStatus::CommandBufferStatusCompleted ||
+        status == MTL::CommandBufferStatus::CommandBufferStatusError) {
+      for (MTL::Buffer *buffer : pending.stagingBuffers) {
+        if (buffer)
+          buffer->release();
+      }
+      pending.stagingBuffers.clear();
+
+      InstanceRecord &inst = _instances[pending.instanceIndex];
+
+      if (status == MTL::CommandBufferStatus::CommandBufferStatusCompleted) {
+        inst.gpu.primitiveCount = inst.cpuPrimitiveCount;
+        inst.gpu.blasNodeCount = inst.cpuBlasNodeCount;
+        inst.gpu.rootNodeIndex = 0;
+        inst.state = ResidencyState::Resident;
+        _residentInstanceCount++;
+        _currentBlasNodeCount += inst.gpu.blasNodeCount;
+        updateInstanceArgument(pending.instanceIndex);
+        updateInstanceMetadata(pending.instanceIndex);
+        _pendingAccumulationReset = true;
+        markLightTableDirty();
+        residencyChanged = true;
+      } else {
+        releaseInstanceResources(pending.instanceIndex);
+      }
+
+      pending.commandBuffer->release();
+      _pendingStreamIns.erase(_pendingStreamIns.begin() + i);
+    } else {
+      ++i;
+    }
+  }
+
+  if (residencyChanged) {
+    _blasNodeCount = _currentBlasNodeCount;
+    refreshActiveNodeCount();
+  }
 }
 
 bool Renderer::createPrivateBuffer(const void *data, size_t size,
