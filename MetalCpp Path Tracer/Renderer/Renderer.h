@@ -28,7 +28,7 @@ public:
   void recalculateViewport();
   bool updateCamera();
 
-  void updateUniforms();
+  void updateUniforms(bool cameraChanged);
   void draw(MTK::View *pView);
   void drawableSizeWillChange(MTK::View *pView, CGSize size);
 
