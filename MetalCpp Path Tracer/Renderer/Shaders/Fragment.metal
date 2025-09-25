@@ -25,7 +25,12 @@ float4 fragment fragmentMain(
         lastFrame.write(0, coord);
     }
 
-    uint32_t seed = random(in.uv, u.randomSeed.xyz) * ((uint32_t)-1);
+    uint seed = uint(random(in.uv, u.randomSeed.xyz) * 4294967295.0);
+
+    ulong frameIndex = u.frameCount;
+    uint frameHash = uint((frameIndex & 0xfffffffful) ^ (frameIndex >> 32));
+    seed ^= frameHash * 747796405u + 2891336453u;
+    seed = random(seed);
 
     float xOff = (randomFloat(seed) - 0.5) / u.screenSize.x;
     seed = random(seed);
