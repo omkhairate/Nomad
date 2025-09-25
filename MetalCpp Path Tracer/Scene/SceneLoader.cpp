@@ -110,6 +110,14 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         } else if (value == "distance" || value == "lod" || value == "distance_lod" ||
                    value == "distancelod" || value == "distancebased") {
             scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
+        } else if (value == "rayhitbudget" || value == "ray_hit_budget" ||
+                   value == "rayhits" || value == "ray_hit" ||
+                   value == "hitbudget") {
+            scene->setResidencyStrategy(ResidencyStrategy::RayHitBudget);
+        } else if (value == "screenspacefootprint" ||
+                   value == "screen_space_footprint" || value == "footprint" ||
+                   value == "screenspace") {
+            scene->setResidencyStrategy(ResidencyStrategy::ScreenSpaceFootprint);
         } else {
             printf("Unknown residency strategy '%s', defaulting to distance LOD.\n",
                    residencyAttr);

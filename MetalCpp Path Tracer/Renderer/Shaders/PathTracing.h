@@ -1,6 +1,7 @@
 #ifndef PATH_TRACING_H
 #define PATH_TRACING_H
 
+#include <metal_atomic>
 #include <metal_raytracing>
 #include <metal_stdlib>
 
@@ -371,9 +372,11 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        device const uchar *activeMask,
                        device const uint *lightIndices,
                        device const float *lightCdf,
+                       device const uint *primitiveRemap,
+                       device atomic_uint *primitiveHitCounts,
                        thread uint32_t &seed, uint maxRayDepth,
                        uint debugAS, uint blasNodeCount, uint lightCount,
-                       float lightTotalWeight) {
+                       float lightTotalWeight, uint totalPrimitiveCount) {
   float footprint = length(cross(rayDx, rayDy));
   float lodAtten = 1.0 / (1.0 + footprint);
   if (debugAS == 1) {
@@ -413,6 +416,15 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
       float3 skyColor = mix(float3(1.0), float3(0.6, 0.7, 1.0), t);
       light += absorption * float4(skyColor, 1.0);
       break;
+    }
+    if (primitiveCount > 0 && bestHit.primitiveId >= 0) {
+      uint localIndex = static_cast<uint>(bestHit.primitiveId);
+      if (localIndex < primitiveCount) {
+        uint globalId = primitiveRemap[localIndex];
+        if (globalId < totalPrimitiveCount)
+          atomic_fetch_add_explicit(&primitiveHitCounts[globalId], 1u,
+                                    memory_order_relaxed);
+      }
     }
     int matIndex = bestHit.primitiveId * 2;
     if (matIndex + 1 >= int(primitiveCount) * 2)

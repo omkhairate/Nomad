@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <numeric>
 #include <simd/simd.h>
 #include <string>
 
@@ -66,6 +67,15 @@ constexpr float LOD_EXIT_DISTANCE = 275.0f;
 constexpr uint32_t LOD_STATE_COOLDOWN_FRAMES = 5;
 constexpr float ENERGY_TARGET_FRACTION = 0.9f;
 constexpr size_t ENERGY_MIN_ACTIVE_PRIMITIVES = 16;
+constexpr float RAY_HIT_DECAY = 0.85f;
+constexpr float RAY_HIT_TARGET_FRACTION = 0.6f;
+constexpr size_t RAY_HIT_MIN_ACTIVE_PRIMITIVES = 16;
+constexpr size_t RAY_HIT_MAX_TOGGLES_PER_FRAME = 12;
+constexpr uint32_t RAY_HIT_REBUILD_COOLDOWN_FRAMES = 6;
+constexpr float SCREEN_FOOTPRINT_TARGET_FRACTION = 0.65f;
+constexpr float SCREEN_FOOTPRINT_MIN_PIXEL_COVERAGE = 32.0f;
+constexpr size_t SCREEN_FOOTPRINT_MIN_ACTIVE_PRIMITIVES = 16;
+constexpr size_t SCREEN_FOOTPRINT_MAX_TOGGLES_PER_FRAME = 10;
 
 float luminance(const simd::float3 &c) {
   return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
@@ -148,6 +158,10 @@ Renderer::~Renderer() {
     _pTLASBuffer->release();
   if (_pActiveBuffer)
     _pActiveBuffer->release();
+  if (_pPrimitiveRemapBuffer)
+    _pPrimitiveRemapBuffer->release();
+  if (_pPrimitiveHitBuffer)
+    _pPrimitiveHitBuffer->release();
   if (_pLightIndexBuffer)
     _pLightIndexBuffer->release();
   if (_pLightCdfBuffer)
@@ -227,10 +241,22 @@ void Renderer::updateVisibleScene() {
          "%u frames)\n",
          LOD_ENTER_DISTANCE, LOD_EXIT_DISTANCE, LOD_STATE_COOLDOWN_FRAMES);
 
-  const char *strategyName =
-      _pScene->getResidencyStrategy() == ResidencyStrategy::EnergyImportance
-          ? "Energy importance"
-          : "Distance-based LOD";
+  const char *strategyName = nullptr;
+  switch (_pScene->getResidencyStrategy()) {
+  case ResidencyStrategy::EnergyImportance:
+    strategyName = "Energy importance";
+    break;
+  case ResidencyStrategy::RayHitBudget:
+    strategyName = "Ray-hit budget";
+    break;
+  case ResidencyStrategy::ScreenSpaceFootprint:
+    strategyName = "Screen-space footprint";
+    break;
+  case ResidencyStrategy::DistanceLOD:
+  default:
+    strategyName = "Distance-based LOD";
+    break;
+  }
   printf("Active primitive residency strategy: %s\n", strategyName);
 
   // Store full primitive list and initialize tracking
@@ -242,6 +268,11 @@ void Renderer::updateVisibleScene() {
   _primitiveBounds.resize(primCount);
   _primitiveImportance.assign(primCount, 0.0f);
   _energySortedIndices.resize(primCount);
+  _primitiveHitScores.assign(primCount, 0.0f);
+  _primitiveHitLastFrame.assign(primCount, 0);
+  _rayHitSortedIndices.resize(primCount);
+  _primitiveScreenCoverage.assign(primCount, 0.0f);
+  _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
   for (size_t i = 0; i < primCount; ++i) {
     const Primitive &p = _allPrimitives[i];
@@ -259,6 +290,10 @@ void Renderer::updateVisibleScene() {
     }
     _primitiveImportance[i] = primitiveImportance(p);
     _energySortedIndices[i] = i;
+    if (i < _rayHitSortedIndices.size())
+      _rayHitSortedIndices[i] = i;
+    if (i < _screenCoverageSortedIndices.size())
+      _screenCoverageSortedIndices[i] = i;
     _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
   }
 
@@ -266,6 +301,22 @@ void Renderer::updateVisibleScene() {
             [this](size_t a, size_t b) {
               return _primitiveImportance[a] > _primitiveImportance[b];
             });
+
+  if (_pPrimitiveHitBuffer) {
+    _pPrimitiveHitBuffer->release();
+    _pPrimitiveHitBuffer = nullptr;
+  }
+  size_t hitCount = primCount > 0 ? primCount : 1;
+  _pPrimitiveHitBuffer =
+      _pDevice->newBuffer(hitCount * sizeof(uint32_t),
+                          MTL::ResourceStorageModeManaged);
+  if (uint32_t *hitPtr = static_cast<uint32_t *>(_pPrimitiveHitBuffer->contents())) {
+    std::memset(hitPtr, 0, hitCount * sizeof(uint32_t));
+    _pPrimitiveHitBuffer->didModifyRange(
+        NS::Range::Make(0, hitCount * sizeof(uint32_t)));
+  }
+
+  _rayHitRebuildCooldown = 0;
 
   _pScene->buildBVH();
 
@@ -489,24 +540,55 @@ void Renderer::rebuildResidentResources() {
   activeScene.screenSize = _pScene->screenSize;
   activeScene.maxRayDepth = _pScene->maxRayDepth;
 
+  std::vector<uint32_t> remap;
+  remap.reserve(_allPrimitives.size());
+
   for (const auto &object : _allSceneObjects) {
     std::vector<Primitive> activePrims;
     activePrims.reserve(object.primitiveCount);
+    std::vector<uint32_t> objectRemap;
+    objectRemap.reserve(object.primitiveCount);
     for (size_t i = 0; i < object.primitiveCount; ++i) {
       size_t primIndex = object.firstPrimitive + i;
       if (primIndex < _activePrimitive.size() &&
           _activePrimitive[primIndex]) {
         activePrims.push_back(_allPrimitives[primIndex]);
+        objectRemap.push_back(static_cast<uint32_t>(primIndex));
       }
     }
-    if (!activePrims.empty())
+    if (!activePrims.empty()) {
       activeScene.addObjectSilent(activePrims);
+      remap.insert(remap.end(), objectRemap.begin(), objectRemap.end());
+    }
   }
 
   activeScene.buildBVH();
 
   rebuildAccelerationStructures(activeScene);
   buildBuffers(activeScene);
+
+  if (_pPrimitiveRemapBuffer) {
+    _pPrimitiveRemapBuffer->release();
+    _pPrimitiveRemapBuffer = nullptr;
+  }
+
+  size_t remapCount = remap.empty() ? 1 : remap.size();
+  _pPrimitiveRemapBuffer =
+      _pDevice->newBuffer(remapCount * sizeof(uint32_t),
+                          MTL::ResourceStorageModeManaged);
+  if (uint32_t *remapPtr =
+          static_cast<uint32_t *>(_pPrimitiveRemapBuffer->contents())) {
+    if (!remap.empty()) {
+      std::memcpy(remapPtr, remap.data(), remap.size() * sizeof(uint32_t));
+      _pPrimitiveRemapBuffer->didModifyRange(
+          NS::Range::Make(0, remap.size() * sizeof(uint32_t)));
+    } else {
+      uint32_t zero = 0;
+      std::memcpy(remapPtr, &zero, sizeof(uint32_t));
+      _pPrimitiveRemapBuffer->didModifyRange(
+          NS::Range::Make(0, sizeof(uint32_t)));
+    }
+  }
 
   _residentPrimitiveCount = activeScene.getPrimitiveCount();
   _residentTriangleCount = activeScene.getTriangleCount();
@@ -627,6 +709,8 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pActiveBuffer, 0, 8);
   pEnc->setFragmentBuffer(_pLightIndexBuffer, 0, 9);
   pEnc->setFragmentBuffer(_pLightCdfBuffer, 0, 10);
+  pEnc->setFragmentBuffer(_pPrimitiveRemapBuffer, 0, 11);
+  pEnc->setFragmentBuffer(_pPrimitiveHitBuffer, 0, 12);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -637,6 +721,8 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->endEncoding();
 
   MTL::BlitCommandEncoder *pBlit = pCmd->blitCommandEncoder();
+  if (_pPrimitiveHitBuffer)
+    pBlit->synchronizeResource(_pPrimitiveHitBuffer);
   pBlit->endEncoding();
 
   pCmd->presentDrawable(pView->currentDrawable());
@@ -649,9 +735,19 @@ void Renderer::updateResidency() {
   if (!_pScene)
     return;
 
+  for (uint32_t &cooldown : _primitiveCooldown)
+    if (cooldown > 0)
+      --cooldown;
+
   switch (_pScene->getResidencyStrategy()) {
   case ResidencyStrategy::EnergyImportance:
     updateEnergyImportance();
+    break;
+  case ResidencyStrategy::RayHitBudget:
+    updateRayHitBudget();
+    break;
+  case ResidencyStrategy::ScreenSpaceFootprint:
+    updateScreenSpaceFootprint();
     break;
   case ResidencyStrategy::DistanceLOD:
   default:
@@ -665,10 +761,6 @@ void Renderer::updateLODByDistance() {
   // activation boundary. Inactive primitives only become active once the
   // camera is closer than LOD_ENTER_DISTANCE, while active primitives stay
   // active until the camera has moved beyond LOD_EXIT_DISTANCE.
-
-  for (uint32_t &cooldown : _primitiveCooldown)
-    if (cooldown > 0)
-      --cooldown;
 
   size_t activeCount = 0;
   bool changed = false;
@@ -744,6 +836,213 @@ void Renderer::updateEnergyImportance() {
   if (activeCount == 0 && !_activePrimitive.empty()) {
     size_t fallback = !_energySortedIndices.empty() ? _energySortedIndices.front()
                                                     : size_t(0);
+    if (setPrimitiveActive(fallback, true))
+      changed = true;
+  }
+
+  if (changed)
+    rebuildResidentResources();
+}
+
+void Renderer::updateRayHitBudget() {
+  if (_activePrimitive.empty())
+    return;
+
+  if (_rayHitSortedIndices.size() != _activePrimitive.size()) {
+    _rayHitSortedIndices.resize(_activePrimitive.size());
+    std::iota(_rayHitSortedIndices.begin(), _rayHitSortedIndices.end(), size_t(0));
+  }
+  if (_primitiveHitScores.size() < _activePrimitive.size())
+    _primitiveHitScores.resize(_activePrimitive.size(), 0.0f);
+
+  if (_rayHitRebuildCooldown > 0) {
+    --_rayHitRebuildCooldown;
+    return;
+  }
+
+  std::sort(_rayHitSortedIndices.begin(), _rayHitSortedIndices.end(),
+            [this](size_t a, size_t b) {
+              float scoreA =
+                  (a < _primitiveHitScores.size()) ? _primitiveHitScores[a] : 0.0f;
+              float scoreB =
+                  (b < _primitiveHitScores.size()) ? _primitiveHitScores[b] : 0.0f;
+              if (scoreA == scoreB)
+                return a < b;
+              return scoreA > scoreB;
+            });
+
+  const size_t primCount = _activePrimitive.size();
+  const size_t minActive = std::min(primCount, RAY_HIT_MIN_ACTIVE_PRIMITIVES);
+  size_t targetActive =
+      static_cast<size_t>(std::ceil(primCount * RAY_HIT_TARGET_FRACTION));
+  targetActive = std::max(targetActive, minActive);
+  targetActive = std::min(targetActive, primCount);
+
+  std::vector<bool> desired(primCount, false);
+  size_t enabled = 0;
+  for (size_t idx : _rayHitSortedIndices) {
+    if (enabled >= targetActive)
+      break;
+    desired[idx] = true;
+    ++enabled;
+  }
+
+  for (size_t i = 0; i < minActive && i < _rayHitSortedIndices.size(); ++i)
+    desired[_rayHitSortedIndices[i]] = true;
+
+  size_t toggles = 0;
+  bool changed = false;
+  for (size_t i = 0; i < primCount; ++i) {
+    bool shouldBeActive = desired[i];
+    if (shouldBeActive == _activePrimitive[i])
+      continue;
+    if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+      continue;
+    if (toggles >= RAY_HIT_MAX_TOGGLES_PER_FRAME)
+      break;
+    if (setPrimitiveActive(i, shouldBeActive)) {
+      ++toggles;
+      changed = true;
+    }
+  }
+
+  size_t activeCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activeCount;
+
+  if (activeCount == 0 && !_activePrimitive.empty()) {
+    size_t fallback = !_rayHitSortedIndices.empty() ? _rayHitSortedIndices.front()
+                                                    : size_t(0);
+    if (setPrimitiveActive(fallback, true))
+      changed = true;
+  }
+
+  if (changed) {
+    rebuildResidentResources();
+    _rayHitRebuildCooldown = RAY_HIT_REBUILD_COOLDOWN_FRAMES;
+  }
+}
+
+void Renderer::updateScreenSpaceFootprint() {
+  if (_activePrimitive.empty())
+    return;
+
+  const size_t primCount = _activePrimitive.size();
+  if (_primitiveScreenCoverage.size() != primCount)
+    _primitiveScreenCoverage.assign(primCount, 0.0f);
+  if (_screenCoverageSortedIndices.size() != primCount) {
+    _screenCoverageSortedIndices.resize(primCount);
+    std::iota(_screenCoverageSortedIndices.begin(),
+              _screenCoverageSortedIndices.end(), size_t(0));
+  }
+
+  const float screenArea = Camera::screenSize.x * Camera::screenSize.y;
+  float halfFov = Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
+  float tanHalfFov = std::tan(halfFov);
+  if (tanHalfFov <= 0.0f)
+    tanHalfFov = 1e-3f;
+
+  simd::float3 forward = simd::normalize(Camera::forward);
+  simd::float3 up = simd::normalize(Camera::up);
+  simd::float3 right = simd::cross(forward, up);
+  float rightLenSq = simd::length_squared(right);
+  if (rightLenSq < 1e-6f)
+    right = {1.0f, 0.0f, 0.0f};
+  else
+    right /= std::sqrt(rightLenSq);
+
+  float aspect = Camera::screenSize.y > 0.0f
+                     ? Camera::screenSize.x / Camera::screenSize.y
+                     : 1.0f;
+  float horizontalHalfFov = std::atan(tanHalfFov * aspect);
+
+  for (size_t i = 0; i < primCount; ++i) {
+    float coverage = 0.0f;
+    if (i < _primitiveBounds.size() && isInView(_primitiveBounds[i])) {
+      const BoundingSphere &b = _primitiveBounds[i];
+      simd::float3 toCenter = b.center - Camera::position;
+      float depth = simd::dot(toCenter, forward);
+      if (depth > 1e-3f) {
+        float dist = simd::length(toCenter);
+        float cosAngle = depth / std::max(dist, 1e-3f);
+        float horiz = simd::dot(toCenter, right);
+        float horizAngle = std::atan2(std::fabs(horiz), depth);
+        if (horizAngle <= horizontalHalfFov + 0.1f) {
+          float radiusPixels =
+              (b.radius / depth) / tanHalfFov * (Camera::screenSize.y * 0.5f);
+          radiusPixels = std::max(radiusPixels, 0.0f);
+          float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
+          float angleFactor = std::max(cosAngle, 0.0f);
+          coverage = std::min(area * angleFactor, screenArea);
+        }
+      }
+    }
+    _primitiveScreenCoverage[i] = coverage;
+  }
+
+  std::sort(_screenCoverageSortedIndices.begin(),
+            _screenCoverageSortedIndices.end(), [this](size_t a, size_t b) {
+              float ca = (a < _primitiveScreenCoverage.size())
+                             ? _primitiveScreenCoverage[a]
+                             : 0.0f;
+              float cb = (b < _primitiveScreenCoverage.size())
+                             ? _primitiveScreenCoverage[b]
+                             : 0.0f;
+              if (ca == cb)
+                return a < b;
+              return ca > cb;
+            });
+
+  std::vector<bool> desired(primCount, false);
+  const size_t minActive =
+      std::min(primCount, SCREEN_FOOTPRINT_MIN_ACTIVE_PRIMITIVES);
+  float accumulated = 0.0f;
+  size_t enabled = 0;
+  float targetCoverage = screenArea * SCREEN_FOOTPRINT_TARGET_FRACTION;
+  for (size_t idx : _screenCoverageSortedIndices) {
+    if (idx >= _primitiveScreenCoverage.size())
+      continue;
+    float coverage = _primitiveScreenCoverage[idx];
+    if (enabled >= minActive && accumulated >= targetCoverage)
+      break;
+    if (enabled >= minActive && coverage < SCREEN_FOOTPRINT_MIN_PIXEL_COVERAGE)
+      break;
+    if (coverage <= 0.0f && enabled >= minActive)
+      break;
+    desired[idx] = true;
+    accumulated += coverage;
+    ++enabled;
+  }
+
+  for (size_t i = 0; i < minActive && i < _screenCoverageSortedIndices.size(); ++i)
+    desired[_screenCoverageSortedIndices[i]] = true;
+
+  size_t toggles = 0;
+  bool changed = false;
+  for (size_t i = 0; i < primCount; ++i) {
+    bool shouldBeActive = desired[i];
+    if (shouldBeActive == _activePrimitive[i])
+      continue;
+    if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+      continue;
+    if (toggles >= SCREEN_FOOTPRINT_MAX_TOGGLES_PER_FRAME)
+      break;
+    if (setPrimitiveActive(i, shouldBeActive)) {
+      ++toggles;
+      changed = true;
+    }
+  }
+
+  size_t activeCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activeCount;
+
+  if (activeCount == 0 && !_activePrimitive.empty()) {
+    size_t fallback = !_screenCoverageSortedIndices.empty()
+                          ? _screenCoverageSortedIndices.front()
+                          : size_t(0);
     if (setPrimitiveActive(fallback, true))
       changed = true;
   }
@@ -915,6 +1214,40 @@ double Renderer::currentGPUMemoryMB() const {
          (1024.0 * 1024.0);
 }
 
+void Renderer::processRayHitCounters() {
+  if (!_pPrimitiveHitBuffer)
+    return;
+
+  size_t totalPrimitiveCount = _allPrimitives.size();
+  if (totalPrimitiveCount == 0)
+    return;
+
+  size_t bufferCount = _pPrimitiveHitBuffer->length() / sizeof(uint32_t);
+  size_t count = std::min(totalPrimitiveCount, bufferCount);
+  if (count == 0)
+    return;
+
+  uint32_t *hitPtr = static_cast<uint32_t *>(_pPrimitiveHitBuffer->contents());
+  if (!hitPtr)
+    return;
+
+  if (_primitiveHitScores.size() < totalPrimitiveCount)
+    _primitiveHitScores.resize(totalPrimitiveCount, 0.0f);
+  if (_primitiveHitLastFrame.size() < totalPrimitiveCount)
+    _primitiveHitLastFrame.resize(totalPrimitiveCount, 0);
+
+  for (size_t i = 0; i < count; ++i) {
+    uint32_t hits = hitPtr[i];
+    _primitiveHitLastFrame[i] = hits;
+    _primitiveHitScores[i] = _primitiveHitScores[i] * RAY_HIT_DECAY +
+                            static_cast<float>(hits);
+    hitPtr[i] = 0;
+  }
+
+  _pPrimitiveHitBuffer->didModifyRange(
+      NS::Range::Make(0, count * sizeof(uint32_t)));
+}
+
 void Renderer::beginFrameMetrics() {
   _cpuStart = std::chrono::high_resolution_clock::now();
   _lastRayCount = static_cast<size_t>(Camera::screenSize.x * Camera::screenSize.y);
@@ -929,6 +1262,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   } else {
     _lastRaysPerSecond = 0.0;
   }
+  processRayHitCounters();
   size_t offloaded = _totalNodeCount > _activeNodeCount ?
                          _totalNodeCount - _activeNodeCount :
                          0;

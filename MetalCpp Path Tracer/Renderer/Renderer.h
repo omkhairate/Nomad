@@ -61,8 +61,11 @@ private:
   void updateResidency();
   void updateLODByDistance();
   void updateEnergyImportance();
+  void updateRayHitBudget();
+  void updateScreenSpaceFootprint();
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
+  void processRayHitCounters();
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -81,6 +84,8 @@ private:
   MTL::Buffer *_pPrimitiveIndexBuffer = nullptr;
   MTL::Buffer *_pTLASBuffer = nullptr;
   MTL::Buffer *_pActiveBuffer = nullptr;
+  MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
+  MTL::Buffer *_pPrimitiveHitBuffer = nullptr;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   size_t _blasNodeCount = 0;
@@ -97,7 +102,14 @@ private:
   std::vector<SceneObject> _allSceneObjects;
   std::vector<float> _primitiveImportance;
   std::vector<size_t> _energySortedIndices;
+  std::vector<float> _primitiveHitScores;
+  std::vector<uint32_t> _primitiveHitLastFrame;
+  std::vector<size_t> _rayHitSortedIndices;
+  std::vector<float> _primitiveScreenCoverage;
+  std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;
+
+  uint32_t _rayHitRebuildCooldown = 0;
 
   size_t _residentPrimitiveCount = 0;
   size_t _residentTriangleCount = 0;
