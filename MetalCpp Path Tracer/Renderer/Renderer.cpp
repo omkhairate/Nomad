@@ -24,7 +24,6 @@ using namespace MetalCppPathTracer;
 static constexpr size_t kMaxInstanceCapacity = 16384;
 static constexpr size_t kTLASNodeFootprintBytes = sizeof(simd::float4) * 2;
 static constexpr int kMaxTLASLeafInstances = 8;
-static constexpr size_t kDefaultBudgetBytes = 256ull * 1024ull * 1024ull;
 static constexpr double kBudgetDecreaseFactor = 0.8;
 static constexpr double kBudgetIncreaseFactor = 1.1;
 static constexpr double kBudgetIncreaseThreshold = 0.6;
@@ -80,19 +79,8 @@ Renderer::Renderer(MTL::Device *pDevice)
     : _pDevice(pDevice->retain()), _pScene(new Scene()) {
   _pCommandQueue = _pDevice->newCommandQueue();
 
-  uint64_t recommended = _pDevice->recommendedMaxWorkingSetSize();
-  if (recommended > 0 &&
-      recommended < std::numeric_limits<uint64_t>::max()) {
-    _recommendedBudget = static_cast<size_t>(recommended);
-    _gpuMemoryBudget = _recommendedBudget;
-    double mb = static_cast<double>(_gpuMemoryBudget) / (1024.0 * 1024.0);
-    printf("GPU memory budget defaulting to %.2f MB (recommended).\n", mb);
-  } else {
-    _recommendedBudget = kDefaultBudgetBytes;
-    _gpuMemoryBudget = _recommendedBudget;
-    double mb = static_cast<double>(_gpuMemoryBudget) / (1024.0 * 1024.0);
-    printf("GPU memory budget defaulting to %.2f MB (fallback).\n", mb);
-  }
+  _recommendedBudget = std::numeric_limits<size_t>::max();
+  _gpuMemoryBudget = std::numeric_limits<size_t>::max();
 
   Camera::reset();
 
@@ -2044,17 +2032,6 @@ bool Renderer::popCompletedFrameMetrics(FrameMetrics &outMetrics) {
   outMetrics = _pendingFrameMetrics;
   _hasPendingMetrics = false;
   return true;
-}
-
-void Renderer::setGPUMemoryBudgetMB(double mb) {
-  _manualBudget = true;
-  if (mb <= 0.0) {
-    _gpuMemoryBudget = std::numeric_limits<size_t>::max();
-    _recommendedBudget = _gpuMemoryBudget;
-  } else {
-    _gpuMemoryBudget = static_cast<size_t>(mb * 1024.0 * 1024.0);
-    _recommendedBudget = _gpuMemoryBudget;
-  }
 }
 
 bool Renderer::ensureBudget(size_t bytes) {
