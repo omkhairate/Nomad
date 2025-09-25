@@ -1884,16 +1884,36 @@ void Renderer::setGPUMemoryBudgetMB(double mb) {
   }
 }
 
-bool Renderer::ensureBudget(size_t bytes) const {
+bool Renderer::ensureBudget(size_t bytes) {
   if (_gpuMemoryBudget == std::numeric_limits<size_t>::max())
     return true;
+
   size_t current = _trackedAllocatedBytes;
-  if (current + bytes > _gpuMemoryBudget) {
-    printf("GPU memory budget exceeded: requested %zu bytes (current %zu, budget %zu)\n",
-           bytes, current, _gpuMemoryBudget);
-    return false;
+  if (current + bytes <= _gpuMemoryBudget)
+    return true;
+
+  if (!_instancesPendingRelease.empty()) {
+    size_t pendingBytes = 0;
+    for (size_t index : _instancesPendingRelease) {
+      if (index >= _instances.size())
+        continue;
+      const InstanceRecord &inst = _instances[index];
+      pendingBytes += inst.gpu.blasNodesBytes;
+      pendingBytes += inst.gpu.primitiveBytes;
+      pendingBytes += inst.gpu.materialBytes;
+      pendingBytes += inst.gpu.primitiveIndicesBytes;
+    }
+
+    if (pendingBytes > 0) {
+      size_t effectiveCurrent = current > pendingBytes ? current - pendingBytes : 0;
+      if (effectiveCurrent + bytes <= _gpuMemoryBudget)
+        return true;
+    }
   }
-  return true;
+
+  printf("GPU memory budget exceeded: requested %zu bytes (current %zu, budget %zu)\n",
+         bytes, current, _gpuMemoryBudget);
+  return false;
 }
 
 void Renderer::adjustBudgetForPerformance() {
