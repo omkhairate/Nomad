@@ -7,6 +7,8 @@
 #include "Random.h"
 #include "Structs.h"
 
+using namespace metal;
+
 struct BSDFSample {
   float3 direction;
   float3 weight; // bsdf * cos(theta) / pdf contribution
@@ -106,6 +108,41 @@ inline float3 evaluateBSDF(thread const float3 &inDir,
   }
   // Delta materials have zero contribution for arbitrary directions
   return float3(0.0);
+}
+
+inline float schlickReflectance(float cosine, float refIdx) {
+  float r0 = (1.0 - refIdx) / (1.0 + refIdx);
+  r0 = r0 * r0;
+  return r0 + (1.0 - r0) * pow((1.0 - cosine), 5.0);
+}
+
+inline void scatter(thread ray &r, thread const intersection &hit,
+                    float materialType, thread uint32_t &seed) {
+  float3 normal = hit.frontFace ? hit.normal : -hit.normal;
+
+  if (materialType == 0.0) {
+    float3 scatterDir = normal + randomUnitVector(seed);
+    seed = random(seed);
+    if (length_squared(scatterDir) < 1e-6)
+      scatterDir = normal;
+    r.direction = normalize(scatterDir);
+  } else if (materialType < 0.0) {
+    r.direction = normalize(reflect(r.direction, normal));
+  } else {
+    float refractionRatio = hit.frontFace ? (1.0 / materialType) : materialType;
+    float cosTheta = fmin(dot(-r.direction, normal), 1.0);
+    float sinTheta = sqrt(fmax(0.0, 1.0 - cosTheta * cosTheta));
+    bool cannotRefract = refractionRatio * sinTheta > 1.0;
+    float reflectProb = schlickReflectance(cosTheta, materialType);
+    bool shouldReflect = cannotRefract || reflectProb > randomFloat(seed);
+    seed = random(seed);
+    float3 dir = shouldReflect ? reflect(r.direction, normal)
+                               : refract(r.direction, normal, refractionRatio);
+    r.direction = normalize(dir);
+  }
+
+  r.min_distance = 0.0001;
+  r.max_distance = INFINITY;
 }
 
 #endif

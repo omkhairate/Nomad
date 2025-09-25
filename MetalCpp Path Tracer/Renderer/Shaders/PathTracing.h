@@ -21,7 +21,9 @@ template <typename T> inline void swap(thread T &a, thread T &b) {
 
 inline float3 randomUnitVector(thread uint32_t &seed) {
   float z = 2.0 * randomFloat(seed) - 1.0;
+  seed = random(seed);
   float t = 2.0 * M_PI * randomFloat(seed);
+  seed = random(seed);
   float r = sqrt(1.0 - z * z);
   return float3(r * cos(t), r * sin(t), z);
 }
@@ -29,9 +31,13 @@ inline float3 randomUnitVector(thread uint32_t &seed) {
 // Helper: Random point in unit sphere
 inline float3 randomInUnitSphere(thread uint32_t &seed) {
   while (true) {
-    float3 p =
-        2.0 * float3(randomFloat(seed), randomFloat(seed), randomFloat(seed)) -
-        float3(1.0);
+    float x = 2.0 * randomFloat(seed) - 1.0;
+    seed = random(seed);
+    float y = 2.0 * randomFloat(seed) - 1.0;
+    seed = random(seed);
+    float z = 2.0 * randomFloat(seed) - 1.0;
+    seed = random(seed);
+    float3 p = float3(x, y, z);
 
     if (length_squared(p) < 1.0)
       return p;
