@@ -1,4 +1,4 @@
-<Scene width="1280" height="720" maxRayDepth="32">
+<Scene width="1280" height="720" maxRayDepth="32" residencyStrategy="distance">
     <CameraPath>
         <!-- Move the camera through a line of primitives to exercise distance-based LOD -->
         <Keyframe frame="0" position="0,20,50" lookAt="0,20,0" />

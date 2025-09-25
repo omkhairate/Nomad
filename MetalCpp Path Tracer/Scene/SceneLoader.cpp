@@ -2,10 +2,13 @@
 #include "Material.h"
 #include <tinyxml2.h>
 #include <simd/simd.h>
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <string>
 #include "tiny_obj_loader.h"
 
 using namespace tinyxml2;
@@ -94,6 +97,25 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     scene->screenSize.x = root->FloatAttribute("width", scene->screenSize.x);
     scene->screenSize.y = root->FloatAttribute("height", scene->screenSize.y);
     scene->maxRayDepth = root->UnsignedAttribute("maxRayDepth", scene->maxRayDepth);
+
+    if (const char* residencyAttr = root->Attribute("residencyStrategy")) {
+        std::string value = residencyAttr;
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+
+        if (value == "energy" || value == "importance" || value == "energyimportance" ||
+            value == "energy_importance") {
+            scene->setResidencyStrategy(ResidencyStrategy::EnergyImportance);
+        } else if (value == "distance" || value == "lod" || value == "distance_lod" ||
+                   value == "distancelod" || value == "distancebased") {
+            scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
+        } else {
+            printf("Unknown residency strategy '%s', defaulting to distance LOD.\n",
+                   residencyAttr);
+            scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
+        }
+    }
 
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
         std::string tag = e->Name();

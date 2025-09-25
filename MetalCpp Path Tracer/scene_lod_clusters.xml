@@ -1,4 +1,4 @@
-<Scene width="1280" height="720" maxRayDepth="32">
+<Scene width="1280" height="720" maxRayDepth="32" residencyStrategy="distance">
     <CameraPath>
         <!-- Start near cluster A, then travel to cluster B to observe node on/off loading -->
         <Keyframe frame="0" position="0,20,50" lookAt="0,20,0" />

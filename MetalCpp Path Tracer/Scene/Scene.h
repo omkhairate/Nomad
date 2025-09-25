@@ -9,6 +9,11 @@
 
 namespace MetalCppPathTracer {
 
+enum class ResidencyStrategy {
+  DistanceLOD = 0,
+  EnergyImportance = 1,
+};
+
 struct SceneObject {
   size_t firstPrimitive = 0;
   size_t primitiveCount = 0;
@@ -48,6 +53,9 @@ public:
   const std::vector<size_t> &getPrimitiveIndices() const;
   const std::vector<SceneObject> &getObjects() const;
 
+  ResidencyStrategy getResidencyStrategy() const;
+  void setResidencyStrategy(ResidencyStrategy strategy);
+
   void buildBVH();
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
@@ -74,6 +82,7 @@ private:
   std::vector<SceneObject> objects;
   std::vector<size_t> objectIndices;
   std::vector<TLASNode> tlasNodes;
+  ResidencyStrategy residencyStrategy;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives);
