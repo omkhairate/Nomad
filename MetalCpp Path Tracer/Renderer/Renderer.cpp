@@ -29,6 +29,7 @@ static constexpr double kBudgetDecreaseFactor = 0.8;
 static constexpr double kBudgetIncreaseFactor = 1.1;
 static constexpr double kBudgetIncreaseThreshold = 0.6;
 static constexpr double kBudgetDecreaseThreshold = 1.2;
+static constexpr size_t kPrimitiveStride = 4;
 
 struct UniformsData {
   int primitiveIndex;
@@ -53,6 +54,8 @@ struct UniformsData {
   uint32_t debugAS;
   uint32_t residentInstanceCount;
   uint32_t totalInstanceCount;
+  uint32_t lightCount;
+  uint32_t paddingUniforms[3];
 };
 
 struct InstanceMetadataCPU {
@@ -122,6 +125,10 @@ Renderer::~Renderer() {
     _pInstanceArgElementEncoder->release();
   if (_pInstanceArgEncoder)
     _pInstanceArgEncoder->release();
+  if (_pLightBuffer) {
+    _pLightBuffer->release();
+    _pLightBuffer = nullptr;
+  }
 
   for (int i = 0; i < 2; i++)
     if (_accumulationTargets[i])
@@ -515,6 +522,9 @@ void Renderer::updateUniforms() {
   if (!_pUniformsBuffer)
     return;
 
+  if (_lightTableDirty)
+    rebuildLightTable();
+
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
   bool cameraChanged = updateCamera();
@@ -535,6 +545,7 @@ void Renderer::updateUniforms() {
   u.debugAS = InputSystem::debugAS;
   u.residentInstanceCount = static_cast<uint32_t>(_residentInstanceCount);
   u.totalInstanceCount = static_cast<uint32_t>(_instances.size());
+  u.lightCount = static_cast<uint32_t>(_lightTable.size());
 
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(UniformsData)));
 }
@@ -561,6 +572,7 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pInstanceMetaBuffer, 0, 2);
   pEnc->setFragmentBuffer(_pInstanceArgBuffer, 0, 3);
   pEnc->setFragmentBuffer(_pTLASInstanceIndexBuffer, 0, 4);
+  pEnc->setFragmentBuffer(_pLightBuffer, 0, 5);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -747,6 +759,7 @@ void Renderer::initializeInstances() {
   _recentVisibleFootprint = 0;
   _lastOffloadedNodeCount = 0;
   _lastOffloadedInstanceCount = 0;
+  markLightTableDirty();
 
   size_t primitiveCount = _allPrimitives.size();
   if (primitiveCount > kMaxInstanceCapacity) {
@@ -1080,6 +1093,7 @@ bool Renderer::streamInInstance(size_t index) {
     updateInstanceArgument(index);
     updateInstanceMetadata(index);
     _pendingAccumulationReset = true;
+    markLightTableDirty();
     return true;
   }
 
@@ -1169,6 +1183,7 @@ bool Renderer::streamInInstance(size_t index) {
   updateInstanceArgument(index);
   updateInstanceMetadata(index);
   _pendingAccumulationReset = true;
+  markLightTableDirty();
   return true;
 }
 
@@ -1191,6 +1206,7 @@ void Renderer::streamOutInstance(size_t index) {
                 index) == _instancesPendingRelease.end())
     _instancesPendingRelease.push_back(index);
   _pendingAccumulationReset = true;
+  markLightTableDirty();
 }
 
 void Renderer::releaseInstanceResources(size_t index) {
@@ -1218,6 +1234,7 @@ void Renderer::releaseInstanceResources(size_t index) {
   inst.gpu.blasNodeCount = 0;
   inst.gpu.rootNodeIndex = 0;
   inst.state = ResidencyState::NotResident;
+  markLightTableDirty();
 }
 
 void Renderer::updateInstanceArgument(size_t index) {
@@ -1270,6 +1287,141 @@ void Renderer::updateInstanceMetadata(size_t index) {
   _pInstanceMetaBuffer->didModifyRange(
       NS::Range::Make(index * sizeof(InstanceMetadataCPU),
                       sizeof(InstanceMetadataCPU)));
+}
+
+void Renderer::markLightTableDirty() {
+  _lightTableDirty = true;
+  _pendingAccumulationReset = true;
+}
+
+static float encodeUInt32(uint32_t value) {
+  float bits = 0.0f;
+  std::memcpy(&bits, &value, sizeof(uint32_t));
+  return bits;
+}
+
+void Renderer::rebuildLightTable() {
+  if (!_lightTableDirty)
+    return;
+
+  if (_pLightBuffer) {
+    _pLightBuffer->release();
+    _pLightBuffer = nullptr;
+  }
+
+  _lightTable.clear();
+  std::vector<float> weights;
+  weights.reserve(_instances.size());
+
+  constexpr float kPi = 3.14159265358979323846f;
+
+  auto primitiveArea = [&](const InstanceRecord &inst,
+                           size_t primIndex) -> float {
+    size_t base = primIndex * kPrimitiveStride;
+    if (base + 3 >= inst.primitiveData.size())
+      return 0.0f;
+    const simd::float4 &p0 = inst.primitiveData[base + 0];
+    const simd::float4 &p1 = inst.primitiveData[base + 1];
+    const simd::float4 &p2 = inst.primitiveData[base + 2];
+    const simd::float4 &p3 = inst.primitiveData[base + 3];
+    int type = static_cast<int>(p0.w);
+    switch (type) {
+    case 0: {
+      float radius = p1.x;
+      return 4.0f * kPi * radius * radius;
+    }
+    case 1: {
+      simd::float3 edge1 = p1.xyz;
+      simd::float3 edge2 = p2.xyz;
+      simd::float3 crossProd = simd::cross(edge1, edge2);
+      float len = simd::length(crossProd);
+      return 0.5f * len;
+    }
+    case 2: {
+      simd::float3 u = p1.xyz;
+      simd::float3 v = p2.xyz;
+      simd::float3 crossProd = simd::cross(u, v);
+      float len = simd::length(crossProd);
+      return 4.0f * len;
+    }
+    default:
+      break;
+    }
+    return 0.0f;
+  };
+
+  double totalWeight = 0.0;
+
+  for (size_t instIndex = 0; instIndex < _instances.size(); ++instIndex) {
+    const InstanceRecord &inst = _instances[instIndex];
+    if (inst.state != ResidencyState::Resident)
+      continue;
+    if (inst.cpuPrimitiveCount == 0)
+      continue;
+
+    for (uint32_t prim = 0; prim < inst.cpuPrimitiveCount; ++prim) {
+      size_t matBase = static_cast<size_t>(prim) * 2;
+      if (matBase + 1 >= inst.materialData.size())
+        continue;
+      const simd::float4 &m1 = inst.materialData[matBase + 1];
+      simd::float3 emissionColor = {m1.x, m1.y, m1.z};
+      float emissionPower = m1.w;
+      if (emissionPower <= 0.0f)
+        continue;
+
+      simd::float3 radiance = emissionColor * emissionPower;
+      float luminance = 0.2126f * radiance.x + 0.7152f * radiance.y +
+                        0.0722f * radiance.z;
+      if (luminance <= 0.0f)
+        continue;
+
+      float area = primitiveArea(inst, prim);
+      if (area <= 0.0f)
+        continue;
+
+      GPULightData light{};
+      light.meta = simd::make_float4(encodeUInt32(static_cast<uint32_t>(instIndex)),
+                                     encodeUInt32(static_cast<uint32_t>(prim)),
+                                     area, 0.0f);
+      light.emission = simd::make_float4(emissionColor, emissionPower);
+      light.cdf = simd::make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+      _lightTable.push_back(light);
+      float weight = luminance * area;
+      weights.push_back(weight);
+      totalWeight += static_cast<double>(weight);
+    }
+  }
+
+  if (_lightTable.empty() || totalWeight <= 0.0) {
+    _lightTable.clear();
+    _lightTableDirty = false;
+    return;
+  }
+
+  float cumulative = 0.0f;
+  for (size_t i = 0; i < _lightTable.size(); ++i) {
+    float weight = weights[i];
+    float pdf = weight > 0.0f ? static_cast<float>(weight / totalWeight) : 0.0f;
+    cumulative += pdf;
+    _lightTable[i].meta.w = pdf;
+    _lightTable[i].cdf.x = cumulative;
+  }
+  _lightTable.back().cdf.x = 1.0f;
+
+  size_t bufferSize = _lightTable.size() * sizeof(GPULightData);
+  if (!ensureBudget(bufferSize)) {
+    _lightTable.clear();
+    _lightTableDirty = false;
+    return;
+  }
+
+  _pLightBuffer =
+      _pDevice->newBuffer(bufferSize, MTL::ResourceStorageModeManaged);
+  std::memcpy(_pLightBuffer->contents(), _lightTable.data(), bufferSize);
+  _pLightBuffer->didModifyRange(NS::Range::Make(0, bufferSize));
+
+  _lightTableDirty = false;
 }
 
 std::pair<size_t, size_t> Renderer::calculateOffloadedResidency() const {

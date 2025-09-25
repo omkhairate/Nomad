@@ -131,6 +131,12 @@ private:
     uint32_t rootNodeIndex = 0;
   };
 
+  struct GPULightData {
+    simd::float4 meta;
+    simd::float4 emission;
+    simd::float4 cdf;
+  };
+
   struct InstanceRecord {
     size_t primitiveIndex = 0;
     uint32_t meshId = kInvalidMeshId;
@@ -151,12 +157,15 @@ private:
 
   std::vector<InstanceRecord> _instances;
   std::vector<size_t> _instancesPendingRelease;
+  std::vector<GPULightData> _lightTable;
 
   bool streamInInstance(size_t index);
   void streamOutInstance(size_t index);
   void releaseInstanceResources(size_t index);
   void updateInstanceArgument(size_t index);
   void updateInstanceMetadata(size_t index);
+  void rebuildLightTable();
+  void markLightTableDirty();
   void rebuildTLAS();
   void refreshActiveNodeCount();
   std::pair<size_t, size_t> calculateOffloadedResidency() const;
@@ -172,6 +181,9 @@ private:
                            MTL::Buffer **outBuffer);
 
   bool _pendingAccumulationReset = false;
+  bool _lightTableDirty = true;
+
+  MTL::Buffer *_pLightBuffer = nullptr;
 
   void updateLODByDistance();
 
