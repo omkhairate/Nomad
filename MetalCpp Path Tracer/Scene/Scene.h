@@ -12,6 +12,8 @@ namespace MetalCppPathTracer {
 enum class ResidencyStrategy {
   DistanceLOD = 0,
   EnergyImportance = 1,
+  RayHitBudget = 2,
+  ScreenSpaceFootprint = 3,
 };
 
 struct SceneObject {

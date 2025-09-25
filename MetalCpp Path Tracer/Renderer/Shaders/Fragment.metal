@@ -18,6 +18,8 @@ float4 fragment fragmentMain(
     device const uchar* activeMask [[buffer(8)]],
     device const uint* lightIndices [[buffer(9)]],
     device const float* lightCdf [[buffer(10)]],
+    device const uint* primitiveRemap [[buffer(11)]],
+    device atomic_uint* primitiveHitCounts [[buffer(12)]],
     texture2d<float, access::read_write> lastFrame [[texture(0)]],
     texture2d<float, access::read_write> currentFrame [[texture(1)]])
 
@@ -64,12 +66,15 @@ float4 fragment fragmentMain(
         activeMask,
         lightIndices,
         lightCdf,
+        primitiveRemap,
+        primitiveHitCounts,
         seed,
         u.maxRayDepth,
         u.debugAS,
         u.blasNodeCount,
         u.lightCount,
-        u.lightTotalWeight
+        u.lightTotalWeight,
+        static_cast<uint>(u.totalPrimitiveCount)
     );
 
 
