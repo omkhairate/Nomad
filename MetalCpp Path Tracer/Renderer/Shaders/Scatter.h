@@ -27,7 +27,7 @@ inline bool mirrorAngle(float refractionIndex, thread const float3 &normal,
           (reflectance > randomFloat(seed)));
 }
 
-inline void buildOrthonormalBasis(const float3 &n, thread float3 &t,
+inline void buildOrthonormalBasis(thread const float3 &n, thread float3 &t,
                                   thread float3 &b) {
   if (fabs(n.z) < 0.999) {
     t = normalize(cross(n, float3(0.0, 0.0, 1.0)));
@@ -37,9 +37,10 @@ inline void buildOrthonormalBasis(const float3 &n, thread float3 &t,
   b = cross(n, t);
 }
 
-inline BSDFSample sampleBSDF(const float3 &inDir, const float3 &normal,
-                             bool frontFace, float materialType,
-                             const float3 &albedo, thread uint32_t &seed) {
+inline BSDFSample sampleBSDF(thread const float3 &inDir,
+                             thread const float3 &normal, bool frontFace,
+                             float materialType, thread const float3 &albedo,
+                             thread uint32_t &seed) {
   BSDFSample s;
   s.direction = normal;
   s.weight = float3(0.0);
@@ -93,9 +94,10 @@ inline BSDFSample sampleBSDF(const float3 &inDir, const float3 &normal,
   return s;
 }
 
-inline float3 evaluateBSDF(const float3 &inDir, const float3 &outDir,
-                           const float3 &normal, float materialType,
-                           const float3 &albedo) {
+inline float3 evaluateBSDF(thread const float3 &inDir,
+                           thread const float3 &outDir,
+                           thread const float3 &normal, float materialType,
+                           thread const float3 &albedo) {
   if (materialType == 0.0) {
     float cosTheta = fmax(0.0, dot(outDir, normal));
     if (cosTheta <= 0.0)

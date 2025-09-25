@@ -218,7 +218,7 @@ inline intersection firstHitBVH(thread const ray &r,
   return in;
 }
 
-inline bool isOccluded(const ray &shadowRay, float maxDistance,
+inline bool isOccluded(thread const ray &shadowRay, float maxDistance,
                        device const float4 *tlasNodes,
                        device const int *tlasInstanceIndices,
                        uint tlasNodeCount,
