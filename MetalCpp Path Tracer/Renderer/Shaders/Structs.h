@@ -45,6 +45,13 @@ struct InstanceArgumentBuffer
     metal::array<InstanceResources, MAX_INSTANCE_COUNT> instances;
 };
 
+struct Light
+{
+    float4 meta;     // instanceId bits, primitiveIndex bits, area, light selection PDF
+    float4 emission; // emissionColor, emissionPower
+    float4 cdf;      // cumulative probability, padding
+};
+
 
 struct UniformsData
 {
@@ -70,6 +77,8 @@ struct UniformsData
     uint debugAS;
     uint residentInstanceCount;
     uint totalInstanceCount;
+    uint lightCount;
+    uint paddingUniforms[3];
 };
 
 
