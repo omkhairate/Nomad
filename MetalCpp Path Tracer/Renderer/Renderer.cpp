@@ -15,7 +15,6 @@
 #include <chrono>
 #include <simd/simd.h>
 #include <string>
-#include <utility>
 
 using namespace MetalCppPathTracer;
 
@@ -106,8 +105,6 @@ Renderer::Renderer(MTL::Device *pDevice)
 
   Camera::reset();
 
-  _rebuildThread = std::thread(&Renderer::rebuildWorkerLoop, this);
-
   updateVisibleScene();
   buildShaders();
   buildTextures();
@@ -116,14 +113,6 @@ Renderer::Renderer(MTL::Device *pDevice)
 }
 
 Renderer::~Renderer() {
-  {
-    std::lock_guard<std::mutex> lock(_workerMutex);
-    _workerExit = true;
-  }
-  _workerCv.notify_all();
-  if (_rebuildThread.joinable())
-    _rebuildThread.join();
-
   if (_pSphereBuffer)
     _pSphereBuffer->release();
   if (_pSphereMaterialBuffer)
@@ -457,89 +446,6 @@ void Renderer::buildBuffers(const Scene &scene) {
 }
 
 void Renderer::rebuildResidentResources() {
-  std::vector<uint8_t> snapshot;
-  {
-    std::lock_guard<std::mutex> lock(_primitiveMutex);
-    snapshot.resize(_activePrimitive.size());
-    for (size_t i = 0; i < _activePrimitive.size(); ++i)
-      snapshot[i] = _activePrimitive[i] ? 1 : 0;
-  }
-
-  PreparedResources resources = buildResourcesForMask(snapshot);
-  commitPreparedResources(resources);
-
-  {
-    std::lock_guard<std::mutex> lock(_workerMutex);
-    _lodAppliedVersion = _lodRequestedVersion;
-    _resourceBuffers[_activeResourceIndex].version = _lodAppliedVersion;
-    _resourceBuffers[_activeResourceIndex].ready = false;
-  }
-  _lodDirty.store(false, std::memory_order_release);
-}
-
-void Renderer::enqueueLODRebuild(const std::vector<uint8_t> &mask) {
-  {
-    std::lock_guard<std::mutex> lock(_workerMutex);
-    _pendingActiveMask = mask;
-    ++_lodRequestedVersion;
-    if (_readyResourceIndex != -1 && _resourceBuffers[_readyResourceIndex].version <
-                                         _lodRequestedVersion) {
-      _resourceBuffers[_readyResourceIndex].ready = false;
-      _resourceBuffers[_readyResourceIndex].data = PreparedResources();
-      _resourceBuffers[_readyResourceIndex].version = 0;
-      _readyResourceIndex = -1;
-    }
-  }
-  _lodDirty.store(true, std::memory_order_release);
-  _workerCv.notify_one();
-}
-
-void Renderer::processPendingResources() {
-  PreparedResources readyResources;
-  size_t readyVersion = 0;
-  size_t latestRequested = 0;
-  int readyIndex = -1;
-  {
-    std::lock_guard<std::mutex> lock(_workerMutex);
-    latestRequested = _lodRequestedVersion;
-    if (_readyResourceIndex != -1 &&
-        _resourceBuffers[_readyResourceIndex].ready) {
-      readyIndex = _readyResourceIndex;
-      readyVersion = _resourceBuffers[readyIndex].version;
-      readyResources = std::move(_resourceBuffers[readyIndex].data);
-      _resourceBuffers[readyIndex].ready = false;
-      _resourceBuffers[readyIndex].version = 0;
-      _readyResourceIndex = -1;
-    }
-  }
-
-  if (readyIndex == -1)
-    return;
-
-  if (readyVersion < latestRequested) {
-    // Drop stale payload; a newer request is pending.
-    return;
-  }
-
-  commitPreparedResources(readyResources);
-
-  bool clearDirty = false;
-  {
-    std::lock_guard<std::mutex> lock(_workerMutex);
-    _activeResourceIndex = readyIndex;
-    _lodAppliedVersion = readyVersion;
-    clearDirty = (_lodRequestedVersion == readyVersion);
-  }
-
-  if (clearDirty)
-    _lodDirty.store(false, std::memory_order_release);
-}
-
-Renderer::PreparedResources
-Renderer::buildResourcesForMask(const std::vector<uint8_t> &mask) {
-  PreparedResources result;
-  result.activeMask = mask;
-
   Scene activeScene;
   activeScene.screenSize = _pScene->screenSize;
   activeScene.maxRayDepth = _pScene->maxRayDepth;
@@ -549,8 +455,10 @@ Renderer::buildResourcesForMask(const std::vector<uint8_t> &mask) {
     activePrims.reserve(object.primitiveCount);
     for (size_t i = 0; i < object.primitiveCount; ++i) {
       size_t primIndex = object.firstPrimitive + i;
-      if (primIndex < mask.size() && mask[primIndex])
+      if (primIndex < _activePrimitive.size() &&
+          _activePrimitive[primIndex]) {
         activePrims.push_back(_allPrimitives[primIndex]);
+      }
     }
     if (!activePrims.empty())
       activeScene.addObjectSilent(activePrims);
@@ -558,301 +466,11 @@ Renderer::buildResourcesForMask(const std::vector<uint8_t> &mask) {
 
   activeScene.buildBVH();
 
-  result.primitiveCount = activeScene.getPrimitiveCount();
-  result.triangleCount = activeScene.getTriangleCount();
-  result.blasNodeCount = activeScene.getBVHNodeCount();
+  rebuildAccelerationStructures(activeScene);
+  buildBuffers(activeScene);
 
-  if (result.primitiveCount > 0) {
-    simd::float4 *transforms = activeScene.createTransformsBuffer();
-    result.transforms.assign(transforms,
-                             transforms + result.primitiveCount * 3);
-    delete[] transforms;
-
-    simd::float4 *materials = activeScene.createMaterialsBuffer();
-    result.materials.assign(materials,
-                            materials + result.primitiveCount * 2);
-    delete[] materials;
-  }
-
-  if (result.blasNodeCount > 0) {
-    simd::float4 *bvhData = activeScene.createBVHBuffer();
-    result.bvhData.assign(bvhData, bvhData + result.blasNodeCount * 2);
-    delete[] bvhData;
-  }
-
-  size_t tlasCount = 0;
-  simd::float4 *tlasData = activeScene.createTLASBuffer(tlasCount);
-  if (tlasData && tlasCount > 0) {
-    result.tlasData.assign(tlasData, tlasData + tlasCount * 2);
-  }
-  delete[] tlasData;
-  result.tlasNodeCount = tlasCount;
-  result.activeNodeCount = result.tlasNodeCount + result.primitiveCount;
-
-  size_t indexCount = activeScene.getPrimitiveIndices().size();
-  if (indexCount > 0) {
-    int *rawIndices = activeScene.createPrimitiveIndexBuffer();
-    result.primitiveIndices.assign(rawIndices, rawIndices + indexCount);
-    delete[] rawIndices;
-  }
-
-  activeScene.createTriangleBuffers(result.triangleVertices,
-                                    result.triangleIndices);
-
-  const auto &primitives = activeScene.getPrimitives();
-  result.lightIndices.reserve(primitives.size());
-  result.lightCdf.reserve(primitives.size());
-  result.lightTotalWeight = 0.0f;
-
-  for (size_t i = 0; i < primitives.size(); ++i) {
-    const Primitive &p = primitives[i];
-    const Material &m = p.material;
-    float emissionStrength = m.emissionPower * luminance(m.emissionColor);
-    if (emissionStrength <= 0.0f)
-      continue;
-
-    float area = primitiveArea(p);
-    if (area <= 0.0f)
-      continue;
-
-    float weight = area * emissionStrength;
-    if (weight <= 0.0f)
-      continue;
-
-    result.lightTotalWeight += weight;
-    result.lightIndices.push_back(static_cast<uint32_t>(i));
-    result.lightCdf.push_back(result.lightTotalWeight);
-  }
-
-  result.lightCount = result.lightIndices.size();
-
-  return result;
-}
-
-void Renderer::commitPreparedResources(const PreparedResources &resources) {
-  _residentPrimitiveCount = resources.primitiveCount;
-  _residentTriangleCount = resources.triangleCount;
-  _blasNodeCount = resources.blasNodeCount;
-  _tlasNodeCount = resources.tlasNodeCount;
-  _activeNodeCount = resources.activeNodeCount;
-  _lightCount = resources.lightCount;
-  _lightTotalWeight = resources.lightTotalWeight;
-
-  if (_pSphereBuffer) {
-    _pSphereBuffer->release();
-    _pSphereBuffer = nullptr;
-  }
-  if (_pSphereMaterialBuffer) {
-    _pSphereMaterialBuffer->release();
-    _pSphereMaterialBuffer = nullptr;
-  }
-
-  size_t transformSize = resources.transforms.size() * sizeof(simd::float4);
-  if (transformSize > 0) {
-    _pSphereBuffer = _pDevice->newBuffer(resources.transforms.data(),
-                                         transformSize,
-                                         MTL::ResourceStorageModeManaged);
-    _pSphereBuffer->didModifyRange(NS::Range::Make(0, transformSize));
-  } else {
-    simd::float4 dummy = {0, 0, 0, 0};
-    _pSphereBuffer = _pDevice->newBuffer(&dummy, sizeof(simd::float4),
-                                         MTL::ResourceStorageModeManaged);
-  }
-
-  size_t materialSize = resources.materials.size() * sizeof(simd::float4);
-  if (materialSize > 0) {
-    _pSphereMaterialBuffer =
-        _pDevice->newBuffer(resources.materials.data(), materialSize,
-                            MTL::ResourceStorageModeManaged);
-    _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialSize));
-  } else {
-    simd::float4 dummy = {0, 0, 0, 0};
-    _pSphereMaterialBuffer = _pDevice->newBuffer(
-        &dummy, sizeof(simd::float4), MTL::ResourceStorageModeManaged);
-  }
-
-  if (_pLightIndexBuffer) {
-    _pLightIndexBuffer->release();
-    _pLightIndexBuffer = nullptr;
-  }
-  if (_pLightCdfBuffer) {
-    _pLightCdfBuffer->release();
-    _pLightCdfBuffer = nullptr;
-  }
-
-  size_t lightCount = resources.lightIndices.size();
-  size_t lightAlloc = lightCount > 0 ? lightCount : 1;
-  _pLightIndexBuffer = _pDevice->newBuffer(lightAlloc * sizeof(uint32_t),
-                                           MTL::ResourceStorageModeManaged);
-  _pLightCdfBuffer = _pDevice->newBuffer(lightAlloc * sizeof(float),
-                                         MTL::ResourceStorageModeManaged);
-
-  if (lightCount > 0) {
-    memcpy(_pLightIndexBuffer->contents(), resources.lightIndices.data(),
-           lightCount * sizeof(uint32_t));
-    _pLightIndexBuffer->didModifyRange(
-        NS::Range::Make(0, lightCount * sizeof(uint32_t)));
-
-    memcpy(_pLightCdfBuffer->contents(), resources.lightCdf.data(),
-           lightCount * sizeof(float));
-    _pLightCdfBuffer->didModifyRange(
-        NS::Range::Make(0, lightCount * sizeof(float)));
-  } else {
-    uint32_t dummyIndex = 0;
-    float dummyCdf = 0.0f;
-    memcpy(_pLightIndexBuffer->contents(), &dummyIndex, sizeof(uint32_t));
-    memcpy(_pLightCdfBuffer->contents(), &dummyCdf, sizeof(float));
-    _pLightIndexBuffer->didModifyRange(NS::Range::Make(0, sizeof(uint32_t)));
-    _pLightCdfBuffer->didModifyRange(NS::Range::Make(0, sizeof(float)));
-  }
-
-  if (_pActiveBuffer) {
-    _pActiveBuffer->release();
-    _pActiveBuffer = nullptr;
-  }
-
-  size_t activeCount = resources.activeMask.size();
-  size_t activeAlloc = activeCount > 0 ? activeCount : 1;
-  _pActiveBuffer =
-      _pDevice->newBuffer(activeAlloc * sizeof(uint8_t),
-                          MTL::ResourceStorageModeManaged);
-  if (activeCount > 0) {
-    memcpy(_pActiveBuffer->contents(), resources.activeMask.data(),
-           activeCount * sizeof(uint8_t));
-    _pActiveBuffer->didModifyRange(
-        NS::Range::Make(0, activeCount * sizeof(uint8_t)));
-  } else {
-    uint8_t inactive = 0;
-    memcpy(_pActiveBuffer->contents(), &inactive, sizeof(uint8_t));
-    _pActiveBuffer->didModifyRange(NS::Range::Make(0, sizeof(uint8_t)));
-  }
-
-  if (_pTriangleVertexBuffer) {
-    _pTriangleVertexBuffer->release();
-    _pTriangleVertexBuffer = nullptr;
-  }
-  if (_pTriangleIndexBuffer) {
-    _pTriangleIndexBuffer->release();
-    _pTriangleIndexBuffer = nullptr;
-  }
-
-  if (!resources.triangleVertices.empty()) {
-    size_t vertexSize = resources.triangleVertices.size() * sizeof(simd::float3);
-    _pTriangleVertexBuffer = _pDevice->newBuffer(
-        resources.triangleVertices.data(), vertexSize,
-        MTL::ResourceStorageModeManaged);
-    _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(0, vertexSize));
-  } else {
-    simd::float3 dummyVertex = {0, 0, 0};
-    _pTriangleVertexBuffer = _pDevice->newBuffer(
-        &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
-  }
-
-  if (!resources.triangleIndices.empty()) {
-    size_t indexSize = resources.triangleIndices.size() * sizeof(simd::uint3);
-    _pTriangleIndexBuffer = _pDevice->newBuffer(
-        resources.triangleIndices.data(), indexSize,
-        MTL::ResourceStorageModeManaged);
-    _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
-  } else {
-    simd::uint3 dummyIndex = {0, 0, 0};
-    _pTriangleIndexBuffer = _pDevice->newBuffer(
-        &dummyIndex, sizeof(simd::uint3), MTL::ResourceStorageModeManaged);
-  }
-
-  if (_pBVHBuffer) {
-    _pBVHBuffer->release();
-    _pBVHBuffer = nullptr;
-  }
-  if (resources.bvhData.empty()) {
-    _pBVHBuffer = _pDevice->newBuffer(sizeof(simd::float4),
-                                      MTL::ResourceStorageModeManaged);
-  } else {
-    size_t bvhSize = resources.bvhData.size() * sizeof(simd::float4);
-    _pBVHBuffer = _pDevice->newBuffer(resources.bvhData.data(), bvhSize,
-                                      MTL::ResourceStorageModeManaged);
-    _pBVHBuffer->didModifyRange(NS::Range::Make(0, bvhSize));
-  }
-
-  if (_pTLASBuffer) {
-    _pTLASBuffer->release();
-    _pTLASBuffer = nullptr;
-  }
-  if (resources.tlasData.empty()) {
-    _pTLASBuffer = _pDevice->newBuffer(sizeof(simd::float4),
-                                       MTL::ResourceStorageModeManaged);
-  } else {
-    size_t tlasSize = resources.tlasData.size() * sizeof(simd::float4);
-    _pTLASBuffer = _pDevice->newBuffer(resources.tlasData.data(), tlasSize,
-                                       MTL::ResourceStorageModeManaged);
-    _pTLASBuffer->didModifyRange(NS::Range::Make(0, tlasSize));
-  }
-
-  if (_pPrimitiveIndexBuffer) {
-    _pPrimitiveIndexBuffer->release();
-    _pPrimitiveIndexBuffer = nullptr;
-  }
-
-  if (!resources.primitiveIndices.empty()) {
-    size_t indexSize = resources.primitiveIndices.size() * sizeof(int);
-    _pPrimitiveIndexBuffer = _pDevice->newBuffer(
-        resources.primitiveIndices.data(), indexSize,
-        MTL::ResourceStorageModeManaged);
-    _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
-  } else {
-    _pPrimitiveIndexBuffer = _pDevice->newBuffer(sizeof(int),
-                                                 MTL::ResourceStorageModeManaged);
-  }
-}
-
-void Renderer::rebuildWorkerLoop() {
-  while (true) {
-    std::vector<uint8_t> mask;
-    size_t targetVersion = 0;
-    int targetIndex = -1;
-
-    {
-      std::unique_lock<std::mutex> lock(_workerMutex);
-      _workerCv.wait(lock, [this]() {
-        return _workerExit ||
-               (_lodRequestedVersion > _lodBuildingVersion);
-      });
-
-      if (_workerExit)
-        break;
-
-      targetVersion = _lodRequestedVersion;
-      mask = _pendingActiveMask;
-      targetIndex = 1 - _activeResourceIndex;
-      if (_readyResourceIndex == targetIndex) {
-        _resourceBuffers[targetIndex].ready = false;
-        _resourceBuffers[targetIndex].data = PreparedResources();
-        _resourceBuffers[targetIndex].version = 0;
-        _readyResourceIndex = -1;
-      }
-      _inFlightResourceIndex = targetIndex;
-      _lodBuildingVersion = targetVersion;
-      _rebuildInProgress = true;
-    }
-
-    PreparedResources resources = buildResourcesForMask(mask);
-
-    {
-      std::lock_guard<std::mutex> lock(_workerMutex);
-      if (_workerExit)
-        break;
-
-      ResourceBuffer &buffer = _resourceBuffers[targetIndex];
-      buffer.data = std::move(resources);
-      buffer.version = targetVersion;
-      buffer.ready = true;
-      _readyResourceIndex = targetIndex;
-      _inFlightResourceIndex = -1;
-      _rebuildInProgress = false;
-    }
-
-    _workerCv.notify_all();
-  }
+  _residentPrimitiveCount = activeScene.getPrimitiveCount();
+  _residentTriangleCount = activeScene.getTriangleCount();
 }
 
 void Renderer::buildTextures() {
@@ -943,7 +561,6 @@ void Renderer::updateUniforms() {
 
 void Renderer::draw(MTK::View *pView) {
   updateLODByDistance();
-  processPendingResources();
   updateUniforms();
   beginFrameMetrics();
   std::swap(_accumulationTargets[0], _accumulationTargets[1]);
@@ -994,39 +611,29 @@ void Renderer::updateLODByDistance() {
   // Using a larger threshold prevents the entire scene from being culled
   // when starting far from the origin.
   const float FULL_DETAIL_DISTANCE = 250.0f;
+  size_t activeCount = 0;
   bool changed = false;
-  std::vector<uint8_t> snapshot;
-  {
-    std::lock_guard<std::mutex> lock(_primitiveMutex);
-    snapshot.resize(_activePrimitive.size());
-    size_t activeCount = 0;
-    for (size_t g = 0; g < _activePrimitive.size(); ++g) {
-      float dist =
-          simd::length(_primitiveBounds[g].center - Camera::position) -
-          _primitiveBounds[g].radius;
-      dist = std::max(dist, 0.0f);
-      bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
-      if (_activePrimitive[g] != shouldBeActive) {
-        _activePrimitive[g] = shouldBeActive;
-        changed = true;
-      }
-      snapshot[g] = _activePrimitive[g] ? 1 : 0;
-      if (_activePrimitive[g])
-        activeCount++;
-    }
-
-    if (activeCount == 0 && !_activePrimitive.empty()) {
-      if (!_activePrimitive[0]) {
-        _activePrimitive[0] = true;
-        snapshot[0] = 1;
-        changed = true;
-      }
-    }
+  for (size_t g = 0; g < _allPrimitives.size(); ++g) {
+    float dist =
+        simd::length(_primitiveBounds[g].center - Camera::position) -
+        _primitiveBounds[g].radius;
+    dist = std::max(dist, 0.0f);
+    bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
+    if (setPrimitiveActive(g, shouldBeActive))
+      changed = true;
+    if (_activePrimitive[g])
+      activeCount++;
   }
 
-  if (changed) {
-    enqueueLODRebuild(snapshot);
+  if (activeCount == 0 && !_activePrimitive.empty()) {
+    // Ensure at least one primitive remains visible to avoid a blank scene
+    if (setPrimitiveActive(0, true))
+      changed = true;
+    activeCount = 1;
   }
+
+  if (changed)
+    rebuildResidentResources();
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -1043,20 +650,11 @@ void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
 
 bool Renderer::setPrimitiveActive(size_t index, bool active) {
-  std::vector<uint8_t> snapshot;
-  {
-    std::lock_guard<std::mutex> lock(_primitiveMutex);
-    if (index >= _activePrimitive.size())
-      return false;
-    if (_activePrimitive[index] == active)
-      return false;
-    _activePrimitive[index] = active;
-    snapshot.resize(_activePrimitive.size());
-    for (size_t i = 0; i < _activePrimitive.size(); ++i)
-      snapshot[i] = _activePrimitive[i] ? 1 : 0;
-  }
-
-  enqueueLODRebuild(snapshot);
+  if (index >= _activePrimitive.size())
+    return false;
+  if (_activePrimitive[index] == active)
+    return false;
+  _activePrimitive[index] = active;
   return true;
 }
 
