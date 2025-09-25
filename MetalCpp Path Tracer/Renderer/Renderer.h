@@ -55,10 +55,6 @@ public:
   // Retrieve the most recently completed frame metrics, if available.
   bool popCompletedFrameMetrics(FrameMetrics &outMetrics);
 
-  // Set a maximum GPU memory budget in megabytes. A value of 0 disables the
-  // budget and allows unlimited allocations.
-  void setGPUMemoryBudgetMB(double mb);
-
   // Expose last recorded performance metrics.
   double lastCPUTime() const;
   double lastGPUTime() const;
