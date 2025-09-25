@@ -518,7 +518,7 @@ bool Renderer::updateCamera() {
   return changed;
 }
 
-void Renderer::updateUniforms() {
+void Renderer::updateUniforms(bool cameraChanged) {
   if (!_pUniformsBuffer)
     return;
 
@@ -527,7 +527,6 @@ void Renderer::updateUniforms() {
 
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
-  bool cameraChanged = updateCamera();
   if (cameraChanged || _pendingAccumulationReset) {
     u.frameCount = 0;
     u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
@@ -551,8 +550,9 @@ void Renderer::updateUniforms() {
 }
 
 void Renderer::draw(MTK::View *pView) {
+  bool cameraChanged = updateCamera();
   updateLODByDistance();
-  updateUniforms();
+  updateUniforms(cameraChanged);
   beginFrameMetrics();
   std::swap(_accumulationTargets[0], _accumulationTargets[1]);
 
