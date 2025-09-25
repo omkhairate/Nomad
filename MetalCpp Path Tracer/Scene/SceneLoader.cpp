@@ -95,8 +95,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     scene->screenSize.y = root->FloatAttribute("height", scene->screenSize.y);
     scene->maxRayDepth = root->UnsignedAttribute("maxRayDepth", scene->maxRayDepth);
 
-    uint32_t nextMeshId = kInvalidMeshId + 1;
-
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
         std::string tag = e->Name();
         if (tag == "Sphere") {
@@ -144,7 +142,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             m.materialType = e->FloatAttribute("materialType", 0);
             m.emissionPower = e->FloatAttribute("emissionPower", 0);
 
-            uint32_t meshId = nextMeshId++;
             for (const auto& tri : tris) {
                 Primitive p{};
                 p.type = PrimitiveType::Triangle;
@@ -152,7 +149,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 p.triangle.v1 = pos + scale * verts[tri.y];
                 p.triangle.v2 = pos + scale * verts[tri.z];
                 p.material = m;
-                p.meshId = meshId;
                 scene->addPrimitive(p);
             }
         }

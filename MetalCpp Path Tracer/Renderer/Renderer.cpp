@@ -15,13 +15,12 @@
 #include <chrono>
 #include <simd/simd.h>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <CoreFoundation/CoreFoundation.h>
 
 using namespace MetalCppPathTracer;
 
 static constexpr size_t kMaxInstanceCapacity = 16384;
+static constexpr size_t kMaxPrimitivesPerInstance = 64;
 static constexpr size_t kTLASNodeFootprintBytes = sizeof(simd::float4) * 2;
 static constexpr int kMaxTLASLeafInstances = 8;
 static constexpr double kBudgetDecreaseFactor = 0.8;
@@ -912,83 +911,41 @@ void Renderer::initializeInstances() {
     inst.cpuPrimitiveCount++;
   };
 
-  std::unordered_map<uint32_t, std::vector<size_t>> meshPrimitiveMap;
-  meshPrimitiveMap.reserve(primitiveCount);
+  InstanceRecord triangleBatch;
+  size_t batchSize = 0;
 
-  size_t fallbackTriangleCount = 0;
-  size_t nonTriangleCount = 0;
-
-  for (size_t i = 0; i < primitiveCount; ++i) {
-    const Primitive &p = _allPrimitives[i];
-    if (p.type == PrimitiveType::Triangle) {
-      if (p.meshId != kInvalidMeshId) {
-        auto &indices = meshPrimitiveMap[p.meshId];
-        indices.push_back(i);
-      } else {
-        fallbackTriangleCount++;
-      }
-    } else {
-      nonTriangleCount++;
-    }
-  }
-
-  size_t potentialInstanceCount = meshPrimitiveMap.size() + fallbackTriangleCount +
-                                  nonTriangleCount;
-  if (potentialInstanceCount > kMaxInstanceCapacity) {
-    printf(
-        "Warning: Scene has %zu potential instances but only %zu are supported; "
-        "excess instances will be ignored.\n",
-        potentialInstanceCount, kMaxInstanceCapacity);
-  }
-
-  _instances.reserve(std::min(potentialInstanceCount, kMaxInstanceCapacity));
-
-  auto buildInstanceFromIndices = [&](const std::vector<size_t> &indices,
-                                      uint32_t meshId) {
-    if (indices.empty() || _instances.size() >= kMaxInstanceCapacity)
+  auto flushTriangleBatch = [&]() {
+    if (batchSize == 0)
       return;
-    InstanceRecord inst;
-    inst.meshId = meshId;
-    inst.primitiveIndex = indices.front();
-    for (size_t idx : indices) {
-      appendPrimitive(inst, _allPrimitives[idx]);
-    }
-    finalizeInstance(inst);
-    _instances.push_back(std::move(inst));
+    finalizeInstance(triangleBatch);
+    _instances.push_back(std::move(triangleBatch));
+    triangleBatch = InstanceRecord{};
+    batchSize = 0;
   };
 
-  std::unordered_set<uint32_t> processedMeshes;
-  processedMeshes.reserve(meshPrimitiveMap.size());
-
   for (size_t i = 0; i < primitiveCount; ++i) {
     const Primitive &p = _allPrimitives[i];
-    if (_instances.size() >= kMaxInstanceCapacity)
-      break;
-
     if (p.type == PrimitiveType::Triangle) {
-      if (p.meshId != kInvalidMeshId) {
-        if (processedMeshes.insert(p.meshId).second) {
-          auto it = meshPrimitiveMap.find(p.meshId);
-          if (it != meshPrimitiveMap.end())
-            buildInstanceFromIndices(it->second, p.meshId);
-        }
-      } else {
-        InstanceRecord inst;
-        inst.meshId = kInvalidMeshId;
-        inst.primitiveIndex = i;
-        appendPrimitive(inst, p);
-        finalizeInstance(inst);
-        _instances.push_back(std::move(inst));
+      if (batchSize == 0) {
+        triangleBatch = InstanceRecord{};
+        triangleBatch.primitiveIndex = i;
+      }
+      appendPrimitive(triangleBatch, p);
+      batchSize++;
+      if (batchSize >= kMaxPrimitivesPerInstance) {
+        flushTriangleBatch();
       }
     } else {
+      flushTriangleBatch();
       InstanceRecord inst;
-      inst.meshId = kInvalidMeshId;
       inst.primitiveIndex = i;
       appendPrimitive(inst, p);
       finalizeInstance(inst);
       _instances.push_back(std::move(inst));
     }
   }
+
+  flushTriangleBatch();
 
   size_t totalBlas = 0;
   for (const auto &inst : _instances)
