@@ -43,6 +43,10 @@ struct UniformsData
     uint64_t blasNodeCount;
     uint maxRayDepth;
     uint debugAS;
+    uint lightCount;
+    float lightTotalWeight;
+    uint padding0;
+    uint padding1;
 };
 
 

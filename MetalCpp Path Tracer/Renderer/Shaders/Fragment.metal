@@ -16,6 +16,8 @@ float4 fragment fragmentMain(
     device const int* primitiveIndices [[buffer(6)]],
     device const float4* tlasNodes [[buffer(7)]],
     device const uchar* activeMask [[buffer(8)]],
+    device const uint* lightIndices [[buffer(9)]],
+    device const float* lightCdf [[buffer(10)]],
     texture2d<float, access::read_write> lastFrame [[texture(0)]],
     texture2d<float, access::read_write> currentFrame [[texture(1)]])
 
@@ -60,10 +62,14 @@ float4 fragment fragmentMain(
         u.primitiveCount,
         primitiveIndices,
         activeMask,
+        lightIndices,
+        lightCdf,
         seed,
         u.maxRayDepth,
         u.debugAS,
-        u.blasNodeCount
+        u.blasNodeCount,
+        u.lightCount,
+        u.lightTotalWeight
     );
 
 

@@ -39,6 +39,10 @@ struct UniformsData {
   uint64_t blasNodeCount;
   uint32_t maxRayDepth;
   uint32_t debugAS;
+  uint32_t lightCount;
+  float lightTotalWeight;
+  uint32_t padding0 = 0;
+  uint32_t padding1 = 0;
 };
 
 inline uint32_t bitm_random() {
@@ -51,6 +55,34 @@ inline uint32_t bitm_random() {
 inline float randomFloat() {
   return (float)bitm_random() / (float)std::numeric_limits<uint32_t>::max();
 }
+
+namespace {
+
+float luminance(const simd::float3 &c) {
+  return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+}
+
+float primitiveArea(const Primitive &p) {
+  switch (p.type) {
+  case PrimitiveType::Sphere: {
+    float r = p.sphere.radius;
+    return 4.0f * static_cast<float>(M_PI) * r * r;
+  }
+  case PrimitiveType::Triangle: {
+    simd::float3 e1 = p.triangle.v1 - p.triangle.v0;
+    simd::float3 e2 = p.triangle.v2 - p.triangle.v0;
+    return 0.5f * simd::length(simd::cross(e1, e2));
+  }
+  case PrimitiveType::Rectangle: {
+    simd::float3 e1 = p.rectangle.u;
+    simd::float3 e2 = p.rectangle.v;
+    return 4.0f * simd::length(simd::cross(e1, e2));
+  }
+  }
+  return 0.0f;
+}
+
+} // namespace
 
 bool Renderer::isInView(const BoundingSphere &b) {
   simd::float3 toCenter = b.center - Camera::position;
@@ -99,6 +131,10 @@ Renderer::~Renderer() {
     _pTLASBuffer->release();
   if (_pActiveBuffer)
     _pActiveBuffer->release();
+  if (_pLightIndexBuffer)
+    _pLightIndexBuffer->release();
+  if (_pLightCdfBuffer)
+    _pLightCdfBuffer->release();
 
   for (int i = 0; i < 2; i++)
     if (_accumulationTargets[i])
@@ -288,6 +324,75 @@ void Renderer::buildBuffers(const Scene &scene) {
   delete[] primitiveBuffer;
   delete[] materialBuffer;
 
+  if (_pLightIndexBuffer) {
+    _pLightIndexBuffer->release();
+    _pLightIndexBuffer = nullptr;
+  }
+  if (_pLightCdfBuffer) {
+    _pLightCdfBuffer->release();
+    _pLightCdfBuffer = nullptr;
+  }
+
+  std::vector<uint32_t> lightIndices;
+  std::vector<float> lightCdf;
+  float totalWeight = 0.0f;
+
+  if (primitiveCount > 0) {
+    const auto &primitives = scene.getPrimitives();
+    lightIndices.reserve(primitives.size());
+    lightCdf.reserve(primitives.size());
+
+    for (size_t i = 0; i < primitives.size(); ++i) {
+      const Primitive &p = primitives[i];
+      const Material &m = p.material;
+      float emissionStrength = m.emissionPower * luminance(m.emissionColor);
+      if (emissionStrength <= 0.0f)
+        continue;
+
+      float area = primitiveArea(p);
+      if (area <= 0.0f)
+        continue;
+
+      float weight = area * emissionStrength;
+      if (weight <= 0.0f)
+        continue;
+
+      totalWeight += weight;
+      lightIndices.push_back(static_cast<uint32_t>(i));
+      lightCdf.push_back(totalWeight);
+    }
+  }
+
+  _lightCount = lightIndices.size();
+  _lightTotalWeight = totalWeight;
+
+  size_t lightCount = _lightCount > 0 ? _lightCount : 1;
+  _pLightIndexBuffer =
+      _pDevice->newBuffer(lightCount * sizeof(uint32_t),
+                          MTL::ResourceStorageModeManaged);
+  _pLightCdfBuffer =
+      _pDevice->newBuffer(lightCount * sizeof(float),
+                          MTL::ResourceStorageModeManaged);
+
+  if (_lightCount > 0) {
+    memcpy(_pLightIndexBuffer->contents(), lightIndices.data(),
+           _lightCount * sizeof(uint32_t));
+    _pLightIndexBuffer->didModifyRange(
+        NS::Range::Make(0, _lightCount * sizeof(uint32_t)));
+
+    memcpy(_pLightCdfBuffer->contents(), lightCdf.data(),
+           _lightCount * sizeof(float));
+    _pLightCdfBuffer->didModifyRange(
+        NS::Range::Make(0, _lightCount * sizeof(float)));
+  } else {
+    uint32_t dummyIndex = 0;
+    float dummyCdf = 0.0f;
+    memcpy(_pLightIndexBuffer->contents(), &dummyIndex, sizeof(uint32_t));
+    memcpy(_pLightCdfBuffer->contents(), &dummyCdf, sizeof(float));
+    _pLightIndexBuffer->didModifyRange(NS::Range::Make(0, sizeof(uint32_t)));
+    _pLightCdfBuffer->didModifyRange(NS::Range::Make(0, sizeof(float)));
+  }
+
   if (_pActiveBuffer) {
     _pActiveBuffer->release();
     _pActiveBuffer = nullptr;
@@ -452,6 +557,8 @@ void Renderer::updateUniforms() {
   u.blasNodeCount = _blasNodeCount;
   u.maxRayDepth = _pScene->maxRayDepth;
   u.debugAS = InputSystem::debugAS;
+  u.lightCount = static_cast<uint32_t>(_lightCount);
+  u.lightTotalWeight = _lightTotalWeight;
 
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(UniformsData)));
 }
@@ -483,6 +590,8 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pPrimitiveIndexBuffer, 0, 6);
   pEnc->setFragmentBuffer(_pTLASBuffer, 0, 7);
   pEnc->setFragmentBuffer(_pActiveBuffer, 0, 8);
+  pEnc->setFragmentBuffer(_pLightIndexBuffer, 0, 9);
+  pEnc->setFragmentBuffer(_pLightCdfBuffer, 0, 10);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
