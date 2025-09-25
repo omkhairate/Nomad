@@ -1323,7 +1323,6 @@ void Renderer::rebuildLightTable() {
     const simd::float4 &p0 = inst.primitiveData[base + 0];
     const simd::float4 &p1 = inst.primitiveData[base + 1];
     const simd::float4 &p2 = inst.primitiveData[base + 2];
-    const simd::float4 &p3 = inst.primitiveData[base + 3];
     int type = static_cast<int>(p0.w);
     switch (type) {
     case 0: {
