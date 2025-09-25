@@ -9,6 +9,21 @@
 
 namespace MetalCppPathTracer {
 
+struct SceneObject {
+  size_t firstPrimitive = 0;
+  size_t primitiveCount = 0;
+  simd::float3 boundsMin = simd::make_float3(0.0f, 0.0f, 0.0f);
+  simd::float3 boundsMax = simd::make_float3(0.0f, 0.0f, 0.0f);
+  int blasRootIndex = -1;
+};
+
+struct TLASNode {
+  simd::float3 boundsMin = simd::make_float3(0.0f, 0.0f, 0.0f);
+  simd::float3 boundsMax = simd::make_float3(0.0f, 0.0f, 0.0f);
+  int leftChild = -1;
+  int rightChild = -1;
+};
+
 struct CameraKeyframe {
   uint32_t frame;
   simd::float3 position;
@@ -22,6 +37,7 @@ public:
   void clear();
 
   size_t addPrimitive(const Primitive &p);
+  size_t addObject(const std::vector<Primitive> &prims);
   size_t getPrimitiveCount() const;
   size_t getSphereCount() const;
   size_t getTriangleCount() const;
@@ -53,10 +69,16 @@ private:
   std::vector<Primitive> primitives;
   std::vector<size_t> primitiveIndices;
   std::vector<BVHNode> bvhNodes;
+  std::vector<SceneObject> objects;
+  std::vector<size_t> objectIndices;
+  std::vector<TLASNode> tlasNodes;
 
+  size_t addObjectInternal(const Primitive *prims, size_t count);
   int buildBVHRecursive(size_t start, size_t end);
+  int buildTLASRecursive(size_t start, size_t end);
   float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax);
   float primitiveAxisValue(const Primitive &p, int axis) const;
+  float objectAxisValue(size_t objectIndex, int axis) const;
   void primitiveBounds(const Primitive &p, simd::float3 &pMin,
                        simd::float3 &pMax) const;
 };

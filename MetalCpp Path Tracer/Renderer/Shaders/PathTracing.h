@@ -197,6 +197,90 @@ inline intersection firstHitBVH(thread const ray &r,
   return in;
 }
 
+inline intersection
+firstHitTLAS(thread const ray &r, device const float4 *tlasNodes,
+             uint tlasNodeCount, device const float4 *bvhNodes,
+             device const float4 *primitives, device const int *primitiveIndices,
+             device const uchar *activeMask) {
+  intersection bestHit;
+  bestHit.t = INFINITY;
+  bestHit.primitiveId = -1;
+  bestHit.nodeIndex = -1;
+  bestHit.isTriangle = 0;
+
+  if (tlasNodeCount == 0)
+    return bestHit;
+
+  constexpr int stackSize = 64;
+  int stack[stackSize];
+  int stackPtr = 0;
+  stack[stackPtr++] = 0;
+
+  while (stackPtr > 0) {
+    int nodeIdx = stack[--stackPtr];
+    float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
+    float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
+
+    if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
+      continue;
+
+    int leftChild = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
+    int rightChild = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
+
+    if (leftChild < 0) {
+      int blasRoot = rightChild;
+      if (blasRoot >= 0) {
+        intersection hit = firstHitBVH(r, bvhNodes, primitives,
+                                       primitiveIndices, activeMask, blasRoot);
+        if (hit.primitiveId != -1 && hit.t < bestHit.t)
+          bestHit = hit;
+      }
+      continue;
+    }
+
+    bool leftHit = false;
+    bool rightHit = false;
+    float leftKey = INFINITY;
+    float rightKey = INFINITY;
+
+    if (leftChild >= 0) {
+      float3 leftMin = tlasNodes[2 * leftChild + 0].xyz;
+      float3 leftMax = tlasNodes[2 * leftChild + 1].xyz;
+      leftHit = intersectAABB(r, leftMin, leftMax, 0.0001, bestHit.t);
+      leftKey = dot((leftMin + leftMax) * 0.5 - r.origin, r.direction);
+    }
+
+    if (rightChild >= 0) {
+      float3 rightMin = tlasNodes[2 * rightChild + 0].xyz;
+      float3 rightMax = tlasNodes[2 * rightChild + 1].xyz;
+      rightHit = intersectAABB(r, rightMin, rightMax, 0.0001, bestHit.t);
+      rightKey = dot((rightMin + rightMax) * 0.5 - r.origin, r.direction);
+    }
+
+    if (leftHit && rightHit) {
+      if (stackPtr + 2 <= stackSize) {
+        if (leftKey < rightKey) {
+          stack[stackPtr++] = rightChild;
+          stack[stackPtr++] = leftChild;
+        } else {
+          stack[stackPtr++] = leftChild;
+          stack[stackPtr++] = rightChild;
+        }
+      } else if (stackPtr < stackSize) {
+        stack[stackPtr++] = (leftKey < rightKey) ? leftChild : rightChild;
+      }
+    } else if (leftHit) {
+      if (stackPtr < stackSize)
+        stack[stackPtr++] = leftChild;
+    } else if (rightHit) {
+      if (stackPtr < stackSize)
+        stack[stackPtr++] = rightChild;
+    }
+  }
+
+  return bestHit;
+}
+
 inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        device const float4 *tlasNodes,
                        uint tlasNodeCount, device const float4 *bvhNodes,
@@ -219,21 +303,9 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     }
     return float4(0.0, 0.0, 0.0, 1.0);
   } else if (debugAS == 2) {
-    intersection bestHit;
-    bestHit.t = INFINITY;
-    bestHit.primitiveId = -1;
-    for (uint i = 0; i < tlasNodeCount; ++i) {
-      float3 bmin = tlasNodes[2 * i + 0].xyz;
-      float3 bmax = tlasNodes[2 * i + 1].xyz;
-      int startNode = as_type<int>(tlasNodes[2 * i + 0].w);
-      if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
-        continue;
-      intersection hit =
-          firstHitBVH(r, bvhNodes, primitives, primitiveIndices, activeMask,
-                     startNode);
-      if (hit.primitiveId != -1 && hit.t < bestHit.t)
-        bestHit = hit;
-    }
+    intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
+                                        primitives, primitiveIndices,
+                                        activeMask);
     if (bestHit.primitiveId != -1) {
       float t = (blasNodeCount > 1)
                     ? float(bestHit.nodeIndex) / float(blasNodeCount - 1)
@@ -247,24 +319,9 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
   float4 light = float4(0.0);
 
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
-    intersection bestHit;
-    bestHit.t = INFINITY;
-    bestHit.primitiveId = -1;
-
-    for (uint i = 0; i < tlasNodeCount; ++i) {
-      float3 bmin = tlasNodes[2 * i + 0].xyz;
-      float3 bmax = tlasNodes[2 * i + 1].xyz;
-      int startNode = as_type<int>(tlasNodes[2 * i + 0].w);
-
-      if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
-        continue;
-
-      intersection hit =
-          firstHitBVH(r, bvhNodes, primitives, primitiveIndices, activeMask,
-                     startNode);
-      if (hit.primitiveId != -1 && hit.t < bestHit.t)
-        bestHit = hit;
-    }
+    intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
+                                        primitives, primitiveIndices,
+                                        activeMask);
 
     if (bestHit.primitiveId == -1) {
       float3 unitDir = normalize(r.direction);

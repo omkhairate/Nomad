@@ -142,6 +142,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             m.materialType = e->FloatAttribute("materialType", 0);
             m.emissionPower = e->FloatAttribute("emissionPower", 0);
 
+            std::vector<Primitive> meshPrimitives;
+            meshPrimitives.reserve(tris.size());
             for (const auto& tri : tris) {
                 Primitive p{};
                 p.type = PrimitiveType::Triangle;
@@ -149,8 +151,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 p.triangle.v1 = pos + scale * verts[tri.y];
                 p.triangle.v2 = pos + scale * verts[tri.z];
                 p.material = m;
-                scene->addPrimitive(p);
+                meshPrimitives.push_back(p);
             }
+            scene->addObject(meshPrimitives);
         }
         else if (tag == "CameraPath") {
             for (auto* kf = e->FirstChildElement("Keyframe"); kf; kf = kf->NextSiblingElement("Keyframe")) {
