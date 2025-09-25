@@ -53,19 +53,25 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
   _lastTime = current;
   updateFPS(fps);
   updateMemoryUsage(getMemoryUsageMB());
-  _pRenderer->draw(pView);
+
   if (_perfLog.is_open()) {
-    double cpu_ms = _pRenderer->lastCPUTime() * 1000.0;
-    double gpu_ms = _pRenderer->lastGPUTime() * 1000.0;
-    double rays = _pRenderer->lastRaysPerSecond();
-    size_t active = _pRenderer->activeNodeCount();
-    size_t offloaded = _pRenderer->offloadedNodeCount();
-    double gpu_mem = _pRenderer->currentGPUMemoryMB();
-    _perfLog << _frameCount << "," << fps << "," << cpu_ms << ","
-             << gpu_ms << "," << rays << "," << active << "," << offloaded
-             << "," << gpu_mem << "\n";
-    _perfLog.flush();
+    Renderer::FrameMetrics metrics;
+    while (_pRenderer->popCompletedFrameMetrics(metrics)) {
+      double cpu_ms = metrics.cpuTime * 1000.0;
+      double gpu_ms = metrics.gpuTime * 1000.0;
+      double rays = metrics.raysPerSecond;
+      size_t active = metrics.activeNodes;
+      size_t offloaded = metrics.offloadedNodes;
+      double gpu_mem = metrics.gpuMemoryMB;
+      _perfLog << _loggedFrameCount << "," << fps << "," << cpu_ms << ","
+               << gpu_ms << "," << rays << "," << active << ","
+               << offloaded << "," << gpu_mem << "\n";
+      _perfLog.flush();
+      ++_loggedFrameCount;
+    }
   }
+
+  _pRenderer->draw(pView);
   if (!_dumpPath.empty()) {
     char file[256];
     std::snprintf(file, sizeof(file), "%s/frame_%04zu.json", _dumpPath.c_str(),
