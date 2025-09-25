@@ -3,7 +3,7 @@
         <!-- Hold inside cluster A so all 64 meshes are resident -->
         <Keyframe frame="0" position="0,30,120" lookAt="0,20,0" />
         <Keyframe frame="80" position="0,30,120" lookAt="0,20,0" />
-        <!-- Jump to empty middle ground well beyond FULL_DETAIL_DISTANCE from both clusters -->
+        <!-- Jump to empty middle ground well beyond LOD_EXIT_DISTANCE from both clusters -->
         <Keyframe frame="160" position="600,80,300" lookAt="600,20,0" />
         <!-- Arrive at cluster B to trigger reloading of all meshes -->
         <Keyframe frame="240" position="1200,30,120" lookAt="1200,20,0" />

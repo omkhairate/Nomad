@@ -90,6 +90,7 @@ private:
 
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
+  std::vector<uint32_t> _primitiveCooldown;
   std::vector<BoundingSphere> _primitiveBounds;
   std::vector<SceneObject> _allSceneObjects;
 
