@@ -18,38 +18,6 @@ struct intersection
     int primitiveId = -1;
     int isTriangle = 0;
     int nodeIndex = -1; // BLAS leaf node index
-    int instanceId = -1;
-};
-
-
-struct InstanceMetadata
-{
-    uint primitiveCount;
-    uint blasNodeCount;
-    uint rootNodeIndex;
-    uint padding;
-};
-
-#define MAX_INSTANCE_COUNT 16384
-
-struct InstanceResources
-{
-    device const float4* blasNodes [[id(0)]];
-    device const float4* primitives [[id(1)]];
-    device const float4* materials [[id(2)]];
-    device const int* primitiveIndices [[id(3)]];
-};
-
-struct InstanceArgumentBuffer
-{
-    metal::array<InstanceResources, MAX_INSTANCE_COUNT> instances;
-};
-
-struct Light
-{
-    float4 meta;     // instanceId bits, primitiveIndex bits, area, light selection PDF
-    float4 emission; // emissionColor, emissionPower
-    float4 cdf;      // cumulative probability, padding
 };
 
 
@@ -75,10 +43,6 @@ struct UniformsData
     uint64_t blasNodeCount;
     uint maxRayDepth;
     uint debugAS;
-    uint residentInstanceCount;
-    uint totalInstanceCount;
-    uint lightCount;
-    uint paddingUniforms[3];
 };
 
 
