@@ -613,6 +613,14 @@ void Renderer::updateLODByDistance() {
     float dist = simd::length(bounds.center - Camera::position) - bounds.radius;
     dist = std::max(dist, 0.0f);
     bool within = dist < FULL_DETAIL_DISTANCE;
+    if (!within && _instances[i].state == ResidencyState::Resident) {
+      // Keep instances that are already resident even if they fall outside of
+      // the full-detail distance. Without this, meshes that were streamed in
+      // during preload immediately become candidates for eviction on the next
+      // frame and disappear even when there is enough budget to keep them
+      // resident.
+      within = true;
+    }
     candidates.push_back({i, dist, within});
   }
 
