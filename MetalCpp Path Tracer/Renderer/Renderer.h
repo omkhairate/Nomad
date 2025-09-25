@@ -3,9 +3,13 @@
 
 #include <Metal/Metal.hpp>
 #include <MetalKit/MetalKit.hpp>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <simd/simd.h>
+#include <thread>
 #include <vector>
 
 #include "Scene.h"
@@ -53,6 +57,12 @@ private:
   void buildBuffers(const Scene &scene);
   void rebuildAccelerationStructures(const Scene &scene);
   void rebuildResidentResources();
+  void processPendingResources();
+  struct PreparedResources;
+  PreparedResources buildResourcesForMask(const std::vector<uint8_t> &mask);
+  void commitPreparedResources(const PreparedResources &resources);
+  void enqueueLODRebuild(const std::vector<uint8_t> &mask);
+  void rebuildWorkerLoop();
   struct BoundingSphere {
     simd::float3 center;
     float radius;
@@ -92,6 +102,48 @@ private:
   std::vector<bool> _activePrimitive;
   std::vector<BoundingSphere> _primitiveBounds;
   std::vector<SceneObject> _allSceneObjects;
+
+  struct PreparedResources {
+    std::vector<simd::float4> transforms;
+    std::vector<simd::float4> materials;
+    std::vector<simd::float4> bvhData;
+    std::vector<simd::float4> tlasData;
+    std::vector<int> primitiveIndices;
+    std::vector<uint8_t> activeMask;
+    std::vector<simd::float3> triangleVertices;
+    std::vector<simd::uint3> triangleIndices;
+    std::vector<uint32_t> lightIndices;
+    std::vector<float> lightCdf;
+    size_t primitiveCount = 0;
+    size_t triangleCount = 0;
+    size_t blasNodeCount = 0;
+    size_t tlasNodeCount = 0;
+    size_t activeNodeCount = 0;
+    size_t lightCount = 0;
+    float lightTotalWeight = 0.0f;
+  };
+
+  struct ResourceBuffer {
+    PreparedResources data;
+    size_t version = 0;
+    bool ready = false;
+  };
+
+  std::mutex _primitiveMutex;
+  std::atomic<bool> _lodDirty{false};
+  std::vector<uint8_t> _pendingActiveMask;
+  size_t _lodRequestedVersion = 0;
+  size_t _lodAppliedVersion = 0;
+  size_t _lodBuildingVersion = 0;
+  bool _rebuildInProgress = false;
+  ResourceBuffer _resourceBuffers[2];
+  int _activeResourceIndex = 0;
+  int _readyResourceIndex = -1;
+  int _inFlightResourceIndex = -1;
+  std::thread _rebuildThread;
+  std::mutex _workerMutex;
+  std::condition_variable _workerCv;
+  bool _workerExit = false;
 
   size_t _residentPrimitiveCount = 0;
   size_t _residentTriangleCount = 0;
