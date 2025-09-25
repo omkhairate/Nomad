@@ -20,6 +20,7 @@ void Scene::clear() {
   cameraPath.clear();
   screenSize = {1280.f, 720.f};
   maxRayDepth = 32;
+  residencyStrategy = ResidencyStrategy::DistanceLOD;
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -100,6 +101,14 @@ const std::vector<size_t> &Scene::getPrimitiveIndices() const {
 }
 
 const std::vector<SceneObject> &Scene::getObjects() const { return objects; }
+
+ResidencyStrategy Scene::getResidencyStrategy() const {
+  return residencyStrategy;
+}
+
+void Scene::setResidencyStrategy(ResidencyStrategy strategy) {
+  residencyStrategy = strategy;
+}
 
 void Scene::buildBVH() {
   primitiveIndices.resize(primitives.size());

@@ -58,7 +58,9 @@ private:
     float radius;
   };
   bool isInView(const BoundingSphere &b);
+  void updateResidency();
   void updateLODByDistance();
+  void updateEnergyImportance();
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
 
@@ -93,6 +95,9 @@ private:
   std::vector<uint32_t> _primitiveCooldown;
   std::vector<BoundingSphere> _primitiveBounds;
   std::vector<SceneObject> _allSceneObjects;
+  std::vector<float> _primitiveImportance;
+  std::vector<size_t> _energySortedIndices;
+  float _totalPrimitiveImportance = 0.0f;
 
   size_t _residentPrimitiveCount = 0;
   size_t _residentTriangleCount = 0;

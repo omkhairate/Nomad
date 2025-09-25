@@ -64,6 +64,8 @@ namespace {
 constexpr float LOD_ENTER_DISTANCE = 225.0f;
 constexpr float LOD_EXIT_DISTANCE = 275.0f;
 constexpr uint32_t LOD_STATE_COOLDOWN_FRAMES = 5;
+constexpr float ENERGY_TARGET_FRACTION = 0.9f;
+constexpr size_t ENERGY_MIN_ACTIVE_PRIMITIVES = 16;
 
 float luminance(const simd::float3 &c) {
   return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
@@ -87,6 +89,14 @@ float primitiveArea(const Primitive &p) {
   }
   }
   return 0.0f;
+}
+
+float primitiveImportance(const Primitive &p) {
+  float area = std::max(primitiveArea(p), 1e-4f);
+  const Material &m = p.material;
+  float emissive = m.emissionPower * luminance(m.emissionColor);
+  float reflective = luminance(m.albedo);
+  return area * (emissive + reflective);
 }
 
 } // namespace
@@ -217,6 +227,12 @@ void Renderer::updateVisibleScene() {
          "%u frames)\n",
          LOD_ENTER_DISTANCE, LOD_EXIT_DISTANCE, LOD_STATE_COOLDOWN_FRAMES);
 
+  const char *strategyName =
+      _pScene->getResidencyStrategy() == ResidencyStrategy::EnergyImportance
+          ? "Energy importance"
+          : "Distance-based LOD";
+  printf("Active primitive residency strategy: %s\n", strategyName);
+
   // Store full primitive list and initialize tracking
   _allPrimitives = _pScene->getPrimitives();
   _allSceneObjects = _pScene->getObjects();
@@ -224,6 +240,9 @@ void Renderer::updateVisibleScene() {
   _activePrimitive.assign(primCount, true);
   _primitiveCooldown.assign(primCount, 0);
   _primitiveBounds.resize(primCount);
+  _primitiveImportance.assign(primCount, 0.0f);
+  _energySortedIndices.resize(primCount);
+  _totalPrimitiveImportance = 0.0f;
   for (size_t i = 0; i < primCount; ++i) {
     const Primitive &p = _allPrimitives[i];
     if (p.type == PrimitiveType::Sphere) {
@@ -238,7 +257,15 @@ void Renderer::updateVisibleScene() {
       float r = simd::length(p.rectangle.u) + simd::length(p.rectangle.v);
       _primitiveBounds[i] = {p.rectangle.center, r};
     }
+    _primitiveImportance[i] = primitiveImportance(p);
+    _energySortedIndices[i] = i;
+    _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
   }
+
+  std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
+            [this](size_t a, size_t b) {
+              return _primitiveImportance[a] > _primitiveImportance[b];
+            });
 
   _pScene->buildBVH();
 
@@ -572,7 +599,7 @@ void Renderer::updateUniforms() {
 }
 
 void Renderer::draw(MTK::View *pView) {
-  updateLODByDistance();
+  updateResidency();
   updateUniforms();
   beginFrameMetrics();
   std::swap(_accumulationTargets[0], _accumulationTargets[1]);
@@ -618,6 +645,21 @@ void Renderer::draw(MTK::View *pView) {
   pPool->release();
 }
 
+void Renderer::updateResidency() {
+  if (!_pScene)
+    return;
+
+  switch (_pScene->getResidencyStrategy()) {
+  case ResidencyStrategy::EnergyImportance:
+    updateEnergyImportance();
+    break;
+  case ResidencyStrategy::DistanceLOD:
+  default:
+    updateLODByDistance();
+    break;
+  }
+}
+
 void Renderer::updateLODByDistance() {
   // Use hysteresis so primitives do not flicker when hovering near the
   // activation boundary. Inactive primitives only become active once the
@@ -652,6 +694,58 @@ void Renderer::updateLODByDistance() {
     if (setPrimitiveActive(0, true))
       changed = true;
     activeCount = 1;
+  }
+
+  if (changed)
+    rebuildResidentResources();
+}
+
+void Renderer::updateEnergyImportance() {
+  if (_activePrimitive.empty())
+    return;
+
+  const size_t primCount = _activePrimitive.size();
+  std::vector<bool> desiredState(primCount, false);
+  size_t minActive = std::min(primCount, ENERGY_MIN_ACTIVE_PRIMITIVES);
+
+  if (_totalPrimitiveImportance <= 0.0f) {
+    for (size_t i = 0; i < minActive && i < _energySortedIndices.size(); ++i)
+      desiredState[_energySortedIndices[i]] = true;
+  } else {
+    float cumulative = 0.0f;
+    float targetImportance = _totalPrimitiveImportance * ENERGY_TARGET_FRACTION;
+    size_t enabled = 0;
+    for (size_t rank = 0; rank < _energySortedIndices.size(); ++rank) {
+      size_t index = _energySortedIndices[rank];
+      if (enabled >= minActive && cumulative >= targetImportance)
+        break;
+      desiredState[index] = true;
+      cumulative += std::max(_primitiveImportance[index], 0.0f);
+      ++enabled;
+    }
+
+    for (size_t i = 0; i < minActive && i < _energySortedIndices.size(); ++i)
+      desiredState[_energySortedIndices[i]] = true;
+  }
+
+  bool changed = false;
+  for (size_t i = 0; i < primCount; ++i) {
+    bool shouldBeActive = desiredState[i];
+    if (shouldBeActive != _activePrimitive[i])
+      if (setPrimitiveActive(i, shouldBeActive))
+        changed = true;
+  }
+
+  size_t activeCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activeCount;
+
+  if (activeCount == 0 && !_activePrimitive.empty()) {
+    size_t fallback = !_energySortedIndices.empty() ? _energySortedIndices.front()
+                                                    : size_t(0);
+    if (setPrimitiveActive(fallback, true))
+      changed = true;
   }
 
   if (changed)
