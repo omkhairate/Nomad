@@ -186,7 +186,6 @@ private:
   void refreshActiveNodeCount();
   std::pair<size_t, size_t> calculateOffloadedResidency() const;
   void initializeInstances();
-  void preloadInitialResidency();
   void processPendingReleases();
   void processPendingStreamIns();
   size_t instanceFootprintBytes(const InstanceRecord &inst) const;
