@@ -568,10 +568,20 @@ void Renderer::dumpAccelerationStructure(const std::string &path) {
   for (size_t i = 0; i < tlasCount; ++i) {
     simd::float4 bmin = tlasData[2 * i];
     simd::float4 bmax = tlasData[2 * i + 1];
-    int childIndex = reinterpret_cast<const int *>(&bmin)[3];
-    out << "    {\"child\":" << childIndex << ",\"min\":[" << bmin.x << ","
-        << bmin.y << "," << bmin.z << "],\"max\":[" << bmax.x << "," << bmax.y
-        << "," << bmax.z << "]}";
+    int first = reinterpret_cast<const int *>(&bmin)[3];
+    int second = reinterpret_cast<const int *>(&bmax)[3];
+    bool isLeaf = first < 0;
+    out << "    {\"index\":" << i << ",\"leaf\":"
+        << (isLeaf ? "true" : "false") << ",\"min\":[" << bmin.x << ","
+        << bmin.y << "," << bmin.z << "],\"max\":[" << bmax.x << ","
+        << bmax.y << "," << bmax.z << "]";
+    if (isLeaf) {
+      int objectIndex = -(first + 1);
+      out << ",\"object\":" << objectIndex << ",\"blasRoot\":" << second;
+    } else {
+      out << ",\"left\":" << first << ",\"right\":" << second;
+    }
+    out << "}";
     if (i + 1 < tlasCount)
       out << ",\n";
     else
