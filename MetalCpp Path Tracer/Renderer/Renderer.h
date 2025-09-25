@@ -3,8 +3,8 @@
 
 #include <Metal/Metal.hpp>
 #include <MetalKit/MetalKit.hpp>
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
 #include <simd/simd.h>
 #include <vector>
 
@@ -19,7 +19,6 @@ public:
 
   void updateVisibleScene();
   void buildShaders();
-  void buildBuffers();
   void buildTextures();
 
   void recalculateViewport();
@@ -30,16 +29,12 @@ public:
   void drawableSizeWillChange(MTK::View *pView, CGSize size);
 
   bool hasKeyframes() const;
-  // Toggle visibility of an individual primitive without rebuilding TLAS.
-  void setPrimitiveActive(size_t index, bool active);
+  bool setPrimitiveActive(size_t index, bool active);
 
-  // Dump acceleration structure to a JSON file for debugging.
   void dumpAccelerationStructure(const std::string &path);
 
-  // Return the amount of GPU memory currently allocated by the device in MB.
   double currentGPUMemoryMB() const;
 
-  // Expose last recorded performance metrics.
   double lastCPUTime() const;
   double lastGPUTime() const;
   double lastRaysPerSecond() const;
@@ -55,6 +50,18 @@ public:
   };
 
 private:
+  void buildBuffers(const Scene &scene);
+  void rebuildAccelerationStructures(const Scene &scene);
+  void rebuildResidentResources();
+  struct BoundingSphere {
+    simd::float3 center;
+    float radius;
+  };
+  bool isInView(const BoundingSphere &b);
+  void updateLODByDistance();
+  void beginFrameMetrics();
+  void completeFrameMetrics(MTL::CommandBuffer *pCmd);
+
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
@@ -79,22 +86,14 @@ private:
   // Accumulation framebuffers
   MTL::Texture *_accumulationTargets[2] = {nullptr, nullptr};
 
-  struct BoundingSphere {
-    simd::float3 center;
-    float radius;
-  };
-
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
   std::vector<BoundingSphere> _primitiveBounds;
+  std::vector<SceneObject> _allSceneObjects;
 
-  bool isInView(const BoundingSphere &b);
-  void rebuildAccelerationStructures();
-  void updateLODByDistance();
+  size_t _residentPrimitiveCount = 0;
+  size_t _residentTriangleCount = 0;
 
-  // Performance metrics
-  void beginFrameMetrics();
-  void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
   double _lastGPUTime = 0.0;

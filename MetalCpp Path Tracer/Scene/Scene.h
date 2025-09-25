@@ -38,6 +38,7 @@ public:
 
   size_t addPrimitive(const Primitive &p);
   size_t addObject(const std::vector<Primitive> &prims);
+  size_t addObjectSilent(const std::vector<Primitive> &prims);
   size_t getPrimitiveCount() const;
   size_t getSphereCount() const;
   size_t getTriangleCount() const;
@@ -45,6 +46,7 @@ public:
 
   const std::vector<Primitive> &getPrimitives() const;
   const std::vector<size_t> &getPrimitiveIndices() const;
+  const std::vector<SceneObject> &getObjects() const;
 
   void buildBVH();
   size_t getBVHNodeCount() const;
@@ -73,7 +75,8 @@ private:
   std::vector<size_t> objectIndices;
   std::vector<TLASNode> tlasNodes;
 
-  size_t addObjectInternal(const Primitive *prims, size_t count);
+  size_t addObjectInternal(const Primitive *prims, size_t count,
+                          bool logPrimitives);
   int buildBVHRecursive(size_t start, size_t end);
   int buildTLASRecursive(size_t start, size_t end);
   float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax);
