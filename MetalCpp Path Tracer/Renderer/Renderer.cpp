@@ -309,8 +309,11 @@ void Renderer::buildBuffers() {
   _pInstanceMetaBuffer->didModifyRange(NS::Range::Make(0, metaSize));
 
   releaseBuffer(_pInstanceArgBuffer, _instanceArgBufferSize);
-  if (_pInstanceArgEncoder) {
-    size_t argLength = _pInstanceArgEncoder->encodedLength();
+  if (_pInstanceArgEncoder && _instanceArgStride > 0) {
+    size_t capacity = kMaxInstanceCapacity;
+    if (_instanceArgStride > std::numeric_limits<size_t>::max() / capacity)
+      return;
+    size_t argLength = _instanceArgStride * capacity;
     if (!ensureBudget(argLength))
       return;
     _pInstanceArgBuffer =
@@ -1277,9 +1280,11 @@ void Renderer::updateInstanceArgument(size_t index) {
     return;
   if (index >= kMaxInstanceCapacity)
     return;
+  if (index >= _instances.size())
+    return;
 
   size_t offset = index * _instanceArgStride;
-  if (offset + _instanceArgStride > _pInstanceArgEncoder->encodedLength())
+  if (offset + _instanceArgStride > _instanceArgBufferSize)
     return;
 
   _pInstanceArgElementEncoder->setArgumentBuffer(_pInstanceArgBuffer,
