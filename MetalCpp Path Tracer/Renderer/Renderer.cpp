@@ -111,28 +111,19 @@ Renderer::~Renderer() {
     _pTriangleVertexBuffer->release();
   if (_pTriangleIndexBuffer)
     _pTriangleIndexBuffer->release();
-  if (_pUniformsBuffer)
-    _pUniformsBuffer->release();
-  if (_pTLASBuffer)
-    _pTLASBuffer->release();
-  if (_pTLASInstanceIndexBuffer)
-    _pTLASInstanceIndexBuffer->release();
-  if (_pInstanceMetaBuffer)
-    _pInstanceMetaBuffer->release();
-  if (_pInstanceArgBuffer)
-    _pInstanceArgBuffer->release();
+  releaseBuffer(_pUniformsBuffer, _uniformsBufferSize);
+  releaseBuffer(_pTLASBuffer, _tlasBufferSize);
+  releaseBuffer(_pTLASInstanceIndexBuffer, _tlasInstanceIndexBufferSize);
+  releaseBuffer(_pInstanceMetaBuffer, _instanceMetaBufferSize);
+  releaseBuffer(_pInstanceArgBuffer, _instanceArgBufferSize);
   if (_pInstanceArgElementEncoder)
     _pInstanceArgElementEncoder->release();
   if (_pInstanceArgEncoder)
     _pInstanceArgEncoder->release();
-  if (_pLightBuffer) {
-    _pLightBuffer->release();
-    _pLightBuffer = nullptr;
-  }
+  releaseBuffer(_pLightBuffer, _lightBufferSize);
 
   for (int i = 0; i < 2; i++)
-    if (_accumulationTargets[i])
-      _accumulationTargets[i]->release();
+    releaseTexture(_accumulationTargets[i], _accumulationTargetSizes[i]);
 
   if (_pPSO)
     _pPSO->release();
@@ -291,18 +282,18 @@ void Renderer::buildBuffers() {
   const size_t uniformsDataSize = sizeof(UniformsData);
 
   // Uniforms
-  if (_pUniformsBuffer)
-    _pUniformsBuffer->release();
+  releaseBuffer(_pUniformsBuffer, _uniformsBufferSize);
   if (!ensureBudget(uniformsDataSize))
     return;
   _pUniformsBuffer =
       _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
+  if (!_pUniformsBuffer)
+    return;
+  _uniformsBufferSize = uniformsDataSize;
+  trackAllocation(_uniformsBufferSize);
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
 
-  if (_pInstanceMetaBuffer) {
-    _pInstanceMetaBuffer->release();
-    _pInstanceMetaBuffer = nullptr;
-  }
+  releaseBuffer(_pInstanceMetaBuffer, _instanceMetaBufferSize);
   size_t instanceCount = _instances.size();
   size_t metaCount = instanceCount > 0 ? instanceCount : 1;
   size_t metaSize = metaCount * sizeof(InstanceMetadataCPU);
@@ -310,19 +301,24 @@ void Renderer::buildBuffers() {
     return;
   _pInstanceMetaBuffer =
       _pDevice->newBuffer(metaSize, MTL::ResourceStorageModeManaged);
+  if (!_pInstanceMetaBuffer)
+    return;
+  _instanceMetaBufferSize = metaSize;
+  trackAllocation(_instanceMetaBufferSize);
   std::memset(_pInstanceMetaBuffer->contents(), 0, metaSize);
   _pInstanceMetaBuffer->didModifyRange(NS::Range::Make(0, metaSize));
 
-  if (_pInstanceArgBuffer) {
-    _pInstanceArgBuffer->release();
-    _pInstanceArgBuffer = nullptr;
-  }
+  releaseBuffer(_pInstanceArgBuffer, _instanceArgBufferSize);
   if (_pInstanceArgEncoder) {
     size_t argLength = _pInstanceArgEncoder->encodedLength();
     if (!ensureBudget(argLength))
       return;
     _pInstanceArgBuffer =
         _pDevice->newBuffer(argLength, MTL::ResourceStorageModeShared);
+    if (!_pInstanceArgBuffer)
+      return;
+    _instanceArgBufferSize = argLength;
+    trackAllocation(_instanceArgBufferSize);
     std::memset(_pInstanceArgBuffer->contents(), 0, argLength);
     _pInstanceArgEncoder->setArgumentBuffer(_pInstanceArgBuffer, 0);
   }
@@ -449,6 +445,9 @@ void Renderer::preloadInitialResidency() {
 }
 
 void Renderer::buildTextures() {
+  for (uint i = 0; i < 2; i++)
+    releaseTexture(_accumulationTargets[i], _accumulationTargetSizes[i]);
+
   MTL::TextureDescriptor *textureDescriptor =
       MTL::TextureDescriptor::alloc()->init();
 
@@ -467,6 +466,10 @@ void Renderer::buildTextures() {
       return;
     }
     _accumulationTargets[i] = _pDevice->newTexture(textureDescriptor);
+    if (_accumulationTargets[i]) {
+      _accumulationTargetSizes[i] = texSize;
+      trackAllocation(texSize);
+    }
   }
   textureDescriptor->release();
 }
@@ -1134,38 +1137,52 @@ bool Renderer::streamInInstance(size_t index) {
     return false;
   }
 
-  auto enqueueCopy = [&](const void *src, size_t size, MTL::Buffer **dst) {
+  auto enqueueCopy = [&](const void *src, size_t size, MTL::Buffer **dst,
+                         size_t &dstSize) {
     if (*dst) {
+      trackDeallocation(dstSize);
       (*dst)->release();
       *dst = nullptr;
+      dstSize = 0;
     }
     if (size == 0)
       return true;
+    if (!ensureBudget(size))
+      return false;
     MTL::Buffer *staging =
         _pDevice->newBuffer(size, MTL::ResourceStorageModeShared);
+    if (!staging)
+      return false;
     std::memcpy(staging->contents(), src, size);
     MTL::Buffer *gpu =
         _pDevice->newBuffer(size, MTL::ResourceStorageModePrivate);
+    if (!gpu) {
+      staging->release();
+      return false;
+    }
     blit->copyFromBuffer(staging, 0, gpu, 0, size);
     stagingBuffers.push_back(staging);
     *dst = gpu;
+    dstSize = size;
+    trackAllocation(size);
     return true;
   };
 
   bool success = enqueueCopy(inst.primitiveData.data(),
                              inst.primitiveData.size() * sizeof(simd::float4),
-                             &inst.gpu.primitives);
+                             &inst.gpu.primitives, inst.gpu.primitiveBytes);
   success = success &&
             enqueueCopy(inst.materialData.data(),
                         inst.materialData.size() * sizeof(simd::float4),
-                        &inst.gpu.materials);
+                        &inst.gpu.materials, inst.gpu.materialBytes);
   success = success && enqueueCopy(inst.primitiveIndices.data(),
                                    inst.primitiveIndices.size() * sizeof(int),
-                                   &inst.gpu.primitiveIndices);
+                                   &inst.gpu.primitiveIndices,
+                                   inst.gpu.primitiveIndicesBytes);
   success = success &&
             enqueueCopy(inst.blasNodes.data(),
                         inst.blasNodes.size() * sizeof(simd::float4),
-                        &inst.gpu.blasNodes);
+                        &inst.gpu.blasNodes, inst.gpu.blasNodesBytes);
 
   blit->endEncoding();
 
@@ -1223,18 +1240,26 @@ void Renderer::releaseInstanceResources(size_t index) {
 
   InstanceRecord &inst = _instances[index];
   if (inst.gpu.blasNodes) {
+    trackDeallocation(inst.gpu.blasNodesBytes);
+    inst.gpu.blasNodesBytes = 0;
     inst.gpu.blasNodes->release();
     inst.gpu.blasNodes = nullptr;
   }
   if (inst.gpu.primitives) {
+    trackDeallocation(inst.gpu.primitiveBytes);
+    inst.gpu.primitiveBytes = 0;
     inst.gpu.primitives->release();
     inst.gpu.primitives = nullptr;
   }
   if (inst.gpu.materials) {
+    trackDeallocation(inst.gpu.materialBytes);
+    inst.gpu.materialBytes = 0;
     inst.gpu.materials->release();
     inst.gpu.materials = nullptr;
   }
   if (inst.gpu.primitiveIndices) {
+    trackDeallocation(inst.gpu.primitiveIndicesBytes);
+    inst.gpu.primitiveIndicesBytes = 0;
     inst.gpu.primitiveIndices->release();
     inst.gpu.primitiveIndices = nullptr;
   }
@@ -1410,12 +1435,19 @@ void Renderer::rebuildLightTable() {
     // case instead of leaving it null.
     GPULightData emptyLight{};
     size_t bufferSize = sizeof(GPULightData);
-    if (!_pLightBuffer) {
+    if (!_pLightBuffer || _pLightBuffer->length() < bufferSize) {
+      releaseBuffer(_pLightBuffer, _lightBufferSize);
+      if (!ensureBudget(bufferSize))
+        return;
       _pLightBuffer =
           _pDevice->newBuffer(bufferSize, MTL::ResourceStorageModeManaged);
+      if (_pLightBuffer) {
+        _lightBufferSize = bufferSize;
+        trackAllocation(_lightBufferSize);
+      }
     }
 
-    if (_pLightBuffer && _pLightBuffer->length() >= bufferSize) {
+    if (_pLightBuffer) {
       std::memcpy(_pLightBuffer->contents(), &emptyLight, bufferSize);
       _pLightBuffer->didModifyRange(NS::Range::Make(0, bufferSize));
     }
@@ -1440,10 +1472,15 @@ void Renderer::rebuildLightTable() {
     return;
   }
 
+  releaseBuffer(_pLightBuffer, _lightBufferSize);
   _pLightBuffer =
       _pDevice->newBuffer(bufferSize, MTL::ResourceStorageModeManaged);
-  std::memcpy(_pLightBuffer->contents(), _lightTable.data(), bufferSize);
-  _pLightBuffer->didModifyRange(NS::Range::Make(0, bufferSize));
+  if (_pLightBuffer) {
+    _lightBufferSize = bufferSize;
+    trackAllocation(_lightBufferSize);
+    std::memcpy(_pLightBuffer->contents(), _lightTable.data(), bufferSize);
+    _pLightBuffer->didModifyRange(NS::Range::Make(0, bufferSize));
+  }
 
   _lightTableDirty = false;
 }
@@ -1592,14 +1629,8 @@ void Renderer::rebuildTLAS() {
       !instanceIndices.empty() ? instanceIndices.size() * sizeof(int)
                                : sizeof(int);
 
-  if (_pTLASBuffer) {
-    _pTLASBuffer->release();
-    _pTLASBuffer = nullptr;
-  }
-  if (_pTLASInstanceIndexBuffer) {
-    _pTLASInstanceIndexBuffer->release();
-    _pTLASInstanceIndexBuffer = nullptr;
-  }
+  releaseBuffer(_pTLASBuffer, _tlasBufferSize);
+  releaseBuffer(_pTLASInstanceIndexBuffer, _tlasInstanceIndexBufferSize);
 
   if (!ensureBudget(nodeByteCount + indexByteCount)) {
     size_t previousActive = _activeNodeCount;
@@ -1616,24 +1647,34 @@ void Renderer::rebuildTLAS() {
 
   _pTLASBuffer =
       _pDevice->newBuffer(nodeByteCount, MTL::ResourceStorageModeManaged);
-  simd::float4 *nodeDst =
-      reinterpret_cast<simd::float4 *>(_pTLASBuffer->contents());
-  if (!tlasData.empty())
-    std::memcpy(nodeDst, tlasData.data(), tlasData.size() * sizeof(simd::float4));
-  else
-    std::memset(nodeDst, 0, nodeByteCount);
-  _pTLASBuffer->didModifyRange(NS::Range::Make(0, nodeByteCount));
+  if (_pTLASBuffer) {
+    _tlasBufferSize = nodeByteCount;
+    trackAllocation(_tlasBufferSize);
+    simd::float4 *nodeDst =
+        reinterpret_cast<simd::float4 *>(_pTLASBuffer->contents());
+    if (!tlasData.empty())
+      std::memcpy(nodeDst, tlasData.data(),
+                  tlasData.size() * sizeof(simd::float4));
+    else
+      std::memset(nodeDst, 0, nodeByteCount);
+    _pTLASBuffer->didModifyRange(NS::Range::Make(0, nodeByteCount));
+  }
 
   _pTLASInstanceIndexBuffer =
       _pDevice->newBuffer(indexByteCount, MTL::ResourceStorageModeManaged);
-  int *indexDst = reinterpret_cast<int *>(_pTLASInstanceIndexBuffer->contents());
-  if (!instanceIndices.empty())
-    std::memcpy(indexDst, instanceIndices.data(),
-                instanceIndices.size() * sizeof(int));
-  else
-    std::memset(indexDst, 0, indexByteCount);
-  _pTLASInstanceIndexBuffer->didModifyRange(
-      NS::Range::Make(0, indexByteCount));
+  if (_pTLASInstanceIndexBuffer) {
+    _tlasInstanceIndexBufferSize = indexByteCount;
+    trackAllocation(_tlasInstanceIndexBufferSize);
+    int *indexDst =
+        reinterpret_cast<int *>(_pTLASInstanceIndexBuffer->contents());
+    if (!instanceIndices.empty())
+      std::memcpy(indexDst, instanceIndices.data(),
+                  instanceIndices.size() * sizeof(int));
+    else
+      std::memset(indexDst, 0, indexByteCount);
+    _pTLASInstanceIndexBuffer->didModifyRange(
+        NS::Range::Make(0, indexByteCount));
+  }
 
   refreshActiveNodeCount();
 }
@@ -1645,10 +1686,13 @@ void Renderer::processPendingReleases() {
 }
 
 bool Renderer::createPrivateBuffer(const void *data, size_t size,
-                                   MTL::Buffer **outBuffer) {
+                                   MTL::Buffer **outBuffer,
+                                   size_t &sizeTracker) {
   if (*outBuffer) {
+    trackDeallocation(sizeTracker);
     (*outBuffer)->release();
     *outBuffer = nullptr;
+    sizeTracker = 0;
   }
   if (size == 0)
     return true;
@@ -1657,11 +1701,30 @@ bool Renderer::createPrivateBuffer(const void *data, size_t size,
 
   MTL::Buffer *staging =
       _pDevice->newBuffer(size, MTL::ResourceStorageModeShared);
-  std::memcpy(staging->contents(), data, size);
+  if (!staging)
+    return false;
+  if (data)
+    std::memcpy(staging->contents(), data, size);
+  else
+    std::memset(staging->contents(), 0, size);
   MTL::Buffer *gpu =
       _pDevice->newBuffer(size, MTL::ResourceStorageModePrivate);
+  if (!gpu) {
+    staging->release();
+    return false;
+  }
   MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
+  if (!cmd) {
+    staging->release();
+    gpu->release();
+    return false;
+  }
   MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
+  if (!blit) {
+    staging->release();
+    gpu->release();
+    return false;
+  }
   blit->copyFromBuffer(staging, 0, gpu, 0, size);
   blit->endEncoding();
   cmd->commit();
@@ -1669,26 +1732,57 @@ bool Renderer::createPrivateBuffer(const void *data, size_t size,
 
   staging->release();
   *outBuffer = gpu;
+  sizeTracker = size;
+  trackAllocation(size);
   return true;
 }
 
 bool Renderer::createPrivateBuffer(const std::vector<simd::float4> &data,
-                                   MTL::Buffer **outBuffer) {
+                                   MTL::Buffer **outBuffer,
+                                   size_t &sizeTracker) {
   const void *ptr = data.empty() ? nullptr : data.data();
   return createPrivateBuffer(ptr, data.size() * sizeof(simd::float4),
-                             outBuffer);
+                             outBuffer, sizeTracker);
 }
 
 bool Renderer::createPrivateBuffer(const std::vector<int> &data,
-                                   MTL::Buffer **outBuffer) {
+                                   MTL::Buffer **outBuffer,
+                                   size_t &sizeTracker) {
   const void *ptr = data.empty() ? nullptr : data.data();
-  return createPrivateBuffer(ptr, data.size() * sizeof(int), outBuffer);
+  return createPrivateBuffer(ptr, data.size() * sizeof(int), outBuffer,
+                             sizeTracker);
+}
+
+void Renderer::trackAllocation(size_t bytes) { _trackedAllocatedBytes += bytes; }
+
+void Renderer::trackDeallocation(size_t bytes) {
+  if (bytes >= _trackedAllocatedBytes)
+    _trackedAllocatedBytes = 0;
+  else
+    _trackedAllocatedBytes -= bytes;
+}
+
+void Renderer::releaseBuffer(MTL::Buffer *&buffer, size_t &sizeTracker) {
+  if (!buffer)
+    return;
+  trackDeallocation(sizeTracker);
+  buffer->release();
+  buffer = nullptr;
+  sizeTracker = 0;
+}
+
+void Renderer::releaseTexture(MTL::Texture *&texture, size_t &sizeTracker) {
+  if (!texture)
+    return;
+  trackDeallocation(sizeTracker);
+  texture->release();
+  texture = nullptr;
+  sizeTracker = 0;
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
   for (uint i = 0; i < 2; i++)
-    if (_accumulationTargets[i])
-      _accumulationTargets[i]->release();
+    releaseTexture(_accumulationTargets[i], _accumulationTargetSizes[i]);
 
   Camera::screenSize = {(float)size.width, (float)size.height};
 
@@ -1761,8 +1855,7 @@ void Renderer::dumpAccelerationStructure(const std::string &path) {
 }
 
 double Renderer::currentGPUMemoryMB() const {
-  return static_cast<double>(_pDevice->currentAllocatedSize()) /
-         (1024.0 * 1024.0);
+  return static_cast<double>(_trackedAllocatedBytes) / (1024.0 * 1024.0);
 }
 
 bool Renderer::popCompletedFrameMetrics(FrameMetrics &outMetrics) {
@@ -1788,7 +1881,7 @@ void Renderer::setGPUMemoryBudgetMB(double mb) {
 bool Renderer::ensureBudget(size_t bytes) const {
   if (_gpuMemoryBudget == std::numeric_limits<size_t>::max())
     return true;
-  size_t current = _pDevice->currentAllocatedSize();
+  size_t current = _trackedAllocatedBytes;
   if (current + bytes > _gpuMemoryBudget) {
     printf("GPU memory budget exceeded: requested %zu bytes (current %zu, budget %zu)\n",
            bytes, current, _gpuMemoryBudget);
