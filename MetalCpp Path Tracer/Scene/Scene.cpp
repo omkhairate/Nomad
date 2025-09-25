@@ -22,15 +22,24 @@ void Scene::clear() {
   maxRayDepth = 32;
 }
 
-size_t Scene::addPrimitive(const Primitive &p) { return addObjectInternal(&p, 1); }
+size_t Scene::addPrimitive(const Primitive &p) {
+  return addObjectInternal(&p, 1, true);
+}
 
 size_t Scene::addObject(const std::vector<Primitive> &prims) {
   if (prims.empty())
     return primitives.size();
-  return addObjectInternal(prims.data(), prims.size());
+  return addObjectInternal(prims.data(), prims.size(), true);
 }
 
-size_t Scene::addObjectInternal(const Primitive *prims, size_t count) {
+size_t Scene::addObjectSilent(const std::vector<Primitive> &prims) {
+  if (prims.empty())
+    return primitives.size();
+  return addObjectInternal(prims.data(), prims.size(), false);
+}
+
+size_t Scene::addObjectInternal(const Primitive *prims, size_t count,
+                                bool logPrimitives) {
   if (count == 0)
     return primitives.size();
 
@@ -42,12 +51,14 @@ size_t Scene::addObjectInternal(const Primitive *prims, size_t count) {
   object.primitiveCount = count;
   objects.push_back(object);
 
-  for (size_t i = 0; i < count; ++i) {
-    const Primitive &p = primitives[start + i];
-    if (p.type == PrimitiveType::Sphere) {
-      const auto &s = p.sphere;
-      printf("Sphere -> Position: (%.2f, %.2f, %.2f), Radius: %.2f\n",
-             s.center.x, s.center.y, s.center.z, s.radius);
+  if (logPrimitives) {
+    for (size_t i = 0; i < count; ++i) {
+      const Primitive &p = primitives[start + i];
+      if (p.type == PrimitiveType::Sphere) {
+        const auto &s = p.sphere;
+        printf("Sphere -> Position: (%.2f, %.2f, %.2f), Radius: %.2f\n",
+               s.center.x, s.center.y, s.center.z, s.radius);
+      }
     }
   }
 
@@ -87,6 +98,8 @@ const std::vector<Primitive> &Scene::getPrimitives() const {
 const std::vector<size_t> &Scene::getPrimitiveIndices() const {
   return primitiveIndices;
 }
+
+const std::vector<SceneObject> &Scene::getObjects() const { return objects; }
 
 void Scene::buildBVH() {
   primitiveIndices.resize(primitives.size());

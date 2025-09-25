@@ -172,6 +172,7 @@ void Renderer::updateVisibleScene() {
 
   // Store full primitive list and initialize tracking
   _allPrimitives = _pScene->getPrimitives();
+  _allSceneObjects = _pScene->getObjects();
   size_t primCount = _allPrimitives.size();
   _activePrimitive.assign(primCount, true);
   _primitiveBounds.resize(primCount);
@@ -191,8 +192,16 @@ void Renderer::updateVisibleScene() {
     }
   }
 
-  rebuildAccelerationStructures();
-  buildBuffers();
+  _pScene->buildBVH();
+
+  size_t fullTlasCount = 0;
+  if (primCount > 0) {
+    simd::float4 *tmp = _pScene->createTLASBuffer(fullTlasCount);
+    delete[] tmp;
+  }
+  _totalNodeCount = fullTlasCount + primCount;
+
+  rebuildResidentResources();
 }
 
 void Renderer::recalculateViewport() {
@@ -231,18 +240,16 @@ void Renderer::recalculateViewport() {
          firstPixelPosition.y, firstPixelPosition.z);
 }
 
-void Renderer::buildBuffers() {
-  const size_t primitiveCount = _pScene->getPrimitiveCount();
+void Renderer::buildBuffers(const Scene &scene) {
+  const size_t primitiveCount = scene.getPrimitiveCount();
   const size_t uniformsDataSize = sizeof(UniformsData);
 
-  // Uniforms
-  if (_pUniformsBuffer)
-    _pUniformsBuffer->release();
-  _pUniformsBuffer =
-      _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
-  _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
+  if (!_pUniformsBuffer) {
+    _pUniformsBuffer =
+        _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
+    _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
+  }
 
-  // Destroy previous
   if (_pSphereBuffer) {
     _pSphereBuffer->release();
     _pSphereBuffer = nullptr;
@@ -252,14 +259,11 @@ void Renderer::buildBuffers() {
     _pSphereMaterialBuffer = nullptr;
   }
 
-  // ✅ Unified buffer
   simd::float4 *primitiveBuffer = nullptr;
   simd::float4 *materialBuffer = nullptr;
   if (primitiveCount > 0) {
-    primitiveBuffer =
-        _pScene->createTransformsBuffer(); // 3 float4s per primitive
-    materialBuffer =
-        _pScene->createMaterialsBuffer(); // 2 float4s per primitive
+    primitiveBuffer = scene.createTransformsBuffer();
+    materialBuffer = scene.createMaterialsBuffer();
   }
 
   const size_t primitiveSize = primitiveCount * 3 * sizeof(simd::float4);
@@ -284,31 +288,88 @@ void Renderer::buildBuffers() {
   delete[] primitiveBuffer;
   delete[] materialBuffer;
 
-  // Active mask buffer (1 byte per primitive)
   if (_pActiveBuffer) {
     _pActiveBuffer->release();
     _pActiveBuffer = nullptr;
   }
-  size_t activeSize = primitiveCount * sizeof(uint8_t);
-  size_t activeAlloc = activeSize > 0 ? activeSize : sizeof(uint8_t);
+  size_t activeAlloc = primitiveCount > 0 ? primitiveCount : 1;
   _pActiveBuffer =
-      _pDevice->newBuffer(activeAlloc, MTL::ResourceStorageModeManaged);
+      _pDevice->newBuffer(activeAlloc * sizeof(uint8_t),
+                          MTL::ResourceStorageModeManaged);
   if (primitiveCount > 0) {
-    std::vector<uint8_t> activeBytes(primitiveCount);
-    for (size_t i = 0; i < primitiveCount; ++i)
-      activeBytes[i] = _activePrimitive[i] ? 1 : 0;
-    memcpy(_pActiveBuffer->contents(), activeBytes.data(), activeSize);
-    _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeSize));
+    std::vector<uint8_t> activeBytes(primitiveCount, 1);
+    memcpy(_pActiveBuffer->contents(), activeBytes.data(),
+           primitiveCount * sizeof(uint8_t));
+    _pActiveBuffer->didModifyRange(
+        NS::Range::Make(0, primitiveCount * sizeof(uint8_t)));
+  } else {
+    uint8_t inactive = 0;
+    memcpy(_pActiveBuffer->contents(), &inactive, sizeof(uint8_t));
+    _pActiveBuffer->didModifyRange(NS::Range::Make(0, sizeof(uint8_t)));
   }
 
-  // Dummy triangle buffer bindings
-  simd::float3 dummyVertex = {0, 0, 0};
-  simd::uint3 dummyIndex = {0, 0, 0};
+  std::vector<simd::float3> vertices;
+  std::vector<simd::uint3> indices;
+  scene.createTriangleBuffers(vertices, indices);
 
-  _pTriangleVertexBuffer = _pDevice->newBuffer(
-      &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
-  _pTriangleIndexBuffer = _pDevice->newBuffer(&dummyIndex, sizeof(simd::uint3),
-                                              MTL::ResourceStorageModeManaged);
+  if (_pTriangleVertexBuffer) {
+    _pTriangleVertexBuffer->release();
+    _pTriangleVertexBuffer = nullptr;
+  }
+  if (_pTriangleIndexBuffer) {
+    _pTriangleIndexBuffer->release();
+    _pTriangleIndexBuffer = nullptr;
+  }
+
+  if (!vertices.empty()) {
+    size_t vertexSize = vertices.size() * sizeof(simd::float3);
+    _pTriangleVertexBuffer = _pDevice->newBuffer(
+        vertices.data(), vertexSize, MTL::ResourceStorageModeManaged);
+    _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(0, vertexSize));
+  } else {
+    simd::float3 dummyVertex = {0, 0, 0};
+    _pTriangleVertexBuffer = _pDevice->newBuffer(
+        &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
+  }
+
+  if (!indices.empty()) {
+    size_t indexSize = indices.size() * sizeof(simd::uint3);
+    _pTriangleIndexBuffer = _pDevice->newBuffer(
+        indices.data(), indexSize, MTL::ResourceStorageModeManaged);
+    _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
+  } else {
+    simd::uint3 dummyIndex = {0, 0, 0};
+    _pTriangleIndexBuffer = _pDevice->newBuffer(
+        &dummyIndex, sizeof(simd::uint3), MTL::ResourceStorageModeManaged);
+  }
+}
+
+void Renderer::rebuildResidentResources() {
+  Scene activeScene;
+  activeScene.screenSize = _pScene->screenSize;
+  activeScene.maxRayDepth = _pScene->maxRayDepth;
+
+  for (const auto &object : _allSceneObjects) {
+    std::vector<Primitive> activePrims;
+    activePrims.reserve(object.primitiveCount);
+    for (size_t i = 0; i < object.primitiveCount; ++i) {
+      size_t primIndex = object.firstPrimitive + i;
+      if (primIndex < _activePrimitive.size() &&
+          _activePrimitive[primIndex]) {
+        activePrims.push_back(_allPrimitives[primIndex]);
+      }
+    }
+    if (!activePrims.empty())
+      activeScene.addObjectSilent(activePrims);
+  }
+
+  activeScene.buildBVH();
+
+  rebuildAccelerationStructures(activeScene);
+  buildBuffers(activeScene);
+
+  _residentPrimitiveCount = activeScene.getPrimitiveCount();
+  _residentTriangleCount = activeScene.getTriangleCount();
 }
 
 void Renderer::buildTextures() {
@@ -384,8 +445,8 @@ void Renderer::updateUniforms() {
     u.frameCount++;
   }
 
-  u.primitiveCount = _pScene->getPrimitiveCount();
-  u.triangleCount = _pScene->getTriangleCount();
+  u.primitiveCount = _residentPrimitiveCount;
+  u.triangleCount = _residentTriangleCount;
   u.totalPrimitiveCount = _allPrimitives.size();
   u.tlasNodeCount = _tlasNodeCount;
   u.blasNodeCount = _blasNodeCount;
@@ -446,29 +507,28 @@ void Renderer::updateLODByDistance() {
   // when starting far from the origin.
   const float FULL_DETAIL_DISTANCE = 250.0f;
   size_t activeCount = 0;
+  bool changed = false;
   for (size_t g = 0; g < _allPrimitives.size(); ++g) {
     float dist =
         simd::length(_primitiveBounds[g].center - Camera::position) -
         _primitiveBounds[g].radius;
     dist = std::max(dist, 0.0f);
     bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
-    if (_activePrimitive[g] != shouldBeActive)
-      setPrimitiveActive(g, shouldBeActive);
+    if (setPrimitiveActive(g, shouldBeActive))
+      changed = true;
     if (_activePrimitive[g])
       activeCount++;
   }
 
   if (activeCount == 0 && !_activePrimitive.empty()) {
     // Ensure at least one primitive remains visible to avoid a blank scene
-    setPrimitiveActive(0, true);
+    if (setPrimitiveActive(0, true))
+      changed = true;
     activeCount = 1;
   }
 
-  size_t newActiveNodes = _tlasNodeCount + activeCount;
-  if (newActiveNodes != _activeNodeCount) {
-    _activeNodeCount = newActiveNodes;
-    printf("Active nodes: %zu\n", _activeNodeCount);
-  }
+  if (changed)
+    rebuildResidentResources();
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -484,65 +544,65 @@ void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
 
-void Renderer::setPrimitiveActive(size_t index, bool active) {
+bool Renderer::setPrimitiveActive(size_t index, bool active) {
   if (index >= _activePrimitive.size())
-    return;
+    return false;
   if (_activePrimitive[index] == active)
-    return;
+    return false;
   _activePrimitive[index] = active;
-  if (_pActiveBuffer) {
-    uint8_t *mask = static_cast<uint8_t *>(_pActiveBuffer->contents());
-    mask[index] = active ? 1 : 0;
-    _pActiveBuffer->didModifyRange(NS::Range::Make(index, 1));
-  }
+  return true;
 }
 
-void Renderer::rebuildAccelerationStructures() {
-  _pScene->buildBVH();
-
-  size_t newBlasCount = _pScene->getBVHNodeCount();
+void Renderer::rebuildAccelerationStructures(const Scene &scene) {
+  size_t newBlasCount = scene.getBVHNodeCount();
   _blasNodeCount = newBlasCount;
 
-  simd::float4 *bvhData = _pScene->createBVHBuffer();
-  if (_pBVHBuffer)
+  if (_pBVHBuffer) {
     _pBVHBuffer->release();
-  _pBVHBuffer =
-      _pDevice->newBuffer(bvhData, sizeof(simd::float4) * newBlasCount * 2,
-                          MTL::ResourceStorageModeManaged);
-  _pBVHBuffer->didModifyRange(NS::Range::Make(0, _pBVHBuffer->length()));
-  delete[] bvhData;
+    _pBVHBuffer = nullptr;
+  }
+
+  if (newBlasCount > 0) {
+    simd::float4 *bvhData = scene.createBVHBuffer();
+    _pBVHBuffer = _pDevice->newBuffer(
+        bvhData, sizeof(simd::float4) * newBlasCount * 2,
+        MTL::ResourceStorageModeManaged);
+    _pBVHBuffer->didModifyRange(NS::Range::Make(0, _pBVHBuffer->length()));
+    delete[] bvhData;
+  } else {
+    _pBVHBuffer =
+        _pDevice->newBuffer(sizeof(simd::float4), MTL::ResourceStorageModeManaged);
+  }
 
   size_t tlasCount = 0;
-  simd::float4 *tlasData = _pScene->createTLASBuffer(tlasCount);
+  simd::float4 *tlasData = scene.createTLASBuffer(tlasCount);
   _tlasNodeCount = tlasCount;
-  _totalNodeCount = _tlasNodeCount + _allPrimitives.size();
-  size_t oldActiveCount = _activeNodeCount;
-  size_t activePrim = 0;
-  for (bool a : _activePrimitive)
-    if (a)
-      activePrim++;
-  _activeNodeCount = _tlasNodeCount + activePrim;
-  if (_activeNodeCount != oldActiveCount) {
-    printf("Active nodes: %zu\n", _activeNodeCount);
-  }
-  if (_pTLASBuffer)
+
+  if (_pTLASBuffer) {
     _pTLASBuffer->release();
+    _pTLASBuffer = nullptr;
+  }
+
   if (tlasData && tlasCount > 0) {
-    _pTLASBuffer =
-        _pDevice->newBuffer(tlasData, sizeof(simd::float4) * tlasCount * 2,
-                            MTL::ResourceStorageModeManaged);
+    _pTLASBuffer = _pDevice->newBuffer(
+        tlasData, sizeof(simd::float4) * tlasCount * 2,
+        MTL::ResourceStorageModeManaged);
     _pTLASBuffer->didModifyRange(NS::Range::Make(0, _pTLASBuffer->length()));
   } else {
-    _pTLASBuffer = _pDevice->newBuffer(1, MTL::ResourceStorageModeManaged);
+    _pTLASBuffer =
+        _pDevice->newBuffer(sizeof(simd::float4), MTL::ResourceStorageModeManaged);
   }
   delete[] tlasData;
 
-  size_t indexCount = _pScene->getPrimitiveCount();
-  size_t indexSize = indexCount * sizeof(int);
-  if (_pPrimitiveIndexBuffer)
+  if (_pPrimitiveIndexBuffer) {
     _pPrimitiveIndexBuffer->release();
+    _pPrimitiveIndexBuffer = nullptr;
+  }
+
+  size_t indexCount = scene.getPrimitiveIndices().size();
   if (indexCount > 0) {
-    int *rawIndices = _pScene->createPrimitiveIndexBuffer();
+    int *rawIndices = scene.createPrimitiveIndexBuffer();
+    size_t indexSize = indexCount * sizeof(int);
     _pPrimitiveIndexBuffer = _pDevice->newBuffer(
         rawIndices, indexSize, MTL::ResourceStorageModeManaged);
     _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
@@ -550,6 +610,12 @@ void Renderer::rebuildAccelerationStructures() {
   } else {
     _pPrimitiveIndexBuffer =
         _pDevice->newBuffer(sizeof(int), MTL::ResourceStorageModeManaged);
+  }
+
+  size_t newActiveCount = _tlasNodeCount + scene.getPrimitiveCount();
+  if (newActiveCount != _activeNodeCount) {
+    _activeNodeCount = newActiveCount;
+    printf("Active nodes: %zu\n", _activeNodeCount);
   }
 }
 
