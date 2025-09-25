@@ -59,11 +59,11 @@ public:
   simd::float4 *createMaterialsBuffer() const;
   simd::float4 *createSphereBuffer();
   simd::float4 *createSphereMaterialsBuffer();
-  simd::float4 *createBVHBuffer();
-  simd::float4 *createTLASBuffer(size_t &outCount);
-  int *createPrimitiveIndexBuffer();
+  simd::float4 *createBVHBuffer() const;
+  simd::float4 *createTLASBuffer(size_t &outCount) const;
+  int *createPrimitiveIndexBuffer() const;
   void createTriangleBuffers(std::vector<simd::float3> &outVertices,
-                             std::vector<simd::uint3> &outIndices);
+                             std::vector<simd::uint3> &outIndices) const;
 
   std::vector<CameraKeyframe> cameraPath;
 

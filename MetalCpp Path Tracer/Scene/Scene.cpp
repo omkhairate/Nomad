@@ -205,7 +205,7 @@ simd::float4 *Scene::createSphereMaterialsBuffer() {
   return buffer;
 }
 
-simd::float4 *Scene::createBVHBuffer() {
+simd::float4 *Scene::createBVHBuffer() const {
   simd::float4 *buffer = new simd::float4[bvhNodes.size() * 2];
   for (size_t i = 0; i < bvhNodes.size(); ++i) {
     const auto &n = bvhNodes[i];
@@ -215,7 +215,7 @@ simd::float4 *Scene::createBVHBuffer() {
   return buffer;
 }
 
-simd::float4 *Scene::createTLASBuffer(size_t &outCount) {
+simd::float4 *Scene::createTLASBuffer(size_t &outCount) const {
   outCount = 0;
   if (tlasNodes.empty())
     return nullptr;
@@ -236,7 +236,7 @@ simd::float4 *Scene::createTLASBuffer(size_t &outCount) {
   return buffer;
 }
 
-int *Scene::createPrimitiveIndexBuffer() {
+int *Scene::createPrimitiveIndexBuffer() const {
   int *buffer = new int[primitiveIndices.size()];
   for (size_t i = 0; i < primitiveIndices.size(); ++i) {
     buffer[i] = static_cast<int>(primitiveIndices[i]);
@@ -245,7 +245,7 @@ int *Scene::createPrimitiveIndexBuffer() {
 }
 
 void Scene::createTriangleBuffers(std::vector<simd::float3> &outVertices,
-                                  std::vector<simd::uint3> &outIndices) {
+                                  std::vector<simd::uint3> &outIndices) const {
   outVertices.clear();
   outIndices.clear();
   uint32_t baseVertex = 0;
