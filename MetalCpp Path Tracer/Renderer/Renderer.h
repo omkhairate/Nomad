@@ -79,6 +79,8 @@ private:
   MTL::Buffer *_pPrimitiveIndexBuffer = nullptr;
   MTL::Buffer *_pTLASBuffer = nullptr;
   MTL::Buffer *_pActiveBuffer = nullptr;
+  MTL::Buffer *_pLightIndexBuffer = nullptr;
+  MTL::Buffer *_pLightCdfBuffer = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -93,6 +95,8 @@ private:
 
   size_t _residentPrimitiveCount = 0;
   size_t _residentTriangleCount = 0;
+  size_t _lightCount = 0;
+  float _lightTotalWeight = 0.0f;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
