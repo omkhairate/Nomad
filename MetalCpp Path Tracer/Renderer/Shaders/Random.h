@@ -25,8 +25,19 @@ inline float3 randomFloat3(uint32_t seed)
 
     const float z = randomFloat(seed)*2-1;
     seed = random(seed);
-    
+
     return {x, y, z};
+}
+
+inline float3 randomUnitVector(thread uint32_t &seed)
+{
+    constexpr float twoPi = 6.28318530717958647692;
+    float z = randomFloat(seed) * 2.0 - 1.0;
+    seed = random(seed);
+    float t = twoPi * randomFloat(seed);
+    seed = random(seed);
+    float r = sqrt(fmax(0.0, 1.0 - z * z));
+    return float3(r * cos(t), r * sin(t), z);
 }
 
 inline float random(float2 uv, float3 random)
