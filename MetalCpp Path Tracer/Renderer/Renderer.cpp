@@ -58,6 +58,13 @@ inline float randomFloat() {
 
 namespace {
 
+// Distance thresholds that implement a small hysteresis band for LOD toggles
+// along with the minimum number of frames primitives must wait before they can
+// flip state again.
+constexpr float LOD_ENTER_DISTANCE = 225.0f;
+constexpr float LOD_EXIT_DISTANCE = 275.0f;
+constexpr uint32_t LOD_STATE_COOLDOWN_FRAMES = 5;
+
 float luminance(const simd::float3 &c) {
   return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 }
@@ -206,11 +213,16 @@ void Renderer::updateVisibleScene() {
          _pScene->getPrimitiveCount(), _pScene->getSphereCount(),
          _pScene->getTriangleCount(), _pScene->getRectangleCount());
 
+  printf("LOD activation threshold: %.1f, deactivation threshold: %.1f (cooldown "
+         "%u frames)\n",
+         LOD_ENTER_DISTANCE, LOD_EXIT_DISTANCE, LOD_STATE_COOLDOWN_FRAMES);
+
   // Store full primitive list and initialize tracking
   _allPrimitives = _pScene->getPrimitives();
   _allSceneObjects = _pScene->getObjects();
   size_t primCount = _allPrimitives.size();
   _activePrimitive.assign(primCount, true);
+  _primitiveCooldown.assign(primCount, 0);
   _primitiveBounds.resize(primCount);
   for (size_t i = 0; i < primCount; ++i) {
     const Primitive &p = _allPrimitives[i];
@@ -607,10 +619,15 @@ void Renderer::draw(MTK::View *pView) {
 }
 
 void Renderer::updateLODByDistance() {
-  // Keep primitives active until the camera is reasonably far away.
-  // Using a larger threshold prevents the entire scene from being culled
-  // when starting far from the origin.
-  const float FULL_DETAIL_DISTANCE = 250.0f;
+  // Use hysteresis so primitives do not flicker when hovering near the
+  // activation boundary. Inactive primitives only become active once the
+  // camera is closer than LOD_ENTER_DISTANCE, while active primitives stay
+  // active until the camera has moved beyond LOD_EXIT_DISTANCE.
+
+  for (uint32_t &cooldown : _primitiveCooldown)
+    if (cooldown > 0)
+      --cooldown;
+
   size_t activeCount = 0;
   bool changed = false;
   for (size_t g = 0; g < _allPrimitives.size(); ++g) {
@@ -618,8 +635,13 @@ void Renderer::updateLODByDistance() {
         simd::length(_primitiveBounds[g].center - Camera::position) -
         _primitiveBounds[g].radius;
     dist = std::max(dist, 0.0f);
-    bool shouldBeActive = dist < FULL_DETAIL_DISTANCE;
-    if (setPrimitiveActive(g, shouldBeActive))
+    bool currentlyActive = g < _activePrimitive.size() && _activePrimitive[g];
+    bool shouldBeActive = currentlyActive ? dist <= LOD_EXIT_DISTANCE
+                                          : dist < LOD_ENTER_DISTANCE;
+    bool canToggle =
+        g >= _primitiveCooldown.size() || _primitiveCooldown[g] == 0;
+    if (canToggle && shouldBeActive != currentlyActive &&
+        setPrimitiveActive(g, shouldBeActive))
       changed = true;
     if (_activePrimitive[g])
       activeCount++;
@@ -655,6 +677,8 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
   if (_activePrimitive[index] == active)
     return false;
   _activePrimitive[index] = active;
+  if (index < _primitiveCooldown.size())
+    _primitiveCooldown[index] = LOD_STATE_COOLDOWN_FRAMES;
   return true;
 }
 
