@@ -726,6 +726,26 @@ void Renderer::updateLODByDistance() {
     if (!candidate.withinDistance)
       continue;
 
+    if (hasBudget && footprint > _gpuMemoryBudget) {
+      if (_manualBudget)
+        continue;
+      size_t previousBudget = _gpuMemoryBudget;
+      _gpuMemoryBudget = footprint;
+      _recommendedBudget =
+          std::max(_recommendedBudget, _gpuMemoryBudget);
+      double prevMB = static_cast<double>(previousBudget) /
+                      (1024.0 * 1024.0);
+      double newMB = static_cast<double>(_gpuMemoryBudget) /
+                     (1024.0 * 1024.0);
+      printf("Expanded GPU memory budget from %.2f MB to %.2f MB to fit instance %zu.\n",
+             prevMB, newMB, candidate.index);
+      hasBudget =
+          _gpuMemoryBudget != std::numeric_limits<size_t>::max();
+    }
+
+    if (hasBudget && footprint > _gpuMemoryBudget)
+      continue;
+
     requiredBudget += footprint;
     visibleCount++;
     if (_instances[candidate.index].state == ResidencyState::Resident) {
@@ -780,6 +800,23 @@ void Renderer::updateLODByDistance() {
         kTLASNodeFootprintBytes;
     if (footprint == 0)
       continue;
+
+    if (hasBudget && footprint > _gpuMemoryBudget) {
+      if (_manualBudget)
+        continue;
+      size_t previousBudget = _gpuMemoryBudget;
+      _gpuMemoryBudget = footprint;
+      _recommendedBudget =
+          std::max(_recommendedBudget, _gpuMemoryBudget);
+      double prevMB = static_cast<double>(previousBudget) /
+                      (1024.0 * 1024.0);
+      double newMB = static_cast<double>(_gpuMemoryBudget) /
+                     (1024.0 * 1024.0);
+      printf("Expanded GPU memory budget from %.2f MB to %.2f MB to fit instance %zu.\n",
+             prevMB, newMB, candidate.index);
+      hasBudget =
+          _gpuMemoryBudget != std::numeric_limits<size_t>::max();
+    }
 
     if (hasBudget) {
       if (footprint > _gpuMemoryBudget)
@@ -1184,9 +1221,28 @@ bool Renderer::streamInInstance(size_t index) {
   }
 
   size_t gpuFootprint = instanceFootprintBytes(inst);
-  if (gpuFootprint > 0 && !ensureBudget(gpuFootprint)) {
-    inst.state = ResidencyState::NotResident;
-    return false;
+  if (gpuFootprint > 0) {
+    if (_gpuMemoryBudget != std::numeric_limits<size_t>::max() &&
+        gpuFootprint > _gpuMemoryBudget) {
+      if (_manualBudget) {
+        inst.state = ResidencyState::NotResident;
+        return false;
+      }
+      size_t previousBudget = _gpuMemoryBudget;
+      _gpuMemoryBudget = gpuFootprint;
+      _recommendedBudget =
+          std::max(_recommendedBudget, _gpuMemoryBudget);
+      double prevMB = static_cast<double>(previousBudget) /
+                      (1024.0 * 1024.0);
+      double newMB = static_cast<double>(_gpuMemoryBudget) /
+                     (1024.0 * 1024.0);
+      printf("Expanded GPU memory budget from %.2f MB to %.2f MB to fit instance %zu.\n",
+             prevMB, newMB, index);
+    }
+    if (!ensureBudget(gpuFootprint)) {
+      inst.state = ResidencyState::NotResident;
+      return false;
+    }
   }
 
   inst.state = ResidencyState::StreamingIn;
