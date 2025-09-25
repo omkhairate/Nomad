@@ -138,7 +138,7 @@ size_t Scene::getBVHNodeCount() const { return bvhNodes.size(); }
 
 const std::vector<BVHNode> &Scene::getBVHNodes() const { return bvhNodes; }
 
-simd::float4 *Scene::createTransformsBuffer() {
+simd::float4 *Scene::createTransformsBuffer() const {
   simd::float4 *buffer = new simd::float4[primitives.size() * 3];
   for (size_t i = 0; i < primitives.size(); ++i) {
     const auto &p = primitives[i];
@@ -163,7 +163,7 @@ simd::float4 *Scene::createTransformsBuffer() {
   return buffer;
 }
 
-simd::float4 *Scene::createMaterialsBuffer() {
+simd::float4 *Scene::createMaterialsBuffer() const {
   simd::float4 *buffer = new simd::float4[2 * primitives.size()];
   for (size_t i = 0; i < primitives.size(); ++i) {
     const auto &m = primitives[i].material;

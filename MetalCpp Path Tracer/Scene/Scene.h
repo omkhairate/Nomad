@@ -55,8 +55,8 @@ public:
   simd::float2 screenSize;
   uint32_t maxRayDepth;
 
-  simd::float4 *createTransformsBuffer();
-  simd::float4 *createMaterialsBuffer();
+  simd::float4 *createTransformsBuffer() const;
+  simd::float4 *createMaterialsBuffer() const;
   simd::float4 *createSphereBuffer();
   simd::float4 *createSphereMaterialsBuffer();
   simd::float4 *createBVHBuffer();
