@@ -457,79 +457,24 @@ void Renderer::buildTextures() {
 
   textureDescriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA32Float);
   textureDescriptor->setTextureType(MTL::TextureType::TextureType2D);
+  textureDescriptor->setWidth(Camera::screenSize.x);
+  textureDescriptor->setHeight(Camera::screenSize.y);
   textureDescriptor->setStorageMode(MTL::StorageMode::StorageModePrivate);
   textureDescriptor->setUsage(MTL::TextureUsageShaderRead |
                               MTL::TextureUsageShaderWrite);
-
-  auto attemptAllocation = [&](NS::UInteger width,
-                               NS::UInteger height) -> bool {
-    if (width == 0 || height == 0)
-      return false;
-
-    textureDescriptor->setWidth(width);
-    textureDescriptor->setHeight(height);
-
-    size_t texSize = static_cast<size_t>(width) *
-                     static_cast<size_t>(height) * 4ull * sizeof(float);
-    MTL::Texture *newTargets[2] = {nullptr, nullptr};
-    size_t newSizes[2] = {0, 0};
-    bool success = true;
-
-    for (uint i = 0; i < 2; ++i) {
-      if (!ensureBudget(texSize)) {
-        success = false;
-        break;
-      }
-
-      newTargets[i] = _pDevice->newTexture(textureDescriptor);
-      if (!newTargets[i]) {
-        success = false;
-        break;
-      }
-
-      newSizes[i] = texSize;
+  size_t texSize = static_cast<size_t>(Camera::screenSize.x * Camera::screenSize.y *
+                                       4 * sizeof(float));
+  for (uint i = 0; i < 2; i++) {
+    if (!ensureBudget(texSize)) {
+      textureDescriptor->release();
+      return;
+    }
+    _accumulationTargets[i] = _pDevice->newTexture(textureDescriptor);
+    if (_accumulationTargets[i]) {
+      _accumulationTargetSizes[i] = texSize;
       trackAllocation(texSize);
     }
-
-    if (!success) {
-      for (uint i = 0; i < 2; ++i) {
-        if (newTargets[i]) {
-          trackDeallocation(newSizes[i]);
-          newTargets[i]->release();
-        }
-      }
-      return false;
-    }
-
-    for (uint i = 0; i < 2; ++i) {
-      _accumulationTargets[i] = newTargets[i];
-      _accumulationTargetSizes[i] = newSizes[i];
-    }
-
-    return true;
-  };
-
-  NS::UInteger targetWidth =
-      std::max<NS::UInteger>(1, static_cast<NS::UInteger>(Camera::screenSize.x));
-  NS::UInteger targetHeight =
-      std::max<NS::UInteger>(1, static_cast<NS::UInteger>(Camera::screenSize.y));
-
-  bool allocated = attemptAllocation(targetWidth, targetHeight);
-
-  if (!allocated) {
-    printf("Warning: Failed to allocate %.0fx%.0f accumulation targets; falling "
-           "back to 1x1 buffer.\n",
-           Camera::screenSize.x, Camera::screenSize.y);
-    allocated = attemptAllocation(1, 1);
   }
-
-  if (!allocated) {
-    printf("Error: Unable to allocate accumulation textures; accumulation will "
-           "be disabled.\n");
-  } else {
-    _pendingAccumulationReset = true;
-  }
-
   textureDescriptor->release();
 }
 
