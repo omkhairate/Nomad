@@ -241,6 +241,7 @@ void Renderer::updateVisibleScene() {
   _allPrimitives = _pScene->getPrimitives();
   initializeInstances();
   buildBuffers();
+  preloadInitialResidency();
 }
 
 void Renderer::recalculateViewport() {
@@ -320,6 +321,124 @@ void Renderer::buildBuffers() {
   }
 
   rebuildTLAS();
+}
+
+void Renderer::preloadInitialResidency() {
+  if (_instances.empty()) {
+    _minInstanceFootprint = 0;
+    _recentVisibleFootprint = 0;
+    return;
+  }
+
+  struct Candidate {
+    size_t index;
+    float distance;
+    size_t footprint;
+  };
+
+  std::vector<Candidate> candidates;
+  candidates.reserve(_instances.size());
+
+  float closestDistance = std::numeric_limits<float>::max();
+  size_t fallbackIndex = std::numeric_limits<size_t>::max();
+  size_t totalRequired = 0;
+  size_t minFootprint = std::numeric_limits<size_t>::max();
+
+  for (size_t i = 0; i < _instances.size(); ++i) {
+    const InstanceRecord &inst = _instances[i];
+    if (inst.cpuPrimitiveCount == 0)
+      continue;
+
+    size_t footprint = instanceFootprintBytes(inst) + kTLASNodeFootprintBytes;
+    if (footprint == 0)
+      continue;
+
+    float dist = simd::length(inst.bounds.center - Camera::position) -
+                 inst.bounds.radius;
+    dist = std::max(dist, 0.0f);
+    candidates.push_back({i, dist, footprint});
+    totalRequired += footprint;
+    minFootprint = std::min(minFootprint, footprint);
+    if (dist < closestDistance) {
+      closestDistance = dist;
+      fallbackIndex = i;
+    }
+  }
+
+  if (candidates.empty()) {
+    _minInstanceFootprint = 0;
+    _recentVisibleFootprint = 0;
+    return;
+  }
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate &a, const Candidate &b) {
+              if (a.distance == b.distance)
+                return a.index < b.index;
+              return a.distance < b.distance;
+            });
+
+  bool hasBudget = _gpuMemoryBudget != std::numeric_limits<size_t>::max();
+  if (!_manualBudget && hasBudget && totalRequired > 0 &&
+      totalRequired > _gpuMemoryBudget) {
+    size_t previousBudget = _gpuMemoryBudget;
+    _gpuMemoryBudget = totalRequired;
+    _recommendedBudget = std::max(_recommendedBudget, _gpuMemoryBudget);
+    double prevMB =
+        static_cast<double>(previousBudget) / (1024.0 * 1024.0);
+    double newMB =
+        static_cast<double>(_gpuMemoryBudget) / (1024.0 * 1024.0);
+    printf("Expanded GPU memory budget from %.2f MB to %.2f MB for initial "
+           "residency (%zu instances).\n",
+           prevMB, newMB, candidates.size());
+    hasBudget = _gpuMemoryBudget != std::numeric_limits<size_t>::max();
+  }
+
+  size_t budgetLimit = hasBudget ? _gpuMemoryBudget
+                                 : std::numeric_limits<size_t>::max();
+  size_t preloadedBytes = 0;
+  size_t streamedCount = 0;
+
+  for (const Candidate &candidate : candidates) {
+    if (hasBudget &&
+        (candidate.footprint > budgetLimit ||
+         preloadedBytes + candidate.footprint > budgetLimit))
+      continue;
+
+    if (streamInInstance(candidate.index)) {
+      preloadedBytes += candidate.footprint;
+      streamedCount++;
+    }
+  }
+
+  if (streamedCount == 0 && fallbackIndex != std::numeric_limits<size_t>::max()) {
+    size_t footprint =
+        instanceFootprintBytes(_instances[fallbackIndex]) +
+        kTLASNodeFootprintBytes;
+    if (footprint > 0 && streamInInstance(fallbackIndex)) {
+      preloadedBytes += footprint;
+      streamedCount = 1;
+      minFootprint = std::min(minFootprint, footprint);
+    }
+  }
+
+  if (minFootprint == std::numeric_limits<size_t>::max())
+    _minInstanceFootprint = 0;
+  else
+    _minInstanceFootprint = minFootprint;
+
+  _recentVisibleFootprint = totalRequired;
+
+  if (streamedCount > 0) {
+    double mb = static_cast<double>(preloadedBytes) / (1024.0 * 1024.0);
+    printf("Preloaded %zu/%zu instances (%.2f MB) before first frame.\n",
+           streamedCount, candidates.size(), mb);
+  }
+
+  if (_residentInstanceCount > 0) {
+    _blasNodeCount = _currentBlasNodeCount;
+    refreshActiveNodeCount();
+  }
 }
 
 void Renderer::buildTextures() {
