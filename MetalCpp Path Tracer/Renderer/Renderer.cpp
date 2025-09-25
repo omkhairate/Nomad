@@ -1403,6 +1403,23 @@ void Renderer::rebuildLightTable() {
   if (_lightTable.empty() || totalWeight <= 0.0) {
     _lightTable.clear();
     _lightTableDirty = false;
+
+    // Ensure the shader always has a valid buffer bound even when no emissive
+    // primitives are present. Metal validation requires that all buffer slots
+    // used by the shader are populated, so create a small dummy buffer in this
+    // case instead of leaving it null.
+    GPULightData emptyLight{};
+    size_t bufferSize = sizeof(GPULightData);
+    if (!_pLightBuffer) {
+      _pLightBuffer =
+          _pDevice->newBuffer(bufferSize, MTL::ResourceStorageModeManaged);
+    }
+
+    if (_pLightBuffer && _pLightBuffer->length() >= bufferSize) {
+      std::memcpy(_pLightBuffer->contents(), &emptyLight, bufferSize);
+      _pLightBuffer->didModifyRange(NS::Range::Make(0, bufferSize));
+    }
+
     return;
   }
 
