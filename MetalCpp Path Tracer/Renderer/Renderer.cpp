@@ -492,12 +492,14 @@ void Renderer::updateLODByDistance() {
             });
 
   std::vector<bool> keep(_instances.size(), false);
-  size_t usedBudget = 0;
   bool hasBudget = _gpuMemoryBudget != std::numeric_limits<size_t>::max();
   size_t closestIndex =
       candidates.empty() ? std::numeric_limits<size_t>::max()
                            : candidates.front().index;
   size_t minFootprint = std::numeric_limits<size_t>::max();
+  size_t usedBudget = 0;
+  size_t requiredBudget = 0;
+  size_t visibleCount = 0;
 
   for (const Candidate &candidate : candidates) {
     size_t footprint =
@@ -506,6 +508,61 @@ void Renderer::updateLODByDistance() {
     if (footprint > 0)
       minFootprint = std::min(minFootprint, footprint);
     if (!candidate.withinDistance)
+      continue;
+
+    requiredBudget += footprint;
+    visibleCount++;
+    if (_instances[candidate.index].state == ResidencyState::Resident) {
+      keep[candidate.index] = true;
+      usedBudget += footprint;
+    }
+  }
+
+  _recentVisibleFootprint = requiredBudget;
+
+  if (minFootprint == std::numeric_limits<size_t>::max())
+    _minInstanceFootprint = 0;
+  else
+    _minInstanceFootprint = minFootprint;
+
+  if (hasBudget && usedBudget > _gpuMemoryBudget) {
+    for (auto it = candidates.rbegin();
+         it != candidates.rend() && usedBudget > _gpuMemoryBudget; ++it) {
+      size_t index = it->index;
+      if (!keep[index])
+        continue;
+      size_t footprint =
+          instanceFootprintBytes(_instances[index]) + kTLASNodeFootprintBytes;
+      if (footprint == 0)
+        continue;
+      keep[index] = false;
+      if (usedBudget >= footprint)
+        usedBudget -= footprint;
+    }
+  }
+
+  if (!_manualBudget && hasBudget && requiredBudget > 0 &&
+      requiredBudget > _gpuMemoryBudget) {
+    size_t previousBudget = _gpuMemoryBudget;
+    _gpuMemoryBudget = requiredBudget;
+    _recommendedBudget = std::max(_recommendedBudget, _gpuMemoryBudget);
+    double prevMB = static_cast<double>(previousBudget) / (1024.0 * 1024.0);
+    double newMB = static_cast<double>(_gpuMemoryBudget) / (1024.0 * 1024.0);
+    printf("Expanded GPU memory budget from %.2f MB to %.2f MB to keep %zu instances resident.\n",
+           prevMB, newMB, visibleCount);
+    hasBudget = _gpuMemoryBudget != std::numeric_limits<size_t>::max();
+  }
+
+  for (const Candidate &candidate : candidates) {
+    if (!candidate.withinDistance)
+      continue;
+    if (keep[candidate.index])
+      continue;
+
+    size_t footprint =
+        instanceFootprintBytes(_instances[candidate.index]) +
+        kTLASNodeFootprintBytes;
+    if (footprint == 0)
       continue;
 
     if (hasBudget) {
@@ -518,11 +575,6 @@ void Renderer::updateLODByDistance() {
     keep[candidate.index] = true;
     usedBudget += footprint;
   }
-
-  if (minFootprint == std::numeric_limits<size_t>::max())
-    _minInstanceFootprint = 0;
-  else
-    _minInstanceFootprint = minFootprint;
 
   if (!candidates.empty() &&
       std::none_of(keep.begin(), keep.end(), [](bool value) { return value; })) {
@@ -572,6 +624,7 @@ void Renderer::initializeInstances() {
   _cpuBlasNodeCount = 0;
   _totalNodeCount = 0;
   _minInstanceFootprint = 0;
+  _recentVisibleFootprint = 0;
   _lastOffloadedNodeCount = 0;
   _lastOffloadedInstanceCount = 0;
 
@@ -1407,12 +1460,14 @@ void Renderer::adjustBudgetForPerformance() {
     return;
   if (_gpuMemoryBudget == std::numeric_limits<size_t>::max())
     return;
-  if (_minInstanceFootprint == 0)
+  if (_minInstanceFootprint == 0 && _recentVisibleFootprint == 0)
     return;
   if (_lastGPUTime <= 0.0)
     return;
 
   size_t minBudget = std::max(_minInstanceFootprint, size_t(16 * 1024 * 1024));
+  if (_recentVisibleFootprint > 0)
+    minBudget = std::max(minBudget, _recentVisibleFootprint);
   size_t maxBudget = _recommendedBudget != std::numeric_limits<size_t>::max()
                          ? std::max(_recommendedBudget, minBudget)
                          : std::max(_gpuMemoryBudget, minBudget);
