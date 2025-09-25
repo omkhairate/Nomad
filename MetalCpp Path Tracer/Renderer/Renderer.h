@@ -82,6 +82,7 @@ private:
   size_t _currentBlasNodeCount = 0;
   size_t _recommendedBudget = std::numeric_limits<size_t>::max();
   size_t _minInstanceFootprint = 0;
+  size_t _recentVisibleFootprint = 0;
   bool _manualBudget = false;
   double _targetFrameTime = 1.0 / 30.0;
   // Accumulation framebuffers
