@@ -121,6 +121,12 @@ private:
     StreamingOut,
   };
 
+  struct PendingStreamIn {
+    size_t instanceIndex = 0;
+    MTL::CommandBuffer *commandBuffer = nullptr;
+    std::vector<MTL::Buffer *> stagingBuffers;
+  };
+
   struct InstanceGPU {
     MTL::Buffer *blasNodes = nullptr;
     MTL::Buffer *primitives = nullptr;
@@ -161,6 +167,7 @@ private:
 
   std::vector<InstanceRecord> _instances;
   std::vector<size_t> _instancesPendingRelease;
+  std::vector<PendingStreamIn> _pendingStreamIns;
   std::vector<GPULightData> _lightTable;
 
   size_t _trackedAllocatedBytes = 0;
@@ -185,6 +192,7 @@ private:
   void initializeInstances();
   void preloadInitialResidency();
   void processPendingReleases();
+  void processPendingStreamIns();
   size_t instanceFootprintBytes(const InstanceRecord &inst) const;
   bool createPrivateBuffer(const void *data, size_t size,
                            MTL::Buffer **outBuffer,
