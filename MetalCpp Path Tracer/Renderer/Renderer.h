@@ -119,6 +119,7 @@ private:
 
   struct InstanceRecord {
     size_t primitiveIndex = 0;
+    uint32_t meshId = kInvalidMeshId;
     BoundingSphere bounds;
     simd::float3 aabbMin;
     simd::float3 aabbMax;
