@@ -1,0 +1,17 @@
+<Scene width="1280" height="720" maxRayDepth="32">
+    <CameraPath>
+        <!-- Move the camera through a line of primitives to exercise distance-based LOD -->
+        <Keyframe frame="0" position="0,20,50" lookAt="0,20,0" />
+        <Keyframe frame="40" position="0,20,-100" lookAt="0,20,-150" />
+        <Keyframe frame="80" position="0,20,-250" lookAt="0,20,-300" />
+    </CameraPath>
+
+    <!-- Ground -->
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Row of primitives to trigger LOD on/off as the camera moves -->
+    <Sphere position="0,20,-50" radius="10" albedo="0.8,0.2,0.2" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="0,0,-150" scale="10.0" albedo="0.9,0.5,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="0,20,-250" radius="10" albedo="0.2,0.2,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="0,0,-350" scale="10.0" albedo="0.3,0.5,0.9" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>

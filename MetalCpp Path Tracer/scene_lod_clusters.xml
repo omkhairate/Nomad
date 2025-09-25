@@ -1,0 +1,21 @@
+<Scene width="1280" height="720" maxRayDepth="32">
+    <CameraPath>
+        <!-- Start near cluster A, then travel to cluster B to observe node on/off loading -->
+        <Keyframe frame="0" position="0,20,50" lookAt="0,20,0" />
+        <Keyframe frame="20" position="0,20,50" lookAt="0,20,0" />
+        <Keyframe frame="100" position="300,20,50" lookAt="300,20,0" />
+    </CameraPath>
+
+    <!-- Ground -->
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Cluster A of primitives -->
+    <Sphere position="-20,20,0" radius="10" albedo="0.9,0.3,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="0,0,0" scale="10.0" albedo="0.9,0.5,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="20,20,0" radius="10" albedo="0.3,0.3,0.9" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Cluster B of primitives positioned far away -->
+    <Sphere position="280,20,0" radius="10" albedo="0.9,0.3,0.9" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="300,0,0" scale="10.0" albedo="0.9,0.5,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="320,20,0" radius="10" albedo="0.3,0.9,0.9" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>

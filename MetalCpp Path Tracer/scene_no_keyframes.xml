@@ -1,0 +1,24 @@
+<Scene width="1280" height="720" maxRayDepth="32">
+    <!-- Ground -->
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Large floating sphere -->
+    <Sphere position="0,100,-100" radius="40" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Small sphere that emits light -->
+    <Sphere position="0,20,-100" radius="10" albedo="0.0,0.0,0.0" emission="1.0,0.9,0.7" materialType="0" emissionPower="5" />
+
+    <!-- Mirror behind the bunny, facing the camera -->
+    <Rectangle position="15,10,-120" u="10,0,0" v="0,10,0" albedo="1.0,1.0,1.0" emission="0,0,0" materialType="-1" emissionPower="0" />
+
+    <!-- Bunny Mesh beside the mirror -->
+    <Mesh
+        file="assets/bunny.obj"
+        position="15,0,-100"
+        scale="10.0"
+        albedo="0.9,0.5,0.3"
+        emission="0,0,0"
+        materialType="0"
+        emissionPower="0" />
+</Scene>
+
