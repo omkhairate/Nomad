@@ -104,7 +104,7 @@ private:
 
   // GPU memory budgeting
   size_t _gpuMemoryBudget = std::numeric_limits<size_t>::max();
-  bool ensureBudget(size_t bytes) const;
+  bool ensureBudget(size_t bytes);
   void adjustBudgetForPerformance();
 
   struct BoundingSphere {
