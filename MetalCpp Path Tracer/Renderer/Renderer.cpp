@@ -111,6 +111,27 @@ float primitiveImportance(const Primitive &p) {
 
 } // namespace
 
+void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
+                                    size_t &currentCapacity) {
+  if (requiredBytes == 0)
+    requiredBytes = 1;
+
+  if (buffer && requiredBytes <= currentCapacity)
+    return;
+
+  if (buffer) {
+    buffer->release();
+    buffer = nullptr;
+  }
+
+  size_t newCapacity = std::max(requiredBytes, currentCapacity);
+  if (newCapacity < requiredBytes)
+    newCapacity = requiredBytes;
+
+  buffer = _pDevice->newBuffer(newCapacity, MTL::ResourceStorageModeManaged);
+  currentCapacity = buffer ? buffer->length() : 0;
+}
+
 bool Renderer::isInView(const BoundingSphere &b) {
   simd::float3 toCenter = b.center - Camera::position;
   float dist = simd::length(toCenter);
@@ -274,6 +295,11 @@ void Renderer::updateVisibleScene() {
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
+
+  size_t totalTriangleCount = _pScene->getTriangleCount();
+  _maxPrimitiveCount = std::max<size_t>(primCount, 1);
+  _maxTriangleVertexCount = std::max<size_t>(totalTriangleCount * 3, 1);
+  _maxTriangleIndexCount = std::max<size_t>(totalTriangleCount, 1);
   for (size_t i = 0; i < primCount; ++i) {
     const Primitive &p = _allPrimitives[i];
     if (p.type == PrimitiveType::Sphere) {
@@ -302,15 +328,11 @@ void Renderer::updateVisibleScene() {
               return _primitiveImportance[a] > _primitiveImportance[b];
             });
 
-  if (_pPrimitiveHitBuffer) {
-    _pPrimitiveHitBuffer->release();
-    _pPrimitiveHitBuffer = nullptr;
-  }
-  size_t hitCount = primCount > 0 ? primCount : 1;
-  _pPrimitiveHitBuffer =
-      _pDevice->newBuffer(hitCount * sizeof(uint32_t),
-                          MTL::ResourceStorageModeManaged);
-  if (uint32_t *hitPtr = static_cast<uint32_t *>(_pPrimitiveHitBuffer->contents())) {
+  size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
+  ensureBufferCapacity(_pPrimitiveHitBuffer, hitCount * sizeof(uint32_t),
+                       _primitiveHitBufferCapacity);
+  if (uint32_t *hitPtr =
+          static_cast<uint32_t *>(_pPrimitiveHitBuffer->contents())) {
     std::memset(hitPtr, 0, hitCount * sizeof(uint32_t));
     _pPrimitiveHitBuffer->didModifyRange(
         NS::Range::Make(0, hitCount * sizeof(uint32_t)));
@@ -319,12 +341,14 @@ void Renderer::updateVisibleScene() {
   _rayHitRebuildCooldown = 0;
 
   _pScene->buildBVH();
+  _maxBlasNodeCount = std::max<size_t>(_pScene->getBVHNodeCount(), 1);
 
   size_t fullTlasCount = 0;
   if (primCount > 0) {
     simd::float4 *tmp = _pScene->createTLASBuffer(fullTlasCount);
     delete[] tmp;
   }
+  _maxTlasNodeCount = std::max<size_t>(fullTlasCount, 1);
   _totalNodeCount = fullTlasCount + primCount;
 
   rebuildResidentResources();
@@ -372,14 +396,9 @@ void Renderer::buildBuffers(const Scene &scene) {
     _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
   }
 
-  if (_pSphereBuffer) {
-    _pSphereBuffer->release();
-    _pSphereBuffer = nullptr;
-  }
-  if (_pSphereMaterialBuffer) {
-    _pSphereMaterialBuffer->release();
-    _pSphereMaterialBuffer = nullptr;
-  }
+  size_t previousPrimitiveCount = _residentPrimitiveCount;
+  size_t previousTriangleCount = _residentTriangleCount;
+  size_t previousLightCount = _lightCount;
 
   simd::float4 *primitiveBuffer = nullptr;
   simd::float4 *materialBuffer = nullptr;
@@ -388,36 +407,71 @@ void Renderer::buildBuffers(const Scene &scene) {
     materialBuffer = scene.createMaterialsBuffer();
   }
 
-  const size_t primitiveSize = primitiveCount * 3 * sizeof(simd::float4);
-  const size_t materialSize = primitiveCount * 2 * sizeof(simd::float4);
+  size_t targetPrimitiveCount =
+      std::max({primitiveCount, previousPrimitiveCount, _maxPrimitiveCount, size_t(1)});
+  size_t primitiveFloat4Count = primitiveCount * 3;
+  size_t previousPrimitiveFloat4Count = previousPrimitiveCount * 3;
+  size_t touchedPrimitiveFloat4Count =
+      std::max({primitiveFloat4Count, previousPrimitiveFloat4Count, size_t(1)});
 
-  size_t primitiveAlloc =
-      primitiveSize > 0 ? primitiveSize : sizeof(simd::float4);
-  size_t materialAlloc = materialSize > 0 ? materialSize : sizeof(simd::float4);
+  ensureBufferCapacity(_pSphereBuffer,
+                       targetPrimitiveCount * 3 * sizeof(simd::float4),
+                       _sphereBufferCapacity);
+  ensureBufferCapacity(_pSphereMaterialBuffer,
+                       targetPrimitiveCount * 2 * sizeof(simd::float4),
+                       _sphereMaterialBufferCapacity);
 
-  _pSphereBuffer =
-      _pDevice->newBuffer(primitiveAlloc, MTL::ResourceStorageModeManaged);
-  _pSphereMaterialBuffer =
-      _pDevice->newBuffer(materialAlloc, MTL::ResourceStorageModeManaged);
+  if (simd::float4 *primitiveDst =
+          static_cast<simd::float4 *>(_pSphereBuffer->contents())) {
+    if (primitiveCount > 0 && primitiveBuffer) {
+      std::memcpy(primitiveDst, primitiveBuffer,
+                  primitiveFloat4Count * sizeof(simd::float4));
+    }
+    if (previousPrimitiveCount > primitiveCount) {
+      size_t zeroStart = primitiveFloat4Count;
+      size_t zeroCount = previousPrimitiveFloat4Count > primitiveFloat4Count
+                             ? previousPrimitiveFloat4Count - primitiveFloat4Count
+                             : 0;
+      if (zeroCount > 0) {
+        std::memset(primitiveDst + zeroStart, 0,
+                    zeroCount * sizeof(simd::float4));
+      }
+    } else if (primitiveCount == 0) {
+      primitiveDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    _pSphereBuffer->didModifyRange(
+        NS::Range::Make(0, touchedPrimitiveFloat4Count * sizeof(simd::float4)));
+  }
 
-  if (primitiveCount > 0) {
-    memcpy(_pSphereBuffer->contents(), primitiveBuffer, primitiveSize);
-    memcpy(_pSphereMaterialBuffer->contents(), materialBuffer, materialSize);
-    _pSphereBuffer->didModifyRange(NS::Range::Make(0, primitiveSize));
-    _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialSize));
+  if (simd::float4 *materialDst =
+          static_cast<simd::float4 *>(_pSphereMaterialBuffer->contents())) {
+    size_t materialFloat4Count = primitiveCount * 2;
+    size_t previousMaterialFloat4Count = previousPrimitiveCount * 2;
+    size_t touchedMaterialFloat4Count =
+        std::max({materialFloat4Count, previousMaterialFloat4Count, size_t(2)});
+    if (primitiveCount > 0 && materialBuffer) {
+      std::memcpy(materialDst, materialBuffer,
+                  materialFloat4Count * sizeof(simd::float4));
+    }
+    if (previousPrimitiveCount > primitiveCount) {
+      size_t zeroStart = materialFloat4Count;
+      size_t zeroCount = previousMaterialFloat4Count > materialFloat4Count
+                             ? previousMaterialFloat4Count - materialFloat4Count
+                             : 0;
+      if (zeroCount > 0) {
+        std::memset(materialDst + zeroStart, 0,
+                    zeroCount * sizeof(simd::float4));
+      }
+    } else if (primitiveCount == 0) {
+      materialDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      materialDst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(
+        0, touchedMaterialFloat4Count * sizeof(simd::float4)));
   }
 
   delete[] primitiveBuffer;
   delete[] materialBuffer;
-
-  if (_pLightIndexBuffer) {
-    _pLightIndexBuffer->release();
-    _pLightIndexBuffer = nullptr;
-  }
-  if (_pLightCdfBuffer) {
-    _pLightCdfBuffer->release();
-    _pLightCdfBuffer = nullptr;
-  }
 
   std::vector<uint32_t> lightIndices;
   std::vector<float> lightCdf;
@@ -452,90 +506,126 @@ void Renderer::buildBuffers(const Scene &scene) {
   _lightCount = lightIndices.size();
   _lightTotalWeight = totalWeight;
 
-  size_t lightCount = _lightCount > 0 ? _lightCount : 1;
-  _pLightIndexBuffer =
-      _pDevice->newBuffer(lightCount * sizeof(uint32_t),
-                          MTL::ResourceStorageModeManaged);
-  _pLightCdfBuffer =
-      _pDevice->newBuffer(lightCount * sizeof(float),
-                          MTL::ResourceStorageModeManaged);
+  size_t targetLightCount =
+      std::max({static_cast<size_t>(1), _maxPrimitiveCount, previousLightCount,
+                _lightCount});
+  ensureBufferCapacity(_pLightIndexBuffer,
+                       targetLightCount * sizeof(uint32_t),
+                       _lightIndexBufferCapacity);
+  ensureBufferCapacity(_pLightCdfBuffer,
+                       targetLightCount * sizeof(float), _lightCdfBufferCapacity);
 
-  if (_lightCount > 0) {
-    memcpy(_pLightIndexBuffer->contents(), lightIndices.data(),
-           _lightCount * sizeof(uint32_t));
+  if (uint32_t *lightIndexPtr =
+          static_cast<uint32_t *>(_pLightIndexBuffer->contents())) {
+    size_t clearCount =
+        std::max({previousLightCount, _lightCount, static_cast<size_t>(1)});
+    std::memset(lightIndexPtr, 0, clearCount * sizeof(uint32_t));
+    if (_lightCount > 0) {
+      std::memcpy(lightIndexPtr, lightIndices.data(),
+                  _lightCount * sizeof(uint32_t));
+    }
     _pLightIndexBuffer->didModifyRange(
-        NS::Range::Make(0, _lightCount * sizeof(uint32_t)));
+        NS::Range::Make(0, clearCount * sizeof(uint32_t)));
+  }
 
-    memcpy(_pLightCdfBuffer->contents(), lightCdf.data(),
-           _lightCount * sizeof(float));
+  if (float *lightCdfPtr = static_cast<float *>(_pLightCdfBuffer->contents())) {
+    size_t clearCount =
+        std::max({previousLightCount, _lightCount, static_cast<size_t>(1)});
+    std::memset(lightCdfPtr, 0, clearCount * sizeof(float));
+    if (_lightCount > 0) {
+      std::memcpy(lightCdfPtr, lightCdf.data(), _lightCount * sizeof(float));
+    }
     _pLightCdfBuffer->didModifyRange(
-        NS::Range::Make(0, _lightCount * sizeof(float)));
-  } else {
-    uint32_t dummyIndex = 0;
-    float dummyCdf = 0.0f;
-    memcpy(_pLightIndexBuffer->contents(), &dummyIndex, sizeof(uint32_t));
-    memcpy(_pLightCdfBuffer->contents(), &dummyCdf, sizeof(float));
-    _pLightIndexBuffer->didModifyRange(NS::Range::Make(0, sizeof(uint32_t)));
-    _pLightCdfBuffer->didModifyRange(NS::Range::Make(0, sizeof(float)));
+        NS::Range::Make(0, clearCount * sizeof(float)));
   }
 
-  if (_pActiveBuffer) {
-    _pActiveBuffer->release();
-    _pActiveBuffer = nullptr;
-  }
-  size_t activeAlloc = primitiveCount > 0 ? primitiveCount : 1;
-  _pActiveBuffer =
-      _pDevice->newBuffer(activeAlloc * sizeof(uint8_t),
-                          MTL::ResourceStorageModeManaged);
-  if (primitiveCount > 0) {
-    std::vector<uint8_t> activeBytes(primitiveCount, 1);
-    memcpy(_pActiveBuffer->contents(), activeBytes.data(),
-           primitiveCount * sizeof(uint8_t));
+  size_t targetActiveCount =
+      std::max({primitiveCount, previousPrimitiveCount, _maxPrimitiveCount,
+                size_t(1)});
+  ensureBufferCapacity(_pActiveBuffer,
+                       targetActiveCount * sizeof(uint8_t),
+                       _activeBufferCapacity);
+  if (uint8_t *activePtr = static_cast<uint8_t *>(_pActiveBuffer->contents())) {
+    size_t clearCount =
+        std::max({previousPrimitiveCount, primitiveCount, size_t(1)});
+    std::memset(activePtr, 0, clearCount * sizeof(uint8_t));
+    if (primitiveCount > 0) {
+      std::memset(activePtr, 1, primitiveCount * sizeof(uint8_t));
+    }
     _pActiveBuffer->didModifyRange(
-        NS::Range::Make(0, primitiveCount * sizeof(uint8_t)));
-  } else {
-    uint8_t inactive = 0;
-    memcpy(_pActiveBuffer->contents(), &inactive, sizeof(uint8_t));
-    _pActiveBuffer->didModifyRange(NS::Range::Make(0, sizeof(uint8_t)));
+        NS::Range::Make(0, clearCount * sizeof(uint8_t)));
   }
 
   std::vector<simd::float3> vertices;
   std::vector<simd::uint3> indices;
   scene.createTriangleBuffers(vertices, indices);
 
-  if (_pTriangleVertexBuffer) {
-    _pTriangleVertexBuffer->release();
-    _pTriangleVertexBuffer = nullptr;
-  }
-  if (_pTriangleIndexBuffer) {
-    _pTriangleIndexBuffer->release();
-    _pTriangleIndexBuffer = nullptr;
+  size_t vertexCount = vertices.size();
+  size_t indexCount = indices.size();
+  size_t previousVertexCount = previousTriangleCount * 3;
+  size_t previousIndexCount = previousTriangleCount;
+
+  size_t targetVertexCount =
+      std::max({vertexCount, previousVertexCount, _maxTriangleVertexCount,
+                size_t(1)});
+  size_t targetIndexCount =
+      std::max({indexCount, previousIndexCount, _maxTriangleIndexCount,
+                size_t(1)});
+
+  ensureBufferCapacity(_pTriangleVertexBuffer,
+                       targetVertexCount * sizeof(simd::float3),
+                       _triangleVertexBufferCapacity);
+  ensureBufferCapacity(_pTriangleIndexBuffer,
+                       targetIndexCount * sizeof(simd::uint3),
+                       _triangleIndexBufferCapacity);
+
+  if (simd::float3 *vertexPtr =
+          static_cast<simd::float3 *>(_pTriangleVertexBuffer->contents())) {
+    if (vertexCount > 0) {
+      std::memcpy(vertexPtr, vertices.data(),
+                  vertexCount * sizeof(simd::float3));
+    }
+    if (previousVertexCount > vertexCount) {
+      size_t zeroStart = vertexCount;
+      size_t zeroCount = previousVertexCount - vertexCount;
+      if (zeroCount > 0) {
+        std::memset(vertexPtr + zeroStart, 0,
+                    zeroCount * sizeof(simd::float3));
+      }
+    } else if (vertexCount == 0) {
+      vertexPtr[0] = simd::float3{0.0f, 0.0f, 0.0f};
+    }
+    size_t touchedVertexCount =
+        std::max({vertexCount, previousVertexCount, size_t(1)});
+    _pTriangleVertexBuffer->didModifyRange(
+        NS::Range::Make(0, touchedVertexCount * sizeof(simd::float3)));
   }
 
-  if (!vertices.empty()) {
-    size_t vertexSize = vertices.size() * sizeof(simd::float3);
-    _pTriangleVertexBuffer = _pDevice->newBuffer(
-        vertices.data(), vertexSize, MTL::ResourceStorageModeManaged);
-    _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(0, vertexSize));
-  } else {
-    simd::float3 dummyVertex = {0, 0, 0};
-    _pTriangleVertexBuffer = _pDevice->newBuffer(
-        &dummyVertex, sizeof(simd::float3), MTL::ResourceStorageModeManaged);
-  }
-
-  if (!indices.empty()) {
-    size_t indexSize = indices.size() * sizeof(simd::uint3);
-    _pTriangleIndexBuffer = _pDevice->newBuffer(
-        indices.data(), indexSize, MTL::ResourceStorageModeManaged);
-    _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
-  } else {
-    simd::uint3 dummyIndex = {0, 0, 0};
-    _pTriangleIndexBuffer = _pDevice->newBuffer(
-        &dummyIndex, sizeof(simd::uint3), MTL::ResourceStorageModeManaged);
+  if (simd::uint3 *indexPtr =
+          static_cast<simd::uint3 *>(_pTriangleIndexBuffer->contents())) {
+    if (indexCount > 0) {
+      std::memcpy(indexPtr, indices.data(),
+                  indexCount * sizeof(simd::uint3));
+    }
+    if (previousIndexCount > indexCount) {
+      size_t zeroStart = indexCount;
+      size_t zeroCount = previousIndexCount - indexCount;
+      if (zeroCount > 0) {
+        std::memset(indexPtr + zeroStart, 0,
+                    zeroCount * sizeof(simd::uint3));
+      }
+    } else if (indexCount == 0) {
+      indexPtr[0] = simd::make_uint3(0, 0, 0);
+    }
+    size_t touchedIndexCount =
+        std::max({indexCount, previousIndexCount, size_t(1)});
+    _pTriangleIndexBuffer->didModifyRange(
+        NS::Range::Make(0, touchedIndexCount * sizeof(simd::uint3)));
   }
 }
 
 void Renderer::rebuildResidentResources() {
+  size_t previousPrimitiveCount = _residentPrimitiveCount;
   Scene activeScene;
   activeScene.screenSize = _pScene->screenSize;
   activeScene.maxRayDepth = _pScene->maxRayDepth;
@@ -567,27 +657,23 @@ void Renderer::rebuildResidentResources() {
   rebuildAccelerationStructures(activeScene);
   buildBuffers(activeScene);
 
-  if (_pPrimitiveRemapBuffer) {
-    _pPrimitiveRemapBuffer->release();
-    _pPrimitiveRemapBuffer = nullptr;
-  }
-
-  size_t remapCount = remap.empty() ? 1 : remap.size();
-  _pPrimitiveRemapBuffer =
-      _pDevice->newBuffer(remapCount * sizeof(uint32_t),
-                          MTL::ResourceStorageModeManaged);
+  size_t remapCount = remap.size();
+  size_t targetRemapCount =
+      std::max({remapCount, previousPrimitiveCount, _maxPrimitiveCount,
+                size_t(1)});
+  ensureBufferCapacity(_pPrimitiveRemapBuffer,
+                       targetRemapCount * sizeof(uint32_t),
+                       _primitiveRemapBufferCapacity);
   if (uint32_t *remapPtr =
           static_cast<uint32_t *>(_pPrimitiveRemapBuffer->contents())) {
+    size_t clearCount =
+        std::max({previousPrimitiveCount, remapCount, size_t(1)});
+    std::memset(remapPtr, 0, clearCount * sizeof(uint32_t));
     if (!remap.empty()) {
       std::memcpy(remapPtr, remap.data(), remap.size() * sizeof(uint32_t));
-      _pPrimitiveRemapBuffer->didModifyRange(
-          NS::Range::Make(0, remap.size() * sizeof(uint32_t)));
-    } else {
-      uint32_t zero = 0;
-      std::memcpy(remapPtr, &zero, sizeof(uint32_t));
-      _pPrimitiveRemapBuffer->didModifyRange(
-          NS::Range::Make(0, sizeof(uint32_t)));
     }
+    _pPrimitiveRemapBuffer->didModifyRange(
+        NS::Range::Make(0, clearCount * sizeof(uint32_t)));
   }
 
   _residentPrimitiveCount = activeScene.getPrimitiveCount();
@@ -1076,63 +1162,113 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
 }
 
 void Renderer::rebuildAccelerationStructures(const Scene &scene) {
+  size_t previousBlasCount = _blasNodeCount;
   size_t newBlasCount = scene.getBVHNodeCount();
   _blasNodeCount = newBlasCount;
 
-  if (_pBVHBuffer) {
-    _pBVHBuffer->release();
-    _pBVHBuffer = nullptr;
-  }
+  size_t targetBlasCount =
+      std::max({newBlasCount, previousBlasCount, _maxBlasNodeCount, size_t(1)});
+  ensureBufferCapacity(_pBVHBuffer,
+                       targetBlasCount * 2 * sizeof(simd::float4),
+                       _bvhBufferCapacity);
 
-  if (newBlasCount > 0) {
-    simd::float4 *bvhData = scene.createBVHBuffer();
-    _pBVHBuffer = _pDevice->newBuffer(
-        bvhData, sizeof(simd::float4) * newBlasCount * 2,
-        MTL::ResourceStorageModeManaged);
-    _pBVHBuffer->didModifyRange(NS::Range::Make(0, _pBVHBuffer->length()));
-    delete[] bvhData;
-  } else {
-    _pBVHBuffer =
-        _pDevice->newBuffer(sizeof(simd::float4), MTL::ResourceStorageModeManaged);
-  }
+  simd::float4 *bvhData = nullptr;
+  if (newBlasCount > 0)
+    bvhData = scene.createBVHBuffer();
 
+  if (simd::float4 *bvhPtr =
+          static_cast<simd::float4 *>(_pBVHBuffer->contents())) {
+    if (newBlasCount > 0 && bvhData) {
+      std::memcpy(bvhPtr, bvhData,
+                  newBlasCount * 2 * sizeof(simd::float4));
+    } else {
+      bvhPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      bvhPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    if (previousBlasCount > newBlasCount) {
+      size_t zeroStart = newBlasCount * 2;
+      size_t zeroCount =
+          (previousBlasCount > newBlasCount) ? (previousBlasCount - newBlasCount) * 2 : 0;
+      if (zeroCount > 0) {
+        std::memset(bvhPtr + zeroStart, 0,
+                    zeroCount * sizeof(simd::float4));
+      }
+    }
+    size_t touchedBlasCount =
+        std::max({previousBlasCount, newBlasCount, size_t(1)});
+    _pBVHBuffer->didModifyRange(NS::Range::Make(
+        0, touchedBlasCount * 2 * sizeof(simd::float4)));
+  }
+  delete[] bvhData;
+
+  size_t previousTlasCount = _tlasNodeCount;
   size_t tlasCount = 0;
   simd::float4 *tlasData = scene.createTLASBuffer(tlasCount);
   _tlasNodeCount = tlasCount;
 
-  if (_pTLASBuffer) {
-    _pTLASBuffer->release();
-    _pTLASBuffer = nullptr;
-  }
+  size_t targetTlasCount =
+      std::max({tlasCount, previousTlasCount, _maxTlasNodeCount, size_t(1)});
+  ensureBufferCapacity(_pTLASBuffer,
+                       targetTlasCount * 2 * sizeof(simd::float4),
+                       _tlasBufferCapacity);
 
-  if (tlasData && tlasCount > 0) {
-    _pTLASBuffer = _pDevice->newBuffer(
-        tlasData, sizeof(simd::float4) * tlasCount * 2,
-        MTL::ResourceStorageModeManaged);
-    _pTLASBuffer->didModifyRange(NS::Range::Make(0, _pTLASBuffer->length()));
-  } else {
-    _pTLASBuffer =
-        _pDevice->newBuffer(sizeof(simd::float4), MTL::ResourceStorageModeManaged);
+  if (simd::float4 *tlasPtr =
+          static_cast<simd::float4 *>(_pTLASBuffer->contents())) {
+    if (tlasData && tlasCount > 0) {
+      std::memcpy(tlasPtr, tlasData,
+                  tlasCount * 2 * sizeof(simd::float4));
+    } else {
+      tlasPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      tlasPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    if (previousTlasCount > tlasCount) {
+      size_t zeroStart = tlasCount * 2;
+      size_t zeroCount =
+          (previousTlasCount > tlasCount) ? (previousTlasCount - tlasCount) * 2 : 0;
+      if (zeroCount > 0) {
+        std::memset(tlasPtr + zeroStart, 0,
+                    zeroCount * sizeof(simd::float4));
+      }
+    }
+    size_t touchedTlasCount =
+        std::max({previousTlasCount, tlasCount, size_t(1)});
+    _pTLASBuffer->didModifyRange(NS::Range::Make(
+        0, touchedTlasCount * 2 * sizeof(simd::float4)));
   }
   delete[] tlasData;
 
-  if (_pPrimitiveIndexBuffer) {
-    _pPrimitiveIndexBuffer->release();
-    _pPrimitiveIndexBuffer = nullptr;
-  }
-
   size_t indexCount = scene.getPrimitiveIndices().size();
-  if (indexCount > 0) {
-    int *rawIndices = scene.createPrimitiveIndexBuffer();
-    size_t indexSize = indexCount * sizeof(int);
-    _pPrimitiveIndexBuffer = _pDevice->newBuffer(
-        rawIndices, indexSize, MTL::ResourceStorageModeManaged);
-    _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(0, indexSize));
-    delete[] rawIndices;
-  } else {
-    _pPrimitiveIndexBuffer =
-        _pDevice->newBuffer(sizeof(int), MTL::ResourceStorageModeManaged);
+  size_t previousIndexCount = _residentPrimitiveCount;
+  size_t targetIndexCount =
+      std::max({indexCount, previousIndexCount, _maxPrimitiveCount, size_t(1)});
+  ensureBufferCapacity(_pPrimitiveIndexBuffer,
+                       targetIndexCount * sizeof(int),
+                       _primitiveIndexBufferCapacity);
+
+  int *rawIndices = nullptr;
+  if (indexCount > 0)
+    rawIndices = scene.createPrimitiveIndexBuffer();
+
+  if (int *indexPtr = static_cast<int *>(_pPrimitiveIndexBuffer->contents())) {
+    if (indexCount > 0 && rawIndices) {
+      std::memcpy(indexPtr, rawIndices, indexCount * sizeof(int));
+    } else {
+      indexPtr[0] = 0;
+    }
+    if (previousIndexCount > indexCount) {
+      size_t zeroStart = indexCount;
+      size_t zeroCount =
+          (previousIndexCount > indexCount) ? previousIndexCount - indexCount : 0;
+      if (zeroCount > 0) {
+        std::memset(indexPtr + zeroStart, 0, zeroCount * sizeof(int));
+      }
+    }
+    size_t touchedIndexCount =
+        std::max({previousIndexCount, indexCount, size_t(1)});
+    _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(
+        0, touchedIndexCount * sizeof(int)));
   }
+  delete[] rawIndices;
 
   size_t newActiveCount = _tlasNodeCount + scene.getPrimitiveCount();
   if (newActiveCount != _activeNodeCount) {

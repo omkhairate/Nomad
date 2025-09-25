@@ -53,6 +53,8 @@ private:
   void buildBuffers(const Scene &scene);
   void rebuildAccelerationStructures(const Scene &scene);
   void rebuildResidentResources();
+  void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
+                            size_t &currentCapacity);
   struct BoundingSphere {
     simd::float3 center;
     float radius;
@@ -115,6 +117,25 @@ private:
   size_t _residentTriangleCount = 0;
   size_t _lightCount = 0;
   float _lightTotalWeight = 0.0f;
+
+  size_t _maxPrimitiveCount = 0;
+  size_t _maxTriangleVertexCount = 0;
+  size_t _maxTriangleIndexCount = 0;
+  size_t _maxBlasNodeCount = 0;
+  size_t _maxTlasNodeCount = 0;
+
+  size_t _sphereBufferCapacity = 0;
+  size_t _sphereMaterialBufferCapacity = 0;
+  size_t _triangleVertexBufferCapacity = 0;
+  size_t _triangleIndexBufferCapacity = 0;
+  size_t _bvhBufferCapacity = 0;
+  size_t _tlasBufferCapacity = 0;
+  size_t _primitiveIndexBufferCapacity = 0;
+  size_t _activeBufferCapacity = 0;
+  size_t _lightIndexBufferCapacity = 0;
+  size_t _lightCdfBufferCapacity = 0;
+  size_t _primitiveRemapBufferCapacity = 0;
+  size_t _primitiveHitBufferCapacity = 0;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
