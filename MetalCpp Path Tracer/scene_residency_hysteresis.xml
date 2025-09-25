@@ -1,0 +1,46 @@
+<Scene width="1280" height="720" maxRayDepth="32">
+    <CameraPath>
+        <!-- Begin inside the dense bunny cluster so everything is resident -->
+        <Keyframe frame="0" position="0,40,140" lookAt="0,20,0" />
+        <Keyframe frame="40" position="-40,35,120" lookAt="0,20,0" />
+        <!-- Cruise sideways across the field to keep the cluster fully visible -->
+        <Keyframe frame="120" position="60,35,150" lookAt="0,20,0" />
+        <!-- Accelerate far beyond the eviction radius toward an isolated bunny -->
+        <Keyframe frame="200" position="0,30,-420" lookAt="0,20,-520" />
+        <!-- Settle near the distant bunny to verify only it remains resident -->
+        <Keyframe frame="260" position="0,25,-460" lookAt="0,15,-560" />
+    </CameraPath>
+
+    <!-- Infinite ground plane -->
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Warm area light hovering above the cluster -->
+    <Sphere position="0,120,0" radius="18" albedo="0,0,0" emission="1.2,1.1,0.9" materialType="0" emissionPower="15" />
+
+    <!-- Reflective backstop behind the cluster to keep the lighting stable -->
+    <Rectangle position="0,20,-160" u="200,0,0" v="0,120,0" albedo="0.95,0.95,0.95" emission="0,0,0" materialType="-1" emissionPower="0" />
+
+    <!-- Dense grid of bunnies that should stream out once the camera departs -->
+    <Mesh file="assets/bunny.obj" position="-60,0,40" scale="10.0" albedo="0.9,0.5,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-20,0,40" scale="10.0" albedo="0.8,0.6,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="20,0,40" scale="10.0" albedo="0.7,0.7,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="60,0,40" scale="10.0" albedo="0.6,0.8,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="-60,0,0" scale="10.0" albedo="0.9,0.4,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-20,0,0" scale="10.0" albedo="0.8,0.5,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="20,0,0" scale="10.0" albedo="0.7,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="60,0,0" scale="10.0" albedo="0.6,0.7,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="-60,0,-40" scale="10.0" albedo="0.9,0.3,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-20,0,-40" scale="10.0" albedo="0.8,0.4,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="20,0,-40" scale="10.0" albedo="0.7,0.5,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="60,0,-40" scale="10.0" albedo="0.6,0.6,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="-60,0,-80" scale="10.0" albedo="0.9,0.2,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-20,0,-80" scale="10.0" albedo="0.8,0.3,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="20,0,-80" scale="10.0" albedo="0.7,0.4,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="60,0,-80" scale="10.0" albedo="0.6,0.5,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Isolated bunny far along the path that should be the only resident mesh at the end -->
+    <Mesh file="assets/bunny.obj" position="0,0,-520" scale="12.0" albedo="0.85,0.55,0.35" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
