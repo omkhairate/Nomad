@@ -270,10 +270,6 @@ void Renderer::recalculateViewport() {
 
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(UniformsData)));
 
-  printf("viewportU: (%f, %f, %f)\n", viewportU.x, viewportU.y, viewportU.z);
-  printf("viewportV: (%f, %f, %f)\n", viewportV.x, viewportV.y, viewportV.z);
-  printf("firstPixel: (%f, %f, %f)\n", firstPixelPosition.x,
-         firstPixelPosition.y, firstPixelPosition.z);
 }
 
 void Renderer::buildBuffers(const Scene &scene) {
