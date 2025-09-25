@@ -1,4 +1,4 @@
-<Scene width="1280" height="720" maxRayDepth="32">
+<Scene width="1280" height="720" maxRayDepth="32" residencyStrategy="distance">
     <CameraPath>
         <!-- Start well beyond full-detail distance to ensure primitives remain visible -->
         <Keyframe frame="0" position="0,20,400" lookAt="0,20,0" />

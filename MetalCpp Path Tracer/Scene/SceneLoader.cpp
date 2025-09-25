@@ -104,9 +104,15 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             return static_cast<char>(std::tolower(c));
         });
 
-        if (value == "energy" || value == "importance" || value == "energyimportance") {
+        if (value == "energy" || value == "importance" || value == "energyimportance" ||
+            value == "energy_importance") {
             scene->setResidencyStrategy(ResidencyStrategy::EnergyImportance);
+        } else if (value == "distance" || value == "lod" || value == "distance_lod" ||
+                   value == "distancelod" || value == "distancebased") {
+            scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
         } else {
+            printf("Unknown residency strategy '%s', defaulting to distance LOD.\n",
+                   residencyAttr);
             scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
         }
     }

@@ -1,4 +1,4 @@
-<Scene width="1280" height="720" maxRayDepth="32">
+<Scene width="1280" height="720" maxRayDepth="32" residencyStrategy="distance">
     <CameraPath>
         <!-- Hold inside cluster A so all 64 meshes are resident -->
         <Keyframe frame="0" position="0,30,120" lookAt="0,20,0" />

@@ -1,4 +1,11 @@
 <Scene width="1280" height="720" maxRayDepth="32" residencyStrategy="distance">
+    <CameraPath>
+        <!-- Matches the default layout but forces distance-based LOD residency -->
+        <Keyframe frame="0" position="0,20,50" lookAt="0,20,0" />
+        <Keyframe frame="10" position="0,20,50" lookAt="0,20,0" />
+        <Keyframe frame="20" position="20,20,50" lookAt="0,20,0" />
+        <Keyframe frame="120" position="100,20,50" lookAt="200,20,0" />
+    </CameraPath>
     <!-- Ground -->
     <Sphere position="0,-10000,0" radius="10000" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
 
@@ -21,4 +28,3 @@
         materialType="0"
         emissionPower="0" />
 </Scene>
-
