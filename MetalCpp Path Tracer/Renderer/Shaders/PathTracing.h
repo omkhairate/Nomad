@@ -318,7 +318,6 @@ inline bool sampleLightPrimitive(int primitiveType,
     float u2 = randomFloat(seed);
     seed = random(seed);
     float su1 = sqrt(u1);
-    float b0 = 1.0 - su1;
     float b1 = su1 * (1.0 - u2);
     float b2 = su1 * u2;
     position = v0 + b1 * edge1 + b2 * edge2;
