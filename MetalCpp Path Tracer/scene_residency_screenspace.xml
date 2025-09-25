@@ -1,0 +1,39 @@
+<Scene width="1280" height="720" maxRayDepth="32" residencyStrategy="screenSpaceFootprint">
+    <CameraPath>
+        <!-- Orbit the scene so primitives enter and leave the screen gradually -->
+        <Keyframe frame="0" position="0,25,70" lookAt="0,15,0" />
+        <Keyframe frame="60" position="-40,25,30" lookAt="0,15,0" />
+        <Keyframe frame="120" position="0,25,-20" lookAt="0,15,0" />
+        <Keyframe frame="180" position="40,25,30" lookAt="0,15,0" />
+        <Keyframe frame="240" position="0,25,70" lookAt="0,15,0" />
+    </CameraPath>
+
+    <!-- Soft white ground -->
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Spread out geometry so their projected coverage varies along the path -->
+    <Sphere position="-45,12,-100" radius="18" albedo="0.8,0.4,0.3" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="30,18,-140" radius="26" albedo="0.3,0.6,0.9" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="0,8,-70" radius="10" albedo="0.9,0.9,0.9" emission="0,0,0" materialType="-1" emissionPower="0" />
+
+    <Rectangle position="-15,25,-120" u="0,0,12" v="0,12,0" albedo="0.7,0.7,0.7" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="35,15,-80" u="12,0,0" v="0,12,0" albedo="0.2,0.8,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Mesh elements to test footprint prioritization -->
+    <Mesh
+        file="assets/bunny.obj"
+        position="-25,0,-110"
+        scale="11.0"
+        albedo="0.8,0.8,0.8"
+        emission="0,0,0"
+        materialType="0"
+        emissionPower="0" />
+    <Mesh
+        file="assets/bunny.obj"
+        position="28,0,-85"
+        scale="8.0"
+        albedo="0.9,0.5,0.3"
+        emission="0,0,0"
+        materialType="0"
+        emissionPower="0" />
+</Scene>
