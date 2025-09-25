@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <chrono>
 #include <limits>
+#include <mutex>
 #include <simd/simd.h>
 #include <utility>
 #include <vector>
@@ -38,8 +39,21 @@ public:
   // Dump acceleration structure to a JSON file for debugging.
   void dumpAccelerationStructure(const std::string &path);
 
+  struct FrameMetrics {
+    double cpuTime = 0.0;
+    double gpuTime = 0.0;
+    double raysPerSecond = 0.0;
+    size_t activeNodes = 0;
+    size_t offloadedNodes = 0;
+    size_t offloadedInstances = 0;
+    double gpuMemoryMB = 0.0;
+  };
+
   // Return the amount of GPU memory currently allocated by the device in MB.
   double currentGPUMemoryMB() const;
+
+  // Retrieve the most recently completed frame metrics, if available.
+  bool popCompletedFrameMetrics(FrameMetrics &outMetrics);
 
   // Set a maximum GPU memory budget in megabytes. A value of 0 disables the
   // budget and allows unlimited allocations.
@@ -170,6 +184,9 @@ private:
   size_t _lastRayCount = 0;
   size_t _lastOffloadedNodeCount = 0;
   size_t _lastOffloadedInstanceCount = 0;
+  FrameMetrics _pendingFrameMetrics;
+  bool _hasPendingMetrics = false;
+  mutable std::mutex _metricsMutex;
 
   size_t _animationFrame = 0;
 };

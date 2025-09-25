@@ -22,6 +22,7 @@ public:
 private:
   Renderer *_pRenderer;
   std::size_t _frameCount = 0;
+  std::size_t _loggedFrameCount = 0;
   std::size_t _maxFrames = 0;
   std::chrono::steady_clock::time_point _lastTime;
   std::string _dumpPath;

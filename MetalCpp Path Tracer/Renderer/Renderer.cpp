@@ -1475,6 +1475,15 @@ double Renderer::currentGPUMemoryMB() const {
          (1024.0 * 1024.0);
 }
 
+bool Renderer::popCompletedFrameMetrics(FrameMetrics &outMetrics) {
+  std::lock_guard<std::mutex> lock(_metricsMutex);
+  if (!_hasPendingMetrics)
+    return false;
+  outMetrics = _pendingFrameMetrics;
+  _hasPendingMetrics = false;
+  return true;
+}
+
 void Renderer::setGPUMemoryBudgetMB(double mb) {
   _manualBudget = true;
   if (mb <= 0.0) {
@@ -1562,6 +1571,20 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   processPendingReleases();
   adjustBudgetForPerformance();
   auto [offloadedNodes, offloadedInstances] = calculateOffloadedResidency();
+  double gpuMemoryMB = currentGPUMemoryMB();
+
+  {
+    std::lock_guard<std::mutex> lock(_metricsMutex);
+    _pendingFrameMetrics.cpuTime = _lastCPUTime;
+    _pendingFrameMetrics.gpuTime = _lastGPUTime;
+    _pendingFrameMetrics.raysPerSecond = _lastRaysPerSecond;
+    _pendingFrameMetrics.activeNodes = _activeNodeCount;
+    _pendingFrameMetrics.offloadedNodes = offloadedNodes;
+    _pendingFrameMetrics.offloadedInstances = offloadedInstances;
+    _pendingFrameMetrics.gpuMemoryMB = gpuMemoryMB;
+    _hasPendingMetrics = true;
+  }
+
   printf(
       "Nodes active: %zu offloaded: %zu (instances: %zu) CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
       _activeNodeCount, offloadedNodes, offloadedInstances,
