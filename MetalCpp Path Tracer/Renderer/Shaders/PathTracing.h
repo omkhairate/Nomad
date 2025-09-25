@@ -5,7 +5,6 @@
 #include <metal_stdlib>
 
 #define M_PI 3.14159265358979323846
-#define PRIMITIVE_STRIDE 4
 
 #include "Intersect.h"
 #include "Random.h"
@@ -104,11 +103,10 @@ inline intersection firstHitBVH(thread const ray &r,
         int primIdx = primitiveIndices[leftFirst + i];
         if (primIdx >= int(primitiveCount))
           continue;
-        int base = primIdx * PRIMITIVE_STRIDE;
+        int base = primIdx * 3;
         float4 p0 = primitives[base + 0];
         float4 p1 = primitives[base + 1];
         float4 p2 = primitives[base + 2];
-        float4 p3 = primitives[base + 3];
 
         int primitiveType = int(p0.w);
         float tHit = INFINITY;
@@ -119,11 +117,10 @@ inline intersection firstHitBVH(thread const ray &r,
         if (primitiveType == 0) {
           float3 center = p0.xyz;
           float radius = p1.x;
-          float radiusSq = p1.y > 0.0 ? p1.y : radius * radius;
           float3 oc = r.origin - center;
           float a = dot(r.direction, r.direction);
           float b = dot(oc, r.direction);
-          float c = dot(oc, oc) - radiusSq;
+          float c = dot(oc, oc) - radius * radius;
           float discriminant = b * b - a * c;
 
           if (discriminant > 0.0) {
@@ -138,9 +135,11 @@ inline intersection firstHitBVH(thread const ray &r,
           }
         } else if (primitiveType == 1) {
           float3 v0 = p0.xyz;
-          float3 edge1 = p1.xyz;
-          float3 edge2 = p2.xyz;
-          float3 storedNormal = p3.xyz;
+          float3 v1 = p1.xyz;
+          float3 v2 = p2.xyz;
+
+          float3 edge1 = v1 - v0;
+          float3 edge2 = v2 - v0;
           float3 h = cross(r.direction, edge2);
           float a = dot(edge1, h);
           if (abs(a) > 1e-5) {
@@ -155,11 +154,7 @@ inline intersection firstHitBVH(thread const ray &r,
                 if (tt > 0.0001 && tt < in.t) {
                   tHit = tt;
                   hit = r.origin + tHit * r.direction;
-                  float normalLenSq = dot(storedNormal, storedNormal);
-                  if (normalLenSq > 1e-12)
-                    n = storedNormal;
-                  else
-                    n = normalize(cross(edge1, edge2));
+                  n = normalize(cross(edge1, edge2));
                   hitThis = true;
                   in.isTriangle = 1;
                 }
@@ -170,20 +165,15 @@ inline intersection firstHitBVH(thread const ray &r,
           float3 center = p0.xyz;
           float3 e1 = p1.xyz;
           float3 e2 = p2.xyz;
-          float invDotU = p1.w;
-          float invDotV = p2.w;
-          float3 normal = p3.xyz;
-          float normalLenSq = dot(normal, normal);
-          if (normalLenSq < 1e-12)
-            normal = normalize(cross(e1, e2));
+          float3 normal = normalize(cross(e1, e2));
           float denom = dot(normal, r.direction);
           if (fabs(denom) > 1e-5) {
             float tt = dot(center - r.origin, normal) / denom;
             if (tt > 0.0001 && tt < in.t) {
               float3 hitPoint = r.origin + tt * r.direction;
               float3 rel = hitPoint - center;
-              float u = invDotU > 0.0 ? dot(rel, e1) * invDotU : 0.0;
-              float v = invDotV > 0.0 ? dot(rel, e2) * invDotV : 0.0;
+              float u = dot(rel, e1) / dot(e1, e1);
+              float v = dot(rel, e2) / dot(e2, e2);
               if (fabs(u) <= 1.0 && fabs(v) <= 1.0) {
                 tHit = tt;
                 hit = hitPoint;
