@@ -40,6 +40,7 @@ public:
   double lastGPUTime() const;
   double lastRaysPerSecond() const;
   size_t activeNodeCount() const;
+  size_t residentNodeCount() const;
   size_t totalNodeCount() const;
 
   std::vector<std::pair<simd::float3, float>> _allSpheres;
@@ -98,6 +99,7 @@ private:
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
+  size_t _residentNodeCount = 0;
   size_t _totalNodeCount = 0;
   // Accumulation framebuffers
   MTL::Texture *_accumulationTargets[2] = {nullptr, nullptr};
