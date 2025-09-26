@@ -6,19 +6,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <mach/mach.h>
 #include <limits>
 
 using namespace MetalCppPathTracer;
-
-static double getMemoryUsageMB() {
-  mach_task_basic_info_data_t info;
-  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
-                reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS)
-    return 0.0;
-  return static_cast<double>(info.resident_size) / (1024.0 * 1024.0);
-}
 
 ViewDelegate::ViewDelegate(MTL::Device *pDevice)
     : MTK::ViewDelegate(), _pRenderer(new Renderer(pDevice)),
@@ -61,7 +51,7 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
   double fps = 1.0 / deltaSeconds;
   _lastTime = current;
   updateFPS(fps);
-  updateMemoryUsage(getMemoryUsageMB());
+  updateMemoryUsage(_pRenderer->currentGPUMemoryMB());
   _pRenderer->setDeltaTime(deltaSeconds);
   _pRenderer->draw(pView);
   if (_perfLog.is_open()) {

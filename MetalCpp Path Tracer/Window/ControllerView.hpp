@@ -15,7 +15,7 @@ public:
 // Update the FPS text overlay on the rendering view.
 void updateFPS(double fps);
 
-// Update the memory usage text overlay on the rendering view.
+// Update the GPU memory usage text overlay on the rendering view.
 void updateMemoryUsage(double memoryMB);
 
 };

@@ -36,14 +36,14 @@ MTK::View *MetalCppPathTracer::ControllerView::get(CGRect frame) {
     [fpsLabel setTextColor:[NSColor whiteColor]];
     [fpsLabel setStringValue:@"0 FPS"];
     [adapter addSubview:fpsLabel];
-    memoryLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, frame.size.height - 55, 120, 20)];
+    memoryLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, frame.size.height - 55, 150, 20)];
     [memoryLabel setBezeled:NO];
     [memoryLabel setDrawsBackground:YES];
     [memoryLabel setBackgroundColor:[NSColor colorWithCalibratedWhite:0 alpha:0.5]];
     [memoryLabel setEditable:NO];
     [memoryLabel setSelectable:NO];
     [memoryLabel setTextColor:[NSColor whiteColor]];
-    [memoryLabel setStringValue:@"0 MB"];
+    [memoryLabel setStringValue:@"GPU: 0.0 MB"];
     [adapter addSubview:memoryLabel];
     [pool release];
 }
@@ -57,7 +57,7 @@ MTK::View *MetalCppPathTracer::ControllerView::get(CGRect frame) {
 }
 
 + (void)updateMemory:(double)mem {
-    [memoryLabel setStringValue:[NSString stringWithFormat:@"%.1f MB", mem]];
+    [memoryLabel setStringValue:[NSString stringWithFormat:@"GPU: %.1f MB", mem]];
 }
 
 - (id)init {
