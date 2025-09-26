@@ -16,6 +16,7 @@ inline simd::float3 up;
 inline float verticalFov;
 inline float focalLength;
 inline simd::float2 screenSize;
+inline float deltaTime = 0.0f;
 
 inline constexpr float movementSpeed = 0.1;
 inline constexpr float rotationSpeed = 0.002;
@@ -29,45 +30,52 @@ inline static void reset()
 
     verticalFov = 60.0;
     focalLength = 1.0;
+    deltaTime = 0.0f;
 }
 
 
 inline bool move(simd::float3 movementDirection)
 {
-    if(simd::length_squared(movementDirection) == 0) return false;
+    if(simd::length_squared(movementDirection) == 0 || deltaTime <= 0.0f) return false;
     
     const simd::float3 cameraRight = simd::normalize(simd::cross(forward, simd::float3{0, 1, 0}));
     
     const simd::float3 forwardMovementDirection = simd::cross(simd::float3{0, 1, 0}, cameraRight);
     
-    position += movementSpeed * simd::normalize(cameraRight*InputSystem::movementInput.x +
+    const float frameMovementSpeed = movementSpeed * deltaTime;
+
+    position += frameMovementSpeed * simd::normalize(cameraRight*InputSystem::movementInput.x +
                                                 simd::float3{0, 1, 0}*InputSystem::movementInput.y +
                                                 forwardMovementDirection*InputSystem::movementInput.z);
     return true;
-    
+
 }
 
 inline bool rotate(simd::float2 angles)
 {
-    if(simd::length_squared(angles) == 0) return false;
-    
+    if(simd::length_squared(angles) == 0 || deltaTime <= 0.0f) return false;
+
     simd::float3 cameraRight = simd::cross(forward, simd::float3{0, 1, 0});
-    simd::quatf rotationUp = simd::quatf(-InputSystem::rotationInput.y*rotationSpeed, cameraRight);
+    const float frameRotationSpeed = rotationSpeed * deltaTime;
+
+    simd::quatf rotationUp = simd::quatf(-InputSystem::rotationInput.y*frameRotationSpeed, cameraRight);
     Camera::forward = simd::normalize(simd_act(rotationUp, forward));
-    
+
     cameraRight = simd::cross(Camera::forward, simd::float3{0, 1, 0});
     up = simd::normalize(simd::cross(cameraRight, forward));
-    simd::quatf rotationRight = simd::quatf(-InputSystem::rotationInput.x*rotationSpeed, up);
+    simd::quatf rotationRight = simd::quatf(-InputSystem::rotationInput.x*frameRotationSpeed, up);
     forward = simd::normalize(simd_act(rotationRight, forward));
-    
+
     return true;
 }
 
 inline bool zoom(float zoomAmount)
 {
-    if (zoomAmount == 0) return false;
-    
-    verticalFov = simd::clamp(verticalFov + zoomAmount * zoomSpeed, 30.0f, 120.0f);
+    if (zoomAmount == 0 || deltaTime <= 0.0f) return false;
+
+    const float frameZoomSpeed = zoomSpeed * deltaTime;
+
+    verticalFov = simd::clamp(verticalFov + zoomAmount * frameZoomSpeed, 30.0f, 120.0f);
     
     return true;
 }
