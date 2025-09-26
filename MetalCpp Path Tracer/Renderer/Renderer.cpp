@@ -65,6 +65,9 @@ namespace {
 constexpr float LOD_ENTER_DISTANCE = 225.0f;
 constexpr float LOD_EXIT_DISTANCE = 275.0f;
 constexpr uint32_t LOD_STATE_COOLDOWN_FRAMES = 5;
+// Avoid large per-frame rebuild spikes by throttling how many primitives can
+// toggle residency at once.
+constexpr size_t LOD_MAX_TOGGLES_PER_FRAME = 24;
 constexpr float ENERGY_TARGET_FRACTION = 0.9f;
 constexpr size_t ENERGY_MIN_ACTIVE_PRIMITIVES = 16;
 constexpr float RAY_HIT_DECAY = 0.85f;
@@ -861,6 +864,7 @@ void Renderer::updateLODByDistance() {
   // active until the camera has moved beyond LOD_EXIT_DISTANCE.
 
   size_t activeCount = 0;
+  size_t toggles = 0;
   bool changed = false;
   for (size_t g = 0; g < _allPrimitives.size(); ++g) {
     float dist =
@@ -872,9 +876,13 @@ void Renderer::updateLODByDistance() {
                                           : dist < LOD_ENTER_DISTANCE;
     bool canToggle =
         g >= _primitiveCooldown.size() || _primitiveCooldown[g] == 0;
-    if (canToggle && shouldBeActive != currentlyActive &&
-        setPrimitiveActive(g, shouldBeActive))
-      changed = true;
+    if (canToggle && shouldBeActive != currentlyActive) {
+      if (toggles < LOD_MAX_TOGGLES_PER_FRAME &&
+          setPrimitiveActive(g, shouldBeActive)) {
+        changed = true;
+        ++toggles;
+      }
+    }
     if (_activePrimitive[g])
       activeCount++;
   }
