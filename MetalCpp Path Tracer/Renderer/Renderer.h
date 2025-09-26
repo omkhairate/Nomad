@@ -51,11 +51,10 @@ public:
   };
 
 private:
-  void buildBuffers(const Scene &scene);
-  void rebuildAccelerationStructures(const Scene &scene);
   void rebuildResidentResources();
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
-                            size_t &currentCapacity);
+                            size_t &currentCapacity,
+                            bool allowShrink = false);
   struct BoundingSphere {
     simd::float3 center;
     float radius;

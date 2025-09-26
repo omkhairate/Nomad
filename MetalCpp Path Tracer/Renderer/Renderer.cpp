@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <limits>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -112,26 +113,182 @@ float primitiveImportance(const Primitive &p) {
   return area * (emissive + reflective);
 }
 
+float boundingSurfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) {
+  simd::float3 d = bmax - bmin;
+  return 2.0f * (d.x * d.y + d.y * d.z + d.z * d.x);
+}
+
+float primitiveAxisValueLocal(const Primitive &p, int axis) {
+  switch (p.type) {
+  case PrimitiveType::Sphere:
+    return p.sphere.center[axis];
+  case PrimitiveType::Rectangle:
+    return p.rectangle.center[axis];
+  case PrimitiveType::Triangle:
+    return (p.triangle.v0[axis] + p.triangle.v1[axis] + p.triangle.v2[axis]) /
+           3.0f;
+  }
+  return 0.0f;
+}
+
+void primitiveBoundsLocal(const Primitive &p, simd::float3 &pMin,
+                          simd::float3 &pMax) {
+  if (p.type == PrimitiveType::Sphere) {
+    float r = p.sphere.radius;
+    pMin = p.sphere.center - r;
+    pMax = p.sphere.center + r;
+  } else if (p.type == PrimitiveType::Rectangle) {
+    simd::float3 c = p.rectangle.center;
+    simd::float3 e1 = p.rectangle.u;
+    simd::float3 e2 = p.rectangle.v;
+    simd::float3 c1 = c - e1 - e2;
+    simd::float3 c2 = c - e1 + e2;
+    simd::float3 c3 = c + e1 - e2;
+    simd::float3 c4 = c + e1 + e2;
+    pMin = simd::min(simd::min(c1, c2), simd::min(c3, c4));
+    pMax = simd::max(simd::max(c1, c2), simd::max(c3, c4));
+  } else {
+    const auto &t = p.triangle;
+    pMin = simd::min(t.v0, simd::min(t.v1, t.v2));
+    pMax = simd::max(t.v0, simd::max(t.v1, t.v2));
+  }
+}
+
+int buildBVHRecursive(const std::vector<Primitive> &primitives,
+                      std::vector<int> &primitiveIndices,
+                      std::vector<BVHNode> &nodes, size_t start, size_t end) {
+  BVHNode node;
+  simd::float3 bMin(std::numeric_limits<float>::max());
+  simd::float3 bMax(-std::numeric_limits<float>::max());
+
+  for (size_t i = start; i < end; ++i) {
+    const Primitive &p = primitives[primitiveIndices[i]];
+    simd::float3 pMin, pMax;
+    primitiveBoundsLocal(p, pMin, pMax);
+    bMin = simd::min(bMin, pMin);
+    bMax = simd::max(bMax, pMax);
+  }
+
+  node.boundsMin = bMin;
+  node.boundsMax = bMax;
+  node.leftFirst = static_cast<int>(start);
+  node.count = static_cast<int>(end - start);
+
+  int nodeIndex = static_cast<int>(nodes.size());
+  nodes.push_back(node);
+
+  size_t range = end - start;
+  if (range <= 8)
+    return nodeIndex;
+
+  const float parentArea = boundingSurfaceArea(bMin, bMax);
+  if (parentArea <= 0.0f)
+    return nodeIndex;
+
+  float bestCost = std::numeric_limits<float>::max();
+  int bestAxis = -1;
+  size_t bestSplit = start + range / 2;
+
+  std::vector<simd::float3> leftMin(range);
+  std::vector<simd::float3> leftMax(range);
+  std::vector<simd::float3> rightMin(range);
+  std::vector<simd::float3> rightMax(range);
+
+  for (int axis = 0; axis < 3; ++axis) {
+    std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
+              [&](int a, int b) {
+                return primitiveAxisValueLocal(primitives[a], axis) <
+                       primitiveAxisValueLocal(primitives[b], axis);
+              });
+
+    simd::float3 currMin(std::numeric_limits<float>::max());
+    simd::float3 currMax(-std::numeric_limits<float>::max());
+    for (size_t i = start; i < end; ++i) {
+      const Primitive &p = primitives[primitiveIndices[i]];
+      simd::float3 pMin, pMax;
+      primitiveBoundsLocal(p, pMin, pMax);
+      currMin = simd::min(currMin, pMin);
+      currMax = simd::max(currMax, pMax);
+      leftMin[i - start] = currMin;
+      leftMax[i - start] = currMax;
+    }
+
+    currMin = simd::float3(std::numeric_limits<float>::max());
+    currMax = simd::float3(-std::numeric_limits<float>::max());
+    for (size_t i = end; i-- > start;) {
+      const Primitive &p = primitives[primitiveIndices[i]];
+      simd::float3 pMin, pMax;
+      primitiveBoundsLocal(p, pMin, pMax);
+      currMin = simd::min(currMin, pMin);
+      currMax = simd::max(currMax, pMax);
+      rightMin[i - start] = currMin;
+      rightMax[i - start] = currMax;
+    }
+
+    for (size_t i = 1; i < range; ++i) {
+      float saLeft = boundingSurfaceArea(leftMin[i - 1], leftMax[i - 1]);
+      float saRight = boundingSurfaceArea(rightMin[i], rightMax[i]);
+      size_t leftCount = i;
+      size_t rightCount = range - i;
+      float cost = 0.125f + (saLeft / parentArea) * leftCount +
+                   (saRight / parentArea) * rightCount;
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestAxis = axis;
+        bestSplit = start + i;
+      }
+    }
+  }
+
+  if (bestAxis == -1)
+    return nodeIndex;
+
+  std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
+            [&](int a, int b) {
+              return primitiveAxisValueLocal(primitives[a], bestAxis) <
+                     primitiveAxisValueLocal(primitives[b], bestAxis);
+            });
+
+  int leftChild =
+      buildBVHRecursive(primitives, primitiveIndices, nodes, start, bestSplit);
+  int rightChild =
+      buildBVHRecursive(primitives, primitiveIndices, nodes, bestSplit, end);
+
+  nodes[nodeIndex].leftFirst = leftChild;
+  nodes[nodeIndex].count = -rightChild;
+  return nodeIndex;
+}
+
 } // namespace
 
 void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
-                                    size_t &currentCapacity) {
+                                    size_t &currentCapacity,
+                                    bool allowShrink) {
   if (requiredBytes == 0)
     requiredBytes = 1;
 
-  if (buffer && requiredBytes <= currentCapacity)
-    return;
+  size_t desiredCapacity = requiredBytes;
+
+  if (!allowShrink) {
+    if (buffer && requiredBytes <= currentCapacity)
+      return;
+    desiredCapacity = std::max(requiredBytes, currentCapacity);
+  } else if (buffer) {
+    size_t shrinkThreshold = currentCapacity / 2;
+    if (requiredBytes <= currentCapacity && requiredBytes >= shrinkThreshold)
+      return;
+    if (requiredBytes > currentCapacity)
+      desiredCapacity = std::max(requiredBytes, currentCapacity * 2);
+  }
 
   if (buffer) {
     buffer->release();
     buffer = nullptr;
+    currentCapacity = 0;
   }
 
-  size_t newCapacity = std::max(requiredBytes, currentCapacity);
-  if (newCapacity < requiredBytes)
-    newCapacity = requiredBytes;
-
-  buffer = _pDevice->newBuffer(newCapacity, MTL::ResourceStorageModeManaged);
+  desiredCapacity = std::max(desiredCapacity, size_t(1));
+  buffer = _pDevice->newBuffer(desiredCapacity, MTL::ResourceStorageModeManaged);
   currentCapacity = buffer ? buffer->length() : 0;
 }
 
@@ -397,139 +554,332 @@ void Renderer::recalculateViewport() {
 
 }
 
-void Renderer::buildBuffers(const Scene &scene) {
-  const size_t primitiveCount = scene.getPrimitiveCount();
-  const size_t uniformsDataSize = sizeof(UniformsData);
-
-  if (!_pUniformsBuffer) {
-    _pUniformsBuffer =
-        _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
-    _pUniformsBuffer->didModifyRange(NS::Range::Make(0, uniformsDataSize));
-  }
-
+void Renderer::rebuildResidentResources() {
   size_t previousPrimitiveCount = _residentPrimitiveCount;
   size_t previousTriangleCount = _residentTriangleCount;
   size_t previousLightCount = _lightCount;
+  size_t previousBlasCount = _blasNodeCount;
+  size_t previousTlasCount = _tlasNodeCount;
 
-  simd::float4 *primitiveBuffer = nullptr;
-  simd::float4 *materialBuffer = nullptr;
-  if (primitiveCount > 0) {
-    primitiveBuffer = scene.createTransformsBuffer();
-    materialBuffer = scene.createMaterialsBuffer();
+  const size_t uniformsDataSize = sizeof(UniformsData);
+  if (!_pUniformsBuffer) {
+    _pUniformsBuffer =
+        _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
+    if (_pUniformsBuffer)
+      _pUniformsBuffer->didModifyRange(
+          NS::Range::Make(0, uniformsDataSize));
   }
 
-  size_t targetPrimitiveCount =
-      std::max({primitiveCount, previousPrimitiveCount, _maxPrimitiveCount, size_t(1)});
-  size_t primitiveFloat4Count = primitiveCount * 3;
+  std::vector<Primitive> activePrimitives;
+  std::vector<uint32_t> remap;
+  activePrimitives.reserve(_allPrimitives.size());
+  remap.reserve(_allPrimitives.size());
+  for (size_t i = 0; i < _allPrimitives.size(); ++i) {
+    if (i < _activePrimitive.size() && _activePrimitive[i]) {
+      activePrimitives.push_back(_allPrimitives[i]);
+      remap.push_back(static_cast<uint32_t>(i));
+    }
+  }
+
+  _residentPrimitiveCount = activePrimitives.size();
+
+  std::vector<simd::float4> primitiveBuffer(_residentPrimitiveCount * 3,
+                                            simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+  std::vector<simd::float4> materialBuffer(_residentPrimitiveCount * 2,
+                                           simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+  std::vector<simd::float3> triangleVertices;
+  std::vector<simd::uint3> triangleIndices;
+  triangleVertices.reserve(_residentPrimitiveCount * 3);
+  triangleIndices.reserve(_residentPrimitiveCount);
+
+  std::vector<uint32_t> lightIndices;
+  std::vector<float> lightCdf;
+  lightIndices.reserve(_residentPrimitiveCount);
+  lightCdf.reserve(_residentPrimitiveCount);
+
+  float totalLightWeight = 0.0f;
+  size_t vertexCursor = 0;
+
+  for (size_t i = 0; i < _residentPrimitiveCount; ++i) {
+    const Primitive &p = activePrimitives[i];
+    simd::float4 *primBase = &primitiveBuffer[3 * i];
+    simd::float4 *matBase = &materialBuffer[2 * i];
+
+    switch (p.type) {
+    case PrimitiveType::Sphere: {
+      primBase[0] =
+          simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+      primBase[1] =
+          simd::make_float4(simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
+      primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      break;
+    }
+    case PrimitiveType::Rectangle: {
+      primBase[0] =
+          simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+      primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
+      primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
+      break;
+    }
+    case PrimitiveType::Triangle: {
+      primBase[0] =
+          simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+      primBase[1] = simd::make_float4(p.triangle.v1, 0.0f);
+      primBase[2] = simd::make_float4(p.triangle.v2, 0.0f);
+      triangleVertices.push_back(p.triangle.v0);
+      triangleVertices.push_back(p.triangle.v1);
+      triangleVertices.push_back(p.triangle.v2);
+      triangleIndices.push_back(
+          simd::make_uint3(vertexCursor, vertexCursor + 1, vertexCursor + 2));
+      vertexCursor += 3;
+      break;
+    }
+    }
+
+    const Material &m = p.material;
+    matBase[0] = simd::make_float4(m.albedo, m.materialType);
+    matBase[1] = simd::make_float4(m.emissionColor, m.emissionPower);
+
+    float emissionStrength = m.emissionPower * luminance(m.emissionColor);
+    if (emissionStrength > 0.0f) {
+      float area = primitiveArea(p);
+      if (area > 0.0f) {
+        float weight = area * emissionStrength;
+        if (weight > 0.0f) {
+          totalLightWeight += weight;
+          lightIndices.push_back(static_cast<uint32_t>(i));
+          lightCdf.push_back(totalLightWeight);
+        }
+      }
+    }
+  }
+
+  _residentTriangleCount = triangleIndices.size();
+  _lightCount = lightIndices.size();
+  _lightTotalWeight = totalLightWeight;
+
+  std::vector<int> primitiveIndices(_residentPrimitiveCount);
+  std::iota(primitiveIndices.begin(), primitiveIndices.end(), 0);
+
+  std::vector<BVHNode> bvhNodes;
+  if (_residentPrimitiveCount > 0) {
+    bvhNodes.reserve(_residentPrimitiveCount * 2);
+    buildBVHRecursive(activePrimitives, primitiveIndices, bvhNodes, 0,
+                      _residentPrimitiveCount);
+  }
+
+  _blasNodeCount = bvhNodes.size();
+
+  std::vector<TLASNode> tlasNodes;
+  if (_residentPrimitiveCount > 0 && !bvhNodes.empty()) {
+    TLASNode root;
+    root.boundsMin = bvhNodes.front().boundsMin;
+    root.boundsMax = bvhNodes.front().boundsMax;
+    root.leftChild = -1;
+    root.rightChild = 0;
+    tlasNodes.push_back(root);
+  }
+
+  _tlasNodeCount = tlasNodes.size();
+
+  std::vector<simd::float4> bvhPacked(_blasNodeCount * 2,
+                                      simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+  for (size_t i = 0; i < _blasNodeCount; ++i) {
+    const BVHNode &node = bvhNodes[i];
+    float leftBits = 0.0f;
+    float countBits = 0.0f;
+    std::memcpy(&leftBits, &node.leftFirst, sizeof(int));
+    std::memcpy(&countBits, &node.count, sizeof(int));
+    bvhPacked[2 * i] = simd::make_float4(node.boundsMin, leftBits);
+    bvhPacked[2 * i + 1] = simd::make_float4(node.boundsMax, countBits);
+  }
+
+  std::vector<simd::float4> tlasPacked(_tlasNodeCount * 2,
+                                       simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+  for (size_t i = 0; i < _tlasNodeCount; ++i) {
+    const TLASNode &node = tlasNodes[i];
+    float leftBits = 0.0f;
+    float rightBits = 0.0f;
+    std::memcpy(&leftBits, &node.leftChild, sizeof(int));
+    std::memcpy(&rightBits, &node.rightChild, sizeof(int));
+    tlasPacked[2 * i] = simd::make_float4(node.boundsMin, leftBits);
+    tlasPacked[2 * i + 1] = simd::make_float4(node.boundsMax, rightBits);
+  }
+
+  size_t primitiveFloat4Count = _residentPrimitiveCount * 3;
   size_t previousPrimitiveFloat4Count = previousPrimitiveCount * 3;
-  size_t touchedPrimitiveFloat4Count =
-      std::max({primitiveFloat4Count, previousPrimitiveFloat4Count, size_t(1)});
-
   ensureBufferCapacity(_pSphereBuffer,
-                       targetPrimitiveCount * 3 * sizeof(simd::float4),
-                       _sphereBufferCapacity);
-  ensureBufferCapacity(_pSphereMaterialBuffer,
-                       targetPrimitiveCount * 2 * sizeof(simd::float4),
-                       _sphereMaterialBufferCapacity);
-
+                       std::max<size_t>(primitiveFloat4Count, 1) *
+                           sizeof(simd::float4),
+                       _sphereBufferCapacity, true);
   if (simd::float4 *primitiveDst =
           static_cast<simd::float4 *>(_pSphereBuffer->contents())) {
-    if (primitiveCount > 0 && primitiveBuffer) {
-      std::memcpy(primitiveDst, primitiveBuffer,
+    if (primitiveFloat4Count > 0) {
+      std::memcpy(primitiveDst, primitiveBuffer.data(),
                   primitiveFloat4Count * sizeof(simd::float4));
+    } else {
+      primitiveDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
     }
-    if (previousPrimitiveCount > primitiveCount) {
+    if (previousPrimitiveFloat4Count > primitiveFloat4Count) {
       size_t zeroStart = primitiveFloat4Count;
-      size_t zeroCount = previousPrimitiveFloat4Count > primitiveFloat4Count
-                             ? previousPrimitiveFloat4Count - primitiveFloat4Count
-                             : 0;
+      size_t zeroCount = previousPrimitiveFloat4Count - primitiveFloat4Count;
       if (zeroCount > 0) {
         std::memset(primitiveDst + zeroStart, 0,
                     zeroCount * sizeof(simd::float4));
       }
-    } else if (primitiveCount == 0) {
-      primitiveDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
     }
-    _pSphereBuffer->didModifyRange(
-        NS::Range::Make(0, touchedPrimitiveFloat4Count * sizeof(simd::float4)));
+    size_t touchedPrimitiveFloat4Count =
+        std::max({primitiveFloat4Count, previousPrimitiveFloat4Count, size_t(1)});
+    _pSphereBuffer->didModifyRange(NS::Range::Make(
+        0, touchedPrimitiveFloat4Count * sizeof(simd::float4)));
   }
 
+  size_t materialFloat4Count = _residentPrimitiveCount * 2;
+  size_t previousMaterialFloat4Count = previousPrimitiveCount * 2;
+  ensureBufferCapacity(_pSphereMaterialBuffer,
+                       std::max<size_t>(materialFloat4Count, 1) *
+                           sizeof(simd::float4),
+                       _sphereMaterialBufferCapacity, true);
   if (simd::float4 *materialDst =
           static_cast<simd::float4 *>(_pSphereMaterialBuffer->contents())) {
-    size_t materialFloat4Count = primitiveCount * 2;
-    size_t previousMaterialFloat4Count = previousPrimitiveCount * 2;
-    size_t touchedMaterialFloat4Count =
-        std::max({materialFloat4Count, previousMaterialFloat4Count, size_t(2)});
-    if (primitiveCount > 0 && materialBuffer) {
-      std::memcpy(materialDst, materialBuffer,
+    if (materialFloat4Count > 0) {
+      std::memcpy(materialDst, materialBuffer.data(),
                   materialFloat4Count * sizeof(simd::float4));
+    } else {
+      materialDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      materialDst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
     }
-    if (previousPrimitiveCount > primitiveCount) {
+    if (previousMaterialFloat4Count > materialFloat4Count) {
       size_t zeroStart = materialFloat4Count;
-      size_t zeroCount = previousMaterialFloat4Count > materialFloat4Count
-                             ? previousMaterialFloat4Count - materialFloat4Count
-                             : 0;
+      size_t zeroCount = previousMaterialFloat4Count - materialFloat4Count;
       if (zeroCount > 0) {
         std::memset(materialDst + zeroStart, 0,
                     zeroCount * sizeof(simd::float4));
       }
-    } else if (primitiveCount == 0) {
-      materialDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      materialDst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
     }
+    size_t touchedMaterialFloat4Count = std::max(
+        {materialFloat4Count, previousMaterialFloat4Count, size_t(1)});
     _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(
         0, touchedMaterialFloat4Count * sizeof(simd::float4)));
   }
 
-  delete[] primitiveBuffer;
-  delete[] materialBuffer;
-
-  std::vector<uint32_t> lightIndices;
-  std::vector<float> lightCdf;
-  float totalWeight = 0.0f;
-
-  if (primitiveCount > 0) {
-    const auto &primitives = scene.getPrimitives();
-    lightIndices.reserve(primitives.size());
-    lightCdf.reserve(primitives.size());
-
-    for (size_t i = 0; i < primitives.size(); ++i) {
-      const Primitive &p = primitives[i];
-      const Material &m = p.material;
-      float emissionStrength = m.emissionPower * luminance(m.emissionColor);
-      if (emissionStrength <= 0.0f)
-        continue;
-
-      float area = primitiveArea(p);
-      if (area <= 0.0f)
-        continue;
-
-      float weight = area * emissionStrength;
-      if (weight <= 0.0f)
-        continue;
-
-      totalWeight += weight;
-      lightIndices.push_back(static_cast<uint32_t>(i));
-      lightCdf.push_back(totalWeight);
+  ensureBufferCapacity(_pPrimitiveIndexBuffer,
+                       std::max<size_t>(_residentPrimitiveCount, 1) *
+                           sizeof(int),
+                       _primitiveIndexBufferCapacity, true);
+  if (int *indexPtr = static_cast<int *>(_pPrimitiveIndexBuffer->contents())) {
+    if (_residentPrimitiveCount > 0) {
+      std::memcpy(indexPtr, primitiveIndices.data(),
+                  _residentPrimitiveCount * sizeof(int));
+    } else {
+      indexPtr[0] = 0;
     }
+    if (previousPrimitiveCount > _residentPrimitiveCount) {
+      size_t zeroStart = _residentPrimitiveCount;
+      size_t zeroCount = previousPrimitiveCount - _residentPrimitiveCount;
+      if (zeroCount > 0) {
+        std::memset(indexPtr + zeroStart, 0, zeroCount * sizeof(int));
+      }
+    }
+    size_t touchedIndexCount =
+        std::max({previousPrimitiveCount, _residentPrimitiveCount, size_t(1)});
+    _pPrimitiveIndexBuffer->didModifyRange(
+        NS::Range::Make(0, touchedIndexCount * sizeof(int)));
   }
 
-  _lightCount = lightIndices.size();
-  _lightTotalWeight = totalWeight;
+  ensureBufferCapacity(_pBVHBuffer,
+                       std::max<size_t>(_blasNodeCount * 2, size_t(1)) *
+                           sizeof(simd::float4),
+                       _bvhBufferCapacity, true);
+  if (simd::float4 *bvhPtr =
+          static_cast<simd::float4 *>(_pBVHBuffer->contents())) {
+    if (_blasNodeCount > 0) {
+      std::memcpy(bvhPtr, bvhPacked.data(),
+                  _blasNodeCount * 2 * sizeof(simd::float4));
+    } else {
+      bvhPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      bvhPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    if (previousBlasCount > _blasNodeCount) {
+      size_t zeroStart = _blasNodeCount * 2;
+      size_t zeroCount = (previousBlasCount - _blasNodeCount) * 2;
+      if (zeroCount > 0) {
+        std::memset(bvhPtr + zeroStart, 0,
+                    zeroCount * sizeof(simd::float4));
+      }
+    }
+    size_t touchedBlasCount =
+        std::max({previousBlasCount, _blasNodeCount, size_t(1)});
+    _pBVHBuffer->didModifyRange(NS::Range::Make(
+        0, touchedBlasCount * 2 * sizeof(simd::float4)));
+  }
 
-  size_t targetLightCount =
-      std::max({static_cast<size_t>(1), _maxPrimitiveCount, previousLightCount,
-                _lightCount});
+  ensureBufferCapacity(_pTLASBuffer,
+                       std::max<size_t>(_tlasNodeCount * 2, size_t(1)) *
+                           sizeof(simd::float4),
+                       _tlasBufferCapacity, true);
+  if (simd::float4 *tlasPtr =
+          static_cast<simd::float4 *>(_pTLASBuffer->contents())) {
+    if (_tlasNodeCount > 0) {
+      std::memcpy(tlasPtr, tlasPacked.data(),
+                  _tlasNodeCount * 2 * sizeof(simd::float4));
+    } else {
+      tlasPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      tlasPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    }
+    if (previousTlasCount > _tlasNodeCount) {
+      size_t zeroStart = _tlasNodeCount * 2;
+      size_t zeroCount = (previousTlasCount - _tlasNodeCount) * 2;
+      if (zeroCount > 0) {
+        std::memset(tlasPtr + zeroStart, 0,
+                    zeroCount * sizeof(simd::float4));
+      }
+    }
+    size_t touchedTlasCount =
+        std::max({previousTlasCount, _tlasNodeCount, size_t(1)});
+    _pTLASBuffer->didModifyRange(NS::Range::Make(
+        0, touchedTlasCount * 2 * sizeof(simd::float4)));
+  }
+
+  ensureBufferCapacity(_pActiveBuffer,
+                       std::max<size_t>(_residentPrimitiveCount, size_t(1)) *
+                           sizeof(uint8_t),
+                       _activeBufferCapacity, true);
+  if (uint8_t *activePtr = static_cast<uint8_t *>(_pActiveBuffer->contents())) {
+    size_t clearCount =
+        std::max({previousPrimitiveCount, _residentPrimitiveCount, size_t(1)});
+    std::memset(activePtr, 0, clearCount * sizeof(uint8_t));
+    if (_residentPrimitiveCount > 0) {
+      std::memset(activePtr, 1, _residentPrimitiveCount * sizeof(uint8_t));
+    }
+    _pActiveBuffer->didModifyRange(
+        NS::Range::Make(0, clearCount * sizeof(uint8_t)));
+  }
+
+  ensureBufferCapacity(_pPrimitiveRemapBuffer,
+                       std::max<size_t>(remap.size(), size_t(1)) *
+                           sizeof(uint32_t),
+                       _primitiveRemapBufferCapacity, true);
+  if (uint32_t *remapPtr =
+          static_cast<uint32_t *>(_pPrimitiveRemapBuffer->contents())) {
+    size_t clearCount =
+        std::max({previousPrimitiveCount, remap.size(), size_t(1)});
+    std::memset(remapPtr, 0, clearCount * sizeof(uint32_t));
+    if (!remap.empty()) {
+      std::memcpy(remapPtr, remap.data(), remap.size() * sizeof(uint32_t));
+    }
+    _pPrimitiveRemapBuffer->didModifyRange(
+        NS::Range::Make(0, clearCount * sizeof(uint32_t)));
+  }
+
   ensureBufferCapacity(_pLightIndexBuffer,
-                       targetLightCount * sizeof(uint32_t),
-                       _lightIndexBufferCapacity);
-  ensureBufferCapacity(_pLightCdfBuffer,
-                       targetLightCount * sizeof(float), _lightCdfBufferCapacity);
-
+                       std::max<size_t>(_lightCount, size_t(1)) *
+                           sizeof(uint32_t),
+                       _lightIndexBufferCapacity, true);
   if (uint32_t *lightIndexPtr =
           static_cast<uint32_t *>(_pLightIndexBuffer->contents())) {
     size_t clearCount =
-        std::max({previousLightCount, _lightCount, static_cast<size_t>(1)});
+        std::max({previousLightCount, _lightCount, size_t(1)});
     std::memset(lightIndexPtr, 0, clearCount * sizeof(uint32_t));
     if (_lightCount > 0) {
       std::memcpy(lightIndexPtr, lightIndices.data(),
@@ -539,9 +889,12 @@ void Renderer::buildBuffers(const Scene &scene) {
         NS::Range::Make(0, clearCount * sizeof(uint32_t)));
   }
 
+  ensureBufferCapacity(_pLightCdfBuffer,
+                       std::max<size_t>(_lightCount, size_t(1)) * sizeof(float),
+                       _lightCdfBufferCapacity, true);
   if (float *lightCdfPtr = static_cast<float *>(_pLightCdfBuffer->contents())) {
     size_t clearCount =
-        std::max({previousLightCount, _lightCount, static_cast<size_t>(1)});
+        std::max({previousLightCount, _lightCount, size_t(1)});
     std::memset(lightCdfPtr, 0, clearCount * sizeof(float));
     if (_lightCount > 0) {
       std::memcpy(lightCdfPtr, lightCdf.data(), _lightCount * sizeof(float));
@@ -550,51 +903,22 @@ void Renderer::buildBuffers(const Scene &scene) {
         NS::Range::Make(0, clearCount * sizeof(float)));
   }
 
-  size_t targetActiveCount =
-      std::max({primitiveCount, previousPrimitiveCount, _maxPrimitiveCount,
-                size_t(1)});
-  ensureBufferCapacity(_pActiveBuffer,
-                       targetActiveCount * sizeof(uint8_t),
-                       _activeBufferCapacity);
-  if (uint8_t *activePtr = static_cast<uint8_t *>(_pActiveBuffer->contents())) {
-    size_t clearCount =
-        std::max({previousPrimitiveCount, primitiveCount, size_t(1)});
-    std::memset(activePtr, 0, clearCount * sizeof(uint8_t));
-    if (primitiveCount > 0) {
-      std::memset(activePtr, 1, primitiveCount * sizeof(uint8_t));
-    }
-    _pActiveBuffer->didModifyRange(
-        NS::Range::Make(0, clearCount * sizeof(uint8_t)));
-  }
-
-  std::vector<simd::float3> vertices;
-  std::vector<simd::uint3> indices;
-  scene.createTriangleBuffers(vertices, indices);
-
-  size_t vertexCount = vertices.size();
-  size_t indexCount = indices.size();
+  size_t vertexCount = triangleVertices.size();
+  size_t indexCount = triangleIndices.size();
   size_t previousVertexCount = previousTriangleCount * 3;
   size_t previousIndexCount = previousTriangleCount;
 
-  size_t targetVertexCount =
-      std::max({vertexCount, previousVertexCount, _maxTriangleVertexCount,
-                size_t(1)});
-  size_t targetIndexCount =
-      std::max({indexCount, previousIndexCount, _maxTriangleIndexCount,
-                size_t(1)});
-
   ensureBufferCapacity(_pTriangleVertexBuffer,
-                       targetVertexCount * sizeof(simd::float3),
-                       _triangleVertexBufferCapacity);
-  ensureBufferCapacity(_pTriangleIndexBuffer,
-                       targetIndexCount * sizeof(simd::uint3),
-                       _triangleIndexBufferCapacity);
-
+                       std::max<size_t>(vertexCount, size_t(1)) *
+                           sizeof(simd::float3),
+                       _triangleVertexBufferCapacity, true);
   if (simd::float3 *vertexPtr =
           static_cast<simd::float3 *>(_pTriangleVertexBuffer->contents())) {
     if (vertexCount > 0) {
-      std::memcpy(vertexPtr, vertices.data(),
+      std::memcpy(vertexPtr, triangleVertices.data(),
                   vertexCount * sizeof(simd::float3));
+    } else {
+      vertexPtr[0] = simd::float3{0.0f, 0.0f, 0.0f};
     }
     if (previousVertexCount > vertexCount) {
       size_t zeroStart = vertexCount;
@@ -603,8 +927,6 @@ void Renderer::buildBuffers(const Scene &scene) {
         std::memset(vertexPtr + zeroStart, 0,
                     zeroCount * sizeof(simd::float3));
       }
-    } else if (vertexCount == 0) {
-      vertexPtr[0] = simd::float3{0.0f, 0.0f, 0.0f};
     }
     size_t touchedVertexCount =
         std::max({vertexCount, previousVertexCount, size_t(1)});
@@ -612,11 +934,17 @@ void Renderer::buildBuffers(const Scene &scene) {
         NS::Range::Make(0, touchedVertexCount * sizeof(simd::float3)));
   }
 
+  ensureBufferCapacity(_pTriangleIndexBuffer,
+                       std::max<size_t>(indexCount, size_t(1)) *
+                           sizeof(simd::uint3),
+                       _triangleIndexBufferCapacity, true);
   if (simd::uint3 *indexPtr =
           static_cast<simd::uint3 *>(_pTriangleIndexBuffer->contents())) {
     if (indexCount > 0) {
-      std::memcpy(indexPtr, indices.data(),
+      std::memcpy(indexPtr, triangleIndices.data(),
                   indexCount * sizeof(simd::uint3));
+    } else {
+      indexPtr[0] = simd::make_uint3(0, 0, 0);
     }
     if (previousIndexCount > indexCount) {
       size_t zeroStart = indexCount;
@@ -625,70 +953,20 @@ void Renderer::buildBuffers(const Scene &scene) {
         std::memset(indexPtr + zeroStart, 0,
                     zeroCount * sizeof(simd::uint3));
       }
-    } else if (indexCount == 0) {
-      indexPtr[0] = simd::make_uint3(0, 0, 0);
     }
     size_t touchedIndexCount =
         std::max({indexCount, previousIndexCount, size_t(1)});
     _pTriangleIndexBuffer->didModifyRange(
         NS::Range::Make(0, touchedIndexCount * sizeof(simd::uint3)));
   }
-}
 
-void Renderer::rebuildResidentResources() {
-  size_t previousPrimitiveCount = _residentPrimitiveCount;
-  Scene activeScene;
-  activeScene.screenSize = _pScene->screenSize;
-  activeScene.maxRayDepth = _pScene->maxRayDepth;
-
-  std::vector<uint32_t> remap;
-  remap.reserve(_allPrimitives.size());
-
-  for (const auto &object : _allSceneObjects) {
-    std::vector<Primitive> activePrims;
-    activePrims.reserve(object.primitiveCount);
-    std::vector<uint32_t> objectRemap;
-    objectRemap.reserve(object.primitiveCount);
-    for (size_t i = 0; i < object.primitiveCount; ++i) {
-      size_t primIndex = object.firstPrimitive + i;
-      if (primIndex < _activePrimitive.size() &&
-          _activePrimitive[primIndex]) {
-        activePrims.push_back(_allPrimitives[primIndex]);
-        objectRemap.push_back(static_cast<uint32_t>(primIndex));
-      }
-    }
-    if (!activePrims.empty()) {
-      activeScene.addObjectSilent(activePrims);
-      remap.insert(remap.end(), objectRemap.begin(), objectRemap.end());
-    }
+  size_t newActiveCount = _tlasNodeCount + _residentPrimitiveCount;
+  if (newActiveCount != _activeNodeCount) {
+    _activeNodeCount = newActiveCount;
+    printf("Active nodes: %zu\n", _activeNodeCount);
   }
 
-  activeScene.buildBVH();
-
-  rebuildAccelerationStructures(activeScene);
-  buildBuffers(activeScene);
-
-  size_t remapCount = remap.size();
-  size_t targetRemapCount =
-      std::max({remapCount, previousPrimitiveCount, _maxPrimitiveCount,
-                size_t(1)});
-  ensureBufferCapacity(_pPrimitiveRemapBuffer,
-                       targetRemapCount * sizeof(uint32_t),
-                       _primitiveRemapBufferCapacity);
-  if (uint32_t *remapPtr =
-          static_cast<uint32_t *>(_pPrimitiveRemapBuffer->contents())) {
-    size_t clearCount =
-        std::max({previousPrimitiveCount, remapCount, size_t(1)});
-    std::memset(remapPtr, 0, clearCount * sizeof(uint32_t));
-    if (!remap.empty()) {
-      std::memcpy(remapPtr, remap.data(), remap.size() * sizeof(uint32_t));
-    }
-    _pPrimitiveRemapBuffer->didModifyRange(
-        NS::Range::Make(0, clearCount * sizeof(uint32_t)));
-  }
-
-  _residentPrimitiveCount = activeScene.getPrimitiveCount();
-  _residentTriangleCount = activeScene.getTriangleCount();
+  _totalNodeCount = _blasNodeCount + _tlasNodeCount;
 }
 
 void Renderer::buildTextures() {
@@ -1179,122 +1457,6 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
   if (index < _primitiveCooldown.size())
     _primitiveCooldown[index] = LOD_STATE_COOLDOWN_FRAMES;
   return true;
-}
-
-void Renderer::rebuildAccelerationStructures(const Scene &scene) {
-  size_t previousBlasCount = _blasNodeCount;
-  size_t newBlasCount = scene.getBVHNodeCount();
-  _blasNodeCount = newBlasCount;
-
-  size_t targetBlasCount =
-      std::max({newBlasCount, previousBlasCount, _maxBlasNodeCount, size_t(1)});
-  ensureBufferCapacity(_pBVHBuffer,
-                       targetBlasCount * 2 * sizeof(simd::float4),
-                       _bvhBufferCapacity);
-
-  simd::float4 *bvhData = nullptr;
-  if (newBlasCount > 0)
-    bvhData = scene.createBVHBuffer();
-
-  if (simd::float4 *bvhPtr =
-          static_cast<simd::float4 *>(_pBVHBuffer->contents())) {
-    if (newBlasCount > 0 && bvhData) {
-      std::memcpy(bvhPtr, bvhData,
-                  newBlasCount * 2 * sizeof(simd::float4));
-    } else {
-      bvhPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      bvhPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-    }
-    if (previousBlasCount > newBlasCount) {
-      size_t zeroStart = newBlasCount * 2;
-      size_t zeroCount =
-          (previousBlasCount > newBlasCount) ? (previousBlasCount - newBlasCount) * 2 : 0;
-      if (zeroCount > 0) {
-        std::memset(bvhPtr + zeroStart, 0,
-                    zeroCount * sizeof(simd::float4));
-      }
-    }
-    size_t touchedBlasCount =
-        std::max({previousBlasCount, newBlasCount, size_t(1)});
-    _pBVHBuffer->didModifyRange(NS::Range::Make(
-        0, touchedBlasCount * 2 * sizeof(simd::float4)));
-  }
-  delete[] bvhData;
-
-  size_t previousTlasCount = _tlasNodeCount;
-  size_t tlasCount = 0;
-  simd::float4 *tlasData = scene.createTLASBuffer(tlasCount);
-  _tlasNodeCount = tlasCount;
-
-  size_t targetTlasCount =
-      std::max({tlasCount, previousTlasCount, _maxTlasNodeCount, size_t(1)});
-  ensureBufferCapacity(_pTLASBuffer,
-                       targetTlasCount * 2 * sizeof(simd::float4),
-                       _tlasBufferCapacity);
-
-  if (simd::float4 *tlasPtr =
-          static_cast<simd::float4 *>(_pTLASBuffer->contents())) {
-    if (tlasData && tlasCount > 0) {
-      std::memcpy(tlasPtr, tlasData,
-                  tlasCount * 2 * sizeof(simd::float4));
-    } else {
-      tlasPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      tlasPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-    }
-    if (previousTlasCount > tlasCount) {
-      size_t zeroStart = tlasCount * 2;
-      size_t zeroCount =
-          (previousTlasCount > tlasCount) ? (previousTlasCount - tlasCount) * 2 : 0;
-      if (zeroCount > 0) {
-        std::memset(tlasPtr + zeroStart, 0,
-                    zeroCount * sizeof(simd::float4));
-      }
-    }
-    size_t touchedTlasCount =
-        std::max({previousTlasCount, tlasCount, size_t(1)});
-    _pTLASBuffer->didModifyRange(NS::Range::Make(
-        0, touchedTlasCount * 2 * sizeof(simd::float4)));
-  }
-  delete[] tlasData;
-
-  size_t indexCount = scene.getPrimitiveIndices().size();
-  size_t previousIndexCount = _residentPrimitiveCount;
-  size_t targetIndexCount =
-      std::max({indexCount, previousIndexCount, _maxPrimitiveCount, size_t(1)});
-  ensureBufferCapacity(_pPrimitiveIndexBuffer,
-                       targetIndexCount * sizeof(int),
-                       _primitiveIndexBufferCapacity);
-
-  int *rawIndices = nullptr;
-  if (indexCount > 0)
-    rawIndices = scene.createPrimitiveIndexBuffer();
-
-  if (int *indexPtr = static_cast<int *>(_pPrimitiveIndexBuffer->contents())) {
-    if (indexCount > 0 && rawIndices) {
-      std::memcpy(indexPtr, rawIndices, indexCount * sizeof(int));
-    } else {
-      indexPtr[0] = 0;
-    }
-    if (previousIndexCount > indexCount) {
-      size_t zeroStart = indexCount;
-      size_t zeroCount =
-          (previousIndexCount > indexCount) ? previousIndexCount - indexCount : 0;
-      if (zeroCount > 0) {
-        std::memset(indexPtr + zeroStart, 0, zeroCount * sizeof(int));
-      }
-    }
-    size_t touchedIndexCount =
-        std::max({previousIndexCount, indexCount, size_t(1)});
-    _pPrimitiveIndexBuffer->didModifyRange(NS::Range::Make(
-        0, touchedIndexCount * sizeof(int)));
-  }
-  delete[] rawIndices;
-
-  size_t newActiveCount = _tlasNodeCount + scene.getPrimitiveCount();
-  if (newActiveCount != _activeNodeCount) {
-    _activeNodeCount = newActiveCount;
-    printf("Active nodes: %zu\n", _activeNodeCount);
-  }
 }
 
 void Renderer::dumpAccelerationStructure(const std::string &path) {
