@@ -9,6 +9,9 @@
 #include <sstream>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 #include "tiny_obj_loader.h"
 
 using namespace tinyxml2;
@@ -19,6 +22,23 @@ static simd::float3 parseVec3(const char* str) {
     float x=0,y=0,z=0;
     sscanf(str, "%f,%f,%f", &x,&y,&z);
     return simd::make_float3(x,y,z);
+}
+
+namespace {
+
+// Stores previously loaded mesh vertex/index buffers keyed by resolved file
+// path so repeated references to the same mesh can reuse geometry data within a
+// single scene load.
+struct CachedMesh {
+    std::vector<simd::float3> vertices;
+    std::vector<simd::uint3> indices;
+};
+
+using MeshCache = std::unordered_map<std::string, CachedMesh>;
+
+MeshCache& GetMeshCache() {
+    static MeshCache cache;
+    return cache;
 }
 
 static void LoadOBJ(const std::string& path, std::vector<simd::float3>& verts, std::vector<simd::uint3>& tris) {
@@ -76,7 +96,16 @@ static void LoadOBJ(const std::string& path, std::vector<simd::float3>& verts, s
     printf("Loaded OBJ: %zu vertices, %zu triangles\n", verts.size(), tris.size());
 }
 
+} // namespace
+
+void SceneLoader::ClearCache() {
+    GetMeshCache().clear();
+}
+
 bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
+    // Ensure stale mesh data does not leak between scene loads.
+    ClearCache();
+
     XMLDocument doc;
     if (doc.LoadFile(path.c_str()) != XML_SUCCESS) {
         printf("Failed to load scene XML: %s\n", path.c_str());
@@ -192,13 +221,21 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             scene->addPrimitive(p);
         }
         else if (tag == "Mesh") {
-            std::vector<simd::float3> verts;
-            std::vector<simd::uint3> tris;
-
             // Build full path to mesh file relative to the scene's directory
             const char* fileAttr = e->Attribute("file");
             std::filesystem::path meshPath = baseDir / (fileAttr ? fileAttr : "");
-            LoadOBJ(meshPath.string(), verts, tris);
+            std::string normalizedPath = meshPath.lexically_normal().string();
+
+            auto& cache = GetMeshCache();
+            auto it = cache.find(normalizedPath);
+            if (it == cache.end()) {
+                // First time encountering this mesh path in the current load.
+                CachedMesh entry;
+                LoadOBJ(normalizedPath, entry.vertices, entry.indices);
+                it = cache.emplace(normalizedPath, std::move(entry)).first;
+            }
+
+            const CachedMesh& meshData = it->second;
 
             simd::float3 pos = parseVec3(e->Attribute("position"));
             float scale = e->FloatAttribute("scale", 1.0f);
@@ -210,13 +247,13 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             m.emissionPower = e->FloatAttribute("emissionPower", 0);
 
             std::vector<Primitive> meshPrimitives;
-            meshPrimitives.reserve(tris.size());
-            for (const auto& tri : tris) {
+            meshPrimitives.reserve(meshData.indices.size());
+            for (const auto& tri : meshData.indices) {
                 Primitive p{};
                 p.type = PrimitiveType::Triangle;
-                p.triangle.v0 = pos + scale * verts[tri.x];
-                p.triangle.v1 = pos + scale * verts[tri.y];
-                p.triangle.v2 = pos + scale * verts[tri.z];
+                p.triangle.v0 = pos + scale * meshData.vertices[tri.x];
+                p.triangle.v1 = pos + scale * meshData.vertices[tri.y];
+                p.triangle.v2 = pos + scale * meshData.vertices[tri.z];
                 p.material = m;
                 meshPrimitives.push_back(p);
             }
