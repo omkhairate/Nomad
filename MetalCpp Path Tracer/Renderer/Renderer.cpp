@@ -268,7 +268,7 @@ BufferCountInfo prepareBufferCounts(size_t current, size_t previous,
 void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                                     size_t &currentCapacity,
                                     bool allowShrink,
-                                    MTL::ResourceStorageMode storageMode) {
+                                    MTL::ResourceOptions storageMode) {
   if (requiredBytes == 0)
     requiredBytes = 1;
 

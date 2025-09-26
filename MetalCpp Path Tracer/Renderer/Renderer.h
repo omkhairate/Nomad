@@ -55,7 +55,7 @@ private:
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                             size_t &currentCapacity,
                             bool allowShrink = false,
-                            MTL::ResourceStorageMode storageMode =
+                            MTL::ResourceOptions storageMode =
                                 MTL::ResourceStorageModeManaged);
   struct BoundingSphere {
     simd::float3 center;
