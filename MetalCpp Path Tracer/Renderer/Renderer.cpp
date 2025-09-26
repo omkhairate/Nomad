@@ -93,8 +93,15 @@ float primitiveImportance(const Primitive &p) {
 }
 
 float sanitizeSortValue(float value) {
-  if (!std::isfinite(value))
-    return -std::numeric_limits<float>::infinity();
+  if (std::isnan(value))
+    return -std::numeric_limits<float>::max();
+
+  const float finiteMax = std::numeric_limits<float>::max();
+  if (value >= finiteMax)
+    return finiteMax;
+  if (value <= -finiteMax)
+    return -finiteMax;
+
   return value;
 }
 
