@@ -1382,13 +1382,29 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   bool changed = false;
 
   const size_t objectCount = _allSceneObjects.size();
+  std::vector<float> objectDistances(objectCount,
+                                     std::numeric_limits<float>::max());
+  std::vector<size_t> sortedIndices(objectCount);
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const BoundingSphere &sphere =
         (objectIndex < _objectBounds.size())
             ? _objectBounds[objectIndex]
             : BoundingSphere{simd::make_float3(0.0f, 0.0f, 0.0f), 0.0f};
     float dist = simd::length(sphere.center - Camera::position) - sphere.radius;
-    dist = std::max(dist, 0.0f);
+    objectDistances[objectIndex] = std::max(dist, 0.0f);
+    sortedIndices[objectIndex] = objectIndex;
+  }
+
+  std::sort(sortedIndices.begin(), sortedIndices.end(),
+            [&objectDistances](size_t a, size_t b) {
+              return objectDistances[a] < objectDistances[b];
+            });
+
+  for (size_t orderIndex = 0; orderIndex < objectCount; ++orderIndex) {
+    size_t objectIndex = sortedIndices[orderIndex];
+    float dist = (objectIndex < objectDistances.size())
+                     ? objectDistances[objectIndex]
+                     : 0.0f;
 
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
