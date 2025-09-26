@@ -1180,10 +1180,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
   }
 
-  size_t newActiveCount = _tlasNodeCount + _residentPrimitiveCount;
+  size_t newActiveCount = _residentNodeCount;
   if (newActiveCount != _activeNodeCount) {
     _activeNodeCount = newActiveCount;
-    printf("Active nodes: %zu\n", _activeNodeCount);
+    printf("Resident nodes: %zu\n", _activeNodeCount);
   }
 }
 
@@ -1945,10 +1945,9 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
-  printf(
-      "Nodes active: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
-      _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
-      _lastGPUTime * 1000.0, _lastRaysPerSecond);
+  printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+         _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
+         _lastGPUTime * 1000.0, _lastRaysPerSecond);
 }
 
 double Renderer::lastCPUTime() const { return _lastCPUTime; }
