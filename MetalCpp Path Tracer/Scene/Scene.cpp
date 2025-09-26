@@ -21,6 +21,7 @@ void Scene::clear() {
   screenSize = {1280.f, 720.f};
   maxRayDepth = 32;
   residencyStrategy = ResidencyStrategy::DistanceLOD;
+  residencyParams = ResidencyParameters{};
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -108,6 +109,14 @@ ResidencyStrategy Scene::getResidencyStrategy() const {
 
 void Scene::setResidencyStrategy(ResidencyStrategy strategy) {
   residencyStrategy = strategy;
+}
+
+const ResidencyParameters &Scene::getResidencyParameters() const {
+  return residencyParams;
+}
+
+void Scene::setResidencyParameters(const ResidencyParameters &params) {
+  residencyParams = params;
 }
 
 void Scene::buildBVH() {

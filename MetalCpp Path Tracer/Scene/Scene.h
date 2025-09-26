@@ -24,6 +24,28 @@ struct SceneObject {
   int blasRootIndex = -1;
 };
 
+struct ResidencyParameters {
+  float lodEnterDistance = 225.0f;
+  float lodExitDistance = 275.0f;
+  uint32_t stateCooldownFrames = 5;
+  size_t lodMaxTogglesPerFrame = 24;
+
+  float energyTargetFraction = 0.9f;
+  size_t energyMinActivePrimitives = 16;
+  size_t energyMaxTogglesPerFrame = 32;
+
+  float rayHitDecay = 0.85f;
+  float rayHitTargetFraction = 0.6f;
+  size_t rayHitMinActivePrimitives = 16;
+  size_t rayHitMaxTogglesPerFrame = 12;
+  uint32_t rayHitRebuildCooldownFrames = 6;
+
+  float screenFootprintTargetFraction = 0.65f;
+  float screenFootprintMinPixelCoverage = 32.0f;
+  size_t screenFootprintMinActivePrimitives = 16;
+  size_t screenFootprintMaxTogglesPerFrame = 10;
+};
+
 struct TLASNode {
   simd::float3 boundsMin = simd::make_float3(0.0f, 0.0f, 0.0f);
   simd::float3 boundsMax = simd::make_float3(0.0f, 0.0f, 0.0f);
@@ -58,6 +80,9 @@ public:
   ResidencyStrategy getResidencyStrategy() const;
   void setResidencyStrategy(ResidencyStrategy strategy);
 
+  const ResidencyParameters &getResidencyParameters() const;
+  void setResidencyParameters(const ResidencyParameters &params);
+
   void buildBVH();
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
@@ -85,6 +110,7 @@ private:
   std::vector<size_t> objectIndices;
   std::vector<TLASNode> tlasNodes;
   ResidencyStrategy residencyStrategy;
+  ResidencyParameters residencyParams;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives);
