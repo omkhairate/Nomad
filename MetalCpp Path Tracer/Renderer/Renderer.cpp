@@ -293,7 +293,7 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
     desiredCapacity = std::max(requiredBytes, currentCapacity);
   } else if (buffer) {
     size_t shrinkThreshold = currentCapacity / 2;
-    if (requiredBytes <= currentCapacity && requiredBytes >= shrinkThreshold)
+    if (requiredBytes <= currentCapacity && requiredBytes > shrinkThreshold)
       return;
     if (requiredBytes > currentCapacity)
       desiredCapacity = std::max(requiredBytes, currentCapacity * 2);
