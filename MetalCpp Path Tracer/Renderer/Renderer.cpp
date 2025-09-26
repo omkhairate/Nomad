@@ -581,16 +581,20 @@ void Renderer::updateVisibleScene() {
 
   _rayHitRebuildCooldown = 0;
 
+  _maxBlasNodeCount = 1;
+  _maxTlasNodeCount = 1;
+
   _pScene->buildBVH();
-  _maxBlasNodeCount = std::max<size_t>(_pScene->getBVHNodeCount(), 1);
+  size_t blasNodeCount = _pScene->getBVHNodeCount();
+  _maxBlasNodeCount = std::max<size_t>(blasNodeCount, _maxBlasNodeCount);
 
   size_t fullTlasCount = 0;
   if (primCount > 0) {
     simd::float4 *tmp = _pScene->createTLASBuffer(fullTlasCount);
     delete[] tmp;
   }
-  _maxTlasNodeCount = std::max<size_t>(fullTlasCount, 1);
-  _totalNodeCount = fullTlasCount + primCount;
+  _maxTlasNodeCount = std::max<size_t>(fullTlasCount, _maxTlasNodeCount);
+  _totalNodeCount = _maxBlasNodeCount + _maxTlasNodeCount;
 
   updateResidency(true, true);
 }
