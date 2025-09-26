@@ -202,6 +202,14 @@ Renderer::~Renderer() {
   delete _pScene;
 }
 
+void Renderer::setDeltaTime(double deltaSeconds) {
+  if (deltaSeconds < 0.0)
+    deltaSeconds = 0.0;
+
+  _deltaTimeSeconds = deltaSeconds;
+  Camera::deltaTime = static_cast<float>(_deltaTimeSeconds);
+}
+
 void Renderer::buildShaders() {
   using NS::StringEncoding::UTF8StringEncoding;
 
@@ -725,6 +733,10 @@ bool Renderer::updateCamera() {
     }
 
     Camera::up = {0, 1, 0};
+    // Reset the frame delta while scripted motion drives the camera so the
+    // timeline remains frame-locked.
+    _deltaTimeSeconds = 0.0;
+    Camera::deltaTime = 0.0f;
     InputSystem::clearInputs();
 
     // Update view dependent data for the new camera transform

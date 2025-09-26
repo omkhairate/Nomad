@@ -27,6 +27,7 @@ public:
   void updateUniforms();
   void draw(MTK::View *pView);
   void drawableSizeWillChange(MTK::View *pView, CGSize size);
+  void setDeltaTime(double deltaSeconds);
 
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);
@@ -142,6 +143,8 @@ private:
   double _lastGPUTime = 0.0;
   double _lastRaysPerSecond = 0.0;
   size_t _lastRayCount = 0;
+
+  double _deltaTimeSeconds = 0.0;
 
   size_t _animationFrame = 0;
 };

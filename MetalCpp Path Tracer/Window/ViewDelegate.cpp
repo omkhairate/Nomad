@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mach/mach.h>
+#include <limits>
 
 using namespace MetalCppPathTracer;
 
@@ -53,10 +54,15 @@ ViewDelegate::~ViewDelegate() {
 
 void ViewDelegate::drawInMTKView(MTK::View *pView) {
   auto current = std::chrono::steady_clock::now();
-  double fps = 1.0 / std::chrono::duration<double>(current - _lastTime).count();
+  double deltaSeconds =
+      std::chrono::duration<double>(current - _lastTime).count();
+  if (deltaSeconds <= 0.0)
+    deltaSeconds = std::numeric_limits<double>::min();
+  double fps = 1.0 / deltaSeconds;
   _lastTime = current;
   updateFPS(fps);
   updateMemoryUsage(getMemoryUsageMB());
+  _pRenderer->setDeltaTime(deltaSeconds);
   _pRenderer->draw(pView);
   if (_perfLog.is_open()) {
     double cpu_ms = _pRenderer->lastCPUTime() * 1000.0;
