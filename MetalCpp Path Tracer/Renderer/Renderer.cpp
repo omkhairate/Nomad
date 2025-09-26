@@ -92,6 +92,12 @@ float primitiveImportance(const Primitive &p) {
   return area * (emissive + reflective);
 }
 
+float sanitizeSortValue(float value) {
+  if (!std::isfinite(value))
+    return -std::numeric_limits<float>::infinity();
+  return value;
+}
+
 float boundingSurfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) {
   simd::float3 d = bmax - bmin;
   return 2.0f * (d.x * d.y + d.y * d.z + d.z * d.x);
@@ -510,7 +516,11 @@ void Renderer::updateVisibleScene() {
 
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
             [this](size_t a, size_t b) {
-              return _primitiveImportance[a] > _primitiveImportance[b];
+              float scoreA = sanitizeSortValue(_primitiveImportance[a]);
+              float scoreB = sanitizeSortValue(_primitiveImportance[b]);
+              if (scoreA == scoreB)
+                return a < b;
+              return scoreA > scoreB;
             });
 
   size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
@@ -1453,10 +1463,12 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
 
   std::sort(_rayHitSortedIndices.begin(), _rayHitSortedIndices.end(),
             [this](size_t a, size_t b) {
-              float scoreA =
+              float rawA =
                   (a < _primitiveHitScores.size()) ? _primitiveHitScores[a] : 0.0f;
-              float scoreB =
+              float rawB =
                   (b < _primitiveHitScores.size()) ? _primitiveHitScores[b] : 0.0f;
+              float scoreA = sanitizeSortValue(rawA);
+              float scoreB = sanitizeSortValue(rawB);
               if (scoreA == scoreB)
                 return a < b;
               return scoreA > scoreB;
@@ -1577,12 +1589,14 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
 
   std::sort(_screenCoverageSortedIndices.begin(),
             _screenCoverageSortedIndices.end(), [this](size_t a, size_t b) {
-              float ca = (a < _primitiveScreenCoverage.size())
-                             ? _primitiveScreenCoverage[a]
-                             : 0.0f;
-              float cb = (b < _primitiveScreenCoverage.size())
-                             ? _primitiveScreenCoverage[b]
-                             : 0.0f;
+              float rawA = (a < _primitiveScreenCoverage.size())
+                               ? _primitiveScreenCoverage[a]
+                               : 0.0f;
+              float rawB = (b < _primitiveScreenCoverage.size())
+                               ? _primitiveScreenCoverage[b]
+                               : 0.0f;
+              float ca = sanitizeSortValue(rawA);
+              float cb = sanitizeSortValue(rawB);
               if (ca == cb)
                 return a < b;
               return ca > cb;
