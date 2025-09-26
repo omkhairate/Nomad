@@ -51,20 +51,24 @@ public:
   };
 
 private:
-  void rebuildResidentResources();
+  void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                             size_t &currentCapacity,
-                            bool allowShrink = false);
+                            bool allowShrink = false,
+                            MTL::ResourceStorageMode storageMode =
+                                MTL::ResourceStorageModeManaged);
   struct BoundingSphere {
     simd::float3 center;
     float radius;
   };
   bool isInView(const BoundingSphere &b);
-  void updateResidency();
-  void updateLODByDistance();
-  void updateEnergyImportance();
-  void updateRayHitBudget();
-  void updateScreenSpaceFootprint();
+  void updateResidency(bool forceAllToggles = false,
+                       bool forceFullRebuild = false);
+  bool updateLODByDistance(bool forceAllToggles);
+  bool updateEnergyImportance(bool forceAllToggles);
+  bool updateRayHitBudget(bool forceAllToggles);
+  bool updateScreenSpaceFootprint(bool forceAllToggles);
+  void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
@@ -87,7 +91,8 @@ private:
   MTL::Buffer *_pTLASBuffer = nullptr;
   MTL::Buffer *_pActiveBuffer = nullptr;
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
-  MTL::Buffer *_pPrimitiveHitBuffer = nullptr;
+  MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
+  MTL::Buffer *_pPrimitiveHitReadback = nullptr;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   size_t _blasNodeCount = 0;
@@ -100,6 +105,7 @@ private:
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
   std::vector<uint32_t> _primitiveCooldown;
+  std::vector<int32_t> _primitiveToResidentIndex;
   std::vector<BoundingSphere> _primitiveBounds;
   std::vector<SceneObject> _allSceneObjects;
   std::vector<float> _primitiveImportance;
@@ -110,6 +116,11 @@ private:
   std::vector<float> _primitiveScreenCoverage;
   std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;
+
+  std::vector<Primitive> _residentPrimitives;
+  std::vector<uint32_t> _residentRemap;
+  std::vector<size_t> _recentlyActivated;
+  std::vector<size_t> _recentlyDeactivated;
 
   uint32_t _rayHitRebuildCooldown = 0;
 
@@ -136,6 +147,7 @@ private:
   size_t _lightCdfBufferCapacity = 0;
   size_t _primitiveRemapBufferCapacity = 0;
   size_t _primitiveHitBufferCapacity = 0;
+  size_t _primitiveHitReadbackCapacity = 0;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
@@ -146,6 +158,8 @@ private:
   double _deltaTimeSeconds = 0.0;
 
   size_t _animationFrame = 0;
+
+  ResidencyParameters _residencyConfig;
 };
 
 } // namespace MetalCppPathTracer

@@ -125,6 +125,43 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         }
     }
 
+    ResidencyParameters params = scene->getResidencyParameters();
+    params.lodEnterDistance = root->FloatAttribute("lodEnterDistance", params.lodEnterDistance);
+    params.lodExitDistance = root->FloatAttribute("lodExitDistance", params.lodExitDistance);
+    params.stateCooldownFrames =
+        root->UnsignedAttribute("residencyCooldown", params.stateCooldownFrames);
+    params.lodMaxTogglesPerFrame =
+        root->UnsignedAttribute("lodToggleBudget", params.lodMaxTogglesPerFrame);
+
+    params.energyTargetFraction =
+        root->FloatAttribute("energyTargetFraction", params.energyTargetFraction);
+    params.energyMinActivePrimitives = root->UnsignedAttribute(
+        "energyMinActive", static_cast<unsigned int>(params.energyMinActivePrimitives));
+    params.energyMaxTogglesPerFrame = root->UnsignedAttribute(
+        "energyToggleBudget", static_cast<unsigned int>(params.energyMaxTogglesPerFrame));
+
+    params.rayHitDecay = root->FloatAttribute("rayHitDecay", params.rayHitDecay);
+    params.rayHitTargetFraction =
+        root->FloatAttribute("rayHitTargetFraction", params.rayHitTargetFraction);
+    params.rayHitMinActivePrimitives = root->UnsignedAttribute(
+        "rayHitMinActive", static_cast<unsigned int>(params.rayHitMinActivePrimitives));
+    params.rayHitMaxTogglesPerFrame = root->UnsignedAttribute(
+        "rayHitToggleBudget", static_cast<unsigned int>(params.rayHitMaxTogglesPerFrame));
+    params.rayHitRebuildCooldownFrames = root->UnsignedAttribute(
+        "rayHitCooldown", params.rayHitRebuildCooldownFrames);
+
+    params.screenFootprintTargetFraction = root->FloatAttribute(
+        "screenTargetFraction", params.screenFootprintTargetFraction);
+    params.screenFootprintMinPixelCoverage = root->FloatAttribute(
+        "screenMinPixelCoverage", params.screenFootprintMinPixelCoverage);
+    params.screenFootprintMinActivePrimitives = root->UnsignedAttribute(
+        "screenMinActive", static_cast<unsigned int>(params.screenFootprintMinActivePrimitives));
+    params.screenFootprintMaxTogglesPerFrame = root->UnsignedAttribute(
+        "screenToggleBudget",
+        static_cast<unsigned int>(params.screenFootprintMaxTogglesPerFrame));
+
+    scene->setResidencyParameters(params);
+
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
         std::string tag = e->Name();
         if (tag == "Sphere") {

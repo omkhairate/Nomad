@@ -60,27 +60,6 @@ inline float randomFloat() {
 
 namespace {
 
-// Distance thresholds that implement a small hysteresis band for LOD toggles
-// along with the minimum number of frames primitives must wait before they can
-// flip state again.
-constexpr float LOD_ENTER_DISTANCE = 225.0f;
-constexpr float LOD_EXIT_DISTANCE = 275.0f;
-constexpr uint32_t LOD_STATE_COOLDOWN_FRAMES = 5;
-// Avoid large per-frame rebuild spikes by throttling how many primitives can
-// toggle residency at once.
-constexpr size_t LOD_MAX_TOGGLES_PER_FRAME = 24;
-constexpr float ENERGY_TARGET_FRACTION = 0.9f;
-constexpr size_t ENERGY_MIN_ACTIVE_PRIMITIVES = 16;
-constexpr float RAY_HIT_DECAY = 0.85f;
-constexpr float RAY_HIT_TARGET_FRACTION = 0.6f;
-constexpr size_t RAY_HIT_MIN_ACTIVE_PRIMITIVES = 16;
-constexpr size_t RAY_HIT_MAX_TOGGLES_PER_FRAME = 12;
-constexpr uint32_t RAY_HIT_REBUILD_COOLDOWN_FRAMES = 6;
-constexpr float SCREEN_FOOTPRINT_TARGET_FRACTION = 0.65f;
-constexpr float SCREEN_FOOTPRINT_MIN_PIXEL_COVERAGE = 32.0f;
-constexpr size_t SCREEN_FOOTPRINT_MIN_ACTIVE_PRIMITIVES = 16;
-constexpr size_t SCREEN_FOOTPRINT_MAX_TOGGLES_PER_FRAME = 10;
-
 float luminance(const simd::float3 &c) {
   return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 }
@@ -259,11 +238,37 @@ int buildBVHRecursive(const std::vector<Primitive> &primitives,
   return nodeIndex;
 }
 
+struct BufferCountInfo {
+  size_t current = 0;
+  size_t previous = 0;
+  size_t zeroStart = 0;
+  size_t zeroCount = 0;
+  size_t touched = 0;
+};
+
+BufferCountInfo prepareBufferCounts(size_t current, size_t previous,
+                                    size_t capacity) {
+  BufferCountInfo info{};
+  if (capacity == 0)
+    return info;
+
+  info.current = std::min(current, capacity);
+  info.previous = std::min(previous, capacity);
+  info.zeroStart = std::min(info.current, capacity);
+  if (info.previous > info.zeroStart)
+    info.zeroCount = info.previous - info.zeroStart;
+
+  info.touched = std::max({info.current, info.previous, size_t(1)});
+  info.touched = std::min(info.touched, capacity);
+  return info;
+}
+
 } // namespace
 
 void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                                     size_t &currentCapacity,
-                                    bool allowShrink) {
+                                    bool allowShrink,
+                                    MTL::ResourceStorageMode storageMode) {
   if (requiredBytes == 0)
     requiredBytes = 1;
 
@@ -288,7 +293,7 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
   }
 
   desiredCapacity = std::max(desiredCapacity, size_t(1));
-  buffer = _pDevice->newBuffer(desiredCapacity, MTL::ResourceStorageModeManaged);
+  buffer = _pDevice->newBuffer(desiredCapacity, storageMode);
   currentCapacity = buffer ? buffer->length() : 0;
 }
 
@@ -341,8 +346,10 @@ Renderer::~Renderer() {
     _pActiveBuffer->release();
   if (_pPrimitiveRemapBuffer)
     _pPrimitiveRemapBuffer->release();
-  if (_pPrimitiveHitBuffer)
-    _pPrimitiveHitBuffer->release();
+  if (_pPrimitiveHitBufferGPU)
+    _pPrimitiveHitBufferGPU->release();
+  if (_pPrimitiveHitReadback)
+    _pPrimitiveHitReadback->release();
   if (_pLightIndexBuffer)
     _pLightIndexBuffer->release();
   if (_pLightCdfBuffer)
@@ -426,9 +433,13 @@ void Renderer::updateVisibleScene() {
          _pScene->getPrimitiveCount(), _pScene->getSphereCount(),
          _pScene->getTriangleCount(), _pScene->getRectangleCount());
 
+  _residencyConfig = _pScene->getResidencyParameters();
+
   printf("LOD activation threshold: %.1f, deactivation threshold: %.1f (cooldown "
-         "%u frames)\n",
-         LOD_ENTER_DISTANCE, LOD_EXIT_DISTANCE, LOD_STATE_COOLDOWN_FRAMES);
+         "%u frames, toggle budget %zu)\n",
+         _residencyConfig.lodEnterDistance, _residencyConfig.lodExitDistance,
+         _residencyConfig.stateCooldownFrames,
+         _residencyConfig.lodMaxTogglesPerFrame);
 
   const char *strategyName = nullptr;
   switch (_pScene->getResidencyStrategy()) {
@@ -452,8 +463,9 @@ void Renderer::updateVisibleScene() {
   _allPrimitives = _pScene->getPrimitives();
   _allSceneObjects = _pScene->getObjects();
   size_t primCount = _allPrimitives.size();
-  _activePrimitive.assign(primCount, true);
+  _activePrimitive.assign(primCount, false);
   _primitiveCooldown.assign(primCount, 0);
+  _primitiveToResidentIndex.assign(primCount, -1);
   _primitiveBounds.resize(primCount);
   _primitiveImportance.assign(primCount, 0.0f);
   _energySortedIndices.resize(primCount);
@@ -463,6 +475,11 @@ void Renderer::updateVisibleScene() {
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
+
+  _residentPrimitives.clear();
+  _residentRemap.clear();
+  _recentlyActivated.clear();
+  _recentlyDeactivated.clear();
 
   size_t totalTriangleCount = _pScene->getTriangleCount();
   _maxPrimitiveCount = std::max<size_t>(primCount, 1);
@@ -497,13 +514,31 @@ void Renderer::updateVisibleScene() {
             });
 
   size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
-  ensureBufferCapacity(_pPrimitiveHitBuffer, hitCount * sizeof(uint32_t),
-                       _primitiveHitBufferCapacity);
+  size_t hitBytes = hitCount * sizeof(uint32_t);
+  ensureBufferCapacity(_pPrimitiveHitBufferGPU, hitBytes,
+                       _primitiveHitBufferCapacity, false,
+                       MTL::ResourceStorageModePrivate);
+  ensureBufferCapacity(_pPrimitiveHitReadback, hitBytes,
+                       _primitiveHitReadbackCapacity, false,
+                       MTL::ResourceStorageModeShared);
   if (uint32_t *hitPtr =
-          static_cast<uint32_t *>(_pPrimitiveHitBuffer->contents())) {
-    std::memset(hitPtr, 0, hitCount * sizeof(uint32_t));
-    _pPrimitiveHitBuffer->didModifyRange(
-        NS::Range::Make(0, hitCount * sizeof(uint32_t)));
+          _pPrimitiveHitReadback
+              ? static_cast<uint32_t *>(_pPrimitiveHitReadback->contents())
+              : nullptr) {
+    std::memset(hitPtr, 0, hitBytes);
+  }
+  if (_pPrimitiveHitBufferGPU && hitBytes > 0) {
+    MTL::CommandBuffer *initCmd = _pCommandQueue->commandBuffer();
+    if (initCmd) {
+      MTL::BlitCommandEncoder *initBlit = initCmd->blitCommandEncoder();
+      if (initBlit) {
+        initBlit->fillBuffer(_pPrimitiveHitBufferGPU,
+                             NS::Range::Make(0, hitBytes), 0);
+        initBlit->endEncoding();
+      }
+      initCmd->commit();
+      initCmd->waitUntilCompleted();
+    }
   }
 
   _rayHitRebuildCooldown = 0;
@@ -519,7 +554,7 @@ void Renderer::updateVisibleScene() {
   _maxTlasNodeCount = std::max<size_t>(fullTlasCount, 1);
   _totalNodeCount = fullTlasCount + primCount;
 
-  rebuildResidentResources();
+  updateResidency(true, true);
 }
 
 void Renderer::recalculateViewport() {
@@ -554,7 +589,7 @@ void Renderer::recalculateViewport() {
 
 }
 
-void Renderer::rebuildResidentResources() {
+void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t previousPrimitiveCount = _residentPrimitiveCount;
   size_t previousTriangleCount = _residentTriangleCount;
   size_t previousLightCount = _lightCount;
@@ -570,18 +605,82 @@ void Renderer::rebuildResidentResources() {
           NS::Range::Make(0, uniformsDataSize));
   }
 
-  std::vector<Primitive> activePrimitives;
-  std::vector<uint32_t> remap;
-  activePrimitives.reserve(_allPrimitives.size());
-  remap.reserve(_allPrimitives.size());
-  for (size_t i = 0; i < _allPrimitives.size(); ++i) {
-    if (i < _activePrimitive.size() && _activePrimitive[i]) {
-      activePrimitives.push_back(_allPrimitives[i]);
-      remap.push_back(static_cast<uint32_t>(i));
+  if (_primitiveToResidentIndex.size() < _activePrimitive.size())
+    _primitiveToResidentIndex.assign(_activePrimitive.size(), -1);
+
+  auto deduplicate = [](std::vector<size_t> &values) {
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+  };
+
+  if (forceFullRebuild) {
+    _residentPrimitives.clear();
+    _residentRemap.clear();
+    for (size_t i = 0; i < _activePrimitive.size(); ++i) {
+      if (_activePrimitive[i]) {
+        size_t slot = _residentPrimitives.size();
+        _residentPrimitives.push_back(_allPrimitives[i]);
+        _residentRemap.push_back(static_cast<uint32_t>(i));
+        if (i < _primitiveToResidentIndex.size())
+          _primitiveToResidentIndex[i] = static_cast<int32_t>(slot);
+      } else if (i < _primitiveToResidentIndex.size()) {
+        _primitiveToResidentIndex[i] = -1;
+      }
     }
+    _recentlyActivated.clear();
+    _recentlyDeactivated.clear();
+  } else {
+    deduplicate(_recentlyActivated);
+    deduplicate(_recentlyDeactivated);
+    if (!_recentlyActivated.empty() && !_recentlyDeactivated.empty()) {
+      for (size_t idx : _recentlyDeactivated) {
+        auto it = std::lower_bound(_recentlyActivated.begin(),
+                                   _recentlyActivated.end(), idx);
+        if (it != _recentlyActivated.end() && *it == idx)
+          _recentlyActivated.erase(it);
+      }
+    }
+
+    for (size_t idx : _recentlyDeactivated) {
+      if (idx >= _primitiveToResidentIndex.size())
+        continue;
+      int32_t slot = _primitiveToResidentIndex[idx];
+      if (slot < 0 || _residentPrimitives.empty() ||
+          static_cast<size_t>(slot) >= _residentPrimitives.size()) {
+        _primitiveToResidentIndex[idx] = -1;
+        continue;
+      }
+      size_t last = _residentPrimitives.size() - 1;
+      if (static_cast<size_t>(slot) != last) {
+        _residentPrimitives[slot] = _residentPrimitives[last];
+        _residentRemap[slot] = _residentRemap[last];
+        size_t movedIndex = _residentRemap[slot];
+        if (movedIndex < _primitiveToResidentIndex.size())
+          _primitiveToResidentIndex[movedIndex] = static_cast<int32_t>(slot);
+      }
+      _residentPrimitives.pop_back();
+      _residentRemap.pop_back();
+      _primitiveToResidentIndex[idx] = -1;
+    }
+
+    for (size_t idx : _recentlyActivated) {
+      if (idx >= _activePrimitive.size() || !_activePrimitive[idx])
+        continue;
+      if (idx >= _primitiveToResidentIndex.size())
+        _primitiveToResidentIndex.resize(idx + 1, -1);
+      if (_primitiveToResidentIndex[idx] >= 0)
+        continue;
+      size_t slot = _residentPrimitives.size();
+      _residentPrimitives.push_back(_allPrimitives[idx]);
+      _residentRemap.push_back(static_cast<uint32_t>(idx));
+      _primitiveToResidentIndex[idx] = static_cast<int32_t>(slot);
+    }
+
+    _recentlyActivated.clear();
+    _recentlyDeactivated.clear();
   }
 
-  _residentPrimitiveCount = activePrimitives.size();
+  _residentPrimitiveCount = _residentPrimitives.size();
 
   std::vector<simd::float4> primitiveBuffer(_residentPrimitiveCount * 3,
                                             simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
@@ -601,7 +700,7 @@ void Renderer::rebuildResidentResources() {
   size_t vertexCursor = 0;
 
   for (size_t i = 0; i < _residentPrimitiveCount; ++i) {
-    const Primitive &p = activePrimitives[i];
+    const Primitive &p = _residentPrimitives[i];
     simd::float4 *primBase = &primitiveBuffer[3 * i];
     simd::float4 *matBase = &materialBuffer[2 * i];
 
@@ -664,7 +763,7 @@ void Renderer::rebuildResidentResources() {
   std::vector<BVHNode> bvhNodes;
   if (_residentPrimitiveCount > 0) {
     bvhNodes.reserve(_residentPrimitiveCount * 2);
-    buildBVHRecursive(activePrimitives, primitiveIndices, bvhNodes, 0,
+    buildBVHRecursive(_residentPrimitives, primitiveIndices, bvhNodes, 0,
                       _residentPrimitiveCount);
   }
 
@@ -712,26 +811,31 @@ void Renderer::rebuildResidentResources() {
                        std::max<size_t>(primitiveFloat4Count, 1) *
                            sizeof(simd::float4),
                        _sphereBufferCapacity, true);
-  if (simd::float4 *primitiveDst =
-          static_cast<simd::float4 *>(_pSphereBuffer->contents())) {
-    if (primitiveFloat4Count > 0) {
-      std::memcpy(primitiveDst, primitiveBuffer.data(),
-                  primitiveFloat4Count * sizeof(simd::float4));
-    } else {
-      primitiveDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-    }
-    if (previousPrimitiveFloat4Count > primitiveFloat4Count) {
-      size_t zeroStart = primitiveFloat4Count;
-      size_t zeroCount = previousPrimitiveFloat4Count - primitiveFloat4Count;
-      if (zeroCount > 0) {
-        std::memset(primitiveDst + zeroStart, 0,
-                    zeroCount * sizeof(simd::float4));
+  if (_pSphereBuffer) {
+    size_t primitiveCapacity = _pSphereBuffer->length() / sizeof(simd::float4);
+    if (primitiveCapacity == 0 && _pSphereBuffer->length() > 0)
+      primitiveCapacity = 1;
+    if (simd::float4 *primitiveDst =
+            static_cast<simd::float4 *>(_pSphereBuffer->contents())) {
+      BufferCountInfo primitiveInfo =
+          prepareBufferCounts(primitiveFloat4Count, previousPrimitiveFloat4Count,
+                              primitiveCapacity);
+      size_t copyCount = std::min(primitiveFloat4Count, primitiveInfo.current);
+      if (copyCount > 0) {
+        std::memcpy(primitiveDst, primitiveBuffer.data(),
+                    copyCount * sizeof(simd::float4));
+      } else if (primitiveCapacity > 0) {
+        primitiveDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
+      if (primitiveInfo.zeroCount > 0) {
+        std::memset(primitiveDst + primitiveInfo.zeroStart, 0,
+                    primitiveInfo.zeroCount * sizeof(simd::float4));
+      }
+      if (primitiveInfo.touched > 0) {
+        _pSphereBuffer->didModifyRange(NS::Range::Make(
+            0, primitiveInfo.touched * sizeof(simd::float4)));
       }
     }
-    size_t touchedPrimitiveFloat4Count =
-        std::max({primitiveFloat4Count, previousPrimitiveFloat4Count, size_t(1)});
-    _pSphereBuffer->didModifyRange(NS::Range::Make(
-        0, touchedPrimitiveFloat4Count * sizeof(simd::float4)));
   }
 
   size_t materialFloat4Count = _residentPrimitiveCount * 2;
@@ -740,167 +844,233 @@ void Renderer::rebuildResidentResources() {
                        std::max<size_t>(materialFloat4Count, 1) *
                            sizeof(simd::float4),
                        _sphereMaterialBufferCapacity, true);
-  if (simd::float4 *materialDst =
-          static_cast<simd::float4 *>(_pSphereMaterialBuffer->contents())) {
-    if (materialFloat4Count > 0) {
-      std::memcpy(materialDst, materialBuffer.data(),
-                  materialFloat4Count * sizeof(simd::float4));
-    } else {
-      materialDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      materialDst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-    }
-    if (previousMaterialFloat4Count > materialFloat4Count) {
-      size_t zeroStart = materialFloat4Count;
-      size_t zeroCount = previousMaterialFloat4Count - materialFloat4Count;
-      if (zeroCount > 0) {
-        std::memset(materialDst + zeroStart, 0,
-                    zeroCount * sizeof(simd::float4));
+  if (_pSphereMaterialBuffer) {
+    size_t materialCapacity =
+        _pSphereMaterialBuffer->length() / sizeof(simd::float4);
+    if (materialCapacity == 0 && _pSphereMaterialBuffer->length() > 0)
+      materialCapacity = 1;
+    if (simd::float4 *materialDst =
+            static_cast<simd::float4 *>(_pSphereMaterialBuffer->contents())) {
+      BufferCountInfo materialInfo = prepareBufferCounts(
+          materialFloat4Count, previousMaterialFloat4Count, materialCapacity);
+      size_t copyCount = std::min(materialFloat4Count, materialInfo.current);
+      if (copyCount > 0) {
+        std::memcpy(materialDst, materialBuffer.data(),
+                    copyCount * sizeof(simd::float4));
+      } else if (materialCapacity > 0) {
+        materialDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (materialCapacity > 1)
+          materialDst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
+      if (materialInfo.zeroCount > 0) {
+        std::memset(materialDst + materialInfo.zeroStart, 0,
+                    materialInfo.zeroCount * sizeof(simd::float4));
+      }
+      if (materialInfo.touched > 0) {
+        _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(
+            0, materialInfo.touched * sizeof(simd::float4)));
       }
     }
-    size_t touchedMaterialFloat4Count = std::max(
-        {materialFloat4Count, previousMaterialFloat4Count, size_t(1)});
-    _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(
-        0, touchedMaterialFloat4Count * sizeof(simd::float4)));
   }
 
   ensureBufferCapacity(_pPrimitiveIndexBuffer,
                        std::max<size_t>(_residentPrimitiveCount, 1) *
                            sizeof(int),
                        _primitiveIndexBufferCapacity, true);
-  if (int *indexPtr = static_cast<int *>(_pPrimitiveIndexBuffer->contents())) {
-    if (_residentPrimitiveCount > 0) {
-      std::memcpy(indexPtr, primitiveIndices.data(),
-                  _residentPrimitiveCount * sizeof(int));
-    } else {
-      indexPtr[0] = 0;
-    }
-    if (previousPrimitiveCount > _residentPrimitiveCount) {
-      size_t zeroStart = _residentPrimitiveCount;
-      size_t zeroCount = previousPrimitiveCount - _residentPrimitiveCount;
-      if (zeroCount > 0) {
-        std::memset(indexPtr + zeroStart, 0, zeroCount * sizeof(int));
+  if (_pPrimitiveIndexBuffer) {
+    size_t indexCapacity = _pPrimitiveIndexBuffer->length() / sizeof(int);
+    if (indexCapacity == 0 && _pPrimitiveIndexBuffer->length() > 0)
+      indexCapacity = 1;
+    if (int *indexPtr =
+            static_cast<int *>(_pPrimitiveIndexBuffer->contents())) {
+      BufferCountInfo indexInfo = prepareBufferCounts(
+          _residentPrimitiveCount, previousPrimitiveCount, indexCapacity);
+      size_t copyCount = std::min(_residentPrimitiveCount, indexInfo.current);
+      if (copyCount > 0) {
+        std::memcpy(indexPtr, primitiveIndices.data(),
+                    copyCount * sizeof(int));
+      } else if (indexCapacity > 0) {
+        indexPtr[0] = 0;
+      }
+      if (indexInfo.zeroCount > 0) {
+        std::memset(indexPtr + indexInfo.zeroStart, 0,
+                    indexInfo.zeroCount * sizeof(int));
+      }
+      if (indexInfo.touched > 0) {
+        _pPrimitiveIndexBuffer->didModifyRange(
+            NS::Range::Make(0, indexInfo.touched * sizeof(int)));
       }
     }
-    size_t touchedIndexCount =
-        std::max({previousPrimitiveCount, _residentPrimitiveCount, size_t(1)});
-    _pPrimitiveIndexBuffer->didModifyRange(
-        NS::Range::Make(0, touchedIndexCount * sizeof(int)));
   }
 
   ensureBufferCapacity(_pBVHBuffer,
                        std::max<size_t>(_blasNodeCount * 2, size_t(1)) *
                            sizeof(simd::float4),
                        _bvhBufferCapacity, true);
-  if (simd::float4 *bvhPtr =
-          static_cast<simd::float4 *>(_pBVHBuffer->contents())) {
-    if (_blasNodeCount > 0) {
-      std::memcpy(bvhPtr, bvhPacked.data(),
-                  _blasNodeCount * 2 * sizeof(simd::float4));
-    } else {
-      bvhPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      bvhPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-    }
-    if (previousBlasCount > _blasNodeCount) {
-      size_t zeroStart = _blasNodeCount * 2;
-      size_t zeroCount = (previousBlasCount - _blasNodeCount) * 2;
-      if (zeroCount > 0) {
-        std::memset(bvhPtr + zeroStart, 0,
-                    zeroCount * sizeof(simd::float4));
+  if (_pBVHBuffer) {
+    size_t bvhCapacity = _pBVHBuffer->length() / sizeof(simd::float4);
+    if (bvhCapacity == 0 && _pBVHBuffer->length() > 0)
+      bvhCapacity = 1;
+    if (simd::float4 *bvhPtr =
+            static_cast<simd::float4 *>(_pBVHBuffer->contents())) {
+      size_t blasFloat4Count = _blasNodeCount * 2;
+      size_t previousBlasFloat4Count = previousBlasCount * 2;
+      BufferCountInfo bvhInfo = prepareBufferCounts(
+          blasFloat4Count, previousBlasFloat4Count, bvhCapacity);
+      size_t copyCount = std::min(blasFloat4Count, bvhInfo.current);
+      if (copyCount > 0) {
+        std::memcpy(bvhPtr, bvhPacked.data(),
+                    copyCount * sizeof(simd::float4));
+      } else if (bvhCapacity > 0) {
+        bvhPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (bvhCapacity > 1)
+          bvhPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
+      if (bvhInfo.zeroCount > 0) {
+        std::memset(bvhPtr + bvhInfo.zeroStart, 0,
+                    bvhInfo.zeroCount * sizeof(simd::float4));
+      }
+      if (bvhInfo.touched > 0) {
+        _pBVHBuffer->didModifyRange(NS::Range::Make(
+            0, bvhInfo.touched * sizeof(simd::float4)));
       }
     }
-    size_t touchedBlasCount =
-        std::max({previousBlasCount, _blasNodeCount, size_t(1)});
-    _pBVHBuffer->didModifyRange(NS::Range::Make(
-        0, touchedBlasCount * 2 * sizeof(simd::float4)));
   }
 
   ensureBufferCapacity(_pTLASBuffer,
                        std::max<size_t>(_tlasNodeCount * 2, size_t(1)) *
                            sizeof(simd::float4),
                        _tlasBufferCapacity, true);
-  if (simd::float4 *tlasPtr =
-          static_cast<simd::float4 *>(_pTLASBuffer->contents())) {
-    if (_tlasNodeCount > 0) {
-      std::memcpy(tlasPtr, tlasPacked.data(),
-                  _tlasNodeCount * 2 * sizeof(simd::float4));
-    } else {
-      tlasPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      tlasPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-    }
-    if (previousTlasCount > _tlasNodeCount) {
-      size_t zeroStart = _tlasNodeCount * 2;
-      size_t zeroCount = (previousTlasCount - _tlasNodeCount) * 2;
-      if (zeroCount > 0) {
-        std::memset(tlasPtr + zeroStart, 0,
-                    zeroCount * sizeof(simd::float4));
+  if (_pTLASBuffer) {
+    size_t tlasCapacity = _pTLASBuffer->length() / sizeof(simd::float4);
+    if (tlasCapacity == 0 && _pTLASBuffer->length() > 0)
+      tlasCapacity = 1;
+    if (simd::float4 *tlasPtr =
+            static_cast<simd::float4 *>(_pTLASBuffer->contents())) {
+      size_t tlasFloat4Count = _tlasNodeCount * 2;
+      size_t previousTlasFloat4Count = previousTlasCount * 2;
+      BufferCountInfo tlasInfo = prepareBufferCounts(
+          tlasFloat4Count, previousTlasFloat4Count, tlasCapacity);
+      size_t copyCount = std::min(tlasFloat4Count, tlasInfo.current);
+      if (copyCount > 0) {
+        std::memcpy(tlasPtr, tlasPacked.data(),
+                    copyCount * sizeof(simd::float4));
+      } else if (tlasCapacity > 0) {
+        tlasPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (tlasCapacity > 1)
+          tlasPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
+      if (tlasInfo.zeroCount > 0) {
+        std::memset(tlasPtr + tlasInfo.zeroStart, 0,
+                    tlasInfo.zeroCount * sizeof(simd::float4));
+      }
+      if (tlasInfo.touched > 0) {
+        _pTLASBuffer->didModifyRange(NS::Range::Make(
+            0, tlasInfo.touched * sizeof(simd::float4)));
       }
     }
-    size_t touchedTlasCount =
-        std::max({previousTlasCount, _tlasNodeCount, size_t(1)});
-    _pTLASBuffer->didModifyRange(NS::Range::Make(
-        0, touchedTlasCount * 2 * sizeof(simd::float4)));
   }
 
   ensureBufferCapacity(_pActiveBuffer,
                        std::max<size_t>(_residentPrimitiveCount, size_t(1)) *
                            sizeof(uint8_t),
                        _activeBufferCapacity, true);
-  if (uint8_t *activePtr = static_cast<uint8_t *>(_pActiveBuffer->contents())) {
-    size_t clearCount =
-        std::max({previousPrimitiveCount, _residentPrimitiveCount, size_t(1)});
-    std::memset(activePtr, 0, clearCount * sizeof(uint8_t));
-    if (_residentPrimitiveCount > 0) {
-      std::memset(activePtr, 1, _residentPrimitiveCount * sizeof(uint8_t));
+  if (_pActiveBuffer) {
+    size_t activeCapacity = _pActiveBuffer->length() / sizeof(uint8_t);
+    if (activeCapacity == 0 && _pActiveBuffer->length() > 0)
+      activeCapacity = 1;
+    if (uint8_t *activePtr =
+            static_cast<uint8_t *>(_pActiveBuffer->contents())) {
+      BufferCountInfo activeInfo = prepareBufferCounts(
+          _residentPrimitiveCount, previousPrimitiveCount, activeCapacity);
+      if (activeInfo.touched > 0) {
+        std::memset(activePtr, 0, activeInfo.touched * sizeof(uint8_t));
+        if (activeInfo.current > 0) {
+          std::memset(activePtr, 1, activeInfo.current * sizeof(uint8_t));
+        }
+        _pActiveBuffer->didModifyRange(
+            NS::Range::Make(0, activeInfo.touched * sizeof(uint8_t)));
+      }
     }
-    _pActiveBuffer->didModifyRange(
-        NS::Range::Make(0, clearCount * sizeof(uint8_t)));
   }
 
   ensureBufferCapacity(_pPrimitiveRemapBuffer,
-                       std::max<size_t>(remap.size(), size_t(1)) *
+                       std::max<size_t>(_residentRemap.size(), size_t(1)) *
                            sizeof(uint32_t),
                        _primitiveRemapBufferCapacity, true);
-  if (uint32_t *remapPtr =
-          static_cast<uint32_t *>(_pPrimitiveRemapBuffer->contents())) {
-    size_t clearCount =
-        std::max({previousPrimitiveCount, remap.size(), size_t(1)});
-    std::memset(remapPtr, 0, clearCount * sizeof(uint32_t));
-    if (!remap.empty()) {
-      std::memcpy(remapPtr, remap.data(), remap.size() * sizeof(uint32_t));
+  if (_pPrimitiveRemapBuffer) {
+    size_t remapCapacity =
+        _pPrimitiveRemapBuffer->length() / sizeof(uint32_t);
+    if (remapCapacity == 0 && _pPrimitiveRemapBuffer->length() > 0)
+      remapCapacity = 1;
+    if (uint32_t *remapPtr =
+            static_cast<uint32_t *>(_pPrimitiveRemapBuffer->contents())) {
+      BufferCountInfo remapInfo = prepareBufferCounts(
+          _residentRemap.size(), previousPrimitiveCount, remapCapacity);
+      if (remapInfo.touched > 0) {
+        std::memset(remapPtr, 0, remapInfo.touched * sizeof(uint32_t));
+        size_t copyCount =
+            std::min(_residentRemap.size(), remapInfo.current);
+        if (copyCount > 0) {
+          std::memcpy(remapPtr, _residentRemap.data(),
+                      copyCount * sizeof(uint32_t));
+        }
+        _pPrimitiveRemapBuffer->didModifyRange(NS::Range::Make(
+            0, remapInfo.touched * sizeof(uint32_t)));
+      }
     }
-    _pPrimitiveRemapBuffer->didModifyRange(
-        NS::Range::Make(0, clearCount * sizeof(uint32_t)));
   }
 
   ensureBufferCapacity(_pLightIndexBuffer,
                        std::max<size_t>(_lightCount, size_t(1)) *
                            sizeof(uint32_t),
                        _lightIndexBufferCapacity, true);
-  if (uint32_t *lightIndexPtr =
-          static_cast<uint32_t *>(_pLightIndexBuffer->contents())) {
-    size_t clearCount =
-        std::max({previousLightCount, _lightCount, size_t(1)});
-    std::memset(lightIndexPtr, 0, clearCount * sizeof(uint32_t));
-    if (_lightCount > 0) {
-      std::memcpy(lightIndexPtr, lightIndices.data(),
-                  _lightCount * sizeof(uint32_t));
+  if (_pLightIndexBuffer) {
+    size_t lightIndexCapacity =
+        _pLightIndexBuffer->length() / sizeof(uint32_t);
+    if (lightIndexCapacity == 0 && _pLightIndexBuffer->length() > 0)
+      lightIndexCapacity = 1;
+    if (uint32_t *lightIndexPtr =
+            static_cast<uint32_t *>(_pLightIndexBuffer->contents())) {
+      BufferCountInfo lightIndexInfo = prepareBufferCounts(
+          _lightCount, previousLightCount, lightIndexCapacity);
+      if (lightIndexInfo.touched > 0) {
+        std::memset(lightIndexPtr, 0,
+                    lightIndexInfo.touched * sizeof(uint32_t));
+        size_t copyCount = std::min(_lightCount, lightIndexInfo.current);
+        if (copyCount > 0) {
+          std::memcpy(lightIndexPtr, lightIndices.data(),
+                      copyCount * sizeof(uint32_t));
+        }
+        _pLightIndexBuffer->didModifyRange(NS::Range::Make(
+            0, lightIndexInfo.touched * sizeof(uint32_t)));
+      }
     }
-    _pLightIndexBuffer->didModifyRange(
-        NS::Range::Make(0, clearCount * sizeof(uint32_t)));
   }
 
   ensureBufferCapacity(_pLightCdfBuffer,
                        std::max<size_t>(_lightCount, size_t(1)) * sizeof(float),
                        _lightCdfBufferCapacity, true);
-  if (float *lightCdfPtr = static_cast<float *>(_pLightCdfBuffer->contents())) {
-    size_t clearCount =
-        std::max({previousLightCount, _lightCount, size_t(1)});
-    std::memset(lightCdfPtr, 0, clearCount * sizeof(float));
-    if (_lightCount > 0) {
-      std::memcpy(lightCdfPtr, lightCdf.data(), _lightCount * sizeof(float));
+  if (_pLightCdfBuffer) {
+    size_t lightCdfCapacity = _pLightCdfBuffer->length() / sizeof(float);
+    if (lightCdfCapacity == 0 && _pLightCdfBuffer->length() > 0)
+      lightCdfCapacity = 1;
+    if (float *lightCdfPtr =
+            static_cast<float *>(_pLightCdfBuffer->contents())) {
+      BufferCountInfo lightCdfInfo = prepareBufferCounts(
+          _lightCount, previousLightCount, lightCdfCapacity);
+      if (lightCdfInfo.touched > 0) {
+        std::memset(lightCdfPtr, 0,
+                    lightCdfInfo.touched * sizeof(float));
+        size_t copyCount = std::min(_lightCount, lightCdfInfo.current);
+        if (copyCount > 0) {
+          std::memcpy(lightCdfPtr, lightCdf.data(),
+                      copyCount * sizeof(float));
+        }
+        _pLightCdfBuffer->didModifyRange(NS::Range::Make(
+            0, lightCdfInfo.touched * sizeof(float)));
+      }
     }
-    _pLightCdfBuffer->didModifyRange(
-        NS::Range::Make(0, clearCount * sizeof(float)));
   }
 
   size_t vertexCount = triangleVertices.size();
@@ -912,52 +1082,62 @@ void Renderer::rebuildResidentResources() {
                        std::max<size_t>(vertexCount, size_t(1)) *
                            sizeof(simd::float3),
                        _triangleVertexBufferCapacity, true);
-  if (simd::float3 *vertexPtr =
-          static_cast<simd::float3 *>(_pTriangleVertexBuffer->contents())) {
-    if (vertexCount > 0) {
-      std::memcpy(vertexPtr, triangleVertices.data(),
-                  vertexCount * sizeof(simd::float3));
-    } else {
-      vertexPtr[0] = simd::float3{0.0f, 0.0f, 0.0f};
-    }
-    if (previousVertexCount > vertexCount) {
-      size_t zeroStart = vertexCount;
-      size_t zeroCount = previousVertexCount - vertexCount;
-      if (zeroCount > 0) {
-        std::memset(vertexPtr + zeroStart, 0,
-                    zeroCount * sizeof(simd::float3));
+  if (_pTriangleVertexBuffer) {
+    size_t vertexCapacity =
+        _pTriangleVertexBuffer->length() / sizeof(simd::float3);
+    if (vertexCapacity == 0 && _pTriangleVertexBuffer->length() > 0)
+      vertexCapacity = 1;
+    if (simd::float3 *vertexPtr = static_cast<simd::float3 *>(
+            _pTriangleVertexBuffer->contents())) {
+      BufferCountInfo vertexInfo = prepareBufferCounts(
+          vertexCount, previousVertexCount, vertexCapacity);
+      size_t copyCount = std::min(vertexCount, vertexInfo.current);
+      if (copyCount > 0) {
+        std::memcpy(vertexPtr, triangleVertices.data(),
+                    copyCount * sizeof(simd::float3));
+      } else if (vertexCapacity > 0) {
+        vertexPtr[0] = simd::float3{0.0f, 0.0f, 0.0f};
+      }
+      if (vertexInfo.zeroCount > 0) {
+        std::memset(vertexPtr + vertexInfo.zeroStart, 0,
+                    vertexInfo.zeroCount * sizeof(simd::float3));
+      }
+      if (vertexInfo.touched > 0) {
+        _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(
+            0, vertexInfo.touched * sizeof(simd::float3)));
       }
     }
-    size_t touchedVertexCount =
-        std::max({vertexCount, previousVertexCount, size_t(1)});
-    _pTriangleVertexBuffer->didModifyRange(
-        NS::Range::Make(0, touchedVertexCount * sizeof(simd::float3)));
   }
 
   ensureBufferCapacity(_pTriangleIndexBuffer,
                        std::max<size_t>(indexCount, size_t(1)) *
                            sizeof(simd::uint3),
                        _triangleIndexBufferCapacity, true);
-  if (simd::uint3 *indexPtr =
-          static_cast<simd::uint3 *>(_pTriangleIndexBuffer->contents())) {
-    if (indexCount > 0) {
-      std::memcpy(indexPtr, triangleIndices.data(),
-                  indexCount * sizeof(simd::uint3));
-    } else {
-      indexPtr[0] = simd::make_uint3(0, 0, 0);
-    }
-    if (previousIndexCount > indexCount) {
-      size_t zeroStart = indexCount;
-      size_t zeroCount = previousIndexCount - indexCount;
-      if (zeroCount > 0) {
-        std::memset(indexPtr + zeroStart, 0,
-                    zeroCount * sizeof(simd::uint3));
+  if (_pTriangleIndexBuffer) {
+    size_t indexCapacity =
+        _pTriangleIndexBuffer->length() / sizeof(simd::uint3);
+    if (indexCapacity == 0 && _pTriangleIndexBuffer->length() > 0)
+      indexCapacity = 1;
+    if (simd::uint3 *indexPtr = static_cast<simd::uint3 *>(
+            _pTriangleIndexBuffer->contents())) {
+      BufferCountInfo indexInfo = prepareBufferCounts(
+          indexCount, previousIndexCount, indexCapacity);
+      size_t copyCount = std::min(indexCount, indexInfo.current);
+      if (copyCount > 0) {
+        std::memcpy(indexPtr, triangleIndices.data(),
+                    copyCount * sizeof(simd::uint3));
+      } else if (indexCapacity > 0) {
+        indexPtr[0] = simd::make_uint3(0, 0, 0);
+      }
+      if (indexInfo.zeroCount > 0) {
+        std::memset(indexPtr + indexInfo.zeroStart, 0,
+                    indexInfo.zeroCount * sizeof(simd::uint3));
+      }
+      if (indexInfo.touched > 0) {
+        _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(
+            0, indexInfo.touched * sizeof(simd::uint3)));
       }
     }
-    size_t touchedIndexCount =
-        std::max({indexCount, previousIndexCount, size_t(1)});
-    _pTriangleIndexBuffer->didModifyRange(
-        NS::Range::Make(0, touchedIndexCount * sizeof(simd::uint3)));
   }
 
   size_t newActiveCount = _tlasNodeCount + _residentPrimitiveCount;
@@ -1089,7 +1269,7 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pLightIndexBuffer, 0, 9);
   pEnc->setFragmentBuffer(_pLightCdfBuffer, 0, 10);
   pEnc->setFragmentBuffer(_pPrimitiveRemapBuffer, 0, 11);
-  pEnc->setFragmentBuffer(_pPrimitiveHitBuffer, 0, 12);
+  pEnc->setFragmentBuffer(_pPrimitiveHitBufferGPU, 0, 12);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -1100,8 +1280,16 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->endEncoding();
 
   MTL::BlitCommandEncoder *pBlit = pCmd->blitCommandEncoder();
-  if (_pPrimitiveHitBuffer)
-    pBlit->synchronizeResource(_pPrimitiveHitBuffer);
+  if (_pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
+    size_t bytes =
+        std::min(_pPrimitiveHitBufferGPU->length(),
+                 _pPrimitiveHitReadback->length());
+    if (bytes > 0) {
+      pBlit->copyFromBuffer(_pPrimitiveHitBufferGPU, 0, _pPrimitiveHitReadback, 0,
+                            bytes);
+      pBlit->fillBuffer(_pPrimitiveHitBufferGPU, NS::Range::Make(0, bytes), 0);
+    }
+  }
   pBlit->endEncoding();
 
   pCmd->presentDrawable(pView->currentDrawable());
@@ -1110,7 +1298,7 @@ void Renderer::draw(MTK::View *pView) {
   pPool->release();
 }
 
-void Renderer::updateResidency() {
+void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   if (!_pScene)
     return;
 
@@ -1118,24 +1306,28 @@ void Renderer::updateResidency() {
     if (cooldown > 0)
       --cooldown;
 
+  bool changed = false;
   switch (_pScene->getResidencyStrategy()) {
   case ResidencyStrategy::EnergyImportance:
-    updateEnergyImportance();
+    changed = updateEnergyImportance(forceAllToggles);
     break;
   case ResidencyStrategy::RayHitBudget:
-    updateRayHitBudget();
+    changed = updateRayHitBudget(forceAllToggles);
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
-    updateScreenSpaceFootprint();
+    changed = updateScreenSpaceFootprint(forceAllToggles);
     break;
   case ResidencyStrategy::DistanceLOD:
   default:
-    updateLODByDistance();
+    changed = updateLODByDistance(forceAllToggles);
     break;
   }
+
+  if (changed || forceFullRebuild)
+    flushResidencyChanges(forceFullRebuild);
 }
 
-void Renderer::updateLODByDistance() {
+bool Renderer::updateLODByDistance(bool forceAllToggles) {
   // Use hysteresis so primitives do not flicker when hovering near the
   // activation boundary. Inactive primitives only become active once the
   // camera is closer than LOD_ENTER_DISTANCE, while active primitives stay
@@ -1150,12 +1342,13 @@ void Renderer::updateLODByDistance() {
         _primitiveBounds[g].radius;
     dist = std::max(dist, 0.0f);
     bool currentlyActive = g < _activePrimitive.size() && _activePrimitive[g];
-    bool shouldBeActive = currentlyActive ? dist <= LOD_EXIT_DISTANCE
-                                          : dist < LOD_ENTER_DISTANCE;
-    bool canToggle =
-        g >= _primitiveCooldown.size() || _primitiveCooldown[g] == 0;
+    bool shouldBeActive =
+        currentlyActive ? dist <= _residencyConfig.lodExitDistance
+                         : dist < _residencyConfig.lodEnterDistance;
+    bool canToggle = forceAllToggles || g >= _primitiveCooldown.size() ||
+                     _primitiveCooldown[g] == 0;
     if (canToggle && shouldBeActive != currentlyActive) {
-      if (toggles < LOD_MAX_TOGGLES_PER_FRAME &&
+      if ((forceAllToggles || toggles < _residencyConfig.lodMaxTogglesPerFrame) &&
           setPrimitiveActive(g, shouldBeActive)) {
         changed = true;
         ++toggles;
@@ -1172,24 +1365,25 @@ void Renderer::updateLODByDistance() {
     activeCount = 1;
   }
 
-  if (changed)
-    rebuildResidentResources();
+  return changed;
 }
 
-void Renderer::updateEnergyImportance() {
+bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (_activePrimitive.empty())
-    return;
+    return false;
 
   const size_t primCount = _activePrimitive.size();
   std::vector<bool> desiredState(primCount, false);
-  size_t minActive = std::min(primCount, ENERGY_MIN_ACTIVE_PRIMITIVES);
+  size_t minActive =
+      std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
   if (_totalPrimitiveImportance <= 0.0f) {
     for (size_t i = 0; i < minActive && i < _energySortedIndices.size(); ++i)
       desiredState[_energySortedIndices[i]] = true;
   } else {
     float cumulative = 0.0f;
-    float targetImportance = _totalPrimitiveImportance * ENERGY_TARGET_FRACTION;
+    float targetImportance =
+        _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
     size_t enabled = 0;
     for (size_t rank = 0; rank < _energySortedIndices.size(); ++rank) {
       size_t index = _energySortedIndices[rank];
@@ -1205,11 +1399,21 @@ void Renderer::updateEnergyImportance() {
   }
 
   bool changed = false;
+  size_t toggles = 0;
   for (size_t i = 0; i < primCount; ++i) {
     bool shouldBeActive = desiredState[i];
-    if (shouldBeActive != _activePrimitive[i])
-      if (setPrimitiveActive(i, shouldBeActive))
-        changed = true;
+    if (shouldBeActive == _activePrimitive[i])
+      continue;
+    if (!forceAllToggles) {
+      if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+        continue;
+      if (toggles >= _residencyConfig.energyMaxTogglesPerFrame)
+        break;
+    }
+    if (setPrimitiveActive(i, shouldBeActive)) {
+      changed = true;
+      ++toggles;
+    }
   }
 
   size_t activeCount = 0;
@@ -1224,13 +1428,12 @@ void Renderer::updateEnergyImportance() {
       changed = true;
   }
 
-  if (changed)
-    rebuildResidentResources();
+  return changed;
 }
 
-void Renderer::updateRayHitBudget() {
+bool Renderer::updateRayHitBudget(bool forceAllToggles) {
   if (_activePrimitive.empty())
-    return;
+    return false;
 
   if (_rayHitSortedIndices.size() != _activePrimitive.size()) {
     _rayHitSortedIndices.resize(_activePrimitive.size());
@@ -1240,8 +1443,12 @@ void Renderer::updateRayHitBudget() {
     _primitiveHitScores.resize(_activePrimitive.size(), 0.0f);
 
   if (_rayHitRebuildCooldown > 0) {
-    --_rayHitRebuildCooldown;
-    return;
+    if (forceAllToggles)
+      _rayHitRebuildCooldown = 0;
+    else {
+      --_rayHitRebuildCooldown;
+      return false;
+    }
   }
 
   std::sort(_rayHitSortedIndices.begin(), _rayHitSortedIndices.end(),
@@ -1256,9 +1463,10 @@ void Renderer::updateRayHitBudget() {
             });
 
   const size_t primCount = _activePrimitive.size();
-  const size_t minActive = std::min(primCount, RAY_HIT_MIN_ACTIVE_PRIMITIVES);
-  size_t targetActive =
-      static_cast<size_t>(std::ceil(primCount * RAY_HIT_TARGET_FRACTION));
+  const size_t minActive =
+      std::min(primCount, _residencyConfig.rayHitMinActivePrimitives);
+  size_t targetActive = static_cast<size_t>(
+      std::ceil(primCount * _residencyConfig.rayHitTargetFraction));
   targetActive = std::max(targetActive, minActive);
   targetActive = std::min(targetActive, primCount);
 
@@ -1280,10 +1488,12 @@ void Renderer::updateRayHitBudget() {
     bool shouldBeActive = desired[i];
     if (shouldBeActive == _activePrimitive[i])
       continue;
-    if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
-      continue;
-    if (toggles >= RAY_HIT_MAX_TOGGLES_PER_FRAME)
-      break;
+    if (!forceAllToggles) {
+      if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+        continue;
+      if (toggles >= _residencyConfig.rayHitMaxTogglesPerFrame)
+        break;
+    }
     if (setPrimitiveActive(i, shouldBeActive)) {
       ++toggles;
       changed = true;
@@ -1302,15 +1512,15 @@ void Renderer::updateRayHitBudget() {
       changed = true;
   }
 
-  if (changed) {
-    rebuildResidentResources();
-    _rayHitRebuildCooldown = RAY_HIT_REBUILD_COOLDOWN_FRAMES;
-  }
+  if (changed)
+    _rayHitRebuildCooldown = _residencyConfig.rayHitRebuildCooldownFrames;
+
+  return changed;
 }
 
-void Renderer::updateScreenSpaceFootprint() {
+bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   if (_activePrimitive.empty())
-    return;
+    return false;
 
   const size_t primCount = _activePrimitive.size();
   if (_primitiveScreenCoverage.size() != primCount)
@@ -1380,17 +1590,19 @@ void Renderer::updateScreenSpaceFootprint() {
 
   std::vector<bool> desired(primCount, false);
   const size_t minActive =
-      std::min(primCount, SCREEN_FOOTPRINT_MIN_ACTIVE_PRIMITIVES);
+      std::min(primCount, _residencyConfig.screenFootprintMinActivePrimitives);
   float accumulated = 0.0f;
   size_t enabled = 0;
-  float targetCoverage = screenArea * SCREEN_FOOTPRINT_TARGET_FRACTION;
+  float targetCoverage =
+      screenArea * _residencyConfig.screenFootprintTargetFraction;
   for (size_t idx : _screenCoverageSortedIndices) {
     if (idx >= _primitiveScreenCoverage.size())
       continue;
     float coverage = _primitiveScreenCoverage[idx];
     if (enabled >= minActive && accumulated >= targetCoverage)
       break;
-    if (enabled >= minActive && coverage < SCREEN_FOOTPRINT_MIN_PIXEL_COVERAGE)
+    if (enabled >= minActive &&
+        coverage < _residencyConfig.screenFootprintMinPixelCoverage)
       break;
     if (coverage <= 0.0f && enabled >= minActive)
       break;
@@ -1408,10 +1620,12 @@ void Renderer::updateScreenSpaceFootprint() {
     bool shouldBeActive = desired[i];
     if (shouldBeActive == _activePrimitive[i])
       continue;
-    if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
-      continue;
-    if (toggles >= SCREEN_FOOTPRINT_MAX_TOGGLES_PER_FRAME)
-      break;
+    if (!forceAllToggles) {
+      if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+        continue;
+      if (toggles >= _residencyConfig.screenFootprintMaxTogglesPerFrame)
+        break;
+    }
     if (setPrimitiveActive(i, shouldBeActive)) {
       ++toggles;
       changed = true;
@@ -1431,8 +1645,16 @@ void Renderer::updateScreenSpaceFootprint() {
       changed = true;
   }
 
-  if (changed)
-    rebuildResidentResources();
+  return changed;
+}
+
+void Renderer::flushResidencyChanges(bool forceFullRebuild) {
+  if (!forceFullRebuild && _recentlyActivated.empty() &&
+      _recentlyDeactivated.empty()) {
+    // No state changes to apply this frame.
+    return;
+  }
+  rebuildResidentResources(forceFullRebuild);
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -1454,8 +1676,16 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
   if (_activePrimitive[index] == active)
     return false;
   _activePrimitive[index] = active;
+  auto &cancelList = active ? _recentlyDeactivated : _recentlyActivated;
+  cancelList.erase(
+      std::remove(cancelList.begin(), cancelList.end(), index),
+      cancelList.end());
+  if (active)
+    _recentlyActivated.push_back(index);
+  else
+    _recentlyDeactivated.push_back(index);
   if (index < _primitiveCooldown.size())
-    _primitiveCooldown[index] = LOD_STATE_COOLDOWN_FRAMES;
+    _primitiveCooldown[index] = _residencyConfig.stateCooldownFrames;
   return true;
 }
 
@@ -1533,19 +1763,20 @@ double Renderer::currentGPUMemoryMB() const {
 }
 
 void Renderer::processRayHitCounters() {
-  if (!_pPrimitiveHitBuffer)
+  if (!_pPrimitiveHitReadback)
     return;
 
   size_t totalPrimitiveCount = _allPrimitives.size();
   if (totalPrimitiveCount == 0)
     return;
 
-  size_t bufferCount = _pPrimitiveHitBuffer->length() / sizeof(uint32_t);
+  size_t bufferCount = _pPrimitiveHitReadback->length() / sizeof(uint32_t);
   size_t count = std::min(totalPrimitiveCount, bufferCount);
   if (count == 0)
     return;
 
-  uint32_t *hitPtr = static_cast<uint32_t *>(_pPrimitiveHitBuffer->contents());
+  uint32_t *hitPtr =
+      static_cast<uint32_t *>(_pPrimitiveHitReadback->contents());
   if (!hitPtr)
     return;
 
@@ -1557,13 +1788,11 @@ void Renderer::processRayHitCounters() {
   for (size_t i = 0; i < count; ++i) {
     uint32_t hits = hitPtr[i];
     _primitiveHitLastFrame[i] = hits;
-    _primitiveHitScores[i] = _primitiveHitScores[i] * RAY_HIT_DECAY +
-                            static_cast<float>(hits);
+    _primitiveHitScores[i] =
+        _primitiveHitScores[i] * _residencyConfig.rayHitDecay +
+        static_cast<float>(hits);
     hitPtr[i] = 0;
   }
-
-  _pPrimitiveHitBuffer->didModifyRange(
-      NS::Range::Make(0, count * sizeof(uint32_t)));
 }
 
 void Renderer::beginFrameMetrics() {
