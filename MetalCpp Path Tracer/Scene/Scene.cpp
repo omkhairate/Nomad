@@ -1,4 +1,5 @@
 #include "Scene.h"
+#include "SceneLoader.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -11,6 +12,8 @@ namespace MetalCppPathTracer {
 Scene::Scene() { clear(); }
 
 void Scene::clear() {
+  // Reset any cached mesh data owned by the loader when the scene is cleared.
+  SceneLoader::ClearCache();
   primitives.clear();
   bvhNodes.clear();
   primitiveIndices.clear();
