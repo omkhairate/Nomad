@@ -479,6 +479,7 @@ void Renderer::updateVisibleScene() {
   _activePrimitive.assign(primCount, false);
   _primitiveCooldown.assign(primCount, 0);
   _primitiveToResidentIndex.assign(primCount, -1);
+  _primitiveToObject.assign(primCount, std::numeric_limits<size_t>::max());
   _primitiveBounds.resize(primCount);
   _primitiveImportance.assign(primCount, 0.0f);
   _energySortedIndices.resize(primCount);
@@ -488,6 +489,11 @@ void Renderer::updateVisibleScene() {
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
+
+  size_t objectCount = _allSceneObjects.size();
+  _objectBounds.resize(objectCount);
+  _objectActive.assign(objectCount, false);
+  _objectCooldown.assign(objectCount, 0);
 
   _residentPrimitives.clear();
   _residentRemap.clear();
@@ -519,6 +525,21 @@ void Renderer::updateVisibleScene() {
     if (i < _screenCoverageSortedIndices.size())
       _screenCoverageSortedIndices[i] = i;
     _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
+  }
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    simd::float3 boundsMin = obj.boundsMin;
+    simd::float3 boundsMax = obj.boundsMax;
+    simd::float3 center = (boundsMin + boundsMax) * 0.5f;
+    float radius = simd::length(boundsMax - center);
+    _objectBounds[objectIndex] = {center, radius};
+
+    size_t first = obj.firstPrimitive;
+    size_t last = first + obj.primitiveCount;
+    for (size_t prim = first; prim < last && prim < _primitiveToObject.size();
+         ++prim)
+      _primitiveToObject[prim] = objectIndex;
   }
 
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
@@ -1322,6 +1343,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   for (uint32_t &cooldown : _primitiveCooldown)
     if (cooldown > 0)
       --cooldown;
+  for (uint32_t &cooldown : _objectCooldown)
+    if (cooldown > 0)
+      --cooldown;
 
   bool changed = false;
   switch (_pScene->getResidencyStrategy()) {
@@ -1345,44 +1369,104 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
 }
 
 bool Renderer::updateLODByDistance(bool forceAllToggles) {
-  // Use hysteresis so primitives do not flicker when hovering near the
-  // activation boundary. Inactive primitives only become active once the
-  // camera is closer than LOD_ENTER_DISTANCE, while active primitives stay
-  // active until the camera has moved beyond LOD_EXIT_DISTANCE.
+  // Use hysteresis so objects do not flicker when hovering near the activation
+  // boundary. Inactive objects only become active once the camera is closer
+  // than LOD_ENTER_DISTANCE, while active objects stay active until the camera
+  // has moved beyond LOD_EXIT_DISTANCE.
 
-  size_t activeCount = 0;
   size_t toggles = 0;
   bool changed = false;
-  for (size_t g = 0; g < _allPrimitives.size(); ++g) {
-    float dist =
-        simd::length(_primitiveBounds[g].center - Camera::position) -
-        _primitiveBounds[g].radius;
+
+  const size_t objectCount = _allSceneObjects.size();
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const BoundingSphere &sphere =
+        (objectIndex < _objectBounds.size())
+            ? _objectBounds[objectIndex]
+            : BoundingSphere{simd::make_float3(0.0f, 0.0f, 0.0f), 0.0f};
+    float dist = simd::length(sphere.center - Camera::position) - sphere.radius;
     dist = std::max(dist, 0.0f);
-    bool currentlyActive = g < _activePrimitive.size() && _activePrimitive[g];
+
+    bool currentlyActive =
+        objectIndex < _objectActive.size() && _objectActive[objectIndex];
     bool shouldBeActive =
         currentlyActive ? dist <= _residencyConfig.lodExitDistance
                          : dist < _residencyConfig.lodEnterDistance;
-    bool canToggle = forceAllToggles || g >= _primitiveCooldown.size() ||
-                     _primitiveCooldown[g] == 0;
-    if (canToggle && shouldBeActive != currentlyActive) {
-      if ((forceAllToggles || toggles < _residencyConfig.lodMaxTogglesPerFrame) &&
-          setPrimitiveActive(g, shouldBeActive)) {
-        changed = true;
-        ++toggles;
-      }
+    bool canToggle =
+        forceAllToggles || objectIndex >= _objectCooldown.size() ||
+        _objectCooldown[objectIndex] == 0;
+    if (!canToggle || shouldBeActive == currentlyActive)
+      continue;
+
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    size_t togglesNeeded = 0;
+    size_t first = obj.firstPrimitive;
+    size_t last = first + obj.primitiveCount;
+    for (size_t prim = first; prim < last && prim < _activePrimitive.size();
+         ++prim) {
+      if (_activePrimitive[prim] != shouldBeActive)
+        ++togglesNeeded;
     }
-    if (_activePrimitive[g])
-      activeCount++;
+
+    if (togglesNeeded == 0)
+      continue;
+
+    if (!forceAllToggles &&
+        toggles + togglesNeeded > _residencyConfig.lodMaxTogglesPerFrame)
+      continue;
+
+    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+    if (toggled > 0) {
+      toggles += toggled;
+      changed = true;
+    }
   }
+
+  size_t activeCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activeCount;
 
   if (activeCount == 0 && !_activePrimitive.empty()) {
     // Ensure at least one primitive remains visible to avoid a blank scene
     if (setPrimitiveActive(0, true))
       changed = true;
-    activeCount = 1;
   }
 
   return changed;
+}
+
+size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
+  if (objectIndex >= _allSceneObjects.size())
+    return 0;
+
+  const SceneObject &obj = _allSceneObjects[objectIndex];
+  size_t toggled = 0;
+  size_t first = obj.firstPrimitive;
+  size_t last = first + obj.primitiveCount;
+  for (size_t prim = first; prim < last && prim < _activePrimitive.size(); ++prim)
+    if (setPrimitiveActive(prim, active))
+      ++toggled;
+
+  if (objectIndex >= _objectActive.size())
+    _objectActive.resize(objectIndex + 1, false);
+  if (objectIndex >= _objectCooldown.size())
+    _objectCooldown.resize(objectIndex + 1, 0);
+
+  bool anyActive = false;
+  for (size_t prim = first; prim < last && prim < _activePrimitive.size(); ++prim) {
+    if (_activePrimitive[prim])
+      anyActive = true;
+  }
+
+  bool newState = anyActive;
+  bool fullyInactive = !anyActive;
+  bool prevState = _objectActive[objectIndex];
+  _objectActive[objectIndex] = newState;
+
+  if (toggled > 0 || prevState != newState || fullyInactive)
+    _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
+
+  return toggled;
 }
 
 bool Renderer::updateEnergyImportance(bool forceAllToggles) {
@@ -1707,6 +1791,33 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
     _recentlyDeactivated.push_back(index);
   if (index < _primitiveCooldown.size())
     _primitiveCooldown[index] = _residencyConfig.stateCooldownFrames;
+
+  if (index < _primitiveToObject.size()) {
+    size_t objectIndex = _primitiveToObject[index];
+    if (objectIndex < _allSceneObjects.size()) {
+      if (objectIndex >= _objectActive.size())
+        _objectActive.resize(objectIndex + 1, false);
+      if (objectIndex >= _objectCooldown.size())
+        _objectCooldown.resize(objectIndex + 1, 0);
+
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      bool anyActive = false;
+      for (size_t prim = first; prim < last && prim < _activePrimitive.size();
+           ++prim) {
+        if (_activePrimitive[prim])
+          anyActive = true;
+      }
+
+      bool newState = anyActive;
+      bool fullyInactive = !anyActive;
+      bool prevState = _objectActive[objectIndex];
+      _objectActive[objectIndex] = newState;
+      if (prevState != newState || fullyInactive)
+        _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
+    }
+  }
   return true;
 }
 

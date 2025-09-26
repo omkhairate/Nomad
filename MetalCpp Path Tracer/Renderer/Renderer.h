@@ -108,8 +108,12 @@ private:
   std::vector<bool> _activePrimitive;
   std::vector<uint32_t> _primitiveCooldown;
   std::vector<int32_t> _primitiveToResidentIndex;
+  std::vector<size_t> _primitiveToObject;
   std::vector<BoundingSphere> _primitiveBounds;
   std::vector<SceneObject> _allSceneObjects;
+  std::vector<BoundingSphere> _objectBounds;
+  std::vector<bool> _objectActive;
+  std::vector<uint32_t> _objectCooldown;
   std::vector<float> _primitiveImportance;
   std::vector<size_t> _energySortedIndices;
   std::vector<float> _primitiveHitScores;
@@ -162,6 +166,8 @@ private:
   size_t _animationFrame = 0;
 
   ResidencyParameters _residencyConfig;
+
+  size_t setObjectActive(size_t objectIndex, bool active);
 };
 
 } // namespace MetalCppPathTracer
