@@ -734,6 +734,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   triangleVertices.reserve(_residentPrimitiveCount * 3);
   triangleIndices.reserve(_residentPrimitiveCount);
 
+  std::vector<std::vector<int>> objectResidentIndices(
+      _allSceneObjects.size());
+  std::vector<int> orphanResidentIndices;
+
   std::vector<uint32_t> lightIndices;
   std::vector<float> lightCdf;
   lightIndices.reserve(_residentPrimitiveCount);
@@ -744,6 +748,17 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   for (size_t i = 0; i < _residentPrimitiveCount; ++i) {
     const Primitive &p = _residentPrimitives[i];
+    size_t remapIndex =
+        (i < _residentRemap.size()) ? _residentRemap[i]
+                                    : std::numeric_limits<size_t>::max();
+    size_t objectIndex =
+        (remapIndex < _primitiveToObject.size())
+            ? _primitiveToObject[remapIndex]
+            : std::numeric_limits<size_t>::max();
+    if (objectIndex < objectResidentIndices.size())
+      objectResidentIndices[objectIndex].push_back(static_cast<int>(i));
+    else
+      orphanResidentIndices.push_back(static_cast<int>(i));
     simd::float4 *primBase = &primitiveBuffer[3 * i];
     simd::float4 *matBase = &materialBuffer[2 * i];
 
@@ -800,172 +815,199 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   _lightCount = lightIndices.size();
   _lightTotalWeight = totalLightWeight;
 
-  std::vector<int> primitiveIndices(_residentPrimitiveCount);
-  std::iota(primitiveIndices.begin(), primitiveIndices.end(), 0);
+  struct ActiveInstance {
+    simd::float3 boundsMin;
+    simd::float3 boundsMax;
+    int blasRoot = -1;
+    int leafValue = -1;
+  };
+
+  std::vector<int> primitiveIndices;
+  primitiveIndices.reserve(_residentPrimitiveCount);
 
   std::vector<BVHNode> bvhNodes;
+  std::vector<ActiveInstance> activeInstances;
+
   if (_residentPrimitiveCount > 0) {
     bvhNodes.reserve(_residentPrimitiveCount * 2);
-    buildBVHRecursive(_residentPrimitives, primitiveIndices, bvhNodes, 0,
-                      _residentPrimitiveCount);
+    activeInstances.reserve(objectResidentIndices.size());
+
+    for (size_t objectIndex = 0; objectIndex < objectResidentIndices.size();
+         ++objectIndex) {
+      auto &indices = objectResidentIndices[objectIndex];
+      if (indices.empty())
+        continue;
+
+      size_t start = primitiveIndices.size();
+      primitiveIndices.insert(primitiveIndices.end(), indices.begin(),
+                              indices.end());
+      size_t end = primitiveIndices.size();
+      int rootIndex = buildBVHRecursive(_residentPrimitives, primitiveIndices,
+                                        bvhNodes, start, end);
+      if (rootIndex >= 0) {
+        ActiveInstance instance;
+        instance.boundsMin = bvhNodes[rootIndex].boundsMin;
+        instance.boundsMax = bvhNodes[rootIndex].boundsMax;
+        instance.blasRoot = rootIndex;
+        instance.leafValue = -static_cast<int>(activeInstances.size()) - 1;
+        activeInstances.push_back(instance);
+      }
+    }
+
+    if (!orphanResidentIndices.empty()) {
+      size_t start = primitiveIndices.size();
+      primitiveIndices.insert(primitiveIndices.end(),
+                              orphanResidentIndices.begin(),
+                              orphanResidentIndices.end());
+      size_t end = primitiveIndices.size();
+      int rootIndex = buildBVHRecursive(_residentPrimitives, primitiveIndices,
+                                        bvhNodes, start, end);
+      if (rootIndex >= 0) {
+        ActiveInstance instance;
+        instance.boundsMin = bvhNodes[rootIndex].boundsMin;
+        instance.boundsMax = bvhNodes[rootIndex].boundsMax;
+        instance.blasRoot = rootIndex;
+        instance.leafValue = -static_cast<int>(activeInstances.size()) - 1;
+        activeInstances.push_back(instance);
+      }
+    }
   }
 
   _blasNodeCount = bvhNodes.size();
 
   std::vector<TLASNode> tlasNodes;
-  if (_residentPrimitiveCount > 0) {
-    std::vector<size_t> activeObjectIndices;
-    activeObjectIndices.reserve(_allSceneObjects.size());
-    std::vector<uint8_t> objectSeen(_allSceneObjects.size(), 0);
+  if (!activeInstances.empty()) {
+    std::vector<size_t> activeInstanceIndices(activeInstances.size());
+    std::iota(activeInstanceIndices.begin(), activeInstanceIndices.end(), 0);
 
-    for (size_t remapIndex : _residentRemap) {
-      if (remapIndex >= _primitiveToObject.size())
-        continue;
-      size_t objectIndex = _primitiveToObject[remapIndex];
-      if (objectIndex >= _allSceneObjects.size())
-        continue;
-      if (objectSeen[objectIndex])
-        continue;
-      const SceneObject &obj = _allSceneObjects[objectIndex];
-      if (obj.blasRootIndex < 0)
-        continue;
-      objectSeen[objectIndex] = 1;
-      activeObjectIndices.push_back(objectIndex);
-    }
+    auto instanceAxisValue = [&activeInstances](size_t instanceIndex, int axis) {
+      const ActiveInstance &instance = activeInstances[instanceIndex];
+      return 0.5f * (instance.boundsMin[axis] + instance.boundsMax[axis]);
+    };
 
-    if (!activeObjectIndices.empty()) {
-      auto objectAxisValue = [this](size_t objectIndex, int axis) {
-        const SceneObject &obj = _allSceneObjects[objectIndex];
-        return 0.5f * (obj.boundsMin[axis] + obj.boundsMax[axis]);
-      };
+    std::function<int(size_t, size_t)> buildTLASRecursive =
+        [&](size_t start, size_t end) -> int {
+      TLASNode node;
+      simd::float3 bMin(std::numeric_limits<float>::max());
+      simd::float3 bMax(-std::numeric_limits<float>::max());
 
-      std::function<int(size_t, size_t)> buildTLASRecursive =
-          [&](size_t start, size_t end) -> int {
-        TLASNode node;
-        simd::float3 bMin(std::numeric_limits<float>::max());
-        simd::float3 bMax(-std::numeric_limits<float>::max());
+      for (size_t i = start; i < end; ++i) {
+        const ActiveInstance &instance =
+            activeInstances[activeInstanceIndices[i]];
+        bMin = simd::min(bMin, instance.boundsMin);
+        bMax = simd::max(bMax, instance.boundsMax);
+      }
 
-        for (size_t i = start; i < end; ++i) {
-          const SceneObject &obj = _allSceneObjects[activeObjectIndices[i]];
-          bMin = simd::min(bMin, obj.boundsMin);
-          bMax = simd::max(bMax, obj.boundsMax);
-        }
+      node.boundsMin = bMin;
+      node.boundsMax = bMax;
+      node.leftChild = -1;
+      node.rightChild = -1;
 
-        node.boundsMin = bMin;
-        node.boundsMax = bMax;
-        node.leftChild = -1;
-        node.rightChild = -1;
+      int nodeIndex = static_cast<int>(tlasNodes.size());
+      tlasNodes.push_back(node);
 
-        int nodeIndex = static_cast<int>(tlasNodes.size());
-        tlasNodes.push_back(node);
+      size_t count = end - start;
+      if (count == 1) {
+        const ActiveInstance &instance =
+            activeInstances[activeInstanceIndices[start]];
+        tlasNodes[nodeIndex].leftChild = instance.leafValue;
+        tlasNodes[nodeIndex].rightChild = instance.blasRoot;
+        return nodeIndex;
+      }
 
-        size_t count = end - start;
-        if (count == 1) {
-          size_t objectIndex = activeObjectIndices[start];
-          const SceneObject &obj = _allSceneObjects[objectIndex];
-          tlasNodes[nodeIndex].leftChild =
-              -static_cast<int>(objectIndex) - 1;
-          tlasNodes[nodeIndex].rightChild = obj.blasRootIndex;
-          return nodeIndex;
-        }
-
-        const float parentArea =
-            boundingSurfaceArea(bMin, bMax);
-        if (parentArea <= 0.0f) {
-          size_t mid = start + count / 2;
-          int leftChild = buildTLASRecursive(start, mid);
-          int rightChild = buildTLASRecursive(mid, end);
-          tlasNodes[nodeIndex].leftChild = leftChild;
-          tlasNodes[nodeIndex].rightChild = rightChild;
-          return nodeIndex;
-        }
-
-        size_t range = count;
-        float bestCost = std::numeric_limits<float>::max();
-        int bestAxis = -1;
-        size_t bestSplit = start + range / 2;
-
-        for (int axis = 0; axis < 3; ++axis) {
-          std::sort(activeObjectIndices.begin() + start,
-                    activeObjectIndices.begin() + end,
-                    [&](size_t a, size_t b) {
-                      return objectAxisValue(a, axis) <
-                             objectAxisValue(b, axis);
-                    });
-
-          std::vector<simd::float3> leftMin(range);
-          std::vector<simd::float3> leftMax(range);
-          std::vector<simd::float3> rightMin(range);
-          std::vector<simd::float3> rightMax(range);
-
-          simd::float3 currMin(std::numeric_limits<float>::max());
-          simd::float3 currMax(-std::numeric_limits<float>::max());
-          for (size_t i = 0; i < range; ++i) {
-            const SceneObject &obj =
-                _allSceneObjects[activeObjectIndices[start + i]];
-            currMin = simd::min(currMin, obj.boundsMin);
-            currMax = simd::max(currMax, obj.boundsMax);
-            leftMin[i] = currMin;
-            leftMax[i] = currMax;
-          }
-
-          currMin = simd::float3(std::numeric_limits<float>::max());
-          currMax =
-              simd::float3(-std::numeric_limits<float>::max());
-          for (size_t i = range; i-- > 0;) {
-            const SceneObject &obj =
-                _allSceneObjects[activeObjectIndices[start + i]];
-            currMin = simd::min(currMin, obj.boundsMin);
-            currMax = simd::max(currMax, obj.boundsMax);
-            rightMin[i] = currMin;
-            rightMax[i] = currMax;
-          }
-
-          for (size_t i = 1; i < range; ++i) {
-            float saLeft = boundingSurfaceArea(leftMin[i - 1], leftMax[i - 1]);
-            float saRight =
-                boundingSurfaceArea(rightMin[i], rightMax[i]);
-
-            size_t leftCount = i;
-            size_t rightCount = range - i;
-
-            float cost = 0.125f + (saLeft / parentArea) * leftCount +
-                         (saRight / parentArea) * rightCount;
-
-            if (cost < bestCost) {
-              bestCost = cost;
-              bestAxis = axis;
-              bestSplit = start + i;
-            }
-          }
-        }
-
-        if (bestAxis == -1) {
-          size_t mid = start + range / 2;
-          int leftChild = buildTLASRecursive(start, mid);
-          int rightChild = buildTLASRecursive(mid, end);
-          tlasNodes[nodeIndex].leftChild = leftChild;
-          tlasNodes[nodeIndex].rightChild = rightChild;
-          return nodeIndex;
-        }
-
-        std::sort(activeObjectIndices.begin() + start,
-                  activeObjectIndices.begin() + end,
-                  [&](size_t a, size_t b) {
-                    return objectAxisValue(a, bestAxis) <
-                           objectAxisValue(b, bestAxis);
-                  });
-
-        int leftChild = buildTLASRecursive(start, bestSplit);
-        int rightChild = buildTLASRecursive(bestSplit, end);
+      const float parentArea = boundingSurfaceArea(bMin, bMax);
+      if (parentArea <= 0.0f) {
+        size_t mid = start + count / 2;
+        int leftChild = buildTLASRecursive(start, mid);
+        int rightChild = buildTLASRecursive(mid, end);
         tlasNodes[nodeIndex].leftChild = leftChild;
         tlasNodes[nodeIndex].rightChild = rightChild;
-
         return nodeIndex;
-      };
+      }
 
-      buildTLASRecursive(0, activeObjectIndices.size());
-    }
+      size_t range = count;
+      std::vector<simd::float3> leftMin(range);
+      std::vector<simd::float3> leftMax(range);
+      std::vector<simd::float3> rightMin(range);
+      std::vector<simd::float3> rightMax(range);
+
+      float bestCost = std::numeric_limits<float>::max();
+      int bestAxis = -1;
+      size_t bestSplit = start + range / 2;
+
+      for (int axis = 0; axis < 3; ++axis) {
+        std::sort(activeInstanceIndices.begin() + start,
+                  activeInstanceIndices.begin() + end,
+                  [&](size_t a, size_t b) {
+                    return instanceAxisValue(a, axis) <
+                           instanceAxisValue(b, axis);
+                  });
+
+        simd::float3 currMin(std::numeric_limits<float>::max());
+        simd::float3 currMax(-std::numeric_limits<float>::max());
+        for (size_t i = 0; i < range; ++i) {
+          const ActiveInstance &instance =
+              activeInstances[activeInstanceIndices[start + i]];
+          currMin = simd::min(currMin, instance.boundsMin);
+          currMax = simd::max(currMax, instance.boundsMax);
+          leftMin[i] = currMin;
+          leftMax[i] = currMax;
+        }
+
+        currMin = simd::float3(std::numeric_limits<float>::max());
+        currMax = simd::float3(-std::numeric_limits<float>::max());
+        for (size_t i = range; i-- > 0;) {
+          const ActiveInstance &instance =
+              activeInstances[activeInstanceIndices[start + i]];
+          currMin = simd::min(currMin, instance.boundsMin);
+          currMax = simd::max(currMax, instance.boundsMax);
+          rightMin[i] = currMin;
+          rightMax[i] = currMax;
+        }
+
+        for (size_t i = 1; i < range; ++i) {
+          float saLeft = boundingSurfaceArea(leftMin[i - 1], leftMax[i - 1]);
+          float saRight = boundingSurfaceArea(rightMin[i], rightMax[i]);
+
+          size_t leftCount = i;
+          size_t rightCount = range - i;
+
+          float cost = 0.125f + (saLeft / parentArea) * leftCount +
+                       (saRight / parentArea) * rightCount;
+
+          if (cost < bestCost) {
+            bestCost = cost;
+            bestAxis = axis;
+            bestSplit = start + i;
+          }
+        }
+      }
+
+      if (bestAxis == -1) {
+        size_t mid = start + range / 2;
+        int leftChild = buildTLASRecursive(start, mid);
+        int rightChild = buildTLASRecursive(mid, end);
+        tlasNodes[nodeIndex].leftChild = leftChild;
+        tlasNodes[nodeIndex].rightChild = rightChild;
+        return nodeIndex;
+      }
+
+      std::sort(activeInstanceIndices.begin() + start,
+                activeInstanceIndices.begin() + end,
+                [&](size_t a, size_t b) {
+                  return instanceAxisValue(a, bestAxis) <
+                         instanceAxisValue(b, bestAxis);
+                });
+
+      int leftChild = buildTLASRecursive(start, bestSplit);
+      int rightChild = buildTLASRecursive(bestSplit, end);
+      tlasNodes[nodeIndex].leftChild = leftChild;
+      tlasNodes[nodeIndex].rightChild = rightChild;
+
+      return nodeIndex;
+    };
+
+    buildTLASRecursive(0, activeInstanceIndices.size());
   }
 
   _tlasNodeCount = tlasNodes.size();
