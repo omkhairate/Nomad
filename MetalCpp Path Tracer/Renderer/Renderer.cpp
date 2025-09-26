@@ -798,6 +798,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   _tlasNodeCount = tlasNodes.size();
 
+  _residentNodeCount = _blasNodeCount + _tlasNodeCount;
+
   std::vector<simd::float4> bvhPacked(_blasNodeCount * 2,
                                       simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
   for (size_t i = 0; i < _blasNodeCount; ++i) {
@@ -1162,8 +1164,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _activeNodeCount = newActiveCount;
     printf("Active nodes: %zu\n", _activeNodeCount);
   }
-
-  _totalNodeCount = _blasNodeCount + _tlasNodeCount;
 }
 
 void Renderer::buildTextures() {
@@ -1831,8 +1831,8 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
     _lastRaysPerSecond = 0.0;
   }
   processRayHitCounters();
-  size_t offloaded = _totalNodeCount > _activeNodeCount ?
-                         _totalNodeCount - _activeNodeCount :
+  size_t offloaded = _totalNodeCount > _residentNodeCount ?
+                         _totalNodeCount - _residentNodeCount :
                          0;
   printf(
       "Nodes active: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
@@ -1844,4 +1844,5 @@ double Renderer::lastCPUTime() const { return _lastCPUTime; }
 double Renderer::lastGPUTime() const { return _lastGPUTime; }
 double Renderer::lastRaysPerSecond() const { return _lastRaysPerSecond; }
 size_t Renderer::activeNodeCount() const { return _activeNodeCount; }
+size_t Renderer::residentNodeCount() const { return _residentNodeCount; }
 size_t Renderer::totalNodeCount() const { return _totalNodeCount; }
