@@ -61,6 +61,10 @@ inline float randomFloat() {
 
 namespace {
 
+constexpr float kCompactionEnterRatio = 0.45f;
+constexpr float kCompactionExitRatio = 0.7f;
+constexpr uint32_t kCompactionCooldownFrames = 30;
+
 float luminance(const simd::float3 &c) {
   return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 }
@@ -279,6 +283,63 @@ BufferCountInfo prepareBufferCounts(size_t current, size_t previous,
 
 } // namespace
 
+struct Renderer::PendingBufferHandles {
+  MTL::Buffer *primitive = nullptr;
+  MTL::Buffer *material = nullptr;
+  MTL::Buffer *primitiveIndices = nullptr;
+  MTL::Buffer *bvh = nullptr;
+  MTL::Buffer *triangleVertices = nullptr;
+  MTL::Buffer *triangleIndices = nullptr;
+  MTL::Buffer *remap = nullptr;
+  MTL::Buffer *activeMask = nullptr;
+  MTL::Buffer *instance = nullptr;
+  MTL::Buffer *lightIndices = nullptr;
+  MTL::Buffer *lightCdf = nullptr;
+};
+
+struct Renderer::CompactionBuildInput {
+  uint64_t generation = 0;
+  const Scene *scene = nullptr;
+  const std::vector<Primitive> *allPrimitives = nullptr;
+  const std::vector<SceneObject> *sceneObjects = nullptr;
+  std::vector<uint8_t> activeMask;
+  std::vector<uint8_t> cpuActiveMask;
+  std::vector<uint32_t> cachedLightIndices;
+  std::vector<float> cachedLightCdf;
+  float lightTotalWeight = 0.0f;
+  size_t totalPrimitiveCount = 0;
+  size_t activePrimitiveCount = 0;
+  size_t activeTriangleCount = 0;
+  size_t tlasNodeCount = 0;
+};
+
+struct Renderer::CompactionResultData {
+  uint64_t generation = 0;
+  std::vector<uint32_t> remap;
+  std::vector<uint8_t> residentActiveMask;
+  std::vector<simd::float4> primitiveData;
+  std::vector<simd::float4> materialData;
+  std::vector<int> primitiveIndices;
+  std::vector<simd::float4> bvhNodes;
+  std::vector<simd::float3> triangleVertices;
+  std::vector<simd::uint3> triangleIndices;
+  std::vector<BlasInstanceRecord> instanceRecords;
+  std::vector<uint32_t> lightIndices;
+  std::vector<float> lightCdf;
+  std::vector<int32_t> primitiveToResidentIndex;
+  std::vector<uint8_t> cpuActiveMask;
+  size_t residentPrimitiveCount = 0;
+  size_t residentTriangleCount = 0;
+  size_t blasNodeCount = 0;
+  size_t tlasNodeCount = 0;
+  size_t activePrimitiveCount = 0;
+  size_t activeTriangleCount = 0;
+  size_t lightCount = 0;
+  float lightTotalWeight = 0.0f;
+  size_t activeBlasNodeCount = 0;
+  size_t activeTlasNodeCount = 0;
+};
+
 void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                                     size_t &currentCapacity,
                                     bool allowShrink,
@@ -311,6 +372,404 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
   currentCapacity = buffer ? buffer->length() : 0;
 }
 
+void Renderer::releasePendingBuffers() {
+  auto release = [](MTL::Buffer *&buffer) {
+    if (buffer) {
+      buffer->release();
+      buffer = nullptr;
+    }
+  };
+
+  release(_pendingBuffers.primitive);
+  release(_pendingBuffers.material);
+  release(_pendingBuffers.primitiveIndices);
+  release(_pendingBuffers.bvh);
+  release(_pendingBuffers.triangleVertices);
+  release(_pendingBuffers.triangleIndices);
+  release(_pendingBuffers.remap);
+  release(_pendingBuffers.activeMask);
+  release(_pendingBuffers.instance);
+  release(_pendingBuffers.lightIndices);
+  release(_pendingBuffers.lightCdf);
+}
+
+void Renderer::releasePendingStagingBuffers() {
+  for (MTL::Buffer *buffer : _pendingStagingBuffers) {
+    if (buffer)
+      buffer->release();
+  }
+  _pendingStagingBuffers.clear();
+}
+
+void Renderer::swapLiveBuffer(MTL::Buffer *&live, MTL::Buffer *&pending,
+                              size_t &capacity) {
+  if (!pending)
+    return;
+
+  if (live)
+    live->release();
+  live = pending;
+  pending = nullptr;
+  capacity = live ? live->length() : 0;
+}
+
+void Renderer::clearPendingCompaction() {
+  _compactionRequested = false;
+  _pendingCompactionGeneration = 0;
+
+  if (_compactionUploadInFlight && _pCompactionUploadCommandBuffer) {
+    _pCompactionUploadCommandBuffer->waitUntilCompleted();
+  }
+
+  if (_pCompactionUploadCommandBuffer) {
+    _pCompactionUploadCommandBuffer->release();
+    _pCompactionUploadCommandBuffer = nullptr;
+  }
+
+  _compactionUploadInFlight = false;
+  releasePendingBuffers();
+  releasePendingStagingBuffers();
+  _pendingCompactionResult.reset();
+  if (_compactionFutureValid) {
+    _compactionFuture.wait();
+    _compactionFutureValid = false;
+  }
+}
+
+void Renderer::launchCompactionBuild(CompactionBuildInput &&input) {
+  std::lock_guard<std::mutex> lock(_compactionMutex);
+  if (_compactionFutureValid)
+    return;
+
+  _compactionFuture = std::async(std::launch::async, [this, payload = std::move(input)]() mutable {
+    return this->buildCompactionResult(std::move(payload));
+  });
+  _compactionFutureValid = true;
+}
+
+std::shared_ptr<Renderer::CompactionResultData>
+Renderer::buildCompactionResult(CompactionBuildInput input) const {
+  auto result = std::make_shared<CompactionResultData>();
+  result->generation = input.generation;
+  result->tlasNodeCount = input.tlasNodeCount;
+  result->activePrimitiveCount = input.activePrimitiveCount;
+  result->activeTriangleCount = input.activeTriangleCount;
+  result->lightCdf = std::move(input.cachedLightCdf);
+  result->lightTotalWeight = input.lightTotalWeight;
+  result->cpuActiveMask = std::move(input.cpuActiveMask);
+
+  const auto &sceneObjects = *input.sceneObjects;
+  const auto &allPrimitives = *input.allPrimitives;
+
+  result->instanceRecords.resize(sceneObjects.size());
+  result->primitiveToResidentIndex.assign(input.totalPrimitiveCount, -1);
+
+  std::vector<size_t> activeLocalPrims;
+  std::vector<Primitive> subset;
+  std::vector<int> localPrimitiveIndices;
+  std::vector<BVHNode> localNodes;
+
+  for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
+    const SceneObject &obj = sceneObjects[objectIndex];
+    BlasInstanceRecord record{};
+    record.blasRootIndex = -1;
+    record.primitiveBase = static_cast<uint32_t>(result->remap.size());
+    record.primitiveIndexBase = static_cast<uint32_t>(result->primitiveIndices.size());
+
+    size_t first = obj.firstPrimitive;
+    size_t last = first + obj.primitiveCount;
+    activeLocalPrims.clear();
+    for (size_t prim = first; prim < last && prim < input.activeMask.size(); ++prim) {
+      if (input.activeMask[prim])
+        activeLocalPrims.push_back(prim);
+    }
+
+    record.primitiveCount = static_cast<uint32_t>(activeLocalPrims.size());
+    if (activeLocalPrims.empty()) {
+      result->instanceRecords[objectIndex] = record;
+      continue;
+    }
+
+    subset.clear();
+    subset.reserve(activeLocalPrims.size());
+    for (size_t idx : activeLocalPrims)
+      subset.push_back(allPrimitives[idx]);
+
+    localPrimitiveIndices.resize(subset.size());
+    std::iota(localPrimitiveIndices.begin(), localPrimitiveIndices.end(), 0);
+
+    localNodes.clear();
+    size_t localNodeCount = 0;
+    simd::float4 *localBVHRaw = input.scene->createBVHBuffer(
+        subset, localPrimitiveIndices, localNodeCount, localNodes);
+    if (localBVHRaw)
+      delete[] localBVHRaw;
+
+    if (localNodeCount == 0 || localNodes.empty()) {
+      record.primitiveCount = 0;
+      result->instanceRecords[objectIndex] = record;
+      continue;
+    }
+
+    for (size_t local = 0; local < subset.size(); ++local) {
+      size_t globalIndex = activeLocalPrims[local];
+      result->remap.push_back(static_cast<uint32_t>(globalIndex));
+      if (globalIndex < result->primitiveToResidentIndex.size())
+        result->primitiveToResidentIndex[globalIndex] =
+            static_cast<int32_t>(record.primitiveBase + local);
+
+      const Primitive &p = subset[local];
+      simd::float4 prim0;
+      simd::float4 prim1;
+      simd::float4 prim2;
+      switch (p.type) {
+      case PrimitiveType::Sphere: {
+        prim0 = simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+        prim1 = simd::make_float4(simd::make_float3(p.sphere.radius, 0.0f, 0.0f),
+                                   0.0f);
+        prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        break;
+      }
+      case PrimitiveType::Rectangle: {
+        prim0 = simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+        prim1 = simd::make_float4(p.rectangle.u, 0.0f);
+        prim2 = simd::make_float4(p.rectangle.v, 0.0f);
+        break;
+      }
+      case PrimitiveType::Triangle: {
+        prim0 = simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+        prim1 = simd::make_float4(p.triangle.v1, 0.0f);
+        prim2 = simd::make_float4(p.triangle.v2, 0.0f);
+        size_t baseVertex = result->triangleVertices.size();
+        result->triangleVertices.push_back(p.triangle.v0);
+        result->triangleVertices.push_back(p.triangle.v1);
+        result->triangleVertices.push_back(p.triangle.v2);
+        result->triangleIndices.push_back(simd::make_uint3(
+            static_cast<uint32_t>(baseVertex),
+            static_cast<uint32_t>(baseVertex + 1),
+            static_cast<uint32_t>(baseVertex + 2)));
+        break;
+      }
+      }
+
+      result->primitiveData.push_back(prim0);
+      result->primitiveData.push_back(prim1);
+      result->primitiveData.push_back(prim2);
+
+      const Material &m = p.material;
+      result->materialData.push_back(simd::make_float4(m.albedo, m.materialType));
+      result->materialData.push_back(
+          simd::make_float4(m.emissionColor, m.emissionPower));
+      result->residentActiveMask.push_back(1);
+    }
+
+    for (int &idx : localPrimitiveIndices)
+      idx = static_cast<int>(record.primitiveBase + idx);
+    result->primitiveIndices.insert(result->primitiveIndices.end(),
+                                    localPrimitiveIndices.begin(),
+                                    localPrimitiveIndices.end());
+
+    size_t nodeBase = result->bvhNodes.size() / 2;
+    for (const BVHNode &node : localNodes) {
+      BVHNode adjusted = node;
+      if (adjusted.count > 0) {
+        adjusted.leftFirst += static_cast<int>(record.primitiveIndexBase);
+      } else {
+        int leftChild = adjusted.leftFirst + static_cast<int>(nodeBase);
+        int rightChild = -adjusted.count + static_cast<int>(nodeBase);
+        adjusted.leftFirst = leftChild;
+        adjusted.count = -rightChild;
+      }
+      float leftBits = 0.0f;
+      float rightBits = 0.0f;
+      std::memcpy(&leftBits, &adjusted.leftFirst, sizeof(int));
+      std::memcpy(&rightBits, &adjusted.count, sizeof(int));
+      result->bvhNodes.push_back(simd::make_float4(adjusted.boundsMin, leftBits));
+      result->bvhNodes.push_back(simd::make_float4(adjusted.boundsMax, rightBits));
+    }
+
+    record.blasRootIndex = static_cast<int32_t>(nodeBase);
+    result->instanceRecords[objectIndex] = record;
+  }
+
+  result->residentPrimitiveCount = result->remap.size();
+  result->residentTriangleCount = result->triangleIndices.size();
+  result->blasNodeCount = result->bvhNodes.size() / 2;
+
+  result->lightIndices.reserve(input.cachedLightIndices.size());
+  for (uint32_t globalIndex : input.cachedLightIndices) {
+    if (globalIndex < result->primitiveToResidentIndex.size()) {
+      int32_t local = result->primitiveToResidentIndex[globalIndex];
+      if (local >= 0)
+        result->lightIndices.push_back(static_cast<uint32_t>(local));
+    }
+  }
+  result->lightCount = result->lightIndices.size();
+
+  result->activeBlasNodeCount = result->blasNodeCount;
+  result->activeTlasNodeCount =
+      (result->residentPrimitiveCount > 0) ? result->tlasNodeCount : 0;
+
+  return result;
+}
+
+void Renderer::beginCompactionUpload() {
+  if (!_pendingCompactionResult)
+    return;
+
+  releasePendingBuffers();
+  releasePendingStagingBuffers();
+
+  struct CopyItem {
+    MTL::Buffer *staging = nullptr;
+    MTL::Buffer *target = nullptr;
+    size_t bytes = 0;
+  };
+  std::vector<CopyItem> copies;
+  copies.reserve(11);
+
+  auto stageVector = [&](auto &vec, size_t elementSize, MTL::Buffer *&pending,
+                         size_t minCount = 1) {
+    size_t count = vec.size();
+    size_t allocCount = std::max(count, minCount);
+    size_t bytes = std::max<size_t>(allocCount * elementSize, elementSize);
+    MTL::Buffer *staging = _pDevice->newBuffer(bytes, MTL::ResourceStorageModeShared);
+    if (count > 0) {
+      std::memcpy(staging->contents(), vec.data(), count * elementSize);
+      if (count * elementSize < bytes) {
+        std::memset(static_cast<uint8_t *>(staging->contents()) + count * elementSize,
+                    0, bytes - count * elementSize);
+      }
+    } else {
+      std::memset(staging->contents(), 0, bytes);
+    }
+
+    pending = _pDevice->newBuffer(bytes, MTL::ResourceStorageModePrivate);
+    _pendingStagingBuffers.push_back(staging);
+    copies.push_back({staging, pending, bytes});
+  };
+
+  auto &result = *_pendingCompactionResult;
+  stageVector(result.primitiveData, sizeof(simd::float4),
+              _pendingBuffers.primitive);
+  stageVector(result.materialData, sizeof(simd::float4),
+              _pendingBuffers.material, 2);
+  stageVector(result.primitiveIndices, sizeof(int),
+              _pendingBuffers.primitiveIndices);
+  stageVector(result.bvhNodes, sizeof(simd::float4), _pendingBuffers.bvh, 2);
+  stageVector(result.triangleVertices, sizeof(simd::float3),
+              _pendingBuffers.triangleVertices);
+  stageVector(result.triangleIndices, sizeof(simd::uint3),
+              _pendingBuffers.triangleIndices);
+  stageVector(result.remap, sizeof(uint32_t), _pendingBuffers.remap);
+  stageVector(result.residentActiveMask, sizeof(uint8_t),
+              _pendingBuffers.activeMask);
+  stageVector(result.instanceRecords, sizeof(BlasInstanceRecord),
+              _pendingBuffers.instance);
+  stageVector(result.lightIndices, sizeof(uint32_t),
+              _pendingBuffers.lightIndices);
+  stageVector(result.lightCdf, sizeof(float), _pendingBuffers.lightCdf);
+
+  MTL::CommandBuffer *pCmd = _pCommandQueue->commandBuffer();
+  pCmd->retain();
+  _pCompactionUploadCommandBuffer = pCmd;
+  MTL::BlitCommandEncoder *blit = pCmd->blitCommandEncoder();
+  for (const CopyItem &item : copies) {
+    blit->copyFromBuffer(item.staging, 0, item.target, 0, item.bytes);
+  }
+  blit->endEncoding();
+
+  pCmd->addCompletedHandler([this](MTL::CommandBuffer *) {
+    this->finalizeCompactionUpload();
+  });
+
+  _compactionUploadInFlight = true;
+  pCmd->commit();
+}
+
+void Renderer::finalizeCompactionUpload() {
+  std::lock_guard<std::mutex> lock(_compactionMutex);
+
+  if (_pCompactionUploadCommandBuffer) {
+    _pCompactionUploadCommandBuffer->release();
+    _pCompactionUploadCommandBuffer = nullptr;
+  }
+
+  _compactionUploadInFlight = false;
+
+  if (!_pendingCompactionResult || !_compactionRequested ||
+      _pendingCompactionResult->generation != _pendingCompactionGeneration) {
+    releasePendingBuffers();
+    releasePendingStagingBuffers();
+    _pendingCompactionResult.reset();
+    return;
+  }
+
+  auto result = _pendingCompactionResult;
+  _pendingCompactionResult.reset();
+
+  swapLiveBuffer(_pSphereBuffer, _pendingBuffers.primitive, _sphereBufferCapacity);
+  swapLiveBuffer(_pSphereMaterialBuffer, _pendingBuffers.material,
+                 _sphereMaterialBufferCapacity);
+  swapLiveBuffer(_pPrimitiveIndexBuffer, _pendingBuffers.primitiveIndices,
+                 _primitiveIndexBufferCapacity);
+  swapLiveBuffer(_pBVHBuffer, _pendingBuffers.bvh, _bvhBufferCapacity);
+  swapLiveBuffer(_pTriangleVertexBuffer, _pendingBuffers.triangleVertices,
+                 _triangleVertexBufferCapacity);
+  swapLiveBuffer(_pTriangleIndexBuffer, _pendingBuffers.triangleIndices,
+                 _triangleIndexBufferCapacity);
+  swapLiveBuffer(_pPrimitiveRemapBuffer, _pendingBuffers.remap,
+                 _primitiveRemapBufferCapacity);
+  swapLiveBuffer(_pActiveBuffer, _pendingBuffers.activeMask,
+                 _activeBufferCapacity);
+  swapLiveBuffer(_pInstanceBuffer, _pendingBuffers.instance,
+                 _instanceBufferCapacity);
+  swapLiveBuffer(_pLightIndexBuffer, _pendingBuffers.lightIndices,
+                 _lightIndexBufferCapacity);
+  swapLiveBuffer(_pLightCdfBuffer, _pendingBuffers.lightCdf,
+                 _lightCdfBufferCapacity);
+
+  releasePendingStagingBuffers();
+
+  _residentRemap = result->remap;
+  _primitiveToResidentIndex = result->primitiveToResidentIndex;
+  _cpuActiveMask = result->cpuActiveMask;
+  _instanceRecords = result->instanceRecords;
+  _cachedLightIndices = result->lightIndices;
+  _cachedLightCdf = result->lightCdf;
+  _lightCount = result->lightCount;
+  _lightTotalWeight = result->lightTotalWeight;
+  _residentPrimitiveCount = result->residentPrimitiveCount;
+  _residentTriangleCount = result->residentTriangleCount;
+  _blasNodeCount = result->blasNodeCount;
+  _tlasNodeCount = result->tlasNodeCount;
+  _activePrimitiveCount = result->activePrimitiveCount;
+  _activeTriangleCount = result->activeTriangleCount;
+  _residentNodeCount = _blasNodeCount + _tlasNodeCount;
+  _activeNodeCount = result->activeBlasNodeCount + result->activeTlasNodeCount;
+
+  _residentCompacted = true;
+  _compactionRequested = false;
+  _liveCompactionGeneration = result->generation;
+  _pendingCompactionGeneration = 0;
+  _compactionCooldown = kCompactionCooldownFrames;
+}
+
+void Renderer::processCompactionPipeline() {
+  if (_compactionFutureValid) {
+    auto status = _compactionFuture.wait_for(std::chrono::seconds(0));
+    if (status == std::future_status::ready) {
+      auto result = _compactionFuture.get();
+      _compactionFutureValid = false;
+      if (result && _compactionRequested &&
+          result->generation == _pendingCompactionGeneration) {
+        _pendingCompactionResult = std::move(result);
+        beginCompactionUpload();
+      }
+    }
+  }
+}
+
 bool Renderer::isInView(const BoundingSphere &b) {
   simd::float3 toCenter = b.center - Camera::position;
   float dist = simd::length(toCenter);
@@ -340,6 +799,12 @@ Renderer::Renderer(MTL::Device *pDevice)
 }
 
 Renderer::~Renderer() {
+  clearPendingCompaction();
+  if (_compactionFutureValid) {
+    _compactionFuture.wait();
+    _compactionFutureValid = false;
+  }
+
   if (_pSphereBuffer)
     _pSphereBuffer->release();
   if (_pSphereMaterialBuffer)
@@ -370,6 +835,11 @@ Renderer::~Renderer() {
     _pLightCdfBuffer->release();
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
+
+  if (_pCompactionUploadCommandBuffer) {
+    _pCompactionUploadCommandBuffer->release();
+    _pCompactionUploadCommandBuffer = nullptr;
+  }
 
   for (int i = 0; i < 2; i++)
     if (_accumulationTargets[i])
@@ -652,6 +1122,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   if (forceFullRebuild) {
     _residentCompacted = false;
     _compactionCooldown = 0;
+    clearPendingCompaction();
   }
 
   const size_t uniformsDataSize = sizeof(UniformsData);
@@ -808,18 +1279,16 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   _lightCount = _cachedLightIndices.size();
   _lightTotalWeight = totalLightWeight;
 
-  constexpr float kCompactionEnterRatio = 0.45f;
-  constexpr float kCompactionExitRatio = 0.7f;
-  constexpr uint32_t kCompactionCooldownFrames = 30;
-
-  bool useCompaction = _residentCompacted;
-  if (!_residentCompacted) {
+  bool compactionActiveOrPending =
+      _residentCompacted || _compactionRequested || _compactionUploadInFlight;
+  bool desiredCompaction = compactionActiveOrPending;
+  if (!compactionActiveOrPending) {
     if (_compactionCooldown == 0 && totalPrimitiveCount > 0 &&
         _activePrimitiveCount < totalPrimitiveCount) {
       float occupancy = static_cast<float>(_activePrimitiveCount) /
                         static_cast<float>(totalPrimitiveCount);
       if (_activePrimitiveCount == 0 || occupancy <= kCompactionEnterRatio)
-        useCompaction = true;
+        desiredCompaction = true;
     }
   } else {
     float occupancy = (totalPrimitiveCount > 0)
@@ -827,26 +1296,60 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                                 static_cast<float>(totalPrimitiveCount)
                           : 1.0f;
     if (_activePrimitiveCount == 0)
-      useCompaction = true;
+      desiredCompaction = true;
     else if (_activePrimitiveCount == totalPrimitiveCount ||
              occupancy >= kCompactionExitRatio)
-      useCompaction = false;
+      desiredCompaction = false;
   }
 
-  bool compactionStateChanged = (useCompaction != _residentCompacted);
-  if (compactionStateChanged) {
-    _residentCompacted = useCompaction;
+  bool shouldCancelCompaction =
+      !desiredCompaction &&
+      (compactionActiveOrPending || _compactionRequested);
+  if (shouldCancelCompaction) {
+    _compactionRequested = false;
+    _pendingCompactionGeneration = 0;
+    if (_residentCompacted) {
+      _residentCompacted = false;
+      needFullUpload = true;
+    }
+    _compactionCooldown = kCompactionCooldownFrames;
+  }
+
+  bool compactionNeedsRefresh =
+      _residentCompacted && (!_recentlyActivated.empty() ||
+                             !_recentlyDeactivated.empty());
+  bool shouldRequestCompaction =
+      desiredCompaction && !_compactionRequested && !_compactionUploadInFlight &&
+      (!_residentCompacted || compactionNeedsRefresh);
+  if (shouldRequestCompaction) {
+    CompactionBuildInput input;
+    input.generation = _nextCompactionGeneration++;
+    input.scene = _pScene;
+    input.allPrimitives = &_allPrimitives;
+    input.sceneObjects = &_allSceneObjects;
+    input.totalPrimitiveCount = totalPrimitiveCount;
+    input.activePrimitiveCount = _activePrimitiveCount;
+    input.activeTriangleCount = _activeTriangleCount;
+    input.tlasNodeCount = _cachedTLASNodes.size() / 2;
+    input.cachedLightIndices = _cachedLightIndices;
+    input.cachedLightCdf = _cachedLightCdf;
+    input.lightTotalWeight = _lightTotalWeight;
+    input.activeMask.resize(totalPrimitiveCount, 0);
+    for (size_t i = 0; i < totalPrimitiveCount; ++i) {
+      bool active = i < _activePrimitive.size() && _activePrimitive[i];
+      input.activeMask[i] = active ? 1 : 0;
+    }
+    if (_cpuActiveMask.size() == totalPrimitiveCount)
+      input.cpuActiveMask = _cpuActiveMask;
+    else
+      input.cpuActiveMask = input.activeMask;
+    _compactionRequested = true;
+    _pendingCompactionGeneration = input.generation;
+    launchCompactionBuild(std::move(input));
     _compactionCooldown = kCompactionCooldownFrames;
   }
 
   std::vector<uint32_t> remapUpload;
-  std::vector<uint8_t> compactActiveMask;
-  std::vector<simd::float4> compactPrimitiveData;
-  std::vector<simd::float4> compactMaterialData;
-  std::vector<int> compactPrimitiveIndices;
-  std::vector<simd::float4> compactBVHNodes;
-  std::vector<simd::float3> compactTriangleVertices;
-  std::vector<simd::uint3> compactTriangleIndices;
 
   const std::vector<simd::float4> *primitiveSource = &_cachedPrimitiveData;
   const std::vector<simd::float4> *materialSource = &_cachedMaterialData;
@@ -858,7 +1361,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   const std::vector<simd::uint3> *triangleIndexSource =
       &_cachedTriangleIndices;
 
-  if (!useCompaction) {
+  if (!_residentCompacted) {
     remapUpload.resize(totalPrimitiveCount);
     for (size_t i = 0; i < totalPrimitiveCount; ++i) {
       remapUpload[i] = static_cast<uint32_t>(i);
@@ -890,185 +1393,13 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       record.blasRootIndex = anyActive ? obj.blasRootIndex : -1;
       _instanceRecords[objectIndex] = record;
     }
-  } else {
-    remapUpload.clear();
-    compactPrimitiveData.clear();
-    compactMaterialData.clear();
-    compactPrimitiveIndices.clear();
-    compactBVHNodes.clear();
-    compactTriangleVertices.clear();
-    compactTriangleIndices.clear();
-    compactActiveMask.clear();
-
-    compactPrimitiveData.reserve(_activePrimitiveCount * 3);
-    compactMaterialData.reserve(_activePrimitiveCount * 2);
-    compactPrimitiveIndices.reserve(_activePrimitiveCount);
-    compactActiveMask.reserve(_activePrimitiveCount);
-
-    std::vector<size_t> activeLocalPrims;
-    std::vector<Primitive> subset;
-    std::vector<int> localPrimitiveIndices;
-    std::vector<BVHNode> localNodes;
-
-    for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
-         ++objectIndex) {
-      const SceneObject &obj = sceneObjects[objectIndex];
-      BlasInstanceRecord record{};
-      record.blasRootIndex = -1;
-      record.primitiveBase = static_cast<uint32_t>(remapUpload.size());
-      record.primitiveIndexBase =
-          static_cast<uint32_t>(compactPrimitiveIndices.size());
-
-      activeLocalPrims.reserve(obj.primitiveCount);
-      activeLocalPrims.clear();
-      size_t first = obj.firstPrimitive;
-      size_t last = first + obj.primitiveCount;
-      for (size_t prim = first;
-           prim < last && prim < _activePrimitive.size(); ++prim) {
-        if (_activePrimitive[prim])
-          activeLocalPrims.push_back(prim);
-      }
-
-      record.primitiveCount = static_cast<uint32_t>(activeLocalPrims.size());
-      if (activeLocalPrims.empty()) {
-        _instanceRecords[objectIndex] = record;
-        continue;
-      }
-
-      subset.clear();
-      subset.reserve(activeLocalPrims.size());
-      for (size_t idx : activeLocalPrims)
-        subset.push_back(_allPrimitives[idx]);
-
-      localPrimitiveIndices.resize(subset.size());
-      std::iota(localPrimitiveIndices.begin(), localPrimitiveIndices.end(), 0);
-
-      localNodes.clear();
-      size_t localNodeCount = 0;
-      simd::float4 *localBVHRaw = _pScene->createBVHBuffer(
-          subset, localPrimitiveIndices, localNodeCount, localNodes);
-      if (localBVHRaw)
-        delete[] localBVHRaw;
-
-      if (localNodeCount == 0 || localNodes.empty()) {
-        record.primitiveCount = 0;
-        _instanceRecords[objectIndex] = record;
-        continue;
-      }
-
-      for (size_t local = 0; local < subset.size(); ++local) {
-        size_t globalIndex = activeLocalPrims[local];
-        remapUpload.push_back(static_cast<uint32_t>(globalIndex));
-        if (globalIndex < _primitiveToResidentIndex.size())
-          _primitiveToResidentIndex[globalIndex] =
-              static_cast<int32_t>(record.primitiveBase + local);
-
-        const Primitive &p = subset[local];
-        simd::float4 prim0;
-        simd::float4 prim1;
-        simd::float4 prim2;
-        switch (p.type) {
-        case PrimitiveType::Sphere: {
-          prim0 = simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-          prim1 = simd::make_float4(simd::make_float3(p.sphere.radius, 0.0f, 0.0f),
-                                     0.0f);
-          prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-          break;
-        }
-        case PrimitiveType::Rectangle: {
-          prim0 = simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-          prim1 = simd::make_float4(p.rectangle.u, 0.0f);
-          prim2 = simd::make_float4(p.rectangle.v, 0.0f);
-          break;
-        }
-        case PrimitiveType::Triangle: {
-          prim0 = simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-          prim1 = simd::make_float4(p.triangle.v1, 0.0f);
-          prim2 = simd::make_float4(p.triangle.v2, 0.0f);
-          size_t baseVertex = compactTriangleVertices.size();
-          compactTriangleVertices.push_back(p.triangle.v0);
-          compactTriangleVertices.push_back(p.triangle.v1);
-          compactTriangleVertices.push_back(p.triangle.v2);
-          compactTriangleIndices.push_back(simd::make_uint3(
-              static_cast<uint32_t>(baseVertex),
-              static_cast<uint32_t>(baseVertex + 1),
-              static_cast<uint32_t>(baseVertex + 2)));
-          break;
-        }
-        }
-
-        compactPrimitiveData.push_back(prim0);
-        compactPrimitiveData.push_back(prim1);
-        compactPrimitiveData.push_back(prim2);
-
-        const Material &m = p.material;
-        compactMaterialData.push_back(simd::make_float4(m.albedo, m.materialType));
-        compactMaterialData.push_back(
-            simd::make_float4(m.emissionColor, m.emissionPower));
-        compactActiveMask.push_back(1);
-      }
-
-      for (int &idx : localPrimitiveIndices)
-        idx = static_cast<int>(record.primitiveBase + idx);
-      compactPrimitiveIndices.insert(compactPrimitiveIndices.end(),
-                                     localPrimitiveIndices.begin(),
-                                     localPrimitiveIndices.end());
-
-      size_t nodeBase = compactBVHNodes.size() / 2;
-      for (const BVHNode &node : localNodes) {
-        BVHNode adjusted = node;
-        if (adjusted.count > 0) {
-          adjusted.leftFirst += static_cast<int>(record.primitiveIndexBase);
-        } else {
-          int leftChild = adjusted.leftFirst + static_cast<int>(nodeBase);
-          int rightChild = -adjusted.count + static_cast<int>(nodeBase);
-          adjusted.leftFirst = leftChild;
-          adjusted.count = -rightChild;
-        }
-        float leftBits = 0.0f;
-        float rightBits = 0.0f;
-        std::memcpy(&leftBits, &adjusted.leftFirst, sizeof(int));
-        std::memcpy(&rightBits, &adjusted.count, sizeof(int));
-        compactBVHNodes.push_back(
-            simd::make_float4(adjusted.boundsMin, leftBits));
-        compactBVHNodes.push_back(
-            simd::make_float4(adjusted.boundsMax, rightBits));
-      }
-
-      record.blasRootIndex = static_cast<int32_t>(nodeBase);
-      _instanceRecords[objectIndex] = record;
-    }
-
-    primitiveSource = &compactPrimitiveData;
-    materialSource = &compactMaterialData;
-    primitiveIndexSource = &compactPrimitiveIndices;
-    bvhSource = &compactBVHNodes;
-    tlasSource = &_cachedTLASNodes;
-    triangleVertexSource = &compactTriangleVertices;
-    triangleIndexSource = &compactTriangleIndices;
-
-    _residentPrimitiveCount = remapUpload.size();
-    _residentTriangleCount = compactTriangleIndices.size();
-    _blasNodeCount = compactBVHNodes.size() / 2;
-    _tlasNodeCount = _cachedTLASNodes.size() / 2;
-
-    std::vector<uint32_t> remappedLights;
-    remappedLights.reserve(_cachedLightIndices.size());
-    for (uint32_t globalIndex : _cachedLightIndices) {
-      if (globalIndex < _primitiveToResidentIndex.size()) {
-        int32_t local = _primitiveToResidentIndex[globalIndex];
-        if (local >= 0)
-          remappedLights.push_back(static_cast<uint32_t>(local));
-      }
-    }
-    _cachedLightIndices.swap(remappedLights);
-    _lightCount = _cachedLightIndices.size();
   }
 
-  _residentRemap = remapUpload;
+  if (!_residentCompacted)
+    _residentRemap = remapUpload;
 
-  bool uploadAll = needFullUpload || useCompaction || compactionStateChanged;
-  bool allowShrink = useCompaction;
+  bool uploadAll = !_residentCompacted && needFullUpload;
+  bool allowShrink = false;
 
   if (uploadAll) {
     size_t primitiveFloat4Count = primitiveSource->size();
@@ -1215,98 +1546,93 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _residentBuffersInitialized = true;
   }
 
-  size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
-  size_t instanceBytes = instanceCount * sizeof(BlasInstanceRecord);
-  ensureBufferCapacity(_pInstanceBuffer, instanceBytes, _instanceBufferCapacity,
-                       allowShrink);
-  if (_pInstanceBuffer) {
-    auto *dst = static_cast<BlasInstanceRecord *>(
-        _pInstanceBuffer->contents());
-    if (_instanceRecords.empty()) {
-      dst[0] = BlasInstanceRecord{};
-    } else {
-      std::memcpy(dst, _instanceRecords.data(),
-                  _instanceRecords.size() * sizeof(BlasInstanceRecord));
-      if (_instanceRecords.size() < instanceCount)
-        dst[_instanceRecords.size()] = BlasInstanceRecord{};
-    }
-    _pInstanceBuffer->didModifyRange(NS::Range::Make(0, instanceBytes));
-  }
-
-  size_t activeMaskCount =
-      useCompaction ? _residentPrimitiveCount : totalPrimitiveCount;
-  size_t activeBytes =
-      std::max<size_t>(activeMaskCount, size_t(1)) * sizeof(uint8_t);
-  ensureBufferCapacity(_pActiveBuffer, activeBytes, _activeBufferCapacity,
-                       allowShrink);
-  if (_pActiveBuffer) {
-    uint8_t *activePtr =
-        static_cast<uint8_t *>(_pActiveBuffer->contents());
-    if (useCompaction) {
-      if (_residentPrimitiveCount > 0) {
-        std::memcpy(activePtr, compactActiveMask.data(),
-                    _residentPrimitiveCount * sizeof(uint8_t));
+  if (!_residentCompacted) {
+    size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
+    size_t instanceBytes = instanceCount * sizeof(BlasInstanceRecord);
+    ensureBufferCapacity(_pInstanceBuffer, instanceBytes, _instanceBufferCapacity,
+                         allowShrink);
+    if (_pInstanceBuffer) {
+      auto *dst = static_cast<BlasInstanceRecord *>(
+          _pInstanceBuffer->contents());
+      if (_instanceRecords.empty()) {
+        dst[0] = BlasInstanceRecord{};
       } else {
-        activePtr[0] = 0;
+        std::memcpy(dst, _instanceRecords.data(),
+                    _instanceRecords.size() * sizeof(BlasInstanceRecord));
+        if (_instanceRecords.size() < instanceCount)
+          dst[_instanceRecords.size()] = BlasInstanceRecord{};
       }
-      _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeBytes));
-    } else if (uploadAll) {
-      if (totalPrimitiveCount > 0)
-        std::memcpy(activePtr, _cpuActiveMask.data(),
-                    totalPrimitiveCount * sizeof(uint8_t));
+      _pInstanceBuffer->didModifyRange(NS::Range::Make(0, instanceBytes));
+    }
+
+    size_t activeMaskCount = totalPrimitiveCount;
+    size_t activeBytes =
+        std::max<size_t>(activeMaskCount, size_t(1)) * sizeof(uint8_t);
+    ensureBufferCapacity(_pActiveBuffer, activeBytes, _activeBufferCapacity,
+                         allowShrink);
+    if (_pActiveBuffer) {
+      uint8_t *activePtr =
+          static_cast<uint8_t *>(_pActiveBuffer->contents());
+      if (uploadAll) {
+        if (totalPrimitiveCount > 0)
+          std::memcpy(activePtr, _cpuActiveMask.data(),
+                      totalPrimitiveCount * sizeof(uint8_t));
+        else
+          activePtr[0] = 0;
+        _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeBytes));
+      } else {
+        auto updateMask = [&](const std::vector<size_t> &indices) {
+          for (size_t idx : indices) {
+            if (idx >= totalPrimitiveCount)
+              continue;
+            bool active = idx < _activePrimitive.size() && _activePrimitive[idx];
+            uint8_t value = active ? 1 : 0;
+            _cpuActiveMask[idx] = value;
+            activePtr[idx] = value;
+            _pActiveBuffer->didModifyRange(NS::Range::Make(idx, 1));
+          }
+        };
+        updateMask(_recentlyActivated);
+        updateMask(_recentlyDeactivated);
+      }
+    }
+
+    size_t lightIndexBytes =
+        std::max<size_t>(_cachedLightIndices.size(), size_t(1)) *
+        sizeof(uint32_t);
+    ensureBufferCapacity(_pLightIndexBuffer, lightIndexBytes,
+                         _lightIndexBufferCapacity, allowShrink);
+    if (_pLightIndexBuffer) {
+      uint32_t *dst = static_cast<uint32_t *>(_pLightIndexBuffer->contents());
+      if (_cachedLightIndices.empty())
+        dst[0] = 0;
       else
-        activePtr[0] = 0;
-      _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeBytes));
-    } else {
-      auto updateMask = [&](const std::vector<size_t> &indices) {
-        for (size_t idx : indices) {
-          if (idx >= totalPrimitiveCount)
-            continue;
-          bool active = idx < _activePrimitive.size() && _activePrimitive[idx];
-          uint8_t value = active ? 1 : 0;
-          _cpuActiveMask[idx] = value;
-          activePtr[idx] = value;
-          _pActiveBuffer->didModifyRange(NS::Range::Make(idx, 1));
-        }
-      };
-      updateMask(_recentlyActivated);
-      updateMask(_recentlyDeactivated);
+        std::memcpy(dst, _cachedLightIndices.data(),
+                    _cachedLightIndices.size() * sizeof(uint32_t));
+      _pLightIndexBuffer->didModifyRange(NS::Range::Make(0, lightIndexBytes));
+    }
+
+    size_t lightCdfBytes =
+        std::max<size_t>(_cachedLightCdf.size(), size_t(1)) * sizeof(float);
+    ensureBufferCapacity(_pLightCdfBuffer, lightCdfBytes, _lightCdfBufferCapacity,
+                         allowShrink);
+    if (_pLightCdfBuffer) {
+      float *dst = static_cast<float *>(_pLightCdfBuffer->contents());
+      if (_cachedLightCdf.empty())
+        dst[0] = 0.0f;
+      else
+        std::memcpy(dst, _cachedLightCdf.data(),
+                    _cachedLightCdf.size() * sizeof(float));
+      _pLightCdfBuffer->didModifyRange(NS::Range::Make(0, lightCdfBytes));
     }
   }
 
-  size_t lightIndexBytes =
-      std::max<size_t>(_cachedLightIndices.size(), size_t(1)) *
-      sizeof(uint32_t);
-  ensureBufferCapacity(_pLightIndexBuffer, lightIndexBytes,
-                       _lightIndexBufferCapacity, allowShrink);
-  if (_pLightIndexBuffer) {
-    uint32_t *dst = static_cast<uint32_t *>(_pLightIndexBuffer->contents());
-    if (_cachedLightIndices.empty())
-      dst[0] = 0;
-    else
-      std::memcpy(dst, _cachedLightIndices.data(),
-                  _cachedLightIndices.size() * sizeof(uint32_t));
-    _pLightIndexBuffer->didModifyRange(NS::Range::Make(0, lightIndexBytes));
-  }
-
-  size_t lightCdfBytes =
-      std::max<size_t>(_cachedLightCdf.size(), size_t(1)) * sizeof(float);
-  ensureBufferCapacity(_pLightCdfBuffer, lightCdfBytes, _lightCdfBufferCapacity,
-                       allowShrink);
-  if (_pLightCdfBuffer) {
-    float *dst = static_cast<float *>(_pLightCdfBuffer->contents());
-    if (_cachedLightCdf.empty())
-      dst[0] = 0.0f;
-    else
-      std::memcpy(dst, _cachedLightCdf.data(),
-                  _cachedLightCdf.size() * sizeof(float));
-    _pLightCdfBuffer->didModifyRange(NS::Range::Make(0, lightCdfBytes));
-  }
+  processCompactionPipeline();
 
   _residentNodeCount = _blasNodeCount + _tlasNodeCount;
   size_t activeBlasNodes = 0;
   size_t activeTlasNodes = 0;
-  if (useCompaction) {
+  if (_residentCompacted) {
     activeBlasNodes = _blasNodeCount;
     activeTlasNodes = (_residentPrimitiveCount > 0) ? _tlasNodeCount : 0;
   } else if (totalPrimitiveCount > 0 && _blasNodeCount > 0) {
