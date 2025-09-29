@@ -1,4 +1,4 @@
-<Scene width="1920" height="1080" maxRayDepth="32" residencyStrategy="distance" lodEnterDistance="70" lodExitDistance="95" residencyCooldown="0" lodToggleBudget="1200">
+<Scene width="1920" height="1080" maxRayDepth="32" residencyStrategy="distance" lodEnterDistance="70" lodExitDistance="95" residencyCooldown="0" lodToggleBudget="6000">
     <CameraPath>
         <!-- Start far enough that compaction should trigger immediately -->
         <Keyframe frame="0" position="0,32,260" lookAt="0,10,220" />

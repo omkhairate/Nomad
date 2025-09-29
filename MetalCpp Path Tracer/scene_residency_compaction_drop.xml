@@ -1,4 +1,4 @@
-<Scene width="1920" height="1080" maxRayDepth="32" residencyStrategy="distance" lodEnterDistance="65" lodExitDistance="90" residencyCooldown="0" lodToggleBudget="1000">
+<Scene width="1920" height="1080" maxRayDepth="32" residencyStrategy="distance" lodEnterDistance="65" lodExitDistance="90" residencyCooldown="0" lodToggleBudget="6000">
     <CameraPath>
         <!-- Begin amidst dense geometry to ensure a high active count -->
         <Keyframe frame="0" position="0,12,0" lookAt="0,6,-110" />
