@@ -400,12 +400,24 @@ void Renderer::swapLiveBuffer(MTL::Buffer *&live, MTL::Buffer *&pending,
 }
 
 void Renderer::clearPendingCompaction() {
+  MTL::CommandBuffer *waitCommandBuffer = nullptr;
+
+  std::unique_lock<std::mutex> lock(_compactionMutex);
   _compactionRequested = false;
   _pendingCompactionGeneration = 0;
 
   if (_compactionUploadInFlight && _pCompactionUploadCommandBuffer) {
-    _pCompactionUploadCommandBuffer->waitUntilCompleted();
+    waitCommandBuffer = _pCompactionUploadCommandBuffer;
+    waitCommandBuffer->retain();
   }
+
+  lock.unlock();
+
+  if (waitCommandBuffer) {
+    waitCommandBuffer->waitUntilCompleted();
+  }
+
+  lock.lock();
 
   if (_pCompactionUploadCommandBuffer) {
     _pCompactionUploadCommandBuffer->release();
@@ -419,6 +431,10 @@ void Renderer::clearPendingCompaction() {
   if (_compactionFutureValid) {
     _compactionFuture.wait();
     _compactionFutureValid = false;
+  }
+
+  if (waitCommandBuffer) {
+    waitCommandBuffer->release();
   }
 }
 
