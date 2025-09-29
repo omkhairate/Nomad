@@ -15,7 +15,6 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
-#include <future>
 #include <numeric>
 #include <simd/simd.h>
 #include <string>
@@ -341,7 +340,6 @@ Renderer::Renderer(MTL::Device *pDevice)
 }
 
 Renderer::~Renderer() {
-  drainResidencyJob();
   if (_pSphereBuffer)
     _pSphereBuffer->release();
   if (_pSphereMaterialBuffer)
@@ -386,19 +384,6 @@ Renderer::~Renderer() {
 
   delete _pScene;
 }
-
-void Renderer::setAsyncResidencyEnabled(bool enabled) {
-  if (_asyncResidencyEnabled == enabled)
-    return;
-  drainResidencyJob();
-  _asyncResidencyEnabled = enabled;
-  printf("Async residency rebuilds %s.\n",
-         _asyncResidencyEnabled ? "enabled" : "disabled");
-  if (!_asyncResidencyEnabled)
-    _telemetryAsyncUsed = false;
-}
-
-bool Renderer::asyncResidencyEnabled() const { return _asyncResidencyEnabled; }
 
 void Renderer::setDeltaTime(double deltaSeconds) {
   if (deltaSeconds < 0.0)
@@ -514,15 +499,9 @@ void Renderer::updateVisibleScene() {
   _objectCooldown.assign(objectCount, 0);
 
   _residentPrimitives.clear();
-  _liveResidencyBuffers = ResidencyBuffers{};
-  _stagingResidencyBuffers = ResidencyBuffers{};
+  _residentRemap.clear();
   _recentlyActivated.clear();
   _recentlyDeactivated.clear();
-  _pendingActivated.clear();
-  _pendingDeactivated.clear();
-  _pendingForceFullRebuild = false;
-  _residencyJobActive = false;
-  _residencyJob = std::future<ResidencyBuffers>();
   _residentBuffersInitialized = false;
   _cachedPrimitiveData.clear();
   _cachedMaterialData.clear();
@@ -666,13 +645,7 @@ void Renderer::recalculateViewport() {
 
 }
 
-Renderer::ResidencyBuffers Renderer::buildResidencyBuffers(
-    bool forceFullRebuild, ResidencyBuffers &&seed,
-    const std::vector<size_t> &recentlyActivated,
-    const std::vector<size_t> &recentlyDeactivated) {
-  ResidencyBuffers buffers = std::move(seed);
-  std::vector<size_t> activated = recentlyActivated;
-  std::vector<size_t> deactivated = recentlyDeactivated;
+void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t totalPrimitiveCount = _allPrimitives.size();
   size_t cachedTotalPrimitiveCount = _cachedTotalPrimitiveCount;
 
@@ -785,14 +758,14 @@ Renderer::ResidencyBuffers Renderer::buildResidencyBuffers(
   };
 
   if (!needFullUpload) {
-    deduplicate(activated);
-    deduplicate(deactivated);
-    if (!activated.empty() && !deactivated.empty()) {
-      for (size_t idx : deactivated) {
-        auto it =
-            std::lower_bound(activated.begin(), activated.end(), idx);
-        if (it != activated.end() && *it == idx)
-          activated.erase(it);
+    deduplicate(_recentlyActivated);
+    deduplicate(_recentlyDeactivated);
+    if (!_recentlyActivated.empty() && !_recentlyDeactivated.empty()) {
+      for (size_t idx : _recentlyDeactivated) {
+        auto it = std::lower_bound(_recentlyActivated.begin(),
+                                   _recentlyActivated.end(), idx);
+        if (it != _recentlyActivated.end() && *it == idx)
+          _recentlyActivated.erase(it);
       }
     }
   }
@@ -1230,150 +1203,58 @@ Renderer::ResidencyBuffers Renderer::buildResidencyBuffers(
     _lightCount = _cachedLightIndices.size();
   }
 
+  _residentRemap = remapUpload;
+
   bool uploadAll = needFullUpload || useCompaction || compactionStateChanged;
   bool allowShrink = useCompaction;
-buffers.residentRemap = std::move(remapUpload);
-  if (primitiveSource == &compactPrimitiveData)
-    buffers.primitiveData = std::move(compactPrimitiveData);
-  else
-    buffers.primitiveData = *primitiveSource;
-  if (materialSource == &compactMaterialData)
-    buffers.materialData = std::move(compactMaterialData);
-  else
-    buffers.materialData = *materialSource;
-  if (primitiveIndexSource == &compactPrimitiveIndices)
-    buffers.primitiveIndices = std::move(compactPrimitiveIndices);
-  else
-    buffers.primitiveIndices = *primitiveIndexSource;
-  if (bvhSource == &compactBVHNodes)
-    buffers.blasNodes = std::move(compactBVHNodes);
-  else
-    buffers.blasNodes = *bvhSource;
-  if (tlasSource == &_cachedTLASNodes)
-    buffers.tlasNodes = _cachedTLASNodes;
-  else
-    buffers.tlasNodes = *tlasSource;
-  if (triangleVertexSource == &compactTriangleVertices)
-    buffers.triangleVertices = std::move(compactTriangleVertices);
-  else
-    buffers.triangleVertices = *triangleVertexSource;
-  if (triangleIndexSource == &compactTriangleIndices)
-    buffers.triangleIndices = std::move(compactTriangleIndices);
-  else
-    buffers.triangleIndices = *triangleIndexSource;
-  if (useCompaction)
-    buffers.activeMask = std::move(compactActiveMask);
-  else
-    buffers.activeMask = _cpuActiveMask;
-  buffers.lightIndices = _cachedLightIndices;
-  buffers.lightCdf = _cachedLightCdf;
-  buffers.instanceRecords = _instanceRecords;
-  buffers.totalPrimitiveCount = totalPrimitiveCount;
-  buffers.residentPrimitiveCount = _residentPrimitiveCount;
-  buffers.residentTriangleCount = _residentTriangleCount;
-  buffers.blasNodeCount = _blasNodeCount;
-  buffers.tlasNodeCount = _tlasNodeCount;
-  buffers.activePrimitiveCount = _activePrimitiveCount;
-  buffers.activeTriangleCount = _activeTriangleCount;
-  buffers.lightCount = _lightCount;
-  buffers.lightTotalWeight = _lightTotalWeight;
-  buffers.residentCompacted = _residentCompacted;
-  buffers.residentBuffersInitialized = _residentBuffersInitialized;
-  buffers.needFullUpload = needFullUpload;
-  buffers.uploadAll = uploadAll;
-  buffers.allowShrink = allowShrink;
-  buffers.compactionStateChanged = compactionStateChanged;
-  buffers.useCompaction = useCompaction;
-  buffers.activeNodeCount = _activeNodeCount;
-  buffers.recentlyActivated = std::move(activated);
-  buffers.recentlyDeactivated = std::move(deactivated);
-  return buffers;
-}
-
-void Renderer::applyResidencyBuffers(const ResidencyBuffers &buffers) {
-  const size_t uniformsDataSize = sizeof(UniformsData);
-  if (!_pUniformsBuffer) {
-    _pUniformsBuffer =
-        _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
-    if (_pUniformsBuffer)
-      _pUniformsBuffer->didModifyRange(
-          NS::Range::Make(0, uniformsDataSize));
-  }
-
-  _liveResidencyBuffers = buffers;
-
-  _residentPrimitiveCount = buffers.residentPrimitiveCount;
-  _residentTriangleCount = buffers.residentTriangleCount;
-  _blasNodeCount = buffers.blasNodeCount;
-  _tlasNodeCount = buffers.tlasNodeCount;
-  _activePrimitiveCount = buffers.activePrimitiveCount;
-  _activeTriangleCount = buffers.activeTriangleCount;
-  _lightCount = buffers.lightCount;
-  _lightTotalWeight = buffers.lightTotalWeight;
-  _residentCompacted = buffers.residentCompacted;
-  _residentBuffersInitialized =
-      _residentBuffersInitialized || buffers.residentBuffersInitialized ||
-      buffers.uploadAll;
-
-  const bool uploadAll = buffers.uploadAll;
-  const bool allowShrink = buffers.allowShrink;
-  const bool useCompaction = buffers.useCompaction;
-
-  const auto &primitiveSource = _liveResidencyBuffers.primitiveData;
-  const auto &materialSource = _liveResidencyBuffers.materialData;
-  const auto &primitiveIndexSource = _liveResidencyBuffers.primitiveIndices;
-  const auto &bvhSource = _liveResidencyBuffers.blasNodes;
-  const auto &tlasSource = _liveResidencyBuffers.tlasNodes;
-  const auto &triangleVertexSource =
-      _liveResidencyBuffers.triangleVertices;
-  const auto &triangleIndexSource = _liveResidencyBuffers.triangleIndices;
-  const auto &residentRemap = _liveResidencyBuffers.residentRemap;
 
   if (uploadAll) {
-    size_t primitiveFloat4Count = primitiveSource.size();
+    size_t primitiveFloat4Count = primitiveSource->size();
     size_t primitiveBytes =
         std::max<size_t>(primitiveFloat4Count, size_t(1)) *
         sizeof(simd::float4);
     ensureBufferCapacity(_pSphereBuffer, primitiveBytes, _sphereBufferCapacity,
                          allowShrink);
     if (_pSphereBuffer) {
-      auto *dst =
+      simd::float4 *dst =
           static_cast<simd::float4 *>(_pSphereBuffer->contents());
       if (primitiveFloat4Count > 0)
-        std::memcpy(dst, primitiveSource.data(),
+        std::memcpy(dst, primitiveSource->data(),
                     primitiveFloat4Count * sizeof(simd::float4));
       else
         dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
       _pSphereBuffer->didModifyRange(NS::Range::Make(0, primitiveBytes));
     }
 
-    size_t materialFloat4Count = materialSource.size();
+    size_t materialFloat4Count = materialSource->size();
     size_t materialBytes =
         std::max<size_t>(materialFloat4Count, size_t(1)) *
         sizeof(simd::float4);
     ensureBufferCapacity(_pSphereMaterialBuffer, materialBytes,
                          _sphereMaterialBufferCapacity, allowShrink);
     if (_pSphereMaterialBuffer) {
-      auto *dst = static_cast<simd::float4 *>(
+      simd::float4 *dst = static_cast<simd::float4 *>(
           _pSphereMaterialBuffer->contents());
       if (materialFloat4Count > 0)
-        std::memcpy(dst, materialSource.data(),
+        std::memcpy(dst, materialSource->data(),
                     materialFloat4Count * sizeof(simd::float4));
-      else
+      else {
         dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      _pSphereMaterialBuffer->didModifyRange(
-          NS::Range::Make(0, materialBytes));
+        if (materialBytes >= 2 * sizeof(simd::float4))
+          dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
+      _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialBytes));
     }
 
-    size_t primitiveIndexCount = primitiveIndexSource.size();
+    size_t primitiveIndexCount = primitiveIndexSource->size();
     size_t primitiveIndexBytes =
         std::max<size_t>(primitiveIndexCount, size_t(1)) * sizeof(int);
     ensureBufferCapacity(_pPrimitiveIndexBuffer, primitiveIndexBytes,
                          _primitiveIndexBufferCapacity, allowShrink);
     if (_pPrimitiveIndexBuffer) {
-      auto *dst = static_cast<int *>(_pPrimitiveIndexBuffer->contents());
+      int *dst = static_cast<int *>(_pPrimitiveIndexBuffer->contents());
       if (primitiveIndexCount > 0)
-        std::memcpy(dst, primitiveIndexSource.data(),
+        std::memcpy(dst, primitiveIndexSource->data(),
                     primitiveIndexCount * sizeof(int));
       else
         dst[0] = 0;
@@ -1381,94 +1262,97 @@ void Renderer::applyResidencyBuffers(const ResidencyBuffers &buffers) {
           NS::Range::Make(0, primitiveIndexBytes));
     }
 
-    size_t bvhFloat4Count = bvhSource.size();
+    size_t blasFloat4Count = bvhSource->size();
     size_t bvhBytes =
-        std::max<size_t>(bvhFloat4Count, size_t(1)) * sizeof(simd::float4);
+        std::max<size_t>(blasFloat4Count, size_t(1)) * sizeof(simd::float4);
     ensureBufferCapacity(_pBVHBuffer, bvhBytes, _bvhBufferCapacity, allowShrink);
     if (_pBVHBuffer) {
-      auto *dst =
+      simd::float4 *dst =
           static_cast<simd::float4 *>(_pBVHBuffer->contents());
-      if (bvhFloat4Count > 0)
-        std::memcpy(dst, bvhSource.data(),
-                    bvhFloat4Count * sizeof(simd::float4));
+      if (blasFloat4Count > 0)
+        std::memcpy(dst, bvhSource->data(),
+                    blasFloat4Count * sizeof(simd::float4));
       else {
         dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (bvhBytes >= 2 * sizeof(simd::float4))
+          dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
       }
       _pBVHBuffer->didModifyRange(NS::Range::Make(0, bvhBytes));
     }
 
-    size_t tlasFloat4Count = tlasSource.size();
+    size_t tlasFloat4Count = tlasSource->size();
     size_t tlasBytes =
         std::max<size_t>(tlasFloat4Count, size_t(1)) * sizeof(simd::float4);
     ensureBufferCapacity(_pTLASBuffer, tlasBytes, _tlasBufferCapacity,
                          allowShrink);
     if (_pTLASBuffer) {
-      auto *dst =
+      simd::float4 *dst =
           static_cast<simd::float4 *>(_pTLASBuffer->contents());
       if (tlasFloat4Count > 0)
-        std::memcpy(dst, tlasSource.data(),
+        std::memcpy(dst, tlasSource->data(),
                     tlasFloat4Count * sizeof(simd::float4));
       else {
         dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (tlasBytes >= 2 * sizeof(simd::float4))
+          dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
       }
       _pTLASBuffer->didModifyRange(NS::Range::Make(0, tlasBytes));
     }
 
-    size_t vertexCount = triangleVertexSource.size();
+    size_t remapCount = std::max<size_t>(_residentRemap.size(), size_t(1));
+    ensureBufferCapacity(_pPrimitiveRemapBuffer,
+                         remapCount * sizeof(uint32_t),
+                         _primitiveRemapBufferCapacity, allowShrink);
+    if (_pPrimitiveRemapBuffer) {
+      uint32_t *dst = static_cast<uint32_t *>(
+          _pPrimitiveRemapBuffer->contents());
+      if (_residentRemap.empty()) {
+        dst[0] = 0;
+      } else {
+        std::memcpy(dst, _residentRemap.data(),
+                    _residentRemap.size() * sizeof(uint32_t));
+        if (_residentRemap.size() < remapCount)
+          dst[_residentRemap.size()] = 0;
+      }
+      _pPrimitiveRemapBuffer->didModifyRange(
+          NS::Range::Make(0, remapCount * sizeof(uint32_t)));
+    }
+
+    size_t vertexCount = triangleVertexSource->size();
     size_t vertexBytes =
         std::max<size_t>(vertexCount, size_t(1)) * sizeof(simd::float3);
     ensureBufferCapacity(_pTriangleVertexBuffer, vertexBytes,
                          _triangleVertexBufferCapacity, allowShrink);
     if (_pTriangleVertexBuffer) {
-      auto *dst = static_cast<simd::float3 *>(
+      simd::float3 *dst = static_cast<simd::float3 *>(
           _pTriangleVertexBuffer->contents());
       if (vertexCount > 0)
-        std::memcpy(dst, triangleVertexSource.data(),
+        std::memcpy(dst, triangleVertexSource->data(),
                     vertexCount * sizeof(simd::float3));
       else
         dst[0] = simd::float3{0.0f, 0.0f, 0.0f};
       _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(0, vertexBytes));
     }
 
-    size_t indexCount = triangleIndexSource.size();
+    size_t indexCount = triangleIndexSource->size();
     size_t indexBytes =
         std::max<size_t>(indexCount, size_t(1)) * sizeof(simd::uint3);
     ensureBufferCapacity(_pTriangleIndexBuffer, indexBytes,
                          _triangleIndexBufferCapacity, allowShrink);
     if (_pTriangleIndexBuffer) {
-      auto *dst = static_cast<simd::uint3 *>(
+      simd::uint3 *dst = static_cast<simd::uint3 *>(
           _pTriangleIndexBuffer->contents());
       if (indexCount > 0)
-        std::memcpy(dst, triangleIndexSource.data(),
+        std::memcpy(dst, triangleIndexSource->data(),
                     indexCount * sizeof(simd::uint3));
       else
         dst[0] = simd::make_uint3(0, 0, 0);
       _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(0, indexBytes));
     }
+
+    _residentBuffersInitialized = true;
   }
 
-  size_t remapCount = std::max<size_t>(residentRemap.size(), size_t(1));
-  ensureBufferCapacity(_pPrimitiveRemapBuffer,
-                       remapCount * sizeof(uint32_t),
-                       _primitiveRemapBufferCapacity, allowShrink);
-  if (_pPrimitiveRemapBuffer) {
-    auto *dst = static_cast<uint32_t *>(
-        _pPrimitiveRemapBuffer->contents());
-    if (residentRemap.empty()) {
-      dst[0] = 0;
-    } else {
-      std::memcpy(dst, residentRemap.data(),
-                  residentRemap.size() * sizeof(uint32_t));
-      if (residentRemap.size() < remapCount)
-        dst[residentRemap.size()] = 0;
-    }
-    _pPrimitiveRemapBuffer->didModifyRange(
-        NS::Range::Make(0, remapCount * sizeof(uint32_t)));
-  }
-
-  _instanceRecords = buffers.instanceRecords;
   size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
   size_t instanceBytes = instanceCount * sizeof(BlasInstanceRecord);
   ensureBufferCapacity(_pInstanceBuffer, instanceBytes, _instanceBufferCapacity,
@@ -1488,33 +1372,33 @@ void Renderer::applyResidencyBuffers(const ResidencyBuffers &buffers) {
   }
 
   size_t activeMaskCount =
-      useCompaction ? _residentPrimitiveCount : buffers.totalPrimitiveCount;
+      useCompaction ? _residentPrimitiveCount : totalPrimitiveCount;
   size_t activeBytes =
       std::max<size_t>(activeMaskCount, size_t(1)) * sizeof(uint8_t);
   ensureBufferCapacity(_pActiveBuffer, activeBytes, _activeBufferCapacity,
                        allowShrink);
   if (_pActiveBuffer) {
-    auto *activePtr =
+    uint8_t *activePtr =
         static_cast<uint8_t *>(_pActiveBuffer->contents());
     if (useCompaction) {
       if (_residentPrimitiveCount > 0) {
-        std::memcpy(activePtr, buffers.activeMask.data(),
+        std::memcpy(activePtr, compactActiveMask.data(),
                     _residentPrimitiveCount * sizeof(uint8_t));
       } else {
         activePtr[0] = 0;
       }
       _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeBytes));
     } else if (uploadAll) {
-      if (buffers.totalPrimitiveCount > 0)
+      if (totalPrimitiveCount > 0)
         std::memcpy(activePtr, _cpuActiveMask.data(),
-                    buffers.totalPrimitiveCount * sizeof(uint8_t));
+                    totalPrimitiveCount * sizeof(uint8_t));
       else
         activePtr[0] = 0;
       _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeBytes));
     } else {
       auto updateMask = [&](const std::vector<size_t> &indices) {
         for (size_t idx : indices) {
-          if (idx >= buffers.totalPrimitiveCount)
+          if (idx >= totalPrimitiveCount)
             continue;
           bool active = idx < _activePrimitive.size() && _activePrimitive[idx];
           uint8_t value = active ? 1 : 0;
@@ -1523,13 +1407,10 @@ void Renderer::applyResidencyBuffers(const ResidencyBuffers &buffers) {
           _pActiveBuffer->didModifyRange(NS::Range::Make(idx, 1));
         }
       };
-      updateMask(buffers.recentlyActivated);
-      updateMask(buffers.recentlyDeactivated);
+      updateMask(_recentlyActivated);
+      updateMask(_recentlyDeactivated);
     }
   }
-
-  _cachedLightIndices = buffers.lightIndices;
-  _cachedLightCdf = buffers.lightCdf;
 
   size_t lightIndexBytes =
       std::max<size_t>(_cachedLightIndices.size(), size_t(1)) *
@@ -1537,7 +1418,7 @@ void Renderer::applyResidencyBuffers(const ResidencyBuffers &buffers) {
   ensureBufferCapacity(_pLightIndexBuffer, lightIndexBytes,
                        _lightIndexBufferCapacity, allowShrink);
   if (_pLightIndexBuffer) {
-    auto *dst = static_cast<uint32_t *>(_pLightIndexBuffer->contents());
+    uint32_t *dst = static_cast<uint32_t *>(_pLightIndexBuffer->contents());
     if (_cachedLightIndices.empty())
       dst[0] = 0;
     else
@@ -1551,7 +1432,7 @@ void Renderer::applyResidencyBuffers(const ResidencyBuffers &buffers) {
   ensureBufferCapacity(_pLightCdfBuffer, lightCdfBytes, _lightCdfBufferCapacity,
                        allowShrink);
   if (_pLightCdfBuffer) {
-    auto *dst = static_cast<float *>(_pLightCdfBuffer->contents());
+    float *dst = static_cast<float *>(_pLightCdfBuffer->contents());
     if (_cachedLightCdf.empty())
       dst[0] = 0.0f;
     else
@@ -1561,114 +1442,24 @@ void Renderer::applyResidencyBuffers(const ResidencyBuffers &buffers) {
   }
 
   _residentNodeCount = _blasNodeCount + _tlasNodeCount;
-  _activeNodeCount = buffers.activeNodeCount;
-
-  if (_asyncResidencyEnabled && !_telemetryAsyncUsed) {
-    printf("Async residency rebuilds enabled (double-buffered).\n");
-    _telemetryAsyncUsed = true;
+  size_t activeBlasNodes = 0;
+  size_t activeTlasNodes = 0;
+  if (useCompaction) {
+    activeBlasNodes = _blasNodeCount;
+    activeTlasNodes = (_residentPrimitiveCount > 0) ? _tlasNodeCount : 0;
+  } else if (totalPrimitiveCount > 0 && _blasNodeCount > 0) {
+    size_t denom = std::max<size_t>(totalPrimitiveCount, size_t(1));
+    activeBlasNodes = std::max<size_t>(
+        size_t(1), (_blasNodeCount * _activePrimitiveCount + denom - 1) /
+                        denom);
+    activeTlasNodes = (_tlasNodeCount > 0 && _activePrimitiveCount > 0)
+                          ? _tlasNodeCount
+                          : size_t(0);
   }
-}
+  _activeNodeCount = activeBlasNodes + activeTlasNodes;
 
-void Renderer::scheduleResidencyJob(bool forceFullRebuild) {
-  std::vector<size_t> jobActivated;
-  std::vector<size_t> jobDeactivated;
-  bool jobForce = forceFullRebuild;
-  bool launchJob = false;
-
-  {
-    std::lock_guard<std::mutex> lock(_residencyToggleMutex);
-    if (forceFullRebuild)
-      _pendingForceFullRebuild = true;
-
-    if (!_recentlyActivated.empty()) {
-      _pendingActivated.insert(_pendingActivated.end(),
-                               _recentlyActivated.begin(),
-                               _recentlyActivated.end());
-      _recentlyActivated.clear();
-    }
-    if (!_recentlyDeactivated.empty()) {
-      _pendingDeactivated.insert(_pendingDeactivated.end(),
-                                 _recentlyDeactivated.begin(),
-                                 _recentlyDeactivated.end());
-      _recentlyDeactivated.clear();
-    }
-
-    if (!_asyncResidencyEnabled) {
-      if (!_pendingActivated.empty() || !_pendingDeactivated.empty() ||
-          _pendingForceFullRebuild) {
-        jobActivated = std::move(_pendingActivated);
-        jobDeactivated = std::move(_pendingDeactivated);
-        jobForce = _pendingForceFullRebuild;
-        _pendingForceFullRebuild = false;
-        launchJob = true;
-      }
-    } else if (!_residencyJobActive) {
-      if (_pendingForceFullRebuild || !_pendingActivated.empty() ||
-          !_pendingDeactivated.empty()) {
-        jobActivated = std::move(_pendingActivated);
-        jobDeactivated = std::move(_pendingDeactivated);
-        jobForce = _pendingForceFullRebuild;
-        _pendingForceFullRebuild = false;
-        _residencyJobActive = true;
-        launchJob = true;
-      }
-    }
-  }
-
-  if (!launchJob)
-    return;
-
-  if (!_asyncResidencyEnabled) {
-    ResidencyBuffers result;
-    {
-      std::lock_guard<std::mutex> lock(_residencyToggleMutex);
-      result = buildResidencyBuffers(jobForce, std::move(_stagingResidencyBuffers),
-                                     jobActivated, jobDeactivated);
-    }
-    applyResidencyBuffers(result);
-    _stagingResidencyBuffers = std::move(result);
-    return;
-  }
-
-  ResidencyBuffers seed = std::move(_stagingResidencyBuffers);
-  _residencyJob = std::async(std::launch::async,
-                             [this, jobForce, act = std::move(jobActivated),
-                              deact = std::move(jobDeactivated),
-                              seed = std::move(seed)]() mutable {
-                               std::lock_guard<std::mutex> lock(
-                                   _residencyToggleMutex);
-                               return buildResidencyBuffers(jobForce,
-                                                            std::move(seed), act,
-                                                            deact);
-                             });
-}
-
-void Renderer::drainResidencyJob() {
-  if (!_residencyJobActive)
-    return;
-  ResidencyBuffers buffers = _residencyJob.get();
-  _residencyJobActive = false;
-  _stagingResidencyBuffers = std::move(buffers);
-  applyResidencyBuffers(_stagingResidencyBuffers);
-}
-
-void Renderer::rebuildResidentResources(bool forceFullRebuild) {
-  scheduleResidencyJob(forceFullRebuild);
-
-  if (_asyncResidencyEnabled) {
-    if (_residencyJobActive) {
-      if (_residencyJob.wait_for(std::chrono::milliseconds(0)) ==
-          std::future_status::ready) {
-        ResidencyBuffers buffers = _residencyJob.get();
-        _residencyJobActive = false;
-        _stagingResidencyBuffers = std::move(buffers);
-        applyResidencyBuffers(_stagingResidencyBuffers);
-        scheduleResidencyJob(false);
-      }
-    }
-  } else {
-    drainResidencyJob();
-  }
+  _recentlyActivated.clear();
+  _recentlyDeactivated.clear();
 }
 
 
@@ -2260,14 +2051,11 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
 }
 
 void Renderer::flushResidencyChanges(bool forceFullRebuild) {
-  bool hasImmediateChanges =
-      forceFullRebuild || !_recentlyActivated.empty() ||
-      !_recentlyDeactivated.empty();
-  bool jobInFlight = _residencyJobActive;
-  bool queuedChanges = _pendingForceFullRebuild || !_pendingActivated.empty() ||
-                       !_pendingDeactivated.empty();
-  if (!hasImmediateChanges && !jobInFlight && !queuedChanges)
+  if (!forceFullRebuild && _recentlyActivated.empty() &&
+      _recentlyDeactivated.empty()) {
+    // No state changes to apply this frame.
     return;
+  }
   rebuildResidentResources(forceFullRebuild);
 }
 
@@ -2287,9 +2075,6 @@ bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
 bool Renderer::setPrimitiveActive(size_t index, bool active) {
   if (index >= _activePrimitive.size())
     return false;
-
-  std::lock_guard<std::mutex> lock(_residencyToggleMutex);
-
   if (_activePrimitive[index] == active)
     return false;
   _activePrimitive[index] = active;

@@ -5,9 +5,6 @@
 #include <MetalKit/MetalKit.hpp>
 #include <chrono>
 #include <cstdint>
-#include <future>
-#include <mutex>
-#include <optional>
 #include <simd/simd.h>
 #include <vector>
 
@@ -60,9 +57,6 @@ public:
         spheres; // (transform, material)
     simd::int3 chunkCoords;
   };
-
-  void setAsyncResidencyEnabled(bool enabled);
-  bool asyncResidencyEnabled() const;
 
 private:
   void rebuildResidentResources(bool forceFullRebuild);
@@ -139,50 +133,9 @@ private:
 
   std::vector<BlasInstanceRecord> _instanceRecords;
   std::vector<Primitive> _residentPrimitives;
-  struct ResidencyBuffers {
-    std::vector<uint32_t> residentRemap;
-    std::vector<simd::float4> primitiveData;
-    std::vector<simd::float4> materialData;
-    std::vector<int> primitiveIndices;
-    std::vector<simd::float4> blasNodes;
-    std::vector<simd::float4> tlasNodes;
-    std::vector<simd::float3> triangleVertices;
-    std::vector<simd::uint3> triangleIndices;
-    std::vector<uint8_t> activeMask;
-    std::vector<uint32_t> lightIndices;
-    std::vector<float> lightCdf;
-    std::vector<BlasInstanceRecord> instanceRecords;
-    std::vector<size_t> recentlyActivated;
-    std::vector<size_t> recentlyDeactivated;
-
-    size_t totalPrimitiveCount = 0;
-    size_t residentPrimitiveCount = 0;
-    size_t residentTriangleCount = 0;
-    size_t blasNodeCount = 0;
-    size_t tlasNodeCount = 0;
-    size_t activePrimitiveCount = 0;
-    size_t activeTriangleCount = 0;
-    size_t lightCount = 0;
-    size_t activeNodeCount = 0;
-    float lightTotalWeight = 0.0f;
-
-    bool residentCompacted = false;
-    bool residentBuffersInitialized = false;
-    bool needFullUpload = false;
-    bool uploadAll = false;
-    bool allowShrink = false;
-    bool compactionStateChanged = false;
-    bool useCompaction = false;
-  };
-
-  ResidencyBuffers _liveResidencyBuffers;
-  ResidencyBuffers _stagingResidencyBuffers;
+  std::vector<uint32_t> _residentRemap;
   std::vector<size_t> _recentlyActivated;
   std::vector<size_t> _recentlyDeactivated;
-  std::vector<size_t> _pendingActivated;
-  std::vector<size_t> _pendingDeactivated;
-  bool _pendingForceFullRebuild = false;
-  std::mutex _residencyToggleMutex;
 
   uint32_t _rayHitRebuildCooldown = 0;
 
@@ -242,19 +195,6 @@ private:
   ResidencyParameters _residencyConfig;
 
   size_t setObjectActive(size_t objectIndex, bool active);
-
-  ResidencyBuffers buildResidencyBuffers(
-      bool forceFullRebuild, ResidencyBuffers &&seed,
-      const std::vector<size_t> &recentlyActivated,
-      const std::vector<size_t> &recentlyDeactivated);
-  void applyResidencyBuffers(const ResidencyBuffers &buffers);
-  void scheduleResidencyJob(bool forceFullRebuild);
-  void drainResidencyJob();
-
-  std::future<ResidencyBuffers> _residencyJob;
-  bool _asyncResidencyEnabled = true;
-  bool _residencyJobActive = false;
-  bool _telemetryAsyncUsed = false;
 };
 
 } // namespace MetalCppPathTracer
