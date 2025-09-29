@@ -131,6 +131,7 @@ private:
   uint32_t _rayHitRebuildCooldown = 0;
 
   size_t _residentPrimitiveCount = 0;
+  size_t _cachedTotalPrimitiveCount = 0;
   size_t _residentTriangleCount = 0;
   size_t _activePrimitiveCount = 0;
   size_t _activeTriangleCount = 0;

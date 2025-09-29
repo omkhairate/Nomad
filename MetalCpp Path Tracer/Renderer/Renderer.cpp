@@ -645,7 +645,7 @@ void Renderer::recalculateViewport() {
 
 void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t totalPrimitiveCount = _allPrimitives.size();
-  size_t previousPrimitiveCount = _residentPrimitiveCount;
+  size_t cachedTotalPrimitiveCount = _cachedTotalPrimitiveCount;
 
   if (forceFullRebuild) {
     _residentCompacted = false;
@@ -666,7 +666,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   std::fill(_primitiveToResidentIndex.begin(), _primitiveToResidentIndex.end(),
             -1);
 
-  bool sizeChanged = previousPrimitiveCount != totalPrimitiveCount;
+  bool sizeChanged = cachedTotalPrimitiveCount != totalPrimitiveCount;
   bool needFullUpload =
       forceFullRebuild || !_residentBuffersInitialized || sizeChanged;
 
@@ -739,6 +739,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       }
     }
     _tlasNodeCount = tlasCount;
+    _cachedTotalPrimitiveCount = totalPrimitiveCount;
   }
 
   if (_cpuActiveMask.size() < totalPrimitiveCount)
