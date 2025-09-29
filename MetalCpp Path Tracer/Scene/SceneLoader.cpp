@@ -164,18 +164,18 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
 
     params.energyTargetFraction =
         root->FloatAttribute("energyTargetFraction", params.energyTargetFraction);
-    params.energyMinActivePrimitives = root->UnsignedAttribute(
-        "energyMinActive", static_cast<unsigned int>(params.energyMinActivePrimitives));
-    params.energyMaxTogglesPerFrame = root->UnsignedAttribute(
-        "energyToggleBudget", static_cast<unsigned int>(params.energyMaxTogglesPerFrame));
+    params.energyMinActivePrimitives = static_cast<size_t>(root->Unsigned64Attribute(
+        "energyMinActive", static_cast<uint64_t>(params.energyMinActivePrimitives)));
+    params.energyMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
+        "energyToggleBudget", static_cast<uint64_t>(params.energyMaxTogglesPerFrame)));
 
     params.rayHitDecay = root->FloatAttribute("rayHitDecay", params.rayHitDecay);
     params.rayHitTargetFraction =
         root->FloatAttribute("rayHitTargetFraction", params.rayHitTargetFraction);
-    params.rayHitMinActivePrimitives = root->UnsignedAttribute(
-        "rayHitMinActive", static_cast<unsigned int>(params.rayHitMinActivePrimitives));
-    params.rayHitMaxTogglesPerFrame = root->UnsignedAttribute(
-        "rayHitToggleBudget", static_cast<unsigned int>(params.rayHitMaxTogglesPerFrame));
+    params.rayHitMinActivePrimitives = static_cast<size_t>(root->Unsigned64Attribute(
+        "rayHitMinActive", static_cast<uint64_t>(params.rayHitMinActivePrimitives)));
+    params.rayHitMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
+        "rayHitToggleBudget", static_cast<uint64_t>(params.rayHitMaxTogglesPerFrame)));
     params.rayHitRebuildCooldownFrames = root->UnsignedAttribute(
         "rayHitCooldown", params.rayHitRebuildCooldownFrames);
 
@@ -183,11 +183,12 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "screenTargetFraction", params.screenFootprintTargetFraction);
     params.screenFootprintMinPixelCoverage = root->FloatAttribute(
         "screenMinPixelCoverage", params.screenFootprintMinPixelCoverage);
-    params.screenFootprintMinActivePrimitives = root->UnsignedAttribute(
-        "screenMinActive", static_cast<unsigned int>(params.screenFootprintMinActivePrimitives));
-    params.screenFootprintMaxTogglesPerFrame = root->UnsignedAttribute(
+    params.screenFootprintMinActivePrimitives = static_cast<size_t>(root->Unsigned64Attribute(
+        "screenMinActive",
+        static_cast<uint64_t>(params.screenFootprintMinActivePrimitives)));
+    params.screenFootprintMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "screenToggleBudget",
-        static_cast<unsigned int>(params.screenFootprintMaxTogglesPerFrame));
+        static_cast<uint64_t>(params.screenFootprintMaxTogglesPerFrame)));
 
     scene->setResidencyParameters(params);
 
