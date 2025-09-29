@@ -453,7 +453,7 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
           selectLightOffset(lightXi, lightCdf, lightCount, lightTotalWeight);
       if (selectedOffset < lightCount) {
         uint lightPrimIndex = lightIndices[selectedOffset];
-        if (lightPrimIndex != bestHit.primitiveId) {
+        if (int(lightPrimIndex) != bestHit.primitiveId) {
           int base = int(lightPrimIndex) * 3;
           float4 lp0 = primitives[base + 0];
           float4 lp1 = primitives[base + 1];
@@ -489,7 +489,7 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                     shadowRay.direction = wi;
                     intersection shadowHit = firstHitTLAS(
                         shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
-                        primitives, primitiveIndices, activeMask);
+                        primitives, primitiveIndices, activeMask, instanceRecords);
                     bool visible = false;
                     if (shadowHit.primitiveId == -1) {
                       visible = true;
