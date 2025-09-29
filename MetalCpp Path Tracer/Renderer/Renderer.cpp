@@ -5,6 +5,7 @@
 #include "Scene.h"
 #include "SceneLoader.h"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <numeric>
 #include <simd/simd.h>
 #include <string>
+#include <utility>
 
 using namespace MetalCppPathTracer;
 
@@ -929,6 +931,18 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                       obj.cachedBlasRootIndex >= 0;
 
       if (hasCache) {
+        size_t remapStart = remapUpload.size();
+        size_t compactPrimitiveDataStart = compactPrimitiveData.size();
+        size_t compactMaterialDataStart = compactMaterialData.size();
+        size_t compactPrimitiveIndicesStart = compactPrimitiveIndices.size();
+        size_t compactActiveMaskStart = compactActiveMask.size();
+        size_t compactBVHNodesStart = compactBVHNodes.size();
+        size_t compactTriangleVerticesStart = compactTriangleVertices.size();
+        size_t compactTriangleIndicesStart = compactTriangleIndices.size();
+
+        std::vector<std::pair<size_t, int32_t>> residentIndexEdits;
+        residentIndexEdits.reserve(obj.cachedPrimitiveIndices.size());
+
         cachedRemap.assign(obj.cachedPrimitiveIndices.size(), -1);
         size_t activeCount = 0;
         for (size_t localIdx = 0; localIdx < obj.cachedPrimitiveIndices.size();
@@ -940,9 +954,12 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
           cachedRemap[localIdx] = static_cast<int32_t>(activeCount);
           remapUpload.push_back(static_cast<uint32_t>(globalIndex));
-          if (globalIndex < _primitiveToResidentIndex.size())
+          if (globalIndex < _primitiveToResidentIndex.size()) {
+            residentIndexEdits.emplace_back(globalIndex,
+                                            _primitiveToResidentIndex[globalIndex]);
             _primitiveToResidentIndex[globalIndex] =
                 static_cast<int32_t>(record.primitiveBase + activeCount);
+          }
 
           const Primitive &p = _allPrimitives[globalIndex];
           simd::float4 prim0;
@@ -999,14 +1016,21 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
         record.primitiveCount = static_cast<uint32_t>(activeCount);
         if (activeCount == 0) {
+          for (const auto &edit : residentIndexEdits)
+            if (edit.first < _primitiveToResidentIndex.size())
+              _primitiveToResidentIndex[edit.first] = edit.second;
           _instanceRecords[objectIndex] = record;
           ++blasCacheSkipped;
           continue;
         }
 
         size_t nodeBase = compactBVHNodes.size() / 2;
-        record.blasRootIndex =
+        int32_t cachedRootIndex =
             static_cast<int32_t>(nodeBase + obj.cachedBlasRootIndex);
+
+        bool encounteredEmptyLeaf = false;
+        std::vector<simd::float4> rebuiltNodes;
+        rebuiltNodes.reserve(obj.cachedBlasNodes.size() * 2);
 
         for (const BVHNode &node : obj.cachedBlasNodes) {
           BVHNode adjusted = node;
@@ -1027,8 +1051,14 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                     static_cast<int>(record.primitiveIndexBase + remapped);
               ++newCount;
             }
+            if (newCount == 0) {
+              encounteredEmptyLeaf = true;
+              break;
+            }
             if (newLeftFirst < 0)
               newLeftFirst = static_cast<int>(record.primitiveIndexBase);
+            assert(newCount > 0 &&
+                   "Cached BLAS leaf remapped to zero primitives");
             adjusted.leftFirst = newLeftFirst;
             adjusted.count = newCount;
           } else {
@@ -1041,15 +1071,37 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           float rightBits = 0.0f;
           std::memcpy(&leftBits, &adjusted.leftFirst, sizeof(int));
           std::memcpy(&rightBits, &adjusted.count, sizeof(int));
-          compactBVHNodes.push_back(
-              simd::make_float4(adjusted.boundsMin, leftBits));
-          compactBVHNodes.push_back(
-              simd::make_float4(adjusted.boundsMax, rightBits));
+          rebuiltNodes.push_back(simd::make_float4(adjusted.boundsMin, leftBits));
+          rebuiltNodes.push_back(simd::make_float4(adjusted.boundsMax, rightBits));
         }
 
-        _instanceRecords[objectIndex] = record;
-        ++blasCacheReused;
-        continue;
+        if (!encounteredEmptyLeaf) {
+          record.blasRootIndex = cachedRootIndex;
+          compactBVHNodes.insert(compactBVHNodes.end(), rebuiltNodes.begin(),
+                                 rebuiltNodes.end());
+          _instanceRecords[objectIndex] = record;
+          ++blasCacheReused;
+          assert(!encounteredEmptyLeaf &&
+                 "Cached BLAS leaf with zero primitives reached upload");
+          continue;
+        }
+
+        printf("Cached BLAS leaf remapped to zero primitives for object %zu, rebuilding fallback BVH.\n",
+               objectIndex);
+        remapUpload.resize(remapStart);
+        compactPrimitiveData.resize(compactPrimitiveDataStart);
+        compactMaterialData.resize(compactMaterialDataStart);
+        compactPrimitiveIndices.resize(compactPrimitiveIndicesStart);
+        compactActiveMask.resize(compactActiveMaskStart);
+        compactBVHNodes.resize(compactBVHNodesStart);
+        compactTriangleVertices.resize(compactTriangleVerticesStart);
+        compactTriangleIndices.resize(compactTriangleIndicesStart);
+
+        for (const auto &edit : residentIndexEdits)
+          if (edit.first < _primitiveToResidentIndex.size())
+            _primitiveToResidentIndex[edit.first] = edit.second;
+
+        record.blasRootIndex = -1;
       }
 
       activeLocalPrims.reserve(obj.primitiveCount);
