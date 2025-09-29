@@ -477,7 +477,6 @@ void Renderer::updateVisibleScene() {
 
   // Store full primitive list and initialize tracking
   _allPrimitives = _pScene->getPrimitives();
-  _allSceneObjects = _pScene->getObjects();
   size_t primCount = _allPrimitives.size();
   _activePrimitive.assign(primCount, false);
   _primitiveCooldown.assign(primCount, 0);
@@ -492,11 +491,6 @@ void Renderer::updateVisibleScene() {
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
-
-  size_t objectCount = _allSceneObjects.size();
-  _objectBounds.resize(objectCount);
-  _objectActive.assign(objectCount, false);
-  _objectCooldown.assign(objectCount, 0);
 
   _residentPrimitives.clear();
   _residentRemap.clear();
@@ -539,21 +533,6 @@ void Renderer::updateVisibleScene() {
     if (i < _screenCoverageSortedIndices.size())
       _screenCoverageSortedIndices[i] = i;
     _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
-  }
-
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-    const SceneObject &obj = _allSceneObjects[objectIndex];
-    simd::float3 boundsMin = obj.boundsMin;
-    simd::float3 boundsMax = obj.boundsMax;
-    simd::float3 center = (boundsMin + boundsMax) * 0.5f;
-    float radius = simd::length(boundsMax - center);
-    _objectBounds[objectIndex] = {center, radius};
-
-    size_t first = obj.firstPrimitive;
-    size_t last = first + obj.primitiveCount;
-    for (size_t prim = first; prim < last && prim < _primitiveToObject.size();
-         ++prim)
-      _primitiveToObject[prim] = objectIndex;
   }
 
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
@@ -609,6 +588,27 @@ void Renderer::updateVisibleScene() {
   }
   _maxTlasNodeCount = std::max<size_t>(fullTlasCount, _maxTlasNodeCount);
   _totalNodeCount = _maxBlasNodeCount + _maxTlasNodeCount;
+
+  _allSceneObjects = _pScene->getObjects();
+  size_t objectCount = _allSceneObjects.size();
+  _objectBounds.resize(objectCount);
+  _objectActive.assign(objectCount, false);
+  _objectCooldown.assign(objectCount, 0);
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    simd::float3 boundsMin = obj.boundsMin;
+    simd::float3 boundsMax = obj.boundsMax;
+    simd::float3 center = (boundsMin + boundsMax) * 0.5f;
+    float radius = simd::length(boundsMax - center);
+    _objectBounds[objectIndex] = {center, radius};
+
+    size_t first = obj.firstPrimitive;
+    size_t last = first + obj.primitiveCount;
+    for (size_t prim = first; prim < last && prim < _primitiveToObject.size();
+         ++prim)
+      _primitiveToObject[prim] = objectIndex;
+  }
 
   updateResidency(true, true);
 }
