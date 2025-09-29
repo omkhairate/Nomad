@@ -1556,6 +1556,7 @@ void Renderer::updateUniforms() {
 }
 
 void Renderer::draw(MTK::View *pView) {
+  processRayHitCounters();
   updateResidency();
   updateUniforms();
   beginFrameMetrics();
@@ -1850,12 +1851,24 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
     }
   }
 
+  const size_t primCount = _activePrimitive.size();
+  if (_primitiveHitScoresSnapshot.size() < primCount)
+    _primitiveHitScoresSnapshot.resize(primCount, 0.0f);
+
+  size_t copyCount = std::min(_primitiveHitScores.size(), primCount);
+  std::copy_n(_primitiveHitScores.begin(), copyCount,
+              _primitiveHitScoresSnapshot.begin());
+  if (copyCount < primCount) {
+    std::fill(_primitiveHitScoresSnapshot.begin() + copyCount,
+              _primitiveHitScoresSnapshot.begin() + primCount, 0.0f);
+  }
+
+  const auto &hitScores = _primitiveHitScoresSnapshot;
+
   std::sort(_rayHitSortedIndices.begin(), _rayHitSortedIndices.end(),
-            [this](size_t a, size_t b) {
-              float rawA =
-                  (a < _primitiveHitScores.size()) ? _primitiveHitScores[a] : 0.0f;
-              float rawB =
-                  (b < _primitiveHitScores.size()) ? _primitiveHitScores[b] : 0.0f;
+            [&hitScores](size_t a, size_t b) {
+              float rawA = (a < hitScores.size()) ? hitScores[a] : 0.0f;
+              float rawB = (b < hitScores.size()) ? hitScores[b] : 0.0f;
               float scoreA = sanitizeSortValue(rawA);
               float scoreB = sanitizeSortValue(rawB);
               if (scoreA == scoreB)
@@ -1863,7 +1876,6 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
               return scoreA > scoreB;
             });
 
-  const size_t primCount = _activePrimitive.size();
   const size_t minActive =
       std::min(primCount, _residencyConfig.rayHitMinActivePrimitives);
   size_t targetActive = static_cast<size_t>(
@@ -2244,7 +2256,6 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   } else {
     _lastRaysPerSecond = 0.0;
   }
-  processRayHitCounters();
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
