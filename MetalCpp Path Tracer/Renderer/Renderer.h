@@ -12,6 +12,13 @@
 
 namespace MetalCppPathTracer {
 
+struct InstanceRecord {
+  int blasRootIndex = -1;
+  int primitiveOffset = 0;
+  int primitiveCount = 0;
+  int padding = 0;
+};
+
 class Renderer {
 public:
   Renderer(MTL::Device *pDevice);
@@ -90,6 +97,7 @@ private:
   MTL::Buffer *_pBVHBuffer = nullptr;
   MTL::Buffer *_pPrimitiveIndexBuffer = nullptr;
   MTL::Buffer *_pTLASBuffer = nullptr;
+  MTL::Buffer *_pInstanceRecordBuffer = nullptr;
   MTL::Buffer *_pActiveBuffer = nullptr;
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
@@ -147,6 +155,7 @@ private:
   std::vector<int> _cachedPrimitiveIndices;
   std::vector<simd::float4> _cachedBVHNodes;
   std::vector<simd::float4> _cachedTLASNodes;
+  std::vector<InstanceRecord> _instanceRecords;
   std::vector<simd::float3> _cachedTriangleVertices;
   std::vector<simd::uint3> _cachedTriangleIndices;
   std::vector<uint32_t> _cachedLightIndices;
@@ -164,6 +173,7 @@ private:
   size_t _triangleIndexBufferCapacity = 0;
   size_t _bvhBufferCapacity = 0;
   size_t _tlasBufferCapacity = 0;
+  size_t _instanceRecordBufferCapacity = 0;
   size_t _primitiveIndexBufferCapacity = 0;
   size_t _activeBufferCapacity = 0;
   size_t _lightIndexBufferCapacity = 0;

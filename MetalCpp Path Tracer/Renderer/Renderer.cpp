@@ -356,6 +356,8 @@ Renderer::~Renderer() {
     _pPrimitiveIndexBuffer->release();
   if (_pTLASBuffer)
     _pTLASBuffer->release();
+  if (_pInstanceRecordBuffer)
+    _pInstanceRecordBuffer->release();
   if (_pActiveBuffer)
     _pActiveBuffer->release();
   if (_pPrimitiveRemapBuffer)
@@ -506,6 +508,7 @@ void Renderer::updateVisibleScene() {
   _cachedPrimitiveIndices.clear();
   _cachedBVHNodes.clear();
   _cachedTLASNodes.clear();
+  _instanceRecords.clear();
   _cachedTriangleVertices.clear();
   _cachedTriangleIndices.clear();
   _cachedLightIndices.clear();
@@ -828,6 +831,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       useCompaction = false;
   }
 
+  useCompaction = false;
   bool compactionStateChanged = (useCompaction != _residentCompacted);
   if (compactionStateChanged) {
     _residentCompacted = useCompaction;
@@ -982,6 +986,20 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
     _cachedLightIndices.swap(remappedLights);
     _lightCount = _cachedLightIndices.size();
+  }
+
+  _instanceRecords.resize(_allSceneObjects.size());
+  for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+       ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    InstanceRecord record;
+    record.blasRootIndex =
+        (objectIndex < _objectActive.size() && _objectActive[objectIndex])
+            ? obj.blasRootIndex
+            : -1;
+    record.primitiveOffset = static_cast<int>(obj.firstPrimitive);
+    record.primitiveCount = static_cast<int>(obj.primitiveCount);
+    _instanceRecords[objectIndex] = record;
   }
 
   _residentRemap = remapUpload;
@@ -1175,6 +1193,23 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
   }
 
+  size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
+  ensureBufferCapacity(_pInstanceRecordBuffer,
+                       instanceCount * sizeof(InstanceRecord),
+                       _instanceRecordBufferCapacity, allowShrink);
+  if (_pInstanceRecordBuffer) {
+    InstanceRecord *dst =
+        static_cast<InstanceRecord *>(_pInstanceRecordBuffer->contents());
+    if (!_instanceRecords.empty()) {
+      std::memcpy(dst, _instanceRecords.data(),
+                  _instanceRecords.size() * sizeof(InstanceRecord));
+    } else {
+      dst[0] = InstanceRecord{};
+    }
+    _pInstanceRecordBuffer->didModifyRange(
+        NS::Range::Make(0, instanceCount * sizeof(InstanceRecord)));
+  }
+
   size_t lightIndexBytes =
       std::max<size_t>(_cachedLightIndices.size(), size_t(1)) *
       sizeof(uint32_t);
@@ -1344,11 +1379,12 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pTriangleIndexBuffer, 0, 5);
   pEnc->setFragmentBuffer(_pPrimitiveIndexBuffer, 0, 6);
   pEnc->setFragmentBuffer(_pTLASBuffer, 0, 7);
-  pEnc->setFragmentBuffer(_pActiveBuffer, 0, 8);
-  pEnc->setFragmentBuffer(_pLightIndexBuffer, 0, 9);
-  pEnc->setFragmentBuffer(_pLightCdfBuffer, 0, 10);
-  pEnc->setFragmentBuffer(_pPrimitiveRemapBuffer, 0, 11);
-  pEnc->setFragmentBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+  pEnc->setFragmentBuffer(_pInstanceRecordBuffer, 0, 8);
+  pEnc->setFragmentBuffer(_pActiveBuffer, 0, 9);
+  pEnc->setFragmentBuffer(_pLightIndexBuffer, 0, 10);
+  pEnc->setFragmentBuffer(_pLightCdfBuffer, 0, 11);
+  pEnc->setFragmentBuffer(_pPrimitiveRemapBuffer, 0, 12);
+  pEnc->setFragmentBuffer(_pPrimitiveHitBufferGPU, 0, 13);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -1903,8 +1939,13 @@ void Renderer::dumpAccelerationStructure(const std::string &path) {
         << bmin.y << "," << bmin.z << "],\"max\":[" << bmax.x << ","
         << bmax.y << "," << bmax.z << "]";
     if (isLeaf) {
-      int objectIndex = -(first + 1);
-      out << ",\"object\":" << objectIndex << ",\"blasRoot\":" << second;
+      int instanceId = -(first + 1);
+      int blasRoot =
+          (instanceId >= 0 &&
+           instanceId < static_cast<int>(_instanceRecords.size()))
+              ? _instanceRecords[instanceId].blasRootIndex
+              : -1;
+      out << ",\"object\":" << instanceId << ",\"blasRoot\":" << blasRoot;
     } else {
       out << ",\"left\":" << first << ",\"right\":" << second;
     }

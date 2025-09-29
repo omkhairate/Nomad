@@ -281,9 +281,9 @@ inline intersection firstHitBVH(thread const ray &r,
 
 inline intersection
 firstHitTLAS(thread const ray &r, device const float4 *tlasNodes,
-             uint tlasNodeCount, device const float4 *bvhNodes,
-             device const float4 *primitives, device const int *primitiveIndices,
-             device const uchar *activeMask) {
+             uint tlasNodeCount, device const InstanceRecord *instances,
+             device const float4 *bvhNodes, device const float4 *primitives,
+             device const int *primitiveIndices, device const uchar *activeMask) {
   intersection bestHit;
   bestHit.t = INFINITY;
   bestHit.primitiveId = -1;
@@ -310,12 +310,16 @@ firstHitTLAS(thread const ray &r, device const float4 *tlasNodes,
     int rightChild = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
 
     if (leftChild < 0) {
-      int blasRoot = rightChild;
-      if (blasRoot >= 0) {
-        intersection hit = firstHitBVH(r, bvhNodes, primitives,
-                                       primitiveIndices, activeMask, blasRoot);
-        if (hit.primitiveId != -1 && hit.t < bestHit.t)
-          bestHit = hit;
+      int instanceId = -leftChild - 1;
+      if (instanceId >= 0) {
+        InstanceRecord record = instances[instanceId];
+        int blasRoot = record.blasRootIndex;
+        if (blasRoot >= 0) {
+          intersection hit = firstHitBVH(r, bvhNodes, primitives,
+                                         primitiveIndices, activeMask, blasRoot);
+          if (hit.primitiveId != -1 && hit.t < bestHit.t)
+            bestHit = hit;
+        }
       }
       continue;
     }
@@ -365,7 +369,9 @@ firstHitTLAS(thread const ray &r, device const float4 *tlasNodes,
 
 inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        device const float4 *tlasNodes,
-                       uint tlasNodeCount, device const float4 *bvhNodes,
+                       uint tlasNodeCount,
+                       device const InstanceRecord *instances,
+                       device const float4 *bvhNodes,
                        device const float4 *primitives,
                        device const float4 *materials, uint primitiveCount,
                        device const int *primitiveIndices,
@@ -390,8 +396,8 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     }
     return float4(0.0, 0.0, 0.0, 1.0);
   } else if (debugAS == 2) {
-    intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
-                                        primitives, primitiveIndices,
+    intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, instances,
+                                        bvhNodes, primitives, primitiveIndices,
                                         activeMask);
     if (bestHit.primitiveId != -1) {
       float t = (blasNodeCount > 1)
@@ -406,8 +412,8 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
   float4 light = float4(0.0);
 
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
-    intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
-                                        primitives, primitiveIndices,
+    intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, instances,
+                                        bvhNodes, primitives, primitiveIndices,
                                         activeMask);
 
     if (bestHit.primitiveId == -1) {
@@ -484,9 +490,10 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                     ray shadowRay;
                     shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
                     shadowRay.direction = wi;
-                    intersection shadowHit = firstHitTLAS(
-                        shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
-                        primitives, primitiveIndices, activeMask);
+                    intersection shadowHit =
+                        firstHitTLAS(shadowRay, tlasNodes, tlasNodeCount,
+                                     instances, bvhNodes, primitives,
+                                     primitiveIndices, activeMask);
                     bool visible = false;
                     if (shadowHit.primitiveId == -1) {
                       visible = true;

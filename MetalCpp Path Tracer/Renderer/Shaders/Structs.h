@@ -49,6 +49,14 @@ struct UniformsData
     uint padding1;
 };
 
+struct InstanceRecord
+{
+    int blasRootIndex;
+    int primitiveOffset;
+    int primitiveCount;
+    int padding;
+};
+
 
 
 
