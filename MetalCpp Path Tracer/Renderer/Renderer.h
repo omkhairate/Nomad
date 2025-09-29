@@ -5,8 +5,6 @@
 #include <MetalKit/MetalKit.hpp>
 #include <chrono>
 #include <cstdint>
-#include <future>
-#include <mutex>
 #include <simd/simd.h>
 #include <vector>
 
@@ -83,33 +81,6 @@ private:
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
 
-  struct CompactionBuildInput;
-  struct CompactionResultData;
-  struct PendingBufferHandles {
-    MTL::Buffer *primitive = nullptr;
-    MTL::Buffer *material = nullptr;
-    MTL::Buffer *primitiveIndices = nullptr;
-    MTL::Buffer *bvh = nullptr;
-    MTL::Buffer *triangleVertices = nullptr;
-    MTL::Buffer *triangleIndices = nullptr;
-    MTL::Buffer *remap = nullptr;
-    MTL::Buffer *activeMask = nullptr;
-    MTL::Buffer *instance = nullptr;
-    MTL::Buffer *lightIndices = nullptr;
-    MTL::Buffer *lightCdf = nullptr;
-  };
-  void launchCompactionBuild(CompactionBuildInput &&input);
-  std::shared_ptr<CompactionResultData>
-  buildCompactionResult(CompactionBuildInput input) const;
-  void processCompactionPipeline();
-  void beginCompactionUpload();
-  void finalizeCompactionUpload();
-  void clearPendingCompaction();
-  void releasePendingBuffers();
-  void releasePendingStagingBuffers();
-  void swapLiveBuffer(MTL::Buffer *&live, MTL::Buffer *&pending,
-                      size_t &capacity);
-
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
@@ -179,10 +150,6 @@ private:
   bool _residentBuffersInitialized = false;
   bool _residentCompacted = false;
   uint32_t _compactionCooldown = 0;
-  bool _compactionRequested = false;
-  uint64_t _nextCompactionGeneration = 1;
-  uint64_t _pendingCompactionGeneration = 0;
-  uint64_t _liveCompactionGeneration = 0;
   std::vector<uint8_t> _cpuActiveMask;
   std::vector<simd::float4> _cachedPrimitiveData;
   std::vector<simd::float4> _cachedMaterialData;
@@ -193,15 +160,6 @@ private:
   std::vector<simd::uint3> _cachedTriangleIndices;
   std::vector<uint32_t> _cachedLightIndices;
   std::vector<float> _cachedLightCdf;
-
-  std::future<std::shared_ptr<CompactionResultData>> _compactionFuture;
-  bool _compactionFutureValid = false;
-  std::shared_ptr<CompactionResultData> _pendingCompactionResult;
-  std::mutex _compactionMutex;
-  bool _compactionUploadInFlight = false;
-  PendingBufferHandles _pendingBuffers;
-  std::vector<MTL::Buffer *> _pendingStagingBuffers;
-  MTL::CommandBuffer *_pCompactionUploadCommandBuffer = nullptr;
 
   size_t _maxPrimitiveCount = 0;
   size_t _maxTriangleVertexCount = 0;
