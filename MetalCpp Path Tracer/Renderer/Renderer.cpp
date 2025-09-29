@@ -1707,13 +1707,14 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
     if (togglesNeeded == 0)
       continue;
 
+    size_t toggleCost = forceAllToggles ? togglesNeeded : size_t(1);
     if (!forceAllToggles &&
-        toggles + togglesNeeded > _residencyConfig.lodMaxTogglesPerFrame)
+        toggles + toggleCost > _residencyConfig.lodMaxTogglesPerFrame)
       continue;
 
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
     if (toggled > 0) {
-      toggles += toggled;
+      toggles += toggleCost;
       changed = true;
     }
   }
