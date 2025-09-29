@@ -905,10 +905,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     compactPrimitiveIndices.reserve(_activePrimitiveCount);
     compactActiveMask.reserve(_activePrimitiveCount);
 
+    std::vector<int32_t> cachedRemap;
     std::vector<size_t> activeLocalPrims;
     std::vector<Primitive> subset;
     std::vector<int> localPrimitiveIndices;
     std::vector<BVHNode> localNodes;
+
+    size_t blasCacheReused = 0;
+    size_t blasCacheFallback = 0;
+    size_t blasCacheSkipped = 0;
 
     for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
          ++objectIndex) {
@@ -918,6 +923,134 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       record.primitiveBase = static_cast<uint32_t>(remapUpload.size());
       record.primitiveIndexBase =
           static_cast<uint32_t>(compactPrimitiveIndices.size());
+
+      bool hasCache = !obj.cachedBlasNodes.empty() &&
+                      !obj.cachedPrimitiveIndices.empty() &&
+                      obj.cachedBlasRootIndex >= 0;
+
+      if (hasCache) {
+        cachedRemap.assign(obj.cachedPrimitiveIndices.size(), -1);
+        size_t activeCount = 0;
+        for (size_t localIdx = 0; localIdx < obj.cachedPrimitiveIndices.size();
+             ++localIdx) {
+          size_t globalIndex = obj.cachedPrimitiveIndices[localIdx];
+          if (globalIndex >= _activePrimitive.size() ||
+              !_activePrimitive[globalIndex])
+            continue;
+
+          cachedRemap[localIdx] = static_cast<int32_t>(activeCount);
+          remapUpload.push_back(static_cast<uint32_t>(globalIndex));
+          if (globalIndex < _primitiveToResidentIndex.size())
+            _primitiveToResidentIndex[globalIndex] =
+                static_cast<int32_t>(record.primitiveBase + activeCount);
+
+          const Primitive &p = _allPrimitives[globalIndex];
+          simd::float4 prim0;
+          simd::float4 prim1;
+          simd::float4 prim2;
+          switch (p.type) {
+          case PrimitiveType::Sphere: {
+            prim0 =
+                simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+            prim1 = simd::make_float4(
+                simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
+            prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+            break;
+          }
+          case PrimitiveType::Rectangle: {
+            prim0 = simd::make_float4(p.rectangle.center,
+                                      static_cast<float>(p.type));
+            prim1 = simd::make_float4(p.rectangle.u, 0.0f);
+            prim2 = simd::make_float4(p.rectangle.v, 0.0f);
+            break;
+          }
+          case PrimitiveType::Triangle: {
+            prim0 =
+                simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+            prim1 = simd::make_float4(p.triangle.v1, 0.0f);
+            prim2 = simd::make_float4(p.triangle.v2, 0.0f);
+            size_t baseVertex = compactTriangleVertices.size();
+            compactTriangleVertices.push_back(p.triangle.v0);
+            compactTriangleVertices.push_back(p.triangle.v1);
+            compactTriangleVertices.push_back(p.triangle.v2);
+            compactTriangleIndices.push_back(simd::make_uint3(
+                static_cast<uint32_t>(baseVertex),
+                static_cast<uint32_t>(baseVertex + 1),
+                static_cast<uint32_t>(baseVertex + 2)));
+            break;
+          }
+          }
+
+          compactPrimitiveData.push_back(prim0);
+          compactPrimitiveData.push_back(prim1);
+          compactPrimitiveData.push_back(prim2);
+
+          const Material &m = p.material;
+          compactMaterialData.push_back(
+              simd::make_float4(m.albedo, m.materialType));
+          compactMaterialData.push_back(
+              simd::make_float4(m.emissionColor, m.emissionPower));
+          compactActiveMask.push_back(1);
+          compactPrimitiveIndices.push_back(
+              static_cast<int>(record.primitiveBase + activeCount));
+
+          ++activeCount;
+        }
+
+        record.primitiveCount = static_cast<uint32_t>(activeCount);
+        if (activeCount == 0) {
+          _instanceRecords[objectIndex] = record;
+          ++blasCacheSkipped;
+          continue;
+        }
+
+        size_t nodeBase = compactBVHNodes.size() / 2;
+        record.blasRootIndex =
+            static_cast<int32_t>(nodeBase + obj.cachedBlasRootIndex);
+
+        for (const BVHNode &node : obj.cachedBlasNodes) {
+          BVHNode adjusted = node;
+          if (adjusted.count > 0) {
+            int newLeftFirst = -1;
+            int newCount = 0;
+            int originalCount = adjusted.count;
+            int localFirst = adjusted.leftFirst;
+            for (int i = 0; i < originalCount; ++i) {
+              size_t idx = static_cast<size_t>(localFirst + i);
+              if (idx >= cachedRemap.size())
+                continue;
+              int32_t remapped = cachedRemap[idx];
+              if (remapped < 0)
+                continue;
+              if (newLeftFirst < 0)
+                newLeftFirst =
+                    static_cast<int>(record.primitiveIndexBase + remapped);
+              ++newCount;
+            }
+            if (newLeftFirst < 0)
+              newLeftFirst = static_cast<int>(record.primitiveIndexBase);
+            adjusted.leftFirst = newLeftFirst;
+            adjusted.count = newCount;
+          } else {
+            int leftChild = adjusted.leftFirst + static_cast<int>(nodeBase);
+            int rightChild = -adjusted.count + static_cast<int>(nodeBase);
+            adjusted.leftFirst = leftChild;
+            adjusted.count = -rightChild;
+          }
+          float leftBits = 0.0f;
+          float rightBits = 0.0f;
+          std::memcpy(&leftBits, &adjusted.leftFirst, sizeof(int));
+          std::memcpy(&rightBits, &adjusted.count, sizeof(int));
+          compactBVHNodes.push_back(
+              simd::make_float4(adjusted.boundsMin, leftBits));
+          compactBVHNodes.push_back(
+              simd::make_float4(adjusted.boundsMax, rightBits));
+        }
+
+        _instanceRecords[objectIndex] = record;
+        ++blasCacheReused;
+        continue;
+      }
 
       activeLocalPrims.reserve(obj.primitiveCount);
       activeLocalPrims.clear();
@@ -934,6 +1067,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         _instanceRecords[objectIndex] = record;
         continue;
       }
+
+      ++blasCacheFallback;
 
       subset.clear();
       subset.reserve(activeLocalPrims.size());
@@ -970,8 +1105,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         switch (p.type) {
         case PrimitiveType::Sphere: {
           prim0 = simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-          prim1 = simd::make_float4(simd::make_float3(p.sphere.radius, 0.0f, 0.0f),
-                                     0.0f);
+          prim1 = simd::make_float4(
+              simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
           prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
           break;
         }
@@ -1038,6 +1173,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       record.blasRootIndex = static_cast<int32_t>(nodeBase);
       _instanceRecords[objectIndex] = record;
     }
+
+    printf("BLAS cache stats: reused %zu, rebuilt %zu, skipped %zu\n",
+           blasCacheReused, blasCacheFallback, blasCacheSkipped);
 
     primitiveSource = &compactPrimitiveData;
     materialSource = &compactMaterialData;
