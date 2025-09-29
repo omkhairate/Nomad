@@ -1,0 +1,59 @@
+<Scene width="1920" height="1080" maxRayDepth="32" residencyStrategy="distance" lodEnterDistance="65" lodExitDistance="90" residencyCooldown="0" lodToggleBudget="1000">
+    <CameraPath>
+        <!-- Begin amidst dense geometry to ensure a high active count -->
+        <Keyframe frame="0" position="0,12,0" lookAt="0,6,-110" />
+        <Keyframe frame="40" position="0,12,0" lookAt="0,6,-110" />
+        <!-- Pull far away so distance-based residency deactivates most primitives -->
+        <Keyframe frame="160" position="0,12,220" lookAt="0,0,120" />
+        <!-- Drift sideways while far to keep the scene sparse for several frames -->
+        <Keyframe frame="260" position="140,20,260" lookAt="140,0,200" />
+    </CameraPath>
+    <!-- Distant ground plane to provide context even when far away -->
+    <Rectangle position="0,-20,-120" u="400,0,0" v="0,0,-400" albedo="0.5,0.5,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+    <!-- Soft fill light to keep the clusters visible -->
+    <Sphere position="0,40,-60" radius="12" albedo="0,0,0" emission="1.0,0.95,0.9" materialType="0" emissionPower="4" />
+    <Sphere position="-11.25,2.06,-100.00" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-11.25,4.69,-98.52" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-11.25,7.31,-97.12" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-11.25,9.94,-95.91" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-3.75,2.06,-97.12" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-3.75,4.69,-95.91" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-3.75,7.31,-94.95" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-3.75,9.94,-94.31" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="3.75,2.06,-94.95" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="3.75,4.69,-94.31" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="3.75,7.31,-94.02" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="3.75,9.94,-94.10" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="11.25,2.06,-94.02" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="11.25,4.69,-94.10" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="11.25,7.31,-94.54" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="11.25,9.94,-95.33" radius="3.00" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="42.25,7.03,-140.00" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="42.25,10.00,-138.52" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="42.25,12.97,-137.12" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="50.75,7.03,-137.12" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="50.75,10.00,-135.91" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="50.75,12.97,-134.95" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="59.25,7.03,-134.95" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="59.25,10.00,-134.31" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="59.25,12.97,-134.02" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="67.75,7.03,-134.02" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="67.75,10.00,-134.10" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="67.75,12.97,-134.54" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-63.50,3.54,-140.00" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-63.50,6.51,-138.52" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-63.50,9.49,-137.12" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-63.50,12.46,-135.91" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-55.00,3.54,-137.12" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-55.00,6.51,-135.91" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-55.00,9.49,-134.95" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-55.00,12.46,-134.31" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-46.50,3.54,-134.95" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-46.50,6.51,-134.31" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-46.50,9.49,-134.02" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Sphere position="-46.50,12.46,-134.10" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <!-- Triangle content to exercise BLAS/TLAS compaction alongside spheres -->
+    <Mesh file="assets/bunny.obj" position="0,0,-100" scale="12" albedo="0.85,0.55,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="60,0,-140" scale="10" albedo="0.75,0.6,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-60,0,-140" scale="10" albedo="0.75,0.6,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
