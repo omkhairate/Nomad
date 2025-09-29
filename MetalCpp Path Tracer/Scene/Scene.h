@@ -22,6 +22,9 @@ struct SceneObject {
   simd::float3 boundsMin = simd::make_float3(0.0f, 0.0f, 0.0f);
   simd::float3 boundsMax = simd::make_float3(0.0f, 0.0f, 0.0f);
   int blasRootIndex = -1;
+  int cachedBlasRootIndex = -1;
+  std::vector<BVHNode> cachedBlasNodes;
+  std::vector<size_t> cachedPrimitiveIndices;
 };
 
 struct ResidencyParameters {

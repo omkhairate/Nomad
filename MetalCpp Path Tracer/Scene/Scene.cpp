@@ -140,14 +140,44 @@ void Scene::buildBVH() {
     if (obj.primitiveCount == 0)
       continue;
 
+    obj.cachedBlasNodes.clear();
+    obj.cachedPrimitiveIndices.clear();
+    obj.cachedBlasRootIndex = -1;
+
+    size_t nodeStart = bvhNodes.size();
     int root = buildBVHRecursive(obj.firstPrimitive,
                                  obj.firstPrimitive + obj.primitiveCount);
+    size_t nodeEnd = bvhNodes.size();
     obj.blasRootIndex = root;
     if (root >= 0) {
       const BVHNode &rootNode = bvhNodes[root];
       obj.boundsMin = rootNode.boundsMin;
       obj.boundsMax = rootNode.boundsMax;
       objectIndices.push_back(i);
+
+      if (nodeEnd > nodeStart) {
+        obj.cachedBlasNodes.reserve(nodeEnd - nodeStart);
+        for (size_t nodeIdx = nodeStart; nodeIdx < nodeEnd; ++nodeIdx) {
+          BVHNode node = bvhNodes[nodeIdx];
+          if (node.count > 0) {
+            node.leftFirst -= static_cast<int>(obj.firstPrimitive);
+          } else {
+            int leftChild = node.leftFirst - static_cast<int>(nodeStart);
+            int rightChild = -node.count - static_cast<int>(nodeStart);
+            node.leftFirst = leftChild;
+            node.count = -rightChild;
+          }
+          obj.cachedBlasNodes.push_back(node);
+        }
+        obj.cachedBlasRootIndex = 0;
+
+        obj.cachedPrimitiveIndices.resize(obj.primitiveCount);
+        for (size_t local = 0; local < obj.primitiveCount; ++local) {
+          size_t globalIndex =
+              primitiveIndices[obj.firstPrimitive + local];
+          obj.cachedPrimitiveIndices[local] = globalIndex;
+        }
+      }
     }
   }
 
