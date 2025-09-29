@@ -279,11 +279,11 @@ inline intersection firstHitBVH(thread const ray &r,
   return in;
 }
 
-inline intersection
-firstHitTLAS(thread const ray &r, device const float4 *tlasNodes,
-             uint tlasNodeCount, device const float4 *bvhNodes,
-             device const float4 *primitives, device const int *primitiveIndices,
-             device const uchar *activeMask) {
+inline intersection firstHitTLAS(
+    thread const ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
+    device const float4 *bvhNodes, device const float4 *primitives,
+    device const int *primitiveIndices, device const uchar *activeMask,
+    device const InstanceRecord *instanceRecords) {
   intersection bestHit;
   bestHit.t = INFINITY;
   bestHit.primitiveId = -1;
@@ -310,7 +310,9 @@ firstHitTLAS(thread const ray &r, device const float4 *tlasNodes,
     int rightChild = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
 
     if (leftChild < 0) {
-      int blasRoot = rightChild;
+      int instanceId = -(leftChild + 1);
+      InstanceRecord record = instanceRecords[instanceId];
+      int blasRoot = record.blasRootIndex;
       if (blasRoot >= 0) {
         intersection hit = firstHitBVH(r, bvhNodes, primitives,
                                        primitiveIndices, activeMask, blasRoot);
@@ -370,6 +372,7 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        device const float4 *materials, uint primitiveCount,
                        device const int *primitiveIndices,
                        device const uchar *activeMask,
+                       device const InstanceRecord *instanceRecords,
                        device const uint *lightIndices,
                        device const float *lightCdf,
                        device const uint *primitiveRemap,
@@ -392,7 +395,7 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
   } else if (debugAS == 2) {
     intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
                                         primitives, primitiveIndices,
-                                        activeMask);
+                                        activeMask, instanceRecords);
     if (bestHit.primitiveId != -1) {
       float t = (blasNodeCount > 1)
                     ? float(bestHit.nodeIndex) / float(blasNodeCount - 1)
@@ -408,7 +411,7 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
     intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
                                         primitives, primitiveIndices,
-                                        activeMask);
+                                        activeMask, instanceRecords);
 
     if (bestHit.primitiveId == -1) {
       float3 unitDir = normalize(r.direction);
