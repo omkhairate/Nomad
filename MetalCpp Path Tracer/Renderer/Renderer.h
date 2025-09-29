@@ -138,6 +138,8 @@ private:
   float _lightTotalWeight = 0.0f;
 
   bool _residentBuffersInitialized = false;
+  bool _residentCompacted = false;
+  uint32_t _compactionCooldown = 0;
   std::vector<uint8_t> _cpuActiveMask;
   std::vector<simd::float4> _cachedPrimitiveData;
   std::vector<simd::float4> _cachedMaterialData;

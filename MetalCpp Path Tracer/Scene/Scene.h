@@ -95,7 +95,14 @@ public:
   simd::float4 *createSphereBuffer();
   simd::float4 *createSphereMaterialsBuffer();
   simd::float4 *createBVHBuffer() const;
+  simd::float4 *createBVHBuffer(const std::vector<Primitive> &subset,
+                                std::vector<int> &primitiveIndices,
+                                size_t &outCount,
+                                std::vector<BVHNode> &outNodes) const;
   simd::float4 *createTLASBuffer(size_t &outCount) const;
+  simd::float4 *createTLASBuffer(size_t &outCount,
+                                 const std::vector<Primitive> &subset,
+                                 const std::vector<BVHNode> &blasNodes) const;
   int *createPrimitiveIndexBuffer() const;
   void createTriangleBuffers(std::vector<simd::float3> &outVertices,
                              std::vector<simd::uint3> &outIndices) const;
