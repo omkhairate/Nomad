@@ -85,7 +85,19 @@ private:
 
   struct CompactionBuildInput;
   struct CompactionResultData;
-  struct PendingBufferHandles;
+  struct PendingBufferHandles {
+    MTL::Buffer *primitive = nullptr;
+    MTL::Buffer *material = nullptr;
+    MTL::Buffer *primitiveIndices = nullptr;
+    MTL::Buffer *bvh = nullptr;
+    MTL::Buffer *triangleVertices = nullptr;
+    MTL::Buffer *triangleIndices = nullptr;
+    MTL::Buffer *remap = nullptr;
+    MTL::Buffer *activeMask = nullptr;
+    MTL::Buffer *instance = nullptr;
+    MTL::Buffer *lightIndices = nullptr;
+    MTL::Buffer *lightCdf = nullptr;
+  };
   void launchCompactionBuild(CompactionBuildInput &&input);
   std::shared_ptr<CompactionResultData>
   buildCompactionResult(CompactionBuildInput input) const;

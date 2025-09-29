@@ -283,20 +283,6 @@ BufferCountInfo prepareBufferCounts(size_t current, size_t previous,
 
 } // namespace
 
-struct Renderer::PendingBufferHandles {
-  MTL::Buffer *primitive = nullptr;
-  MTL::Buffer *material = nullptr;
-  MTL::Buffer *primitiveIndices = nullptr;
-  MTL::Buffer *bvh = nullptr;
-  MTL::Buffer *triangleVertices = nullptr;
-  MTL::Buffer *triangleIndices = nullptr;
-  MTL::Buffer *remap = nullptr;
-  MTL::Buffer *activeMask = nullptr;
-  MTL::Buffer *instance = nullptr;
-  MTL::Buffer *lightIndices = nullptr;
-  MTL::Buffer *lightCdf = nullptr;
-};
-
 struct Renderer::CompactionBuildInput {
   uint64_t generation = 0;
   const Scene *scene = nullptr;
