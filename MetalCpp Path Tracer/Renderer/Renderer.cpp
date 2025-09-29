@@ -1420,6 +1420,11 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   size_t toggles = 0;
   bool changed = false;
 
+  size_t activePrimitiveCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activePrimitiveCount;
+
   const size_t objectCount = _allSceneObjects.size();
   std::vector<float> objectDistances(objectCount,
                                      std::numeric_limits<float>::max());
@@ -1473,22 +1478,29 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
         toggles + togglesNeeded > _residencyConfig.lodMaxTogglesPerFrame)
       continue;
 
+    if (!forceAllToggles && !shouldBeActive && activePrimitiveCount > 0 &&
+        togglesNeeded >= activePrimitiveCount)
+      continue;
+
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
     if (toggled > 0) {
       toggles += toggled;
       changed = true;
+      if (shouldBeActive) {
+        activePrimitiveCount += toggled;
+      } else {
+        activePrimitiveCount =
+            (toggled >= activePrimitiveCount) ? 0 : activePrimitiveCount - toggled;
+      }
     }
   }
 
-  size_t activeCount = 0;
-  for (bool active : _activePrimitive)
-    if (active)
-      ++activeCount;
-
-  if (activeCount == 0 && !_activePrimitive.empty()) {
+  if (activePrimitiveCount == 0 && !_activePrimitive.empty()) {
     // Ensure at least one primitive remains visible to avoid a blank scene
-    if (setPrimitiveActive(0, true))
+    if (setPrimitiveActive(0, true)) {
       changed = true;
+      ++activePrimitiveCount;
+    }
   }
 
   return changed;
