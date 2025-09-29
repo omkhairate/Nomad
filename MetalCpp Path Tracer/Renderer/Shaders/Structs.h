@@ -20,6 +20,14 @@ struct intersection
     int nodeIndex = -1; // BLAS leaf node index
 };
 
+struct InstanceRecord
+{
+    int blasRootIndex;
+    uint primitiveBase;
+    uint primitiveCount;
+    uint primitiveIndexBase;
+};
+
 
 struct UniformsData
 {

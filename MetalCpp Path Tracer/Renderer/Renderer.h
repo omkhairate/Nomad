@@ -12,6 +12,13 @@
 
 namespace MetalCppPathTracer {
 
+struct BlasInstanceRecord {
+  int32_t blasRootIndex;
+  uint32_t primitiveBase;
+  uint32_t primitiveCount;
+  uint32_t primitiveIndexBase;
+};
+
 class Renderer {
 public:
   Renderer(MTL::Device *pDevice);
@@ -96,6 +103,7 @@ private:
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
+  MTL::Buffer *_pInstanceBuffer = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -123,6 +131,7 @@ private:
   std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;
 
+  std::vector<BlasInstanceRecord> _instanceRecords;
   std::vector<Primitive> _residentPrimitives;
   std::vector<uint32_t> _residentRemap;
   std::vector<size_t> _recentlyActivated;
@@ -170,6 +179,7 @@ private:
   size_t _lightCdfBufferCapacity = 0;
   size_t _primitiveRemapBufferCapacity = 0;
   size_t _primitiveHitBufferCapacity = 0;
+  size_t _instanceBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;

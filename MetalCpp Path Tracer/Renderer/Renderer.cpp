@@ -368,6 +368,8 @@ Renderer::~Renderer() {
     _pLightIndexBuffer->release();
   if (_pLightCdfBuffer)
     _pLightCdfBuffer->release();
+  if (_pInstanceBuffer)
+    _pInstanceBuffer->release();
 
   for (int i = 0; i < 2; i++)
     if (_accumulationTargets[i])
@@ -742,6 +744,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _cachedTotalPrimitiveCount = totalPrimitiveCount;
   }
 
+  const auto &sceneObjects = _pScene->getObjects();
+  _instanceRecords.resize(sceneObjects.size());
+
   if (_cpuActiveMask.size() < totalPrimitiveCount)
     _cpuActiveMask.resize(totalPrimitiveCount, 0);
   if (needFullUpload)
@@ -840,10 +845,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   std::vector<simd::float4> compactMaterialData;
   std::vector<int> compactPrimitiveIndices;
   std::vector<simd::float4> compactBVHNodes;
-  std::vector<simd::float4> compactTLASNodes;
   std::vector<simd::float3> compactTriangleVertices;
   std::vector<simd::uint3> compactTriangleIndices;
-  std::vector<BVHNode> compactBVHStructs;
 
   const std::vector<simd::float4> *primitiveSource = &_cachedPrimitiveData;
   const std::vector<simd::float4> *materialSource = &_cachedMaterialData;
@@ -866,110 +869,188 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _residentTriangleCount = _cachedTriangleIndices.size();
     _blasNodeCount = _cachedBVHNodes.size() / 2;
     _tlasNodeCount = _cachedTLASNodes.size() / 2;
+
+    for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
+         ++objectIndex) {
+      const SceneObject &obj = sceneObjects[objectIndex];
+      BlasInstanceRecord record{};
+      record.primitiveBase = static_cast<uint32_t>(obj.firstPrimitive);
+      record.primitiveCount = static_cast<uint32_t>(obj.primitiveCount);
+      record.primitiveIndexBase = static_cast<uint32_t>(obj.firstPrimitive);
+      bool anyActive = false;
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      for (size_t prim = first;
+           prim < last && prim < _activePrimitive.size(); ++prim) {
+        if (_activePrimitive[prim]) {
+          anyActive = true;
+          break;
+        }
+      }
+      record.blasRootIndex = anyActive ? obj.blasRootIndex : -1;
+      _instanceRecords[objectIndex] = record;
+    }
   } else {
-    size_t residentPrimitiveCount = _activePrimitiveCount;
-    remapUpload.resize(residentPrimitiveCount);
-    compactPrimitiveData.assign(residentPrimitiveCount * 3,
-                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-    compactMaterialData.assign(residentPrimitiveCount * 2,
-                               simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-    compactPrimitiveIndices.resize(residentPrimitiveCount);
+    remapUpload.clear();
+    compactPrimitiveData.clear();
+    compactMaterialData.clear();
+    compactPrimitiveIndices.clear();
+    compactBVHNodes.clear();
+    compactTriangleVertices.clear();
+    compactTriangleIndices.clear();
+    compactActiveMask.clear();
 
-    std::vector<Primitive> compactPrimitives;
-    compactPrimitives.reserve(residentPrimitiveCount);
+    compactPrimitiveData.reserve(_activePrimitiveCount * 3);
+    compactMaterialData.reserve(_activePrimitiveCount * 2);
+    compactPrimitiveIndices.reserve(_activePrimitiveCount);
+    compactActiveMask.reserve(_activePrimitiveCount);
 
-    size_t triangleVertexBase = 0;
-    for (size_t localIndex = 0; localIndex < residentPrimitiveCount;
-         ++localIndex) {
-      size_t globalIndex = activeIndices[localIndex];
-      remapUpload[localIndex] = static_cast<uint32_t>(globalIndex);
-      if (globalIndex < _primitiveToResidentIndex.size())
-        _primitiveToResidentIndex[globalIndex] =
-            static_cast<int32_t>(localIndex);
+    std::vector<size_t> activeLocalPrims;
+    std::vector<Primitive> subset;
+    std::vector<int> localPrimitiveIndices;
+    std::vector<BVHNode> localNodes;
 
-      const Primitive &p = _allPrimitives[globalIndex];
-      compactPrimitives.push_back(p);
-      compactPrimitiveIndices[localIndex] = static_cast<int>(localIndex);
+    for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
+         ++objectIndex) {
+      const SceneObject &obj = sceneObjects[objectIndex];
+      BlasInstanceRecord record{};
+      record.blasRootIndex = -1;
+      record.primitiveBase = static_cast<uint32_t>(remapUpload.size());
+      record.primitiveIndexBase =
+          static_cast<uint32_t>(compactPrimitiveIndices.size());
 
-      simd::float4 *primBase = &compactPrimitiveData[3 * localIndex];
-      simd::float4 *matBase = &compactMaterialData[2 * localIndex];
-
-      switch (p.type) {
-      case PrimitiveType::Sphere: {
-        primBase[0] =
-            simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(
-            simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
-        primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        break;
-      }
-      case PrimitiveType::Rectangle: {
-        primBase[0] =
-            simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
-        primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
-        break;
-      }
-      case PrimitiveType::Triangle: {
-        primBase[0] =
-            simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(p.triangle.v1, 0.0f);
-        primBase[2] = simd::make_float4(p.triangle.v2, 0.0f);
-        compactTriangleVertices.push_back(p.triangle.v0);
-        compactTriangleVertices.push_back(p.triangle.v1);
-        compactTriangleVertices.push_back(p.triangle.v2);
-        compactTriangleIndices.push_back(simd::make_uint3(
-            static_cast<uint32_t>(triangleVertexBase),
-            static_cast<uint32_t>(triangleVertexBase + 1),
-            static_cast<uint32_t>(triangleVertexBase + 2)));
-        triangleVertexBase += 3;
-        break;
-      }
+      activeLocalPrims.reserve(obj.primitiveCount);
+      activeLocalPrims.clear();
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      for (size_t prim = first;
+           prim < last && prim < _activePrimitive.size(); ++prim) {
+        if (_activePrimitive[prim])
+          activeLocalPrims.push_back(prim);
       }
 
-      const Material &m = p.material;
-      matBase[0] = simd::make_float4(m.albedo, m.materialType);
-      matBase[1] = simd::make_float4(m.emissionColor, m.emissionPower);
+      record.primitiveCount = static_cast<uint32_t>(activeLocalPrims.size());
+      if (activeLocalPrims.empty()) {
+        _instanceRecords[objectIndex] = record;
+        continue;
+      }
+
+      subset.clear();
+      subset.reserve(activeLocalPrims.size());
+      for (size_t idx : activeLocalPrims)
+        subset.push_back(_allPrimitives[idx]);
+
+      localPrimitiveIndices.resize(subset.size());
+      std::iota(localPrimitiveIndices.begin(), localPrimitiveIndices.end(), 0);
+
+      localNodes.clear();
+      size_t localNodeCount = 0;
+      simd::float4 *localBVHRaw = _pScene->createBVHBuffer(
+          subset, localPrimitiveIndices, localNodeCount, localNodes);
+      if (localBVHRaw)
+        delete[] localBVHRaw;
+
+      if (localNodeCount == 0 || localNodes.empty()) {
+        record.primitiveCount = 0;
+        _instanceRecords[objectIndex] = record;
+        continue;
+      }
+
+      for (size_t local = 0; local < subset.size(); ++local) {
+        size_t globalIndex = activeLocalPrims[local];
+        remapUpload.push_back(static_cast<uint32_t>(globalIndex));
+        if (globalIndex < _primitiveToResidentIndex.size())
+          _primitiveToResidentIndex[globalIndex] =
+              static_cast<int32_t>(record.primitiveBase + local);
+
+        const Primitive &p = subset[local];
+        simd::float4 prim0;
+        simd::float4 prim1;
+        simd::float4 prim2;
+        switch (p.type) {
+        case PrimitiveType::Sphere: {
+          prim0 = simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+          prim1 = simd::make_float4(simd::make_float3(p.sphere.radius, 0.0f, 0.0f),
+                                     0.0f);
+          prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          break;
+        }
+        case PrimitiveType::Rectangle: {
+          prim0 = simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+          prim1 = simd::make_float4(p.rectangle.u, 0.0f);
+          prim2 = simd::make_float4(p.rectangle.v, 0.0f);
+          break;
+        }
+        case PrimitiveType::Triangle: {
+          prim0 = simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+          prim1 = simd::make_float4(p.triangle.v1, 0.0f);
+          prim2 = simd::make_float4(p.triangle.v2, 0.0f);
+          size_t baseVertex = compactTriangleVertices.size();
+          compactTriangleVertices.push_back(p.triangle.v0);
+          compactTriangleVertices.push_back(p.triangle.v1);
+          compactTriangleVertices.push_back(p.triangle.v2);
+          compactTriangleIndices.push_back(simd::make_uint3(
+              static_cast<uint32_t>(baseVertex),
+              static_cast<uint32_t>(baseVertex + 1),
+              static_cast<uint32_t>(baseVertex + 2)));
+          break;
+        }
+        }
+
+        compactPrimitiveData.push_back(prim0);
+        compactPrimitiveData.push_back(prim1);
+        compactPrimitiveData.push_back(prim2);
+
+        const Material &m = p.material;
+        compactMaterialData.push_back(simd::make_float4(m.albedo, m.materialType));
+        compactMaterialData.push_back(
+            simd::make_float4(m.emissionColor, m.emissionPower));
+        compactActiveMask.push_back(1);
+      }
+
+      for (int &idx : localPrimitiveIndices)
+        idx = static_cast<int>(record.primitiveBase + idx);
+      compactPrimitiveIndices.insert(compactPrimitiveIndices.end(),
+                                     localPrimitiveIndices.begin(),
+                                     localPrimitiveIndices.end());
+
+      size_t nodeBase = compactBVHNodes.size() / 2;
+      for (const BVHNode &node : localNodes) {
+        BVHNode adjusted = node;
+        if (adjusted.count > 0) {
+          adjusted.leftFirst += static_cast<int>(record.primitiveIndexBase);
+        } else {
+          int leftChild = adjusted.leftFirst + static_cast<int>(nodeBase);
+          int rightChild = -adjusted.count + static_cast<int>(nodeBase);
+          adjusted.leftFirst = leftChild;
+          adjusted.count = -rightChild;
+        }
+        float leftBits = 0.0f;
+        float rightBits = 0.0f;
+        std::memcpy(&leftBits, &adjusted.leftFirst, sizeof(int));
+        std::memcpy(&rightBits, &adjusted.count, sizeof(int));
+        compactBVHNodes.push_back(
+            simd::make_float4(adjusted.boundsMin, leftBits));
+        compactBVHNodes.push_back(
+            simd::make_float4(adjusted.boundsMax, rightBits));
+      }
+
+      record.blasRootIndex = static_cast<int32_t>(nodeBase);
+      _instanceRecords[objectIndex] = record;
     }
-
-    size_t compactBlasCount = 0;
-    simd::float4 *compactBVHRaw = _pScene->createBVHBuffer(
-        compactPrimitives, compactPrimitiveIndices, compactBlasCount,
-        compactBVHStructs);
-    if (compactBVHRaw && compactBlasCount > 0) {
-      compactBVHNodes.assign(compactBVHRaw,
-                             compactBVHRaw + compactBlasCount * 2);
-      delete[] compactBVHRaw;
-    } else {
-      compactBVHNodes.clear();
-      compactBVHStructs.clear();
-    }
-
-    size_t compactTlasCount = 0;
-    simd::float4 *compactTLASRaw = _pScene->createTLASBuffer(
-        compactTlasCount, compactPrimitives, compactBVHStructs);
-    if (compactTLASRaw && compactTlasCount > 0) {
-      compactTLASNodes.assign(compactTLASRaw,
-                              compactTLASRaw + compactTlasCount * 2);
-      delete[] compactTLASRaw;
-    } else {
-      compactTLASNodes.clear();
-    }
-
-    compactActiveMask.assign(residentPrimitiveCount, 1);
 
     primitiveSource = &compactPrimitiveData;
     materialSource = &compactMaterialData;
     primitiveIndexSource = &compactPrimitiveIndices;
     bvhSource = &compactBVHNodes;
-    tlasSource = &compactTLASNodes;
+    tlasSource = &_cachedTLASNodes;
     triangleVertexSource = &compactTriangleVertices;
     triangleIndexSource = &compactTriangleIndices;
 
-    _residentPrimitiveCount = residentPrimitiveCount;
+    _residentPrimitiveCount = remapUpload.size();
     _residentTriangleCount = compactTriangleIndices.size();
     _blasNodeCount = compactBVHNodes.size() / 2;
-    _tlasNodeCount = compactTLASNodes.size() / 2;
+    _tlasNodeCount = _cachedTLASNodes.size() / 2;
 
     std::vector<uint32_t> remappedLights;
     remappedLights.reserve(_cachedLightIndices.size());
@@ -1132,6 +1213,24 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     _residentBuffersInitialized = true;
+  }
+
+  size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
+  size_t instanceBytes = instanceCount * sizeof(BlasInstanceRecord);
+  ensureBufferCapacity(_pInstanceBuffer, instanceBytes, _instanceBufferCapacity,
+                       allowShrink);
+  if (_pInstanceBuffer) {
+    auto *dst = static_cast<BlasInstanceRecord *>(
+        _pInstanceBuffer->contents());
+    if (_instanceRecords.empty()) {
+      dst[0] = BlasInstanceRecord{};
+    } else {
+      std::memcpy(dst, _instanceRecords.data(),
+                  _instanceRecords.size() * sizeof(BlasInstanceRecord));
+      if (_instanceRecords.size() < instanceCount)
+        dst[_instanceRecords.size()] = BlasInstanceRecord{};
+    }
+    _pInstanceBuffer->didModifyRange(NS::Range::Make(0, instanceBytes));
   }
 
   size_t activeMaskCount =
@@ -1349,6 +1448,7 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pLightCdfBuffer, 0, 10);
   pEnc->setFragmentBuffer(_pPrimitiveRemapBuffer, 0, 11);
   pEnc->setFragmentBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+  pEnc->setFragmentBuffer(_pInstanceBuffer, 0, 13);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -1904,7 +2004,12 @@ void Renderer::dumpAccelerationStructure(const std::string &path) {
         << bmax.y << "," << bmax.z << "]";
     if (isLeaf) {
       int objectIndex = -(first + 1);
-      out << ",\"object\":" << objectIndex << ",\"blasRoot\":" << second;
+      int blasRoot = -1;
+      if (objectIndex >= 0 &&
+          static_cast<size_t>(objectIndex) < _instanceRecords.size())
+        blasRoot = _instanceRecords[objectIndex].blasRootIndex;
+      out << ",\"object\":" << objectIndex << ",\"instance\":"
+          << second << ",\"blasRoot\":" << blasRoot;
     } else {
       out << ",\"left\":" << first << ",\"right\":" << second;
     }
