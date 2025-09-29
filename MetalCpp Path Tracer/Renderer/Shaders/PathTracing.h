@@ -169,6 +169,8 @@ inline intersection firstHitBVH(thread const ray &r,
 
     if (second > 0) {
       int count = second;
+      if (count <= 0 || leftFirst < 0)
+        continue;
       for (int i = 0; i < count; ++i) {
         int primIdx = primitiveIndices[leftFirst + i];
         if (!activeMask[primIdx])
@@ -265,8 +267,16 @@ inline intersection firstHitBVH(thread const ray &r,
       }
     } else {
       int rightChild = -second;
-      stack[stackPtr++] = leftFirst;
-      stack[stackPtr++] = rightChild;
+      bool leftValid = leftFirst >= 0;
+      bool rightValid = rightChild >= 0;
+
+      if (!leftValid && !rightValid)
+        continue;
+
+      if (leftValid && stackPtr < stackSize)
+        stack[stackPtr++] = leftFirst;
+      if (rightValid && stackPtr < stackSize)
+        stack[stackPtr++] = rightChild;
     }
   }
 
