@@ -460,11 +460,11 @@ simd::float4 *Scene::createTLASBuffer(size_t &outCount,
 
   const BVHNode &root = blasNodes.front();
   int encodedLeaf = -1;
-  int blasRootIndex = 0;
+  int instanceId = 0;
   float leftBits = 0.0f;
   float rightBits = 0.0f;
   std::memcpy(&leftBits, &encodedLeaf, sizeof(int));
-  std::memcpy(&rightBits, &blasRootIndex, sizeof(int));
+  std::memcpy(&rightBits, &instanceId, sizeof(int));
 
   buffer[0] = simd::make_float4(root.boundsMin, leftBits);
   buffer[1] = simd::make_float4(root.boundsMax, rightBits);
@@ -629,7 +629,7 @@ int Scene::buildTLASRecursive(size_t start, size_t end) {
     size_t objectIndex = objectIndices[start];
     tlasNodes[nodeIndex].leftChild =
         -static_cast<int>(objectIndex) - 1; // encode object index
-    tlasNodes[nodeIndex].rightChild = objects[objectIndex].blasRootIndex;
+    tlasNodes[nodeIndex].rightChild = static_cast<int>(objectIndex);
     return nodeIndex;
   }
 

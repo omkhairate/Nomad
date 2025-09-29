@@ -20,6 +20,7 @@ float4 fragment fragmentMain(
     device const float* lightCdf [[buffer(10)]],
     device const uint* primitiveRemap [[buffer(11)]],
     device atomic_uint* primitiveHitCounts [[buffer(12)]],
+    device const InstanceRecord* instanceRecords [[buffer(13)]],
     texture2d<float, access::read_write> lastFrame [[texture(0)]],
     texture2d<float, access::read_write> currentFrame [[texture(1)]])
 
@@ -68,6 +69,7 @@ float4 fragment fragmentMain(
         lightCdf,
         primitiveRemap,
         primitiveHitCounts,
+        instanceRecords,
         seed,
         u.maxRayDepth,
         u.debugAS,
