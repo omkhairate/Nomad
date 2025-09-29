@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <limits>
 #include "tiny_obj_loader.h"
 
 using namespace tinyxml2;
@@ -25,6 +26,134 @@ static simd::float3 parseVec3(const char* str) {
 }
 
 namespace {
+
+static float AxisValue(const simd::float3& v, int axis) {
+    switch (axis) {
+        case 0: return v.x;
+        case 1: return v.y;
+        default: return v.z;
+    }
+}
+
+static void ComputeBounds(const std::vector<Primitive>& prims, size_t start,
+                          size_t end, simd::float3& outMin,
+                          simd::float3& outMax) {
+    const float maxFloat = std::numeric_limits<float>::max();
+    const float minFloat = -std::numeric_limits<float>::max();
+    simd::float3 bmin = simd::make_float3(maxFloat, maxFloat, maxFloat);
+    simd::float3 bmax = simd::make_float3(minFloat, minFloat, minFloat);
+
+    for (size_t i = start; i < end; ++i) {
+        const Primitive& p = prims[i];
+        const auto& tri = p.triangle;
+
+        bmin.x = std::min(bmin.x, tri.v0.x);
+        bmin.y = std::min(bmin.y, tri.v0.y);
+        bmin.z = std::min(bmin.z, tri.v0.z);
+        bmax.x = std::max(bmax.x, tri.v0.x);
+        bmax.y = std::max(bmax.y, tri.v0.y);
+        bmax.z = std::max(bmax.z, tri.v0.z);
+
+        bmin.x = std::min(bmin.x, tri.v1.x);
+        bmin.y = std::min(bmin.y, tri.v1.y);
+        bmin.z = std::min(bmin.z, tri.v1.z);
+        bmax.x = std::max(bmax.x, tri.v1.x);
+        bmax.y = std::max(bmax.y, tri.v1.y);
+        bmax.z = std::max(bmax.z, tri.v1.z);
+
+        bmin.x = std::min(bmin.x, tri.v2.x);
+        bmin.y = std::min(bmin.y, tri.v2.y);
+        bmin.z = std::min(bmin.z, tri.v2.z);
+        bmax.x = std::max(bmax.x, tri.v2.x);
+        bmax.y = std::max(bmax.y, tri.v2.y);
+        bmax.z = std::max(bmax.z, tri.v2.z);
+    }
+
+    outMin = bmin;
+    outMax = bmax;
+}
+
+static float PrimitiveCentroidAxis(const Primitive& prim, int axis) {
+    const auto& tri = prim.triangle;
+    float c0 = AxisValue(tri.v0, axis);
+    float c1 = AxisValue(tri.v1, axis);
+    float c2 = AxisValue(tri.v2, axis);
+    return (c0 + c1 + c2) / 3.0f;
+}
+
+static void PartitionTrianglesRecursive(std::vector<Primitive>& prims,
+                                        size_t start, size_t end,
+                                        size_t maxTriangles, float maxExtent,
+                                        std::vector<std::pair<size_t, size_t>>&
+                                            partitions) {
+    size_t count = end - start;
+    if (count == 0) {
+        return;
+    }
+
+    simd::float3 bmin, bmax;
+    ComputeBounds(prims, start, end, bmin, bmax);
+    simd::float3 extents = bmax - bmin;
+
+    float longest = extents.x;
+    int axis = 0;
+    if (extents.y > longest) {
+        longest = extents.y;
+        axis = 1;
+    }
+    if (extents.z > longest) {
+        longest = extents.z;
+        axis = 2;
+    }
+
+    bool withinTriangleBudget = (maxTriangles == 0 || count <= maxTriangles);
+    bool withinExtentBudget = (maxExtent <= 0.0f || longest <= maxExtent);
+
+    if ((withinTriangleBudget && withinExtentBudget) || count <= 1) {
+        partitions.emplace_back(start, end);
+        return;
+    }
+
+    size_t mid = start + count / 2;
+    if (mid == start || mid == end) {
+        partitions.emplace_back(start, end);
+        return;
+    }
+
+    std::nth_element(
+        prims.begin() + start, prims.begin() + mid, prims.begin() + end,
+        [axis](const Primitive& a, const Primitive& b) {
+            return PrimitiveCentroidAxis(a, axis) <
+                   PrimitiveCentroidAxis(b, axis);
+        });
+
+    PartitionTrianglesRecursive(prims, start, mid, maxTriangles, maxExtent,
+                                partitions);
+    PartitionTrianglesRecursive(prims, mid, end, maxTriangles, maxExtent,
+                                partitions);
+}
+
+static void EmitMeshPartitions(Scene* scene, std::vector<Primitive>& prims,
+                               size_t maxTriangles, float maxExtent) {
+    if (prims.empty()) {
+        return;
+    }
+
+    if ((maxTriangles == 0 && maxExtent <= 0.0f) || prims.size() <= 1) {
+        scene->addObject(prims);
+        return;
+    }
+
+    std::vector<std::pair<size_t, size_t>> partitions;
+    PartitionTrianglesRecursive(prims, 0, prims.size(), maxTriangles,
+                                maxExtent, partitions);
+
+    for (const auto& range : partitions) {
+        std::vector<Primitive> chunk(prims.begin() + range.first,
+                                     prims.begin() + range.second);
+        scene->addObject(chunk);
+    }
+}
 
 // Stores previously loaded mesh vertex/index buffers keyed by resolved file
 // path so repeated references to the same mesh can reuse geometry data within a
@@ -247,6 +376,11 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             m.materialType = e->FloatAttribute("materialType", 0);
             m.emissionPower = e->FloatAttribute("emissionPower", 0);
 
+            size_t clusterMaxTriangles = static_cast<size_t>(
+                e->Unsigned64Attribute("clusterMaxTriangles", 0));
+            float clusterMaxExtent =
+                e->FloatAttribute("clusterMaxExtent", 0.0f);
+
             std::vector<Primitive> meshPrimitives;
             meshPrimitives.reserve(meshData.indices.size());
             for (const auto& tri : meshData.indices) {
@@ -258,7 +392,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 p.material = m;
                 meshPrimitives.push_back(p);
             }
-            scene->addObject(meshPrimitives);
+            EmitMeshPartitions(scene, meshPrimitives, clusterMaxTriangles,
+                               clusterMaxExtent);
         }
         else if (tag == "CameraPath") {
             for (auto* kf = e->FirstChildElement("Keyframe"); kf; kf = kf->NextSiblingElement("Keyframe")) {

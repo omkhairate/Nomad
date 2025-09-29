@@ -14,134 +14,134 @@
     <Sphere position="0,-10000,0" radius="10000" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
 
     <!-- Dense cluster A of 64 high-vertex meshes -->
-    <Mesh file="assets/bunny.obj" position="-87.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-87.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-87.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-87.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-87.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-87.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-87.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-87.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-62.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-62.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-62.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-62.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-62.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-62.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-62.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-62.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-37.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-37.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-37.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-37.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-37.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-37.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-37.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-37.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-12.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-12.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-12.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-12.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-12.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-12.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-12.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-12.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="12.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="12.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="12.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="12.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="12.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="12.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="12.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="12.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="37.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="37.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="37.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="37.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="37.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="37.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="37.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="37.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="62.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="62.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="62.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="62.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="62.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="62.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="62.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="62.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="87.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="87.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="87.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="87.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="87.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="87.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="87.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="87.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-87.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-87.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-87.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-87.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-87.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-87.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-87.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-87.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-62.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-62.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-62.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-62.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-62.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-62.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-62.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-62.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-37.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-37.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-37.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-37.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-37.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-37.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-37.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-37.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-12.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-12.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-12.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-12.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-12.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-12.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-12.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-12.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="12.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="12.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="12.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="12.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="12.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="12.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="12.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="12.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="37.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="37.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="37.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="37.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="37.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="37.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="37.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="37.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="62.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="62.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="62.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="62.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="62.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="62.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="62.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="62.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="87.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="87.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="87.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="87.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="87.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="87.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="87.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="87.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
 
     <!-- Identical cluster B far away so everything unloads in transit -->
-    <Mesh file="assets/bunny.obj" position="1112.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1112.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1112.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1112.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1112.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1112.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1112.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1112.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1137.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1137.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1137.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1137.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1137.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1137.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1137.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1137.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1162.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1162.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1162.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1162.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1162.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1162.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1162.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1162.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1187.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1187.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1187.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1187.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1187.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1187.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1187.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1187.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1212.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1212.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1212.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1212.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1212.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1212.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1212.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1212.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1237.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1237.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1237.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1237.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1237.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1237.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1237.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1237.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1262.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1262.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1262.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1262.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1262.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1262.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1262.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1262.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1287.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1287.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1287.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1287.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1287.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1287.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1287.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="1287.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1112.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1112.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1112.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1112.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1112.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1112.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1112.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1112.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1137.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1137.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1137.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1137.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1137.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1137.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1137.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1137.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1162.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1162.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1162.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1162.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1162.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1162.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1162.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1162.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1187.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1187.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1187.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1187.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1187.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1187.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1187.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1187.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1212.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1212.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1212.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1212.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1212.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1212.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1212.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1212.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1237.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1237.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1237.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1237.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1237.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1237.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1237.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1237.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1262.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1262.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1262.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1262.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1262.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1262.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1262.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1262.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1287.5,0,-87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1287.5,0,-62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1287.5,0,-37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1287.5,0,-12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1287.5,0,12.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1287.5,0,37.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1287.5,0,62.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="1287.5,0,87.5" scale="12.0" albedo="0.85,0.6,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
 </Scene>
