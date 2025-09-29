@@ -500,6 +500,17 @@ void Renderer::updateVisibleScene() {
   _residentRemap.clear();
   _recentlyActivated.clear();
   _recentlyDeactivated.clear();
+  _residentBuffersInitialized = false;
+  _cachedPrimitiveData.clear();
+  _cachedMaterialData.clear();
+  _cachedPrimitiveIndices.clear();
+  _cachedBVHNodes.clear();
+  _cachedTLASNodes.clear();
+  _cachedTriangleVertices.clear();
+  _cachedTriangleIndices.clear();
+  _cachedLightIndices.clear();
+  _cachedLightCdf.clear();
+  _cpuActiveMask.clear();
 
   size_t totalTriangleCount = _pScene->getTriangleCount();
   _maxPrimitiveCount = std::max<size_t>(primCount, 1);
@@ -633,11 +644,8 @@ void Renderer::recalculateViewport() {
 }
 
 void Renderer::rebuildResidentResources(bool forceFullRebuild) {
+  size_t totalPrimitiveCount = _allPrimitives.size();
   size_t previousPrimitiveCount = _residentPrimitiveCount;
-  size_t previousTriangleCount = _residentTriangleCount;
-  size_t previousLightCount = _lightCount;
-  size_t previousBlasCount = _blasNodeCount;
-  size_t previousTlasCount = _tlasNodeCount;
 
   const size_t uniformsDataSize = sizeof(UniformsData);
   if (!_pUniformsBuffer) {
@@ -648,31 +656,241 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           NS::Range::Make(0, uniformsDataSize));
   }
 
-  if (_primitiveToResidentIndex.size() < _activePrimitive.size())
-    _primitiveToResidentIndex.assign(_activePrimitive.size(), -1);
+  if (_primitiveToResidentIndex.size() < totalPrimitiveCount)
+    _primitiveToResidentIndex.resize(totalPrimitiveCount, -1);
+  if (_residentRemap.size() < totalPrimitiveCount)
+    _residentRemap.resize(totalPrimitiveCount, 0);
+
+  for (size_t i = 0; i < totalPrimitiveCount; ++i) {
+    _primitiveToResidentIndex[i] = static_cast<int32_t>(i);
+    _residentRemap[i] = static_cast<uint32_t>(i);
+  }
+
+  bool sizeChanged = previousPrimitiveCount != totalPrimitiveCount;
+  bool needFullUpload =
+      forceFullRebuild || !_residentBuffersInitialized || sizeChanged;
+
+  if (needFullUpload) {
+    _cachedPrimitiveData.assign(totalPrimitiveCount * 3,
+                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+    _cachedMaterialData.assign(totalPrimitiveCount * 2,
+                               simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+
+    for (size_t i = 0; i < totalPrimitiveCount; ++i) {
+      const Primitive &p = _allPrimitives[i];
+      simd::float4 *primBase = &_cachedPrimitiveData[3 * i];
+      simd::float4 *matBase = &_cachedMaterialData[2 * i];
+
+      switch (p.type) {
+      case PrimitiveType::Sphere: {
+        primBase[0] =
+            simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+        primBase[1] = simd::make_float4(
+            simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
+        primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        break;
+      }
+      case PrimitiveType::Rectangle: {
+        primBase[0] =
+            simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+        primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
+        primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
+        break;
+      }
+      case PrimitiveType::Triangle: {
+        primBase[0] =
+            simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+        primBase[1] = simd::make_float4(p.triangle.v1, 0.0f);
+        primBase[2] = simd::make_float4(p.triangle.v2, 0.0f);
+        break;
+      }
+      }
+
+      const Material &m = p.material;
+      matBase[0] = simd::make_float4(m.albedo, m.materialType);
+      matBase[1] = simd::make_float4(m.emissionColor, m.emissionPower);
+    }
+
+    _pScene->createTriangleBuffers(_cachedTriangleVertices,
+                                   _cachedTriangleIndices);
+
+    const auto &sceneIndices = _pScene->getPrimitiveIndices();
+    _cachedPrimitiveIndices.resize(sceneIndices.size());
+    for (size_t i = 0; i < sceneIndices.size(); ++i)
+      _cachedPrimitiveIndices[i] = static_cast<int>(sceneIndices[i]);
+
+    _cachedBVHNodes.clear();
+    _blasNodeCount = _pScene ? _pScene->getBVHNodeCount() : 0;
+    if (_blasNodeCount > 0) {
+      simd::float4 *bvhRaw = _pScene->createBVHBuffer();
+      if (bvhRaw) {
+        _cachedBVHNodes.assign(bvhRaw, bvhRaw + _blasNodeCount * 2);
+        delete[] bvhRaw;
+      }
+    }
+
+    _cachedTLASNodes.clear();
+    size_t tlasCount = 0;
+    if (totalPrimitiveCount > 0) {
+      simd::float4 *tlasRaw = _pScene->createTLASBuffer(tlasCount);
+      if (tlasRaw) {
+        _cachedTLASNodes.assign(tlasRaw, tlasRaw + tlasCount * 2);
+        delete[] tlasRaw;
+      }
+    }
+    _tlasNodeCount = tlasCount;
+
+    size_t primitiveFloat4Count = totalPrimitiveCount * 3;
+    size_t primitiveBytes =
+        std::max<size_t>(primitiveFloat4Count, size_t(1)) *
+        sizeof(simd::float4);
+    ensureBufferCapacity(_pSphereBuffer, primitiveBytes, _sphereBufferCapacity,
+                         false);
+    if (_pSphereBuffer) {
+      simd::float4 *dst =
+          static_cast<simd::float4 *>(_pSphereBuffer->contents());
+      if (primitiveFloat4Count > 0)
+        std::memcpy(dst, _cachedPrimitiveData.data(),
+                    primitiveFloat4Count * sizeof(simd::float4));
+      else
+        dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      _pSphereBuffer->didModifyRange(NS::Range::Make(0, primitiveBytes));
+    }
+
+    size_t materialFloat4Count = totalPrimitiveCount * 2;
+    size_t materialBytes =
+        std::max<size_t>(materialFloat4Count, size_t(1)) *
+        sizeof(simd::float4);
+    ensureBufferCapacity(_pSphereMaterialBuffer, materialBytes,
+                         _sphereMaterialBufferCapacity, false);
+    if (_pSphereMaterialBuffer) {
+      simd::float4 *dst = static_cast<simd::float4 *>(
+          _pSphereMaterialBuffer->contents());
+      if (materialFloat4Count > 0)
+        std::memcpy(dst, _cachedMaterialData.data(),
+                    materialFloat4Count * sizeof(simd::float4));
+      else {
+        dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (materialBytes >= 2 * sizeof(simd::float4))
+          dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
+      _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialBytes));
+    }
+
+    size_t primitiveIndexCount = _cachedPrimitiveIndices.size();
+    size_t primitiveIndexBytes =
+        std::max<size_t>(primitiveIndexCount, size_t(1)) * sizeof(int);
+    ensureBufferCapacity(_pPrimitiveIndexBuffer, primitiveIndexBytes,
+                         _primitiveIndexBufferCapacity, false);
+    if (_pPrimitiveIndexBuffer) {
+      int *dst = static_cast<int *>(_pPrimitiveIndexBuffer->contents());
+      if (primitiveIndexCount > 0)
+        std::memcpy(dst, _cachedPrimitiveIndices.data(),
+                    primitiveIndexCount * sizeof(int));
+      else
+        dst[0] = 0;
+      _pPrimitiveIndexBuffer->didModifyRange(
+          NS::Range::Make(0, primitiveIndexBytes));
+    }
+
+    size_t blasFloat4Count = _cachedBVHNodes.size();
+    size_t bvhBytes =
+        std::max<size_t>(blasFloat4Count, size_t(1)) * sizeof(simd::float4);
+    ensureBufferCapacity(_pBVHBuffer, bvhBytes, _bvhBufferCapacity, false);
+    if (_pBVHBuffer) {
+      simd::float4 *dst =
+          static_cast<simd::float4 *>(_pBVHBuffer->contents());
+      if (blasFloat4Count > 0)
+        std::memcpy(dst, _cachedBVHNodes.data(),
+                    blasFloat4Count * sizeof(simd::float4));
+      else {
+        dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (bvhBytes >= 2 * sizeof(simd::float4))
+          dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
+      _pBVHBuffer->didModifyRange(NS::Range::Make(0, bvhBytes));
+    }
+
+    size_t tlasFloat4Count = _cachedTLASNodes.size();
+    size_t tlasBytes =
+        std::max<size_t>(tlasFloat4Count, size_t(1)) * sizeof(simd::float4);
+    ensureBufferCapacity(_pTLASBuffer, tlasBytes, _tlasBufferCapacity, false);
+    if (_pTLASBuffer) {
+      simd::float4 *dst =
+          static_cast<simd::float4 *>(_pTLASBuffer->contents());
+      if (tlasFloat4Count > 0)
+        std::memcpy(dst, _cachedTLASNodes.data(),
+                    tlasFloat4Count * sizeof(simd::float4));
+      else {
+        dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (tlasBytes >= 2 * sizeof(simd::float4))
+          dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
+      _pTLASBuffer->didModifyRange(NS::Range::Make(0, tlasBytes));
+    }
+
+    size_t remapCount = std::max<size_t>(totalPrimitiveCount, size_t(1));
+    ensureBufferCapacity(_pPrimitiveRemapBuffer, remapCount * sizeof(uint32_t),
+                         _primitiveRemapBufferCapacity, false);
+    if (_pPrimitiveRemapBuffer) {
+      uint32_t *dst = static_cast<uint32_t *>(
+          _pPrimitiveRemapBuffer->contents());
+      if (totalPrimitiveCount > 0) {
+        for (size_t i = 0; i < totalPrimitiveCount; ++i)
+          dst[i] = static_cast<uint32_t>(i);
+      } else {
+        dst[0] = 0;
+      }
+      _pPrimitiveRemapBuffer->didModifyRange(
+          NS::Range::Make(0, remapCount * sizeof(uint32_t)));
+    }
+
+    size_t vertexCount = _cachedTriangleVertices.size();
+    size_t vertexBytes =
+        std::max<size_t>(vertexCount, size_t(1)) * sizeof(simd::float3);
+    ensureBufferCapacity(_pTriangleVertexBuffer, vertexBytes,
+                         _triangleVertexBufferCapacity, false);
+    if (_pTriangleVertexBuffer) {
+      simd::float3 *dst = static_cast<simd::float3 *>(
+          _pTriangleVertexBuffer->contents());
+      if (vertexCount > 0)
+        std::memcpy(dst, _cachedTriangleVertices.data(),
+                    vertexCount * sizeof(simd::float3));
+      else
+        dst[0] = simd::float3{0.0f, 0.0f, 0.0f};
+      _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(0, vertexBytes));
+    }
+
+    size_t indexCount = _cachedTriangleIndices.size();
+    size_t indexBytes =
+        std::max<size_t>(indexCount, size_t(1)) * sizeof(simd::uint3);
+    ensureBufferCapacity(_pTriangleIndexBuffer, indexBytes,
+                         _triangleIndexBufferCapacity, false);
+    if (_pTriangleIndexBuffer) {
+      simd::uint3 *dst = static_cast<simd::uint3 *>(
+          _pTriangleIndexBuffer->contents());
+      if (indexCount > 0)
+        std::memcpy(dst, _cachedTriangleIndices.data(),
+                    indexCount * sizeof(simd::uint3));
+      else
+        dst[0] = simd::make_uint3(0, 0, 0);
+      _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(0, indexBytes));
+    }
+
+    _residentBuffersInitialized = true;
+  }
+
+  if (_cpuActiveMask.size() < totalPrimitiveCount)
+    _cpuActiveMask.resize(totalPrimitiveCount, 0);
+  else if (needFullUpload)
+    std::fill(_cpuActiveMask.begin(), _cpuActiveMask.end(), 0);
 
   auto deduplicate = [](std::vector<size_t> &values) {
     std::sort(values.begin(), values.end());
     values.erase(std::unique(values.begin(), values.end()), values.end());
   };
 
-  if (forceFullRebuild) {
-    _residentPrimitives.clear();
-    _residentRemap.clear();
-    for (size_t i = 0; i < _activePrimitive.size(); ++i) {
-      if (_activePrimitive[i]) {
-        size_t slot = _residentPrimitives.size();
-        _residentPrimitives.push_back(_allPrimitives[i]);
-        _residentRemap.push_back(static_cast<uint32_t>(i));
-        if (i < _primitiveToResidentIndex.size())
-          _primitiveToResidentIndex[i] = static_cast<int32_t>(slot);
-      } else if (i < _primitiveToResidentIndex.size()) {
-        _primitiveToResidentIndex[i] = -1;
-      }
-    }
-    _recentlyActivated.clear();
-    _recentlyDeactivated.clear();
-  } else {
+  if (!needFullUpload) {
     deduplicate(_recentlyActivated);
     deduplicate(_recentlyDeactivated);
     if (!_recentlyActivated.empty() && !_recentlyDeactivated.empty()) {
@@ -683,702 +901,123 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           _recentlyActivated.erase(it);
       }
     }
-
-    for (size_t idx : _recentlyDeactivated) {
-      if (idx >= _primitiveToResidentIndex.size())
-        continue;
-      int32_t slot = _primitiveToResidentIndex[idx];
-      if (slot < 0 || _residentPrimitives.empty() ||
-          static_cast<size_t>(slot) >= _residentPrimitives.size()) {
-        _primitiveToResidentIndex[idx] = -1;
-        continue;
-      }
-      size_t last = _residentPrimitives.size() - 1;
-      if (static_cast<size_t>(slot) != last) {
-        _residentPrimitives[slot] = _residentPrimitives[last];
-        _residentRemap[slot] = _residentRemap[last];
-        size_t movedIndex = _residentRemap[slot];
-        if (movedIndex < _primitiveToResidentIndex.size())
-          _primitiveToResidentIndex[movedIndex] = static_cast<int32_t>(slot);
-      }
-      _residentPrimitives.pop_back();
-      _residentRemap.pop_back();
-      _primitiveToResidentIndex[idx] = -1;
-    }
-
-    for (size_t idx : _recentlyActivated) {
-      if (idx >= _activePrimitive.size() || !_activePrimitive[idx])
-        continue;
-      if (idx >= _primitiveToResidentIndex.size())
-        _primitiveToResidentIndex.resize(idx + 1, -1);
-      if (_primitiveToResidentIndex[idx] >= 0)
-        continue;
-      size_t slot = _residentPrimitives.size();
-      _residentPrimitives.push_back(_allPrimitives[idx]);
-      _residentRemap.push_back(static_cast<uint32_t>(idx));
-      _primitiveToResidentIndex[idx] = static_cast<int32_t>(slot);
-    }
-
-    _recentlyActivated.clear();
-    _recentlyDeactivated.clear();
   }
 
-  _residentPrimitiveCount = _residentPrimitives.size();
-
-  std::vector<simd::float4> primitiveBuffer(_residentPrimitiveCount * 3,
-                                            simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-  std::vector<simd::float4> materialBuffer(_residentPrimitiveCount * 2,
-                                           simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-  std::vector<simd::float3> triangleVertices;
-  std::vector<simd::uint3> triangleIndices;
-  triangleVertices.reserve(_residentPrimitiveCount * 3);
-  triangleIndices.reserve(_residentPrimitiveCount);
-
-  std::vector<std::vector<int>> objectResidentIndices(
-      _allSceneObjects.size());
-  std::vector<int> orphanResidentIndices;
-
-  std::vector<uint32_t> lightIndices;
-  std::vector<float> lightCdf;
-  lightIndices.reserve(_residentPrimitiveCount);
-  lightCdf.reserve(_residentPrimitiveCount);
-
+  _cachedLightIndices.clear();
+  _cachedLightCdf.clear();
   float totalLightWeight = 0.0f;
-  size_t vertexCursor = 0;
+  size_t activePrimitiveCount = 0;
+  size_t activeTriangleCount = 0;
 
-  for (size_t i = 0; i < _residentPrimitiveCount; ++i) {
-    const Primitive &p = _residentPrimitives[i];
-    size_t remapIndex =
-        (i < _residentRemap.size()) ? _residentRemap[i]
-                                    : std::numeric_limits<size_t>::max();
-    size_t objectIndex =
-        (remapIndex < _primitiveToObject.size())
-            ? _primitiveToObject[remapIndex]
-            : std::numeric_limits<size_t>::max();
-    if (objectIndex < objectResidentIndices.size())
-      objectResidentIndices[objectIndex].push_back(static_cast<int>(i));
-    else
-      orphanResidentIndices.push_back(static_cast<int>(i));
-    simd::float4 *primBase = &primitiveBuffer[3 * i];
-    simd::float4 *matBase = &materialBuffer[2 * i];
+  for (size_t i = 0; i < totalPrimitiveCount; ++i) {
+    bool active = i < _activePrimitive.size() && _activePrimitive[i];
+    if (active) {
+      ++activePrimitiveCount;
+      if (_allPrimitives[i].type == PrimitiveType::Triangle)
+        ++activeTriangleCount;
 
-    switch (p.type) {
-    case PrimitiveType::Sphere: {
-      primBase[0] =
-          simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-      primBase[1] =
-          simd::make_float4(simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
-      primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      break;
-    }
-    case PrimitiveType::Rectangle: {
-      primBase[0] =
-          simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-      primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
-      primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
-      break;
-    }
-    case PrimitiveType::Triangle: {
-      primBase[0] =
-          simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-      primBase[1] = simd::make_float4(p.triangle.v1, 0.0f);
-      primBase[2] = simd::make_float4(p.triangle.v2, 0.0f);
-      triangleVertices.push_back(p.triangle.v0);
-      triangleVertices.push_back(p.triangle.v1);
-      triangleVertices.push_back(p.triangle.v2);
-      triangleIndices.push_back(
-          simd::make_uint3(vertexCursor, vertexCursor + 1, vertexCursor + 2));
-      vertexCursor += 3;
-      break;
-    }
-    }
-
-    const Material &m = p.material;
-    matBase[0] = simd::make_float4(m.albedo, m.materialType);
-    matBase[1] = simd::make_float4(m.emissionColor, m.emissionPower);
-
-    float emissionStrength = m.emissionPower * luminance(m.emissionColor);
-    if (emissionStrength > 0.0f) {
-      float area = primitiveArea(p);
-      if (area > 0.0f) {
-        float weight = area * emissionStrength;
-        if (weight > 0.0f) {
-          totalLightWeight += weight;
-          lightIndices.push_back(static_cast<uint32_t>(i));
-          lightCdf.push_back(totalLightWeight);
-        }
-      }
-    }
-  }
-
-  _residentTriangleCount = triangleIndices.size();
-  _lightCount = lightIndices.size();
-  _lightTotalWeight = totalLightWeight;
-
-  struct ActiveInstance {
-    simd::float3 boundsMin;
-    simd::float3 boundsMax;
-    int blasRoot = -1;
-    int leafValue = -1;
-  };
-
-  std::vector<int> primitiveIndices;
-  primitiveIndices.reserve(_residentPrimitiveCount);
-
-  std::vector<BVHNode> bvhNodes;
-  std::vector<ActiveInstance> activeInstances;
-
-  if (_residentPrimitiveCount > 0) {
-    bvhNodes.reserve(_residentPrimitiveCount * 2);
-    activeInstances.reserve(objectResidentIndices.size());
-
-    for (size_t objectIndex = 0; objectIndex < objectResidentIndices.size();
-         ++objectIndex) {
-      auto &indices = objectResidentIndices[objectIndex];
-      if (indices.empty())
-        continue;
-
-      size_t start = primitiveIndices.size();
-      primitiveIndices.insert(primitiveIndices.end(), indices.begin(),
-                              indices.end());
-      size_t end = primitiveIndices.size();
-      int rootIndex = buildBVHRecursive(_residentPrimitives, primitiveIndices,
-                                        bvhNodes, start, end);
-      if (rootIndex >= 0) {
-        ActiveInstance instance;
-        instance.boundsMin = bvhNodes[rootIndex].boundsMin;
-        instance.boundsMax = bvhNodes[rootIndex].boundsMax;
-        instance.blasRoot = rootIndex;
-        instance.leafValue = -static_cast<int>(activeInstances.size()) - 1;
-        activeInstances.push_back(instance);
-      }
-    }
-
-    if (!orphanResidentIndices.empty()) {
-      size_t start = primitiveIndices.size();
-      primitiveIndices.insert(primitiveIndices.end(),
-                              orphanResidentIndices.begin(),
-                              orphanResidentIndices.end());
-      size_t end = primitiveIndices.size();
-      int rootIndex = buildBVHRecursive(_residentPrimitives, primitiveIndices,
-                                        bvhNodes, start, end);
-      if (rootIndex >= 0) {
-        ActiveInstance instance;
-        instance.boundsMin = bvhNodes[rootIndex].boundsMin;
-        instance.boundsMax = bvhNodes[rootIndex].boundsMax;
-        instance.blasRoot = rootIndex;
-        instance.leafValue = -static_cast<int>(activeInstances.size()) - 1;
-        activeInstances.push_back(instance);
-      }
-    }
-  }
-
-  _blasNodeCount = bvhNodes.size();
-
-  std::vector<TLASNode> tlasNodes;
-  if (!activeInstances.empty()) {
-    std::vector<size_t> activeInstanceIndices(activeInstances.size());
-    std::iota(activeInstanceIndices.begin(), activeInstanceIndices.end(), 0);
-
-    auto instanceAxisValue = [&activeInstances](size_t instanceIndex, int axis) {
-      const ActiveInstance &instance = activeInstances[instanceIndex];
-      return 0.5f * (instance.boundsMin[axis] + instance.boundsMax[axis]);
-    };
-
-    std::function<int(size_t, size_t)> buildTLASRecursive =
-        [&](size_t start, size_t end) -> int {
-      TLASNode node;
-      simd::float3 bMin(std::numeric_limits<float>::max());
-      simd::float3 bMax(-std::numeric_limits<float>::max());
-
-      for (size_t i = start; i < end; ++i) {
-        const ActiveInstance &instance =
-            activeInstances[activeInstanceIndices[i]];
-        bMin = simd::min(bMin, instance.boundsMin);
-        bMax = simd::max(bMax, instance.boundsMax);
-      }
-
-      node.boundsMin = bMin;
-      node.boundsMax = bMax;
-      node.leftChild = -1;
-      node.rightChild = -1;
-
-      int nodeIndex = static_cast<int>(tlasNodes.size());
-      tlasNodes.push_back(node);
-
-      size_t count = end - start;
-      if (count == 1) {
-        const ActiveInstance &instance =
-            activeInstances[activeInstanceIndices[start]];
-        tlasNodes[nodeIndex].leftChild = instance.leafValue;
-        tlasNodes[nodeIndex].rightChild = instance.blasRoot;
-        return nodeIndex;
-      }
-
-      const float parentArea = boundingSurfaceArea(bMin, bMax);
-      if (parentArea <= 0.0f) {
-        size_t mid = start + count / 2;
-        int leftChild = buildTLASRecursive(start, mid);
-        int rightChild = buildTLASRecursive(mid, end);
-        tlasNodes[nodeIndex].leftChild = leftChild;
-        tlasNodes[nodeIndex].rightChild = rightChild;
-        return nodeIndex;
-      }
-
-      size_t range = count;
-      std::vector<simd::float3> leftMin(range);
-      std::vector<simd::float3> leftMax(range);
-      std::vector<simd::float3> rightMin(range);
-      std::vector<simd::float3> rightMax(range);
-
-      float bestCost = std::numeric_limits<float>::max();
-      int bestAxis = -1;
-      size_t bestSplit = start + range / 2;
-
-      for (int axis = 0; axis < 3; ++axis) {
-        std::sort(activeInstanceIndices.begin() + start,
-                  activeInstanceIndices.begin() + end,
-                  [&](size_t a, size_t b) {
-                    return instanceAxisValue(a, axis) <
-                           instanceAxisValue(b, axis);
-                  });
-
-        simd::float3 currMin(std::numeric_limits<float>::max());
-        simd::float3 currMax(-std::numeric_limits<float>::max());
-        for (size_t i = 0; i < range; ++i) {
-          const ActiveInstance &instance =
-              activeInstances[activeInstanceIndices[start + i]];
-          currMin = simd::min(currMin, instance.boundsMin);
-          currMax = simd::max(currMax, instance.boundsMax);
-          leftMin[i] = currMin;
-          leftMax[i] = currMax;
-        }
-
-        currMin = simd::float3(std::numeric_limits<float>::max());
-        currMax = simd::float3(-std::numeric_limits<float>::max());
-        for (size_t i = range; i-- > 0;) {
-          const ActiveInstance &instance =
-              activeInstances[activeInstanceIndices[start + i]];
-          currMin = simd::min(currMin, instance.boundsMin);
-          currMax = simd::max(currMax, instance.boundsMax);
-          rightMin[i] = currMin;
-          rightMax[i] = currMax;
-        }
-
-        for (size_t i = 1; i < range; ++i) {
-          float saLeft = boundingSurfaceArea(leftMin[i - 1], leftMax[i - 1]);
-          float saRight = boundingSurfaceArea(rightMin[i], rightMax[i]);
-
-          size_t leftCount = i;
-          size_t rightCount = range - i;
-
-          float cost = 0.125f + (saLeft / parentArea) * leftCount +
-                       (saRight / parentArea) * rightCount;
-
-          if (cost < bestCost) {
-            bestCost = cost;
-            bestAxis = axis;
-            bestSplit = start + i;
+      const Material &m = _allPrimitives[i].material;
+      float emissionStrength = m.emissionPower * luminance(m.emissionColor);
+      if (emissionStrength > 0.0f) {
+        float area = primitiveArea(_allPrimitives[i]);
+        if (area > 0.0f) {
+          float weight = area * emissionStrength;
+          if (weight > 0.0f) {
+            totalLightWeight += weight;
+            _cachedLightIndices.push_back(static_cast<uint32_t>(i));
+            _cachedLightCdf.push_back(totalLightWeight);
           }
         }
       }
+    }
 
-      if (bestAxis == -1) {
-        size_t mid = start + range / 2;
-        int leftChild = buildTLASRecursive(start, mid);
-        int rightChild = buildTLASRecursive(mid, end);
-        tlasNodes[nodeIndex].leftChild = leftChild;
-        tlasNodes[nodeIndex].rightChild = rightChild;
-        return nodeIndex;
-      }
-
-      std::sort(activeInstanceIndices.begin() + start,
-                activeInstanceIndices.begin() + end,
-                [&](size_t a, size_t b) {
-                  return instanceAxisValue(a, bestAxis) <
-                         instanceAxisValue(b, bestAxis);
-                });
-
-      int leftChild = buildTLASRecursive(start, bestSplit);
-      int rightChild = buildTLASRecursive(bestSplit, end);
-      tlasNodes[nodeIndex].leftChild = leftChild;
-      tlasNodes[nodeIndex].rightChild = rightChild;
-
-      return nodeIndex;
-    };
-
-    buildTLASRecursive(0, activeInstanceIndices.size());
+    if (needFullUpload)
+      _cpuActiveMask[i] = active ? 1 : 0;
   }
 
-  _tlasNodeCount = tlasNodes.size();
+  _lightCount = _cachedLightIndices.size();
+  _lightTotalWeight = totalLightWeight;
+  _activePrimitiveCount = activePrimitiveCount;
+  _activeTriangleCount = activeTriangleCount;
+  _residentPrimitiveCount = totalPrimitiveCount;
+  _residentTriangleCount = _cachedTriangleIndices.size();
+
+  size_t activeBytes =
+      std::max<size_t>(totalPrimitiveCount, size_t(1)) * sizeof(uint8_t);
+  ensureBufferCapacity(_pActiveBuffer, activeBytes, _activeBufferCapacity,
+                       false);
+  if (_pActiveBuffer) {
+    uint8_t *activePtr =
+        static_cast<uint8_t *>(_pActiveBuffer->contents());
+    if (needFullUpload) {
+      if (totalPrimitiveCount > 0)
+        std::memcpy(activePtr, _cpuActiveMask.data(),
+                    totalPrimitiveCount * sizeof(uint8_t));
+      else
+        activePtr[0] = 0;
+      _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeBytes));
+    } else {
+      auto updateMask = [&](const std::vector<size_t> &indices) {
+        for (size_t idx : indices) {
+          if (idx >= totalPrimitiveCount)
+            continue;
+          bool active = idx < _activePrimitive.size() && _activePrimitive[idx];
+          uint8_t value = active ? 1 : 0;
+          _cpuActiveMask[idx] = value;
+          activePtr[idx] = value;
+          _pActiveBuffer->didModifyRange(NS::Range::Make(idx, 1));
+        }
+      };
+      updateMask(_recentlyActivated);
+      updateMask(_recentlyDeactivated);
+    }
+  }
+
+  size_t lightIndexBytes =
+      std::max<size_t>(_cachedLightIndices.size(), size_t(1)) *
+      sizeof(uint32_t);
+  ensureBufferCapacity(_pLightIndexBuffer, lightIndexBytes,
+                       _lightIndexBufferCapacity, false);
+  if (_pLightIndexBuffer) {
+    uint32_t *dst = static_cast<uint32_t *>(_pLightIndexBuffer->contents());
+    if (_cachedLightIndices.empty())
+      dst[0] = 0;
+    else
+      std::memcpy(dst, _cachedLightIndices.data(),
+                  _cachedLightIndices.size() * sizeof(uint32_t));
+    _pLightIndexBuffer->didModifyRange(NS::Range::Make(0, lightIndexBytes));
+  }
+
+  size_t lightCdfBytes =
+      std::max<size_t>(_cachedLightCdf.size(), size_t(1)) * sizeof(float);
+  ensureBufferCapacity(_pLightCdfBuffer, lightCdfBytes, _lightCdfBufferCapacity,
+                       false);
+  if (_pLightCdfBuffer) {
+    float *dst = static_cast<float *>(_pLightCdfBuffer->contents());
+    if (_cachedLightCdf.empty())
+      dst[0] = 0.0f;
+    else
+      std::memcpy(dst, _cachedLightCdf.data(),
+                  _cachedLightCdf.size() * sizeof(float));
+    _pLightCdfBuffer->didModifyRange(NS::Range::Make(0, lightCdfBytes));
+  }
 
   _residentNodeCount = _blasNodeCount + _tlasNodeCount;
-
-  std::vector<simd::float4> bvhPacked(_blasNodeCount * 2,
-                                      simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-  for (size_t i = 0; i < _blasNodeCount; ++i) {
-    const BVHNode &node = bvhNodes[i];
-    float leftBits = 0.0f;
-    float countBits = 0.0f;
-    std::memcpy(&leftBits, &node.leftFirst, sizeof(int));
-    std::memcpy(&countBits, &node.count, sizeof(int));
-    bvhPacked[2 * i] = simd::make_float4(node.boundsMin, leftBits);
-    bvhPacked[2 * i + 1] = simd::make_float4(node.boundsMax, countBits);
+  size_t activeBlasNodes = 0;
+  if (totalPrimitiveCount > 0 && _blasNodeCount > 0) {
+    size_t denom = std::max<size_t>(totalPrimitiveCount, size_t(1));
+    activeBlasNodes = std::max<size_t>(
+        size_t(1), (_blasNodeCount * activePrimitiveCount + denom - 1) / denom);
   }
+  size_t activeTlasNodes = (_tlasNodeCount > 0 && activePrimitiveCount > 0)
+                               ? _tlasNodeCount
+                               : size_t(0);
+  _activeNodeCount = activeBlasNodes + activeTlasNodes;
 
-  std::vector<simd::float4> tlasPacked(_tlasNodeCount * 2,
-                                       simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-  for (size_t i = 0; i < _tlasNodeCount; ++i) {
-    const TLASNode &node = tlasNodes[i];
-    float leftBits = 0.0f;
-    float rightBits = 0.0f;
-    std::memcpy(&leftBits, &node.leftChild, sizeof(int));
-    std::memcpy(&rightBits, &node.rightChild, sizeof(int));
-    tlasPacked[2 * i] = simd::make_float4(node.boundsMin, leftBits);
-    tlasPacked[2 * i + 1] = simd::make_float4(node.boundsMax, rightBits);
-  }
-
-  size_t primitiveFloat4Count = _residentPrimitiveCount * 3;
-  size_t previousPrimitiveFloat4Count = previousPrimitiveCount * 3;
-  ensureBufferCapacity(_pSphereBuffer,
-                       std::max<size_t>(primitiveFloat4Count, 1) *
-                           sizeof(simd::float4),
-                       _sphereBufferCapacity, true);
-  if (_pSphereBuffer) {
-    size_t primitiveCapacity = _pSphereBuffer->length() / sizeof(simd::float4);
-    if (primitiveCapacity == 0 && _pSphereBuffer->length() > 0)
-      primitiveCapacity = 1;
-    if (simd::float4 *primitiveDst =
-            static_cast<simd::float4 *>(_pSphereBuffer->contents())) {
-      BufferCountInfo primitiveInfo =
-          prepareBufferCounts(primitiveFloat4Count, previousPrimitiveFloat4Count,
-                              primitiveCapacity);
-      size_t copyCount = std::min(primitiveFloat4Count, primitiveInfo.current);
-      if (copyCount > 0) {
-        std::memcpy(primitiveDst, primitiveBuffer.data(),
-                    copyCount * sizeof(simd::float4));
-      } else if (primitiveCapacity > 0) {
-        primitiveDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      }
-      if (primitiveInfo.zeroCount > 0) {
-        std::memset(primitiveDst + primitiveInfo.zeroStart, 0,
-                    primitiveInfo.zeroCount * sizeof(simd::float4));
-      }
-      if (primitiveInfo.touched > 0) {
-        _pSphereBuffer->didModifyRange(NS::Range::Make(
-            0, primitiveInfo.touched * sizeof(simd::float4)));
-      }
-    }
-  }
-
-  size_t materialFloat4Count = _residentPrimitiveCount * 2;
-  size_t previousMaterialFloat4Count = previousPrimitiveCount * 2;
-  ensureBufferCapacity(_pSphereMaterialBuffer,
-                       std::max<size_t>(materialFloat4Count, 1) *
-                           sizeof(simd::float4),
-                       _sphereMaterialBufferCapacity, true);
-  if (_pSphereMaterialBuffer) {
-    size_t materialCapacity =
-        _pSphereMaterialBuffer->length() / sizeof(simd::float4);
-    if (materialCapacity == 0 && _pSphereMaterialBuffer->length() > 0)
-      materialCapacity = 1;
-    if (simd::float4 *materialDst =
-            static_cast<simd::float4 *>(_pSphereMaterialBuffer->contents())) {
-      BufferCountInfo materialInfo = prepareBufferCounts(
-          materialFloat4Count, previousMaterialFloat4Count, materialCapacity);
-      size_t copyCount = std::min(materialFloat4Count, materialInfo.current);
-      if (copyCount > 0) {
-        std::memcpy(materialDst, materialBuffer.data(),
-                    copyCount * sizeof(simd::float4));
-      } else if (materialCapacity > 0) {
-        materialDst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        if (materialCapacity > 1)
-          materialDst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      }
-      if (materialInfo.zeroCount > 0) {
-        std::memset(materialDst + materialInfo.zeroStart, 0,
-                    materialInfo.zeroCount * sizeof(simd::float4));
-      }
-      if (materialInfo.touched > 0) {
-        _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(
-            0, materialInfo.touched * sizeof(simd::float4)));
-      }
-    }
-  }
-
-  ensureBufferCapacity(_pPrimitiveIndexBuffer,
-                       std::max<size_t>(_residentPrimitiveCount, 1) *
-                           sizeof(int),
-                       _primitiveIndexBufferCapacity, true);
-  if (_pPrimitiveIndexBuffer) {
-    size_t indexCapacity = _pPrimitiveIndexBuffer->length() / sizeof(int);
-    if (indexCapacity == 0 && _pPrimitiveIndexBuffer->length() > 0)
-      indexCapacity = 1;
-    if (int *indexPtr =
-            static_cast<int *>(_pPrimitiveIndexBuffer->contents())) {
-      BufferCountInfo indexInfo = prepareBufferCounts(
-          _residentPrimitiveCount, previousPrimitiveCount, indexCapacity);
-      size_t copyCount = std::min(_residentPrimitiveCount, indexInfo.current);
-      if (copyCount > 0) {
-        std::memcpy(indexPtr, primitiveIndices.data(),
-                    copyCount * sizeof(int));
-      } else if (indexCapacity > 0) {
-        indexPtr[0] = 0;
-      }
-      if (indexInfo.zeroCount > 0) {
-        std::memset(indexPtr + indexInfo.zeroStart, 0,
-                    indexInfo.zeroCount * sizeof(int));
-      }
-      if (indexInfo.touched > 0) {
-        _pPrimitiveIndexBuffer->didModifyRange(
-            NS::Range::Make(0, indexInfo.touched * sizeof(int)));
-      }
-    }
-  }
-
-  ensureBufferCapacity(_pBVHBuffer,
-                       std::max<size_t>(_blasNodeCount * 2, size_t(1)) *
-                           sizeof(simd::float4),
-                       _bvhBufferCapacity, true);
-  if (_pBVHBuffer) {
-    size_t bvhCapacity = _pBVHBuffer->length() / sizeof(simd::float4);
-    if (bvhCapacity == 0 && _pBVHBuffer->length() > 0)
-      bvhCapacity = 1;
-    if (simd::float4 *bvhPtr =
-            static_cast<simd::float4 *>(_pBVHBuffer->contents())) {
-      size_t blasFloat4Count = _blasNodeCount * 2;
-      size_t previousBlasFloat4Count = previousBlasCount * 2;
-      BufferCountInfo bvhInfo = prepareBufferCounts(
-          blasFloat4Count, previousBlasFloat4Count, bvhCapacity);
-      size_t copyCount = std::min(blasFloat4Count, bvhInfo.current);
-      if (copyCount > 0) {
-        std::memcpy(bvhPtr, bvhPacked.data(),
-                    copyCount * sizeof(simd::float4));
-      } else if (bvhCapacity > 0) {
-        bvhPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        if (bvhCapacity > 1)
-          bvhPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      }
-      if (bvhInfo.zeroCount > 0) {
-        std::memset(bvhPtr + bvhInfo.zeroStart, 0,
-                    bvhInfo.zeroCount * sizeof(simd::float4));
-      }
-      if (bvhInfo.touched > 0) {
-        _pBVHBuffer->didModifyRange(NS::Range::Make(
-            0, bvhInfo.touched * sizeof(simd::float4)));
-      }
-    }
-  }
-
-  ensureBufferCapacity(_pTLASBuffer,
-                       std::max<size_t>(_tlasNodeCount * 2, size_t(1)) *
-                           sizeof(simd::float4),
-                       _tlasBufferCapacity, true);
-  if (_pTLASBuffer) {
-    size_t tlasCapacity = _pTLASBuffer->length() / sizeof(simd::float4);
-    if (tlasCapacity == 0 && _pTLASBuffer->length() > 0)
-      tlasCapacity = 1;
-    if (simd::float4 *tlasPtr =
-            static_cast<simd::float4 *>(_pTLASBuffer->contents())) {
-      size_t tlasFloat4Count = _tlasNodeCount * 2;
-      size_t previousTlasFloat4Count = previousTlasCount * 2;
-      BufferCountInfo tlasInfo = prepareBufferCounts(
-          tlasFloat4Count, previousTlasFloat4Count, tlasCapacity);
-      size_t copyCount = std::min(tlasFloat4Count, tlasInfo.current);
-      if (copyCount > 0) {
-        std::memcpy(tlasPtr, tlasPacked.data(),
-                    copyCount * sizeof(simd::float4));
-      } else if (tlasCapacity > 0) {
-        tlasPtr[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        if (tlasCapacity > 1)
-          tlasPtr[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      }
-      if (tlasInfo.zeroCount > 0) {
-        std::memset(tlasPtr + tlasInfo.zeroStart, 0,
-                    tlasInfo.zeroCount * sizeof(simd::float4));
-      }
-      if (tlasInfo.touched > 0) {
-        _pTLASBuffer->didModifyRange(NS::Range::Make(
-            0, tlasInfo.touched * sizeof(simd::float4)));
-      }
-    }
-  }
-
-  ensureBufferCapacity(_pActiveBuffer,
-                       std::max<size_t>(_residentPrimitiveCount, size_t(1)) *
-                           sizeof(uint8_t),
-                       _activeBufferCapacity, true);
-  if (_pActiveBuffer) {
-    size_t activeCapacity = _pActiveBuffer->length() / sizeof(uint8_t);
-    if (activeCapacity == 0 && _pActiveBuffer->length() > 0)
-      activeCapacity = 1;
-    if (uint8_t *activePtr =
-            static_cast<uint8_t *>(_pActiveBuffer->contents())) {
-      BufferCountInfo activeInfo = prepareBufferCounts(
-          _residentPrimitiveCount, previousPrimitiveCount, activeCapacity);
-      if (activeInfo.touched > 0) {
-        std::memset(activePtr, 0, activeInfo.touched * sizeof(uint8_t));
-        if (activeInfo.current > 0) {
-          std::memset(activePtr, 1, activeInfo.current * sizeof(uint8_t));
-        }
-        _pActiveBuffer->didModifyRange(
-            NS::Range::Make(0, activeInfo.touched * sizeof(uint8_t)));
-      }
-    }
-  }
-
-  ensureBufferCapacity(_pPrimitiveRemapBuffer,
-                       std::max<size_t>(_residentRemap.size(), size_t(1)) *
-                           sizeof(uint32_t),
-                       _primitiveRemapBufferCapacity, true);
-  if (_pPrimitiveRemapBuffer) {
-    size_t remapCapacity =
-        _pPrimitiveRemapBuffer->length() / sizeof(uint32_t);
-    if (remapCapacity == 0 && _pPrimitiveRemapBuffer->length() > 0)
-      remapCapacity = 1;
-    if (uint32_t *remapPtr =
-            static_cast<uint32_t *>(_pPrimitiveRemapBuffer->contents())) {
-      BufferCountInfo remapInfo = prepareBufferCounts(
-          _residentRemap.size(), previousPrimitiveCount, remapCapacity);
-      if (remapInfo.touched > 0) {
-        std::memset(remapPtr, 0, remapInfo.touched * sizeof(uint32_t));
-        size_t copyCount =
-            std::min(_residentRemap.size(), remapInfo.current);
-        if (copyCount > 0) {
-          std::memcpy(remapPtr, _residentRemap.data(),
-                      copyCount * sizeof(uint32_t));
-        }
-        _pPrimitiveRemapBuffer->didModifyRange(NS::Range::Make(
-            0, remapInfo.touched * sizeof(uint32_t)));
-      }
-    }
-  }
-
-  ensureBufferCapacity(_pLightIndexBuffer,
-                       std::max<size_t>(_lightCount, size_t(1)) *
-                           sizeof(uint32_t),
-                       _lightIndexBufferCapacity, true);
-  if (_pLightIndexBuffer) {
-    size_t lightIndexCapacity =
-        _pLightIndexBuffer->length() / sizeof(uint32_t);
-    if (lightIndexCapacity == 0 && _pLightIndexBuffer->length() > 0)
-      lightIndexCapacity = 1;
-    if (uint32_t *lightIndexPtr =
-            static_cast<uint32_t *>(_pLightIndexBuffer->contents())) {
-      BufferCountInfo lightIndexInfo = prepareBufferCounts(
-          _lightCount, previousLightCount, lightIndexCapacity);
-      if (lightIndexInfo.touched > 0) {
-        std::memset(lightIndexPtr, 0,
-                    lightIndexInfo.touched * sizeof(uint32_t));
-        size_t copyCount = std::min(_lightCount, lightIndexInfo.current);
-        if (copyCount > 0) {
-          std::memcpy(lightIndexPtr, lightIndices.data(),
-                      copyCount * sizeof(uint32_t));
-        }
-        _pLightIndexBuffer->didModifyRange(NS::Range::Make(
-            0, lightIndexInfo.touched * sizeof(uint32_t)));
-      }
-    }
-  }
-
-  ensureBufferCapacity(_pLightCdfBuffer,
-                       std::max<size_t>(_lightCount, size_t(1)) * sizeof(float),
-                       _lightCdfBufferCapacity, true);
-  if (_pLightCdfBuffer) {
-    size_t lightCdfCapacity = _pLightCdfBuffer->length() / sizeof(float);
-    if (lightCdfCapacity == 0 && _pLightCdfBuffer->length() > 0)
-      lightCdfCapacity = 1;
-    if (float *lightCdfPtr =
-            static_cast<float *>(_pLightCdfBuffer->contents())) {
-      BufferCountInfo lightCdfInfo = prepareBufferCounts(
-          _lightCount, previousLightCount, lightCdfCapacity);
-      if (lightCdfInfo.touched > 0) {
-        std::memset(lightCdfPtr, 0,
-                    lightCdfInfo.touched * sizeof(float));
-        size_t copyCount = std::min(_lightCount, lightCdfInfo.current);
-        if (copyCount > 0) {
-          std::memcpy(lightCdfPtr, lightCdf.data(),
-                      copyCount * sizeof(float));
-        }
-        _pLightCdfBuffer->didModifyRange(NS::Range::Make(
-            0, lightCdfInfo.touched * sizeof(float)));
-      }
-    }
-  }
-
-  size_t vertexCount = triangleVertices.size();
-  size_t indexCount = triangleIndices.size();
-  size_t previousVertexCount = previousTriangleCount * 3;
-  size_t previousIndexCount = previousTriangleCount;
-
-  ensureBufferCapacity(_pTriangleVertexBuffer,
-                       std::max<size_t>(vertexCount, size_t(1)) *
-                           sizeof(simd::float3),
-                       _triangleVertexBufferCapacity, true);
-  if (_pTriangleVertexBuffer) {
-    size_t vertexCapacity =
-        _pTriangleVertexBuffer->length() / sizeof(simd::float3);
-    if (vertexCapacity == 0 && _pTriangleVertexBuffer->length() > 0)
-      vertexCapacity = 1;
-    if (simd::float3 *vertexPtr = static_cast<simd::float3 *>(
-            _pTriangleVertexBuffer->contents())) {
-      BufferCountInfo vertexInfo = prepareBufferCounts(
-          vertexCount, previousVertexCount, vertexCapacity);
-      size_t copyCount = std::min(vertexCount, vertexInfo.current);
-      if (copyCount > 0) {
-        std::memcpy(vertexPtr, triangleVertices.data(),
-                    copyCount * sizeof(simd::float3));
-      } else if (vertexCapacity > 0) {
-        vertexPtr[0] = simd::float3{0.0f, 0.0f, 0.0f};
-      }
-      if (vertexInfo.zeroCount > 0) {
-        std::memset(vertexPtr + vertexInfo.zeroStart, 0,
-                    vertexInfo.zeroCount * sizeof(simd::float3));
-      }
-      if (vertexInfo.touched > 0) {
-        _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(
-            0, vertexInfo.touched * sizeof(simd::float3)));
-      }
-    }
-  }
-
-  ensureBufferCapacity(_pTriangleIndexBuffer,
-                       std::max<size_t>(indexCount, size_t(1)) *
-                           sizeof(simd::uint3),
-                       _triangleIndexBufferCapacity, true);
-  if (_pTriangleIndexBuffer) {
-    size_t indexCapacity =
-        _pTriangleIndexBuffer->length() / sizeof(simd::uint3);
-    if (indexCapacity == 0 && _pTriangleIndexBuffer->length() > 0)
-      indexCapacity = 1;
-    if (simd::uint3 *indexPtr = static_cast<simd::uint3 *>(
-            _pTriangleIndexBuffer->contents())) {
-      BufferCountInfo indexInfo = prepareBufferCounts(
-          indexCount, previousIndexCount, indexCapacity);
-      size_t copyCount = std::min(indexCount, indexInfo.current);
-      if (copyCount > 0) {
-        std::memcpy(indexPtr, triangleIndices.data(),
-                    copyCount * sizeof(simd::uint3));
-      } else if (indexCapacity > 0) {
-        indexPtr[0] = simd::make_uint3(0, 0, 0);
-      }
-      if (indexInfo.zeroCount > 0) {
-        std::memset(indexPtr + indexInfo.zeroStart, 0,
-                    indexInfo.zeroCount * sizeof(simd::uint3));
-      }
-      if (indexInfo.touched > 0) {
-        _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(
-            0, indexInfo.touched * sizeof(simd::uint3)));
-      }
-    }
-  }
-
-  size_t newActiveCount = _residentNodeCount;
-  if (newActiveCount != _activeNodeCount) {
-    _activeNodeCount = newActiveCount;
-    printf("Resident nodes: %zu\n", _activeNodeCount);
-  }
+  _recentlyActivated.clear();
+  _recentlyDeactivated.clear();
 }
+
 
 void Renderer::buildTextures() {
   MTL::TextureDescriptor *textureDescriptor =

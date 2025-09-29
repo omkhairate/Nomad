@@ -132,8 +132,22 @@ private:
 
   size_t _residentPrimitiveCount = 0;
   size_t _residentTriangleCount = 0;
+  size_t _activePrimitiveCount = 0;
+  size_t _activeTriangleCount = 0;
   size_t _lightCount = 0;
   float _lightTotalWeight = 0.0f;
+
+  bool _residentBuffersInitialized = false;
+  std::vector<uint8_t> _cpuActiveMask;
+  std::vector<simd::float4> _cachedPrimitiveData;
+  std::vector<simd::float4> _cachedMaterialData;
+  std::vector<int> _cachedPrimitiveIndices;
+  std::vector<simd::float4> _cachedBVHNodes;
+  std::vector<simd::float4> _cachedTLASNodes;
+  std::vector<simd::float3> _cachedTriangleVertices;
+  std::vector<simd::uint3> _cachedTriangleIndices;
+  std::vector<uint32_t> _cachedLightIndices;
+  std::vector<float> _cachedLightCdf;
 
   size_t _maxPrimitiveCount = 0;
   size_t _maxTriangleVertexCount = 0;
