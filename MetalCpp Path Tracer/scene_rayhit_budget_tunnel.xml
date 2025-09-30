@@ -1,4 +1,4 @@
-<Scene width="1920" height="1080" maxRayDepth="32" residencyStrategy="rayHitBudget"
+<Scene width="960" height="540" maxRayDepth="8" residencyStrategy="rayHitBudget"
        rayHitTargetFraction="0.28" rayHitMinActive="140" rayHitToggleBudget="900"
        rayHitCooldown="12" rayHitDecay="0.82">
     <CameraPath>
