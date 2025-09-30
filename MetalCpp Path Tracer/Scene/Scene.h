@@ -47,6 +47,12 @@ struct ResidencyParameters {
   float screenFootprintMinPixelCoverage = 32.0f;
   size_t screenFootprintMinActivePrimitives = 16;
   size_t screenFootprintMaxTogglesPerFrame = 10;
+
+  uint32_t tileWidth = 32;
+  uint32_t tileHeight = 32;
+  float tileBudgetMinMultiplier = 0.5f;
+  float tileBudgetMaxMultiplier = 2.0f;
+  float tileBudgetSmoothing = 0.85f;
 };
 
 struct TLASNode {
