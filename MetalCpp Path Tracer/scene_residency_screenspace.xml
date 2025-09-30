@@ -20,7 +20,7 @@
     <Rectangle position="35,15,-80" u="12,0,0" v="0,12,0" albedo="0.2,0.8,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
 
     <!-- Mesh elements to test footprint prioritization -->
-    <Mesh
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40"
         file="assets/bunny.obj"
         position="-25,0,-110"
         scale="11.0"
@@ -28,7 +28,7 @@
         emission="0,0,0"
         materialType="0"
         emissionPower="0" />
-    <Mesh
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40"
         file="assets/bunny.obj"
         position="28,0,-85"
         scale="8.0"

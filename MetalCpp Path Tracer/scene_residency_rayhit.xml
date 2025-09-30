@@ -19,7 +19,7 @@
     <Sphere position="12,18,-105" radius="10" albedo="0.75,0.75,0.75" emission="0,0,0" materialType="-1" emissionPower="0" />
 
     <!-- A detailed mesh that should become resident when the camera lingers on it -->
-    <Mesh
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40"
         file="assets/bunny.obj"
         position="0,0,-100"
         scale="10.0"

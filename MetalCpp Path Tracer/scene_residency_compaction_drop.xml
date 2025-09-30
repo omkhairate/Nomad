@@ -53,7 +53,7 @@
     <Sphere position="-46.50,9.49,-134.02" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
     <Sphere position="-46.50,12.46,-134.10" radius="3.50" albedo="0.7,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
     <!-- Triangle content to exercise BLAS/TLAS compaction alongside spheres -->
-    <Mesh file="assets/bunny.obj" position="0,0,-100" scale="12" albedo="0.85,0.55,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="60,0,-140" scale="10" albedo="0.75,0.6,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-60,0,-140" scale="10" albedo="0.75,0.6,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="0,0,-100" scale="12" albedo="0.85,0.55,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="60,0,-140" scale="10" albedo="0.75,0.6,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40" file="assets/bunny.obj" position="-60,0,-140" scale="10" albedo="0.75,0.6,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
 </Scene>
