@@ -5,6 +5,7 @@
 #include "Scene.h"
 #include "SceneLoader.h"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -46,8 +47,10 @@ struct UniformsData {
   uint32_t debugAS;
   uint32_t lightCount;
   float lightTotalWeight;
-  uint32_t padding0 = 0;
-  uint32_t padding1 = 0;
+  uint32_t sampleCountTextureIndex = 0;
+  uint32_t sampleImportanceTextureIndex = 0;
+  uint32_t minSamplesPerPixel = 1;
+  uint32_t maxSamplesPerPixel = 1;
 };
 
 inline uint32_t bitm_random() {
@@ -62,6 +65,23 @@ inline float randomFloat() {
 }
 
 namespace {
+
+size_t alignTo(size_t value, size_t alignment) {
+  if (alignment == 0)
+    return value;
+  return (value + alignment - 1) & ~(alignment - 1);
+}
+
+size_t bytesPerPixel(MTL::PixelFormat format) {
+  switch (format) {
+  case MTL::PixelFormat::PixelFormatRGBA32Float:
+    return sizeof(float) * 4;
+  case MTL::PixelFormat::PixelFormatR32Float:
+    return sizeof(float);
+  default:
+    return 0;
+  }
+}
 
 float luminance(const simd::float3 &c) {
   return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
@@ -377,6 +397,17 @@ Renderer::~Renderer() {
     if (_accumulationTargets[i])
       _accumulationTargets[i]->release();
 
+  if (_sampleCountTarget)
+    _sampleCountTarget->release();
+  if (_sampleImportanceTarget)
+    _sampleImportanceTarget->release();
+
+  if (_pTextureClearBuffer)
+    _pTextureClearBuffer->release();
+
+  if (_pAdaptiveSamplingPSO)
+    _pAdaptiveSamplingPSO->release();
+
   if (_pPSO)
     _pPSO->release();
   if (_pCommandQueue)
@@ -397,6 +428,15 @@ void Renderer::setDeltaTime(double deltaSeconds) {
 
 void Renderer::buildShaders() {
   using NS::StringEncoding::UTF8StringEncoding;
+
+  if (_pPSO) {
+    _pPSO->release();
+    _pPSO = nullptr;
+  }
+  if (_pAdaptiveSamplingPSO) {
+    _pAdaptiveSamplingPSO->release();
+    _pAdaptiveSamplingPSO = nullptr;
+  }
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
@@ -422,6 +462,18 @@ void Renderer::buildShaders() {
   if (!_pPSO) {
     __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     assert(false);
+  }
+
+  pError = nullptr;
+  MTL::Function *pAdaptiveFn = pLibrary->newFunction(
+      NS::String::string("adaptiveSamplingMain", UTF8StringEncoding));
+  if (pAdaptiveFn) {
+    _pAdaptiveSamplingPSO =
+        _pDevice->newComputePipelineState(pAdaptiveFn, &pError);
+    if (!_pAdaptiveSamplingPSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    }
+    pAdaptiveFn->release();
   }
 
   pVertexFn->release();
@@ -1512,25 +1564,195 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   _recentlyActivated.clear();
   _recentlyDeactivated.clear();
+
+  _needsAccumulationReset = true;
 }
 
 
 
 
 void Renderer::buildTextures() {
+  for (MTL::Texture *&target : _accumulationTargets) {
+    if (target) {
+      target->release();
+      target = nullptr;
+    }
+  }
+  if (_sampleCountTarget) {
+    _sampleCountTarget->release();
+    _sampleCountTarget = nullptr;
+  }
+  if (_sampleImportanceTarget) {
+    _sampleImportanceTarget->release();
+    _sampleImportanceTarget = nullptr;
+  }
+
+  NS::UInteger width = std::max<NS::UInteger>(
+      1, static_cast<NS::UInteger>(Camera::screenSize.x));
+  NS::UInteger height = std::max<NS::UInteger>(
+      1, static_cast<NS::UInteger>(Camera::screenSize.y));
+
   MTL::TextureDescriptor *textureDescriptor =
       MTL::TextureDescriptor::alloc()->init();
-
   textureDescriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA32Float);
   textureDescriptor->setTextureType(MTL::TextureType::TextureType2D);
-  textureDescriptor->setWidth(Camera::screenSize.x);
-  textureDescriptor->setHeight(Camera::screenSize.y);
+  textureDescriptor->setWidth(width);
+  textureDescriptor->setHeight(height);
   textureDescriptor->setStorageMode(MTL::StorageMode::StorageModePrivate);
   textureDescriptor->setUsage(MTL::TextureUsageShaderRead |
                               MTL::TextureUsageShaderWrite);
 
   for (uint i = 0; i < 2; i++)
     _accumulationTargets[i] = _pDevice->newTexture(textureDescriptor);
+  textureDescriptor->release();
+
+  MTL::TextureDescriptor *sampleCountDescriptor =
+      MTL::TextureDescriptor::alloc()->init();
+  sampleCountDescriptor->setPixelFormat(
+      MTL::PixelFormat::PixelFormatR32Float);
+  sampleCountDescriptor->setTextureType(MTL::TextureType::TextureType2D);
+  sampleCountDescriptor->setWidth(width);
+  sampleCountDescriptor->setHeight(height);
+  sampleCountDescriptor->setStorageMode(MTL::StorageMode::StorageModePrivate);
+  sampleCountDescriptor->setUsage(MTL::TextureUsageShaderRead |
+                                  MTL::TextureUsageShaderWrite);
+  _sampleCountTarget = _pDevice->newTexture(sampleCountDescriptor);
+  sampleCountDescriptor->release();
+
+  MTL::TextureDescriptor *sampleImportanceDescriptor =
+      MTL::TextureDescriptor::alloc()->init();
+  sampleImportanceDescriptor->setPixelFormat(
+      MTL::PixelFormat::PixelFormatR32Float);
+  sampleImportanceDescriptor->setTextureType(
+      MTL::TextureType::TextureType2D);
+  sampleImportanceDescriptor->setWidth(width);
+  sampleImportanceDescriptor->setHeight(height);
+  sampleImportanceDescriptor->setStorageMode(
+      MTL::StorageMode::StorageModePrivate);
+  sampleImportanceDescriptor->setUsage(MTL::TextureUsageShaderRead |
+                                       MTL::TextureUsageShaderWrite);
+  _sampleImportanceTarget =
+      _pDevice->newTexture(sampleImportanceDescriptor);
+  sampleImportanceDescriptor->release();
+
+  _needsAccumulationReset = true;
+}
+
+void Renderer::resetAccumulationTargets() {
+  if (!_pCommandQueue)
+    return;
+
+  std::array<MTL::Texture *, 4> textures = {
+      _accumulationTargets[0], _accumulationTargets[1], _sampleCountTarget,
+      _sampleImportanceTarget};
+
+  size_t maxBytes = 0;
+  for (MTL::Texture *texture : textures) {
+    if (!texture)
+      continue;
+    size_t pixelBytes = bytesPerPixel(texture->pixelFormat());
+    if (pixelBytes == 0)
+      continue;
+    size_t width = texture->width();
+    size_t height = texture->height();
+    if (width == 0 || height == 0)
+      continue;
+    size_t rowBytes = width * pixelBytes;
+    size_t alignedRowBytes = alignTo(rowBytes, 256);
+    size_t totalBytes = alignedRowBytes * height;
+    maxBytes = std::max(maxBytes, totalBytes);
+  }
+
+  if (maxBytes == 0) {
+    _needsAccumulationReset = false;
+    return;
+  }
+
+  ensureBufferCapacity(_pTextureClearBuffer, maxBytes,
+                       _textureClearBufferCapacity, false,
+                       MTL::ResourceStorageModeShared);
+  if (!_pTextureClearBuffer) {
+    _needsAccumulationReset = false;
+    return;
+  }
+
+  if (void *ptr = _pTextureClearBuffer->contents())
+    std::memset(ptr, 0, maxBytes);
+
+  MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
+  if (!cmd) {
+    _needsAccumulationReset = false;
+    return;
+  }
+
+  MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
+  if (!blit) {
+    cmd->commit();
+    cmd->waitUntilCompleted();
+    _needsAccumulationReset = false;
+    return;
+  }
+
+  for (MTL::Texture *texture : textures) {
+    if (!texture)
+      continue;
+    size_t pixelBytes = bytesPerPixel(texture->pixelFormat());
+    if (pixelBytes == 0)
+      continue;
+    size_t width = texture->width();
+    size_t height = texture->height();
+    if (width == 0 || height == 0)
+      continue;
+    size_t rowBytes = width * pixelBytes;
+    size_t alignedRowBytes = alignTo(rowBytes, 256);
+    size_t totalBytes = alignedRowBytes * height;
+    if (totalBytes == 0)
+      continue;
+
+    MTL::Size size = MTL::Size::Make(width, height, 1);
+    MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+    blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
+                         size, texture, 0, 0, origin);
+  }
+
+  blit->endEncoding();
+  cmd->commit();
+  cmd->waitUntilCompleted();
+
+  _needsAccumulationReset = false;
+}
+
+void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
+  if (!_pAdaptiveSamplingPSO || !pCmd)
+    return;
+  if (!_sampleImportanceTarget || !_accumulationTargets[0] ||
+      !_pUniformsBuffer)
+    return;
+
+  NS::UInteger width = _sampleImportanceTarget->width();
+  NS::UInteger height = _sampleImportanceTarget->height();
+  if (width == 0 || height == 0)
+    return;
+
+  MTL::ComputeCommandEncoder *pCompute = pCmd->computeCommandEncoder();
+  if (!pCompute)
+    return;
+
+  pCompute->setComputePipelineState(_pAdaptiveSamplingPSO);
+  pCompute->setTexture(_accumulationTargets[0], 0);
+  pCompute->setTexture(_sampleImportanceTarget, 1);
+  pCompute->setBuffer(_pUniformsBuffer, 0, 0);
+
+  const NS::UInteger threadWidth = 8;
+  const NS::UInteger threadHeight = 8;
+  MTL::Size threadsPerThreadgroup =
+      MTL::Size::Make(threadWidth, threadHeight, 1);
+  MTL::Size threadgroups = MTL::Size::Make(
+      (width + threadWidth - 1) / threadWidth,
+      (height + threadHeight - 1) / threadHeight, 1);
+
+  pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+  pCompute->endEncoding();
 }
 
 bool Renderer::updateCamera() {
@@ -1587,12 +1809,27 @@ bool Renderer::updateCamera() {
 void Renderer::updateUniforms() {
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
-  if (updateCamera()) {
+  bool cameraChanged = updateCamera();
+  if (cameraChanged)
+    _needsAccumulationReset = true;
+
+  if (_needsAccumulationReset) {
+    resetAccumulationTargets();
     u.frameCount = 0;
     u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
   } else {
     u.frameCount++;
   }
+
+  uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
+  uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
+  minSamples = std::max<uint32_t>(minSamples, 1);
+  maxSamples = std::max(maxSamples, minSamples);
+
+  u.sampleCountTextureIndex = 2;
+  u.sampleImportanceTextureIndex = 3;
+  u.minSamplesPerPixel = minSamples;
+  u.maxSamplesPerPixel = maxSamples;
 
   u.primitiveCount = _residentPrimitiveCount;
   u.triangleCount = _residentTriangleCount;
@@ -1620,6 +1857,9 @@ void Renderer::draw(MTK::View *pView) {
   pCmd->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
     this->completeFrameMetrics(cmd);
   });
+
+  updateAdaptiveSamplingMaps(pCmd);
+
   MTL::RenderPassDescriptor *pRpd = pView->currentRenderPassDescriptor();
   MTL::RenderCommandEncoder *pEnc = pCmd->renderCommandEncoder(pRpd);
 
@@ -1643,6 +1883,8 @@ void Renderer::draw(MTK::View *pView) {
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
+  pEnc->setFragmentTexture(_sampleCountTarget, 2);
+  pEnc->setFragmentTexture(_sampleImportanceTarget, 3);
 
   pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
                        NS::UInteger(0), NS::UInteger(6));
@@ -2125,10 +2367,6 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
-  for (uint i = 0; i < 2; i++)
-    if (_accumulationTargets[i])
-      _accumulationTargets[i]->release();
-
   Camera::screenSize = {(float)size.width, (float)size.height};
 
   buildTextures();

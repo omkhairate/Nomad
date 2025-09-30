@@ -53,8 +53,10 @@ struct UniformsData
     uint debugAS;
     uint lightCount;
     float lightTotalWeight;
-    uint padding0;
-    uint padding1;
+    uint sampleCountTextureIndex;
+    uint sampleImportanceTextureIndex;
+    uint minSamplesPerPixel;
+    uint maxSamplesPerPixel;
 };
 
 
