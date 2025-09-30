@@ -21,10 +21,10 @@ float4 fragment fragmentMain(
     device const uint* primitiveRemap [[buffer(11)]],
     device atomic_uint* primitiveHitCounts [[buffer(12)]],
     device const InstanceRecord* instanceRecords [[buffer(13)]],
-    texture2d<float, access::read_write> lastFrame [[texture(0)]],
-    texture2d<float, access::read_write> currentFrame [[texture(1)]],
-    texture2d<float, access::read_write> sampleCount [[texture(2)]],
-    texture2d<float, access::read> sampleImportance [[texture(3)]])
+    texture2d<half, access::read_write> lastFrame [[texture(0)]],
+    texture2d<half, access::read_write> currentFrame [[texture(1)]],
+    texture2d<half, access::read_write> sampleCount [[texture(2)]],
+    texture2d<half, access::read> sampleImportance [[texture(3)]])
 
 {
     const device UniformsData& u = *uniforms;
@@ -33,7 +33,7 @@ float4 fragment fragmentMain(
 
     uint2 coord = uint2(in.uv * u.screenSize);
 
-    float desiredSamples = sampleImportance.read(coord).x;
+    float desiredSamples = float(sampleImportance.read(coord).x);
     if (!isfinite(desiredSamples))
     {
         desiredSamples = float(u.minSamplesPerPixel);
@@ -43,8 +43,8 @@ float4 fragment fragmentMain(
     samplesThisFrame = clamp(samplesThisFrame, u.minSamplesPerPixel, u.maxSamplesPerPixel);
     samplesThisFrame = max(samplesThisFrame, 1u);
 
-    float previousSampleCount = sampleCount.read(coord).x;
-    float4 previousColor = lastFrame.read(coord);
+    float previousSampleCount = float(sampleCount.read(coord).x);
+    float4 previousColor = float4(lastFrame.read(coord));
 
     float4 accumulatedColor = float4(0.0);
 
@@ -102,8 +102,8 @@ float4 fragment fragmentMain(
     averaged = clamp(averaged, 0.0, 1.0);
 
     float4 result = float4(averaged, 1.0);
-    currentFrame.write(result, coord);
-    sampleCount.write(totalSamples, coord);
+    currentFrame.write(half4(result), coord);
+    sampleCount.write(half4(totalSamples, half(0.0), half(0.0), half(0.0)), coord);
 
     return result;
 }

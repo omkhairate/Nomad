@@ -9,17 +9,17 @@ inline float luminance(float3 color)
     return dot(color, float3(0.2126, 0.7152, 0.0722));
 }
 
-inline float fetchLuminance(texture2d<float, access::read> accumulation,
+inline float fetchLuminance(texture2d<half, access::read> accumulation,
                             uint width, uint height, int2 coord)
 {
     int x = clamp(coord.x, 0, int(width - 1));
     int y = clamp(coord.y, 0, int(height - 1));
-    return luminance(accumulation.read(uint2(x, y)).xyz);
+    return luminance(float3(accumulation.read(uint2(x, y)).xyz));
 }
 
 kernel void adaptiveSamplingMain(
-    texture2d<float, access::read> accumulation [[texture(0)]],
-    texture2d<float, access::write> importance [[texture(1)]],
+    texture2d<half, access::read> accumulation [[texture(0)]],
+    texture2d<half, access::write> importance [[texture(1)]],
     constant UniformsData& uniforms [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
@@ -54,5 +54,5 @@ kernel void adaptiveSamplingMain(
     float maxSamples = float(max(uniforms.maxSamplesPerPixel, uniforms.minSamplesPerPixel));
     float sampleBudget = mix(minSamples, maxSamples, detail);
 
-    importance.write(sampleBudget, gid);
+    importance.write(half4(sampleBudget, half(0.0), half(0.0), half(0.0)), gid);
 }

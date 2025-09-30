@@ -78,6 +78,10 @@ size_t bytesPerPixel(MTL::PixelFormat format) {
     return sizeof(float) * 4;
   case MTL::PixelFormat::PixelFormatR32Float:
     return sizeof(float);
+  case MTL::PixelFormat::PixelFormatRGBA16Float:
+    return sizeof(uint16_t) * 4;
+  case MTL::PixelFormat::PixelFormatR16Float:
+    return sizeof(uint16_t);
   default:
     return 0;
   }
@@ -1594,7 +1598,7 @@ void Renderer::buildTextures() {
 
   MTL::TextureDescriptor *textureDescriptor =
       MTL::TextureDescriptor::alloc()->init();
-  textureDescriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA32Float);
+  textureDescriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA16Float);
   textureDescriptor->setTextureType(MTL::TextureType::TextureType2D);
   textureDescriptor->setWidth(width);
   textureDescriptor->setHeight(height);
@@ -1609,7 +1613,7 @@ void Renderer::buildTextures() {
   MTL::TextureDescriptor *sampleCountDescriptor =
       MTL::TextureDescriptor::alloc()->init();
   sampleCountDescriptor->setPixelFormat(
-      MTL::PixelFormat::PixelFormatR32Float);
+      MTL::PixelFormat::PixelFormatR16Float);
   sampleCountDescriptor->setTextureType(MTL::TextureType::TextureType2D);
   sampleCountDescriptor->setWidth(width);
   sampleCountDescriptor->setHeight(height);
@@ -1622,7 +1626,7 @@ void Renderer::buildTextures() {
   MTL::TextureDescriptor *sampleImportanceDescriptor =
       MTL::TextureDescriptor::alloc()->init();
   sampleImportanceDescriptor->setPixelFormat(
-      MTL::PixelFormat::PixelFormatR32Float);
+      MTL::PixelFormat::PixelFormatR16Float);
   sampleImportanceDescriptor->setTextureType(
       MTL::TextureType::TextureType2D);
   sampleImportanceDescriptor->setWidth(width);
