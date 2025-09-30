@@ -1638,9 +1638,9 @@ void Renderer::buildTextures() {
   _needsAccumulationReset = true;
 }
 
-void Renderer::resetAccumulationTargets() {
-  if (!_pCommandQueue)
-    return;
+bool Renderer::encodeAccumulationReset(MTL::BlitCommandEncoder *pBlit) {
+  if (!pBlit)
+    return false;
 
   std::array<MTL::Texture *, 4> textures = {
       _accumulationTargets[0], _accumulationTargets[1], _sampleCountTarget,
@@ -1663,35 +1663,17 @@ void Renderer::resetAccumulationTargets() {
     maxBytes = std::max(maxBytes, totalBytes);
   }
 
-  if (maxBytes == 0) {
-    _needsAccumulationReset = false;
-    return;
-  }
+  if (maxBytes == 0)
+    return true;
 
   ensureBufferCapacity(_pTextureClearBuffer, maxBytes,
                        _textureClearBufferCapacity, false,
                        MTL::ResourceStorageModeShared);
-  if (!_pTextureClearBuffer) {
-    _needsAccumulationReset = false;
-    return;
-  }
+  if (!_pTextureClearBuffer)
+    return false;
 
   if (void *ptr = _pTextureClearBuffer->contents())
     std::memset(ptr, 0, maxBytes);
-
-  MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
-  if (!cmd) {
-    _needsAccumulationReset = false;
-    return;
-  }
-
-  MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
-  if (!blit) {
-    cmd->commit();
-    cmd->waitUntilCompleted();
-    _needsAccumulationReset = false;
-    return;
-  }
 
   for (MTL::Texture *texture : textures) {
     if (!texture)
@@ -1711,15 +1693,11 @@ void Renderer::resetAccumulationTargets() {
 
     MTL::Size size = MTL::Size::Make(width, height, 1);
     MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-    blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
-                         size, texture, 0, 0, origin);
+    pBlit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
+                          size, texture, 0, 0, origin);
   }
 
-  blit->endEncoding();
-  cmd->commit();
-  cmd->waitUntilCompleted();
-
-  _needsAccumulationReset = false;
+  return true;
 }
 
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
@@ -1814,7 +1792,6 @@ void Renderer::updateUniforms() {
     _needsAccumulationReset = true;
 
   if (_needsAccumulationReset) {
-    resetAccumulationTargets();
     u.frameCount = 0;
     u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
   } else {
@@ -1857,6 +1834,17 @@ void Renderer::draw(MTK::View *pView) {
   pCmd->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
     this->completeFrameMetrics(cmd);
   });
+
+  if (_needsAccumulationReset) {
+    MTL::BlitCommandEncoder *pResetBlit = pCmd->blitCommandEncoder();
+    bool resetEncoded = false;
+    if (pResetBlit) {
+      resetEncoded = encodeAccumulationReset(pResetBlit);
+      pResetBlit->endEncoding();
+    }
+    if (resetEncoded)
+      _needsAccumulationReset = false;
+  }
 
   updateAdaptiveSamplingMaps(pCmd);
 
