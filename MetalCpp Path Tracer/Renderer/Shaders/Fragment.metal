@@ -22,73 +22,88 @@ float4 fragment fragmentMain(
     device atomic_uint* primitiveHitCounts [[buffer(12)]],
     device const InstanceRecord* instanceRecords [[buffer(13)]],
     texture2d<float, access::read_write> lastFrame [[texture(0)]],
-    texture2d<float, access::read_write> currentFrame [[texture(1)]])
+    texture2d<float, access::read_write> currentFrame [[texture(1)]],
+    texture2d<float, access::read_write> sampleCount [[texture(2)]],
+    texture2d<float, access::read> sampleImportance [[texture(3)]])
 
 {
     const device UniformsData& u = *uniforms;
 
-    if (u.frameCount == 0)
-    {
-        uint2 coord = uint2(in.uv * u.screenSize);
-        lastFrame.write(0, coord);
-    }
-
     uint32_t seed = random(in.uv, u.randomSeed.xyz) * ((uint32_t)-1);
 
-    float xOff = (randomFloat(seed) - 0.5) / u.screenSize.x;
-    seed = random(seed);
-    float yOff = (randomFloat(seed) - 0.5) / u.screenSize.y;
-    seed = random(seed);
+    uint2 coord = uint2(in.uv * u.screenSize);
 
-    float3 rayDir = (
-        u.firstPixelPosition +
-        (in.uv.x + xOff) * u.viewportU +
-        (in.uv.y + yOff) * u.viewportV
-    ) - u.cameraPosition;
+    float desiredSamples = sampleImportance.read(coord).x;
+    if (!isfinite(desiredSamples))
+    {
+        desiredSamples = float(u.minSamplesPerPixel);
+    }
 
-    ray r{u.cameraPosition, normalize(rayDir)};
-    r.min_distance = 0.0001;
-    r.max_distance = INFINITY; // or INFINITY
+    uint samplesThisFrame = uint(round(desiredSamples));
+    samplesThisFrame = clamp(samplesThisFrame, u.minSamplesPerPixel, u.maxSamplesPerPixel);
+    samplesThisFrame = max(samplesThisFrame, 1u);
+
+    float previousSampleCount = sampleCount.read(coord).x;
+    float4 previousColor = lastFrame.read(coord);
+
+    float4 accumulatedColor = float4(0.0);
 
     float3 rayDx = u.rayDx;
     float3 rayDy = u.rayDy;
 
-    float4 color = rayColor(
-        r,
-        rayDx,
-        rayDy,
-        tlasNodes,
-        u.tlasNodeCount,
-        bvhNodes,
-        primitives,       // <- Each primitive is 3 float4s
-        materials,
-        u.primitiveCount,
-        primitiveIndices,
-        activeMask,
-        instanceRecords,
-        lightIndices,
-        lightCdf,
-        primitiveRemap,
-        primitiveHitCounts,
-        seed,
-        u.maxRayDepth,
-        u.debugAS,
-        u.blasNodeCount,
-        u.lightCount,
-        u.lightTotalWeight,
-        static_cast<uint>(u.totalPrimitiveCount)
-    );
+    for (uint sample = 0; sample < samplesThisFrame; ++sample)
+    {
+        float xOff = (randomFloat(seed) - 0.5) / u.screenSize.x;
+        seed = random(seed);
+        float yOff = (randomFloat(seed) - 0.5) / u.screenSize.y;
+        seed = random(seed);
 
+        float3 rayDir = (
+            u.firstPixelPosition +
+            (in.uv.x + xOff) * u.viewportU +
+            (in.uv.y + yOff) * u.viewportV
+        ) - u.cameraPosition;
 
+        ray r{u.cameraPosition, normalize(rayDir)};
+        r.min_distance = 0.0001;
+        r.max_distance = INFINITY;
 
-    uint2 coord = uint2(in.uv * u.screenSize);
-    uint64_t frameCount = u.frameCount + 1;
+        accumulatedColor += rayColor(
+            r,
+            rayDx,
+            rayDy,
+            tlasNodes,
+            u.tlasNodeCount,
+            bvhNodes,
+            primitives,
+            materials,
+            u.primitiveCount,
+            primitiveIndices,
+            activeMask,
+            instanceRecords,
+            lightIndices,
+            lightCdf,
+            primitiveRemap,
+            primitiveHitCounts,
+            seed,
+            u.maxRayDepth,
+            u.debugAS,
+            u.blasNodeCount,
+            u.lightCount,
+            u.lightTotalWeight,
+            static_cast<uint>(u.totalPrimitiveCount)
+        );
+    }
 
-    color += lastFrame.read(coord) * (float)(frameCount - 1);
-    color /= frameCount;
-    color = clamp(color, 0.0, 1.0);
+    float totalSamples = previousSampleCount + float(samplesThisFrame);
+    float3 previousSum = previousColor.xyz * previousSampleCount;
+    float3 combinedSum = previousSum + accumulatedColor.xyz;
+    float3 averaged = (totalSamples > 0.0f) ? combinedSum / totalSamples : float3(0.0);
+    averaged = clamp(averaged, 0.0, 1.0);
 
-    currentFrame.write(color, coord);
-    color.w = 1;
-    return color;
+    float4 result = float4(averaged, 1.0);
+    currentFrame.write(result, coord);
+    sampleCount.write(totalSamples, coord);
+
+    return result;
 }

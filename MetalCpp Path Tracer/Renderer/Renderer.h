@@ -80,10 +80,13 @@ private:
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
+  void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
+  void resetAccumulationTargets();
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
+  MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
@@ -111,6 +114,8 @@ private:
   size_t _totalNodeCount = 0;
   // Accumulation framebuffers
   MTL::Texture *_accumulationTargets[2] = {nullptr, nullptr};
+  MTL::Texture *_sampleCountTarget = nullptr;
+  MTL::Texture *_sampleImportanceTarget = nullptr;
 
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
@@ -194,6 +199,12 @@ private:
   size_t _animationFrame = 0;
 
   ResidencyParameters _residencyConfig;
+
+  uint32_t _minSamplesPerPixel = 1;
+  uint32_t _maxSamplesPerPixel = 4;
+  bool _needsAccumulationReset = true;
+  MTL::Buffer *_pTextureClearBuffer = nullptr;
+  size_t _textureClearBufferCapacity = 0;
 
   size_t setObjectActive(size_t objectIndex, bool active);
 };
