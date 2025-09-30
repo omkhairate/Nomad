@@ -51,6 +51,12 @@ struct UniformsData {
   uint32_t sampleImportanceTextureIndex = 0;
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
+  uint32_t tileCountX = 0;
+  uint32_t tileCountY = 0;
+  uint32_t tileSizeX = 1;
+  uint32_t tileSizeY = 1;
+  float tileBudgetMinMultiplier = 1.0f;
+  float tileBudgetMaxMultiplier = 1.0f;
 };
 
 inline uint32_t bitm_random() {
@@ -392,6 +398,8 @@ Renderer::~Renderer() {
     _pLightCdfBuffer->release();
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
+  if (_tileBudgetBuffer)
+    _tileBudgetBuffer->release();
 
   for (int i = 0; i < 2; i++)
     if (_accumulationTargets[i])
@@ -505,11 +513,28 @@ void Renderer::updateVisibleScene() {
 
   _residencyConfig = _pScene->getResidencyParameters();
 
+  _tileWidth = std::max<uint32_t>(_residencyConfig.tileWidth, 1u);
+  _tileHeight = std::max<uint32_t>(_residencyConfig.tileHeight, 1u);
+  _tileBudgetMinMultiplier = _residencyConfig.tileBudgetMinMultiplier;
+  _tileBudgetMaxMultiplier = _residencyConfig.tileBudgetMaxMultiplier;
+  _tileBudgetSmoothing = _residencyConfig.tileBudgetSmoothing;
+  _tileSampleCost.clear();
+  _tileCountX = 0;
+  _tileCountY = 0;
+  if (_tileBudgetBuffer) {
+    _tileBudgetBuffer->release();
+    _tileBudgetBuffer = nullptr;
+    _tileBudgetBufferCapacity = 0;
+  }
+
   printf("LOD activation threshold: %.1f, deactivation threshold: %.1f (cooldown "
          "%u frames, toggle budget %zu)\n",
          _residencyConfig.lodEnterDistance, _residencyConfig.lodExitDistance,
          _residencyConfig.stateCooldownFrames,
          _residencyConfig.lodMaxTogglesPerFrame);
+  printf("Tile budgets: tile %ux%u min %.2f max %.2f smoothing %.2f\n",
+         _tileWidth, _tileHeight, _tileBudgetMinMultiplier,
+         _tileBudgetMaxMultiplier, _tileBudgetSmoothing);
 
   const char *strategyName = nullptr;
   switch (_pScene->getResidencyStrategy()) {
@@ -1830,6 +1855,16 @@ void Renderer::updateUniforms() {
   u.sampleImportanceTextureIndex = 3;
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
+  u.tileCountX = _tileCountX;
+  u.tileCountY = _tileCountY;
+  u.tileSizeX = std::max<uint32_t>(_tileWidth, 1u);
+  u.tileSizeY = std::max<uint32_t>(_tileHeight, 1u);
+  float minBudget = std::min(_tileBudgetMinMultiplier, _tileBudgetMaxMultiplier);
+  float maxBudget = std::max(_tileBudgetMinMultiplier, _tileBudgetMaxMultiplier);
+  minBudget = std::max(minBudget, 0.0f);
+  maxBudget = std::max(maxBudget, minBudget);
+  u.tileBudgetMinMultiplier = minBudget;
+  u.tileBudgetMaxMultiplier = maxBudget;
 
   u.primitiveCount = _residentPrimitiveCount;
   u.triangleCount = _residentTriangleCount;
@@ -1844,9 +1879,193 @@ void Renderer::updateUniforms() {
   _pUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(UniformsData)));
 }
 
+void Renderer::updateTileBudgets() {
+  if (_activePrimitive.empty()) {
+    _tileCountX = 0;
+    _tileCountY = 0;
+    _tileSampleCost.clear();
+    return;
+  }
+
+  float screenWidthF = std::max(Camera::screenSize.x, 1.0f);
+  float screenHeightF = std::max(Camera::screenSize.y, 1.0f);
+  uint32_t tileWidth = std::max<uint32_t>(_tileWidth, 1u);
+  uint32_t tileHeight = std::max<uint32_t>(_tileHeight, 1u);
+  uint32_t screenWidth = std::max<uint32_t>(1u, static_cast<uint32_t>(screenWidthF));
+  uint32_t screenHeight = std::max<uint32_t>(1u, static_cast<uint32_t>(screenHeightF));
+
+  uint32_t tileCountX = (screenWidth + tileWidth - 1) / tileWidth;
+  uint32_t tileCountY = (screenHeight + tileHeight - 1) / tileHeight;
+  tileCountX = std::max(tileCountX, 1u);
+  tileCountY = std::max(tileCountY, 1u);
+  size_t tileCount = static_cast<size_t>(tileCountX) * tileCountY;
+
+  _tileCountX = tileCountX;
+  _tileCountY = tileCountY;
+
+  if (tileCount == 0) {
+    _tileSampleCost.clear();
+    return;
+  }
+
+  std::vector<float> accum(tileCount, 0.0f);
+
+  if (_primitiveScreenCoverage.size() < _activePrimitive.size())
+    _primitiveScreenCoverage.resize(_activePrimitive.size(), 0.0f);
+
+  simd::float3 forward = simd::normalize(Camera::forward);
+  if (simd::length_squared(forward) < 1e-6f)
+    forward = {0.0f, 0.0f, -1.0f};
+  simd::float3 up = simd::normalize(Camera::up);
+  if (simd::length_squared(up) < 1e-6f)
+    up = {0.0f, 1.0f, 0.0f};
+  simd::float3 right = simd::cross(forward, up);
+  float rightLenSq = simd::length_squared(right);
+  if (rightLenSq < 1e-6f)
+    right = {1.0f, 0.0f, 0.0f};
+  else
+    right /= std::sqrt(rightLenSq);
+
+  float halfFov = Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
+  float tanHalfFov = std::tan(halfFov);
+  if (tanHalfFov <= 1e-6f)
+    tanHalfFov = 1e-3f;
+  float aspect = Camera::screenSize.y > 0.0f
+                     ? Camera::screenSize.x / Camera::screenSize.y
+                     : 1.0f;
+  float horizontalHalfFov = std::atan(tanHalfFov * aspect);
+  float tanHorizontalHalfFov = std::tan(horizontalHalfFov);
+  if (tanHorizontalHalfFov <= 1e-6f)
+    tanHorizontalHalfFov = tanHalfFov * aspect;
+  float screenArea = screenWidthF * screenHeightF;
+  float tileArea = std::max(1.0f,
+                            static_cast<float>(tileWidth) * static_cast<float>(tileHeight));
+  float tileDiag = std::sqrt(static_cast<float>(tileWidth) * tileWidth +
+                             static_cast<float>(tileHeight) * tileHeight);
+
+  for (size_t i = 0; i < _activePrimitive.size(); ++i) {
+    float coverage = 0.0f;
+    if (_activePrimitive[i] && i < _primitiveBounds.size()) {
+      const BoundingSphere &b = _primitiveBounds[i];
+      if (isInView(b)) {
+        simd::float3 toCenter = b.center - Camera::position;
+        float depth = simd::dot(toCenter, forward);
+        if (depth > 1e-4f) {
+          float dist = simd::length(toCenter);
+          float cosAngle = depth / std::max(dist, 1e-4f);
+          cosAngle = std::max(cosAngle, 0.0f);
+          float radiusPixels =
+              (b.radius / depth) / tanHalfFov * (Camera::screenSize.y * 0.5f);
+          radiusPixels = std::max(radiusPixels, 0.0f);
+          coverage = std::min(static_cast<float>(M_PI) * radiusPixels * radiusPixels *
+                                  cosAngle,
+                              screenArea);
+
+          float horiz = simd::dot(toCenter, right);
+          float vert = simd::dot(toCenter, up);
+          float depthSafe = std::max(depth, 1e-4f);
+          float normX = tanHorizontalHalfFov > 0.0f
+                            ? (horiz / depthSafe) / tanHorizontalHalfFov
+                            : 0.0f;
+          float normY = (vert / depthSafe) / tanHalfFov;
+          float pixelX = (normX * 0.5f + 0.5f) * screenWidthF;
+          float pixelY = (0.5f - normY * 0.5f) * screenHeightF;
+
+          float minPixelX = pixelX - radiusPixels;
+          float maxPixelX = pixelX + radiusPixels;
+          float minPixelY = pixelY - radiusPixels;
+          float maxPixelY = pixelY + radiusPixels;
+
+          float invTileWidth = 1.0f / static_cast<float>(tileWidth);
+          float invTileHeight = 1.0f / static_cast<float>(tileHeight);
+          int minTileX = static_cast<int>(std::floor(minPixelX * invTileWidth));
+          int maxTileX = static_cast<int>(std::floor(maxPixelX * invTileWidth));
+          int minTileY = static_cast<int>(std::floor(minPixelY * invTileHeight));
+          int maxTileY = static_cast<int>(std::floor(maxPixelY * invTileHeight));
+
+          minTileX = std::clamp(minTileX, 0, static_cast<int>(tileCountX) - 1);
+          maxTileX = std::clamp(maxTileX, 0, static_cast<int>(tileCountX) - 1);
+          minTileY = std::clamp(minTileY, 0, static_cast<int>(tileCountY) - 1);
+          maxTileY = std::clamp(maxTileY, 0, static_cast<int>(tileCountY) - 1);
+
+          if (minTileX <= maxTileX && minTileY <= maxTileY) {
+            float hitScore = (i < _primitiveHitScores.size())
+                                 ? _primitiveHitScores[i]
+                                 : 0.0f;
+            float hitWeight = static_cast<float>(
+                std::log1p(static_cast<double>(std::max(hitScore, 0.0f))));
+            float baseCost = std::max(coverage / tileArea, 0.0f);
+            baseCost *= (1.0f + hitWeight);
+            float influenceRadius = radiusPixels + tileDiag * 0.5f;
+            influenceRadius = std::max(influenceRadius, 1.0f);
+
+            for (int ty = minTileY; ty <= maxTileY; ++ty) {
+              for (int tx = minTileX; tx <= maxTileX; ++tx) {
+                float tileCenterX = (static_cast<float>(tx) + 0.5f) * tileWidth;
+                float tileCenterY = (static_cast<float>(ty) + 0.5f) * tileHeight;
+                float dx = tileCenterX - pixelX;
+                float dy = tileCenterY - pixelY;
+                float distance = std::sqrt(dx * dx + dy * dy);
+                float falloff = std::max(0.0f, 1.0f - distance / influenceRadius);
+                size_t tileIndex =
+                    static_cast<size_t>(ty) * tileCountX + static_cast<size_t>(tx);
+                if (tileIndex < accum.size())
+                  accum[tileIndex] += baseCost * falloff;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (i < _primitiveScreenCoverage.size())
+      _primitiveScreenCoverage[i] = coverage;
+  }
+
+  if (_tileSampleCost.size() != tileCount)
+    _tileSampleCost.assign(tileCount, 1.0f);
+
+  float totalCost = std::accumulate(accum.begin(), accum.end(), 0.0f);
+  float averageCost = (tileCount > 0)
+                          ? totalCost / static_cast<float>(tileCount)
+                          : 0.0f;
+  if (averageCost <= 1e-5f)
+    averageCost = 1.0f;
+
+  float minRange = std::min(_tileBudgetMinMultiplier, _tileBudgetMaxMultiplier);
+  float maxRange = std::max(_tileBudgetMinMultiplier, _tileBudgetMaxMultiplier);
+  minRange = std::max(minRange, 0.0f);
+  maxRange = std::max(maxRange, minRange > 0.0f ? minRange : 1.0f);
+  float smoothing = std::clamp(_tileBudgetSmoothing, 0.0f, 0.999f);
+
+  for (size_t i = 0; i < tileCount; ++i) {
+    float normalized = accum[i] / averageCost;
+    if (!std::isfinite(normalized))
+      normalized = 1.0f;
+    normalized = std::max(normalized, 0.0f);
+    float target = std::clamp(normalized, minRange, maxRange);
+    float previous = (i < _tileSampleCost.size()) ? _tileSampleCost[i] : target;
+    float smoothed = previous * smoothing + target * (1.0f - smoothing);
+    if (!std::isfinite(smoothed))
+      smoothed = target;
+    smoothed = std::clamp(smoothed, minRange, maxRange);
+    _tileSampleCost[i] = smoothed;
+  }
+
+  size_t bytes = _tileSampleCost.size() * sizeof(float);
+  ensureBufferCapacity(_tileBudgetBuffer, bytes, _tileBudgetBufferCapacity, false,
+                       MTL::ResourceStorageModeShared);
+  if (_tileBudgetBuffer && bytes > 0) {
+    if (void *ptr = _tileBudgetBuffer->contents())
+      std::memcpy(ptr, _tileSampleCost.data(), bytes);
+    _tileBudgetBuffer->didModifyRange(NS::Range::Make(0, bytes));
+  }
+}
+
 void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
   updateResidency();
+  updateTileBudgets();
   updateUniforms();
   beginFrameMetrics();
   std::swap(_accumulationTargets[0], _accumulationTargets[1]);
@@ -1880,6 +2099,7 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pPrimitiveRemapBuffer, 0, 11);
   pEnc->setFragmentBuffer(_pPrimitiveHitBufferGPU, 0, 12);
   pEnc->setFragmentBuffer(_pInstanceBuffer, 0, 13);
+  pEnc->setFragmentBuffer(_tileBudgetBuffer, 0, 14);
 
   pEnc->setFragmentTexture(_accumulationTargets[0], 0);
   pEnc->setFragmentTexture(_accumulationTargets[1], 1);
@@ -2552,6 +2772,14 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
          _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
          _lastGPUTime * 1000.0, _lastRaysPerSecond);
+  if (_tileCountX > 0 && _tileCountY > 0 && !_tileSampleCost.empty()) {
+    float minBudget = *std::min_element(_tileSampleCost.begin(), _tileSampleCost.end());
+    float maxBudget = *std::max_element(_tileSampleCost.begin(), _tileSampleCost.end());
+    float avgBudget = std::accumulate(_tileSampleCost.begin(), _tileSampleCost.end(), 0.0f) /
+                      static_cast<float>(_tileSampleCost.size());
+    printf("Tile budgets: %ux%u -> min %.2f max %.2f avg %.2f\n", _tileCountX,
+           _tileCountY, minBudget, maxBudget, avgBudget);
+  }
 }
 
 double Renderer::lastCPUTime() const { return _lastCPUTime; }

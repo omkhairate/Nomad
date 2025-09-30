@@ -319,6 +319,15 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "screenToggleBudget",
         static_cast<uint64_t>(params.screenFootprintMaxTogglesPerFrame)));
 
+    params.tileWidth = root->UnsignedAttribute("tileWidth", params.tileWidth);
+    params.tileHeight = root->UnsignedAttribute("tileHeight", params.tileHeight);
+    params.tileBudgetMinMultiplier = root->FloatAttribute(
+        "tileMinMultiplier", params.tileBudgetMinMultiplier);
+    params.tileBudgetMaxMultiplier = root->FloatAttribute(
+        "tileMaxMultiplier", params.tileBudgetMaxMultiplier);
+    params.tileBudgetSmoothing = root->FloatAttribute(
+        "tileSmoothing", params.tileBudgetSmoothing);
+
     scene->setResidencyParameters(params);
 
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {

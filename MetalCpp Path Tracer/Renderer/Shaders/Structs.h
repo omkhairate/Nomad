@@ -57,6 +57,12 @@ struct UniformsData
     uint sampleImportanceTextureIndex;
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
+    uint tileCountX;
+    uint tileCountY;
+    uint tileSizeX;
+    uint tileSizeY;
+    float tileBudgetMinMultiplier;
+    float tileBudgetMaxMultiplier;
 };
 
 
