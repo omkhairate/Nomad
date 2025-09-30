@@ -80,7 +80,6 @@ private:
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
-  void updateTileBudgets();
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   void resetAccumulationTargets();
 
@@ -137,17 +136,6 @@ private:
   std::vector<float> _primitiveScreenCoverage;
   std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;
-
-  uint32_t _tileWidth = 32;
-  uint32_t _tileHeight = 32;
-  float _tileBudgetMinMultiplier = 1.0f;
-  float _tileBudgetMaxMultiplier = 1.0f;
-  float _tileBudgetSmoothing = 0.85f;
-  uint32_t _tileCountX = 0;
-  uint32_t _tileCountY = 0;
-  std::vector<float> _tileSampleCost;
-  MTL::Buffer *_tileBudgetBuffer = nullptr;
-  size_t _tileBudgetBufferCapacity = 0;
 
   std::vector<BlasInstanceRecord> _instanceRecords;
   std::vector<Primitive> _residentPrimitives;
