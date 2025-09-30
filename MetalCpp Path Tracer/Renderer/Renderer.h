@@ -81,7 +81,7 @@ private:
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
-  bool encodeAccumulationReset(MTL::BlitCommandEncoder *pBlitEncoder);
+  void resetAccumulationTargets();
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
