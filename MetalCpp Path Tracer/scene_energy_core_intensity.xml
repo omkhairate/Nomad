@@ -1,4 +1,4 @@
-<Scene width="1920" height="1080" maxRayDepth="32" residencyStrategy="energy"
+<Scene width="960" height="540" maxRayDepth="8" residencyStrategy="energy"
        energyTargetFraction="0.42" energyMinActive="180" energyToggleBudget="1500">
     <CameraPath>
         <!-- Hovering orbit keeps the emissive core inside the frustum while darker shells drop residency -->
