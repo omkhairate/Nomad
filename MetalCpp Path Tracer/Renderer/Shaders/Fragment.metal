@@ -21,7 +21,6 @@ float4 fragment fragmentMain(
     device const uint* primitiveRemap [[buffer(11)]],
     device atomic_uint* primitiveHitCounts [[buffer(12)]],
     device const InstanceRecord* instanceRecords [[buffer(13)]],
-    device const float* tileBudgets [[buffer(14)]],
     texture2d<float, access::read_write> lastFrame [[texture(0)]],
     texture2d<float, access::read_write> currentFrame [[texture(1)]],
     texture2d<float, access::read_write> sampleCount [[texture(2)]],
@@ -35,17 +34,6 @@ float4 fragment fragmentMain(
     uint2 coord = uint2(in.uv * u.screenSize);
 
     float desiredSamples = sampleImportance.read(coord).x;
-
-    float tileMultiplier = 1.0f;
-    if (u.tileCountX > 0 && u.tileCountY > 0 && u.tileSizeX > 0 && u.tileSizeY > 0 && tileBudgets)
-    {
-        uint tileX = min(coord.x / u.tileSizeX, u.tileCountX - 1);
-        uint tileY = min(coord.y / u.tileSizeY, u.tileCountY - 1);
-        uint tileIndex = tileY * u.tileCountX + tileX;
-        tileMultiplier = tileBudgets[tileIndex];
-        tileMultiplier = clamp(tileMultiplier, u.tileBudgetMinMultiplier, u.tileBudgetMaxMultiplier);
-    }
-    desiredSamples *= tileMultiplier;
     if (!isfinite(desiredSamples))
     {
         desiredSamples = float(u.minSamplesPerPixel);
