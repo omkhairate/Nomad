@@ -19,7 +19,7 @@
     <Rectangle position="15,10,-120" u="10,0,0" v="0,10,0" albedo="1.0,1.0,1.0" emission="0,0,0" materialType="-1" emissionPower="0" />
 
     <!-- Bunny Mesh beside the mirror -->
-    <Mesh
+    <Mesh clusterMaxTriangles="4096" clusterMaxExtent="40"
         file="assets/bunny.obj"
         position="15,0,-100"
         scale="10.0"
