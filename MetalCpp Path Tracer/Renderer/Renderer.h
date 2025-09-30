@@ -81,7 +81,7 @@ private:
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
-  void resetAccumulationTargets();
+  void resetAccumulationTargets(MTL::CommandBuffer *cmd);
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -203,6 +203,7 @@ private:
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
   bool _needsAccumulationReset = true;
+  bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
 

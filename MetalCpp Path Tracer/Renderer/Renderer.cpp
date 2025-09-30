@@ -1642,8 +1642,8 @@ void Renderer::buildTextures() {
   _needsAccumulationReset = true;
 }
 
-void Renderer::resetAccumulationTargets() {
-  if (!_pCommandQueue)
+void Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
+  if (!cmd)
     return;
 
   std::array<MTL::Texture *, 4> textures = {
@@ -1667,35 +1667,21 @@ void Renderer::resetAccumulationTargets() {
     maxBytes = std::max(maxBytes, totalBytes);
   }
 
-  if (maxBytes == 0) {
-    _needsAccumulationReset = false;
+  if (maxBytes == 0)
     return;
-  }
 
   ensureBufferCapacity(_pTextureClearBuffer, maxBytes,
                        _textureClearBufferCapacity, false,
                        MTL::ResourceStorageModeShared);
-  if (!_pTextureClearBuffer) {
-    _needsAccumulationReset = false;
+  if (!_pTextureClearBuffer)
     return;
-  }
 
   if (void *ptr = _pTextureClearBuffer->contents())
     std::memset(ptr, 0, maxBytes);
 
-  MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
-  if (!cmd) {
-    _needsAccumulationReset = false;
-    return;
-  }
-
   MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
-  if (!blit) {
-    cmd->commit();
-    cmd->waitUntilCompleted();
-    _needsAccumulationReset = false;
+  if (!blit)
     return;
-  }
 
   for (MTL::Texture *texture : textures) {
     if (!texture)
@@ -1720,10 +1706,6 @@ void Renderer::resetAccumulationTargets() {
   }
 
   blit->endEncoding();
-  cmd->commit();
-  cmd->waitUntilCompleted();
-
-  _needsAccumulationReset = false;
 }
 
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
@@ -1818,9 +1800,11 @@ void Renderer::updateUniforms() {
     _needsAccumulationReset = true;
 
   if (_needsAccumulationReset) {
-    resetAccumulationTargets();
+    if (!_accumulationTargetsNeedClear) {
+      _accumulationTargetsNeedClear = true;
+      u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
+    }
     u.frameCount = 0;
-    u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
   } else {
     u.frameCount++;
   }
@@ -1858,6 +1842,20 @@ void Renderer::draw(MTK::View *pView) {
   NS::AutoreleasePool *pPool = NS::AutoreleasePool::alloc()->init();
 
   MTL::CommandBuffer *pCmd = _pCommandQueue->commandBuffer();
+  if (!pCmd) {
+    if (_accumulationTargetsNeedClear) {
+      _accumulationTargetsNeedClear = false;
+      _needsAccumulationReset = false;
+    }
+    pPool->release();
+    return;
+  }
+
+  if (_accumulationTargetsNeedClear) {
+    resetAccumulationTargets(pCmd);
+    _accumulationTargetsNeedClear = false;
+    _needsAccumulationReset = false;
+  }
   pCmd->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
     this->completeFrameMetrics(cmd);
   });
