@@ -1,0 +1,60 @@
+<Scene width="1600" height="900" maxRayDepth="32" residencyStrategy="distance"
+       lodEnterDistance="45" lodExitDistance="65" residencyCooldown="2" lodToggleBudget="8000">
+    <CameraPath>
+        <!-- Climb up and orbit so outer rings fall outside the distance budget -->
+        <Keyframe frame="0" position="0,6,-25" lookAt="0,3,0" />
+        <Keyframe frame="30" position="-10,10,-10" lookAt="0,4,-40" />
+        <Keyframe frame="90" position="-35,22,-35" lookAt="0,6,-80" />
+        <Keyframe frame="140" position="-60,32,-60" lookAt="0,8,-110" />
+    </CameraPath>
+
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.7,0.7,0.7" emission="0,0,0"
+            materialType="0" emissionPower="0" />
+
+    <Rectangle position="0,30,-40" u="25,0,0" v="0,0,25" albedo="1.0,1.0,1.0"
+               emission="0.9,0.95,1.0" materialType="-1" emissionPower="28" />
+
+    <!-- Inner ring stays resident while outer rings stream out as the camera ascends -->
+    <Mesh file="assets/bunny.obj" position="0,0,0" scale="8.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.78,0.72,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="18,0,-18" scale="8.0"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.75,0.7,0.64" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-18,0,-18" scale="8.0"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.7,0.75,0.64" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="18,0,18" scale="8.0"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.64,0.75,0.7" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-18,0,18" scale="8.0"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.64,0.7,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="36,0,-36" scale="9.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.6,0.68,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-36,0,-36" scale="9.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.75,0.6,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="36,0,36" scale="9.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.68,0.75,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-36,0,36" scale="9.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.6,0.75,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="54,0,-54" scale="11.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.58,0.66,0.72" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-54,0,-54" scale="11.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.72,0.58,0.66" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="54,0,54" scale="11.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.66,0.72,0.58" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-54,0,54" scale="11.5"
+          clusterMaxTriangles="768" clusterMaxExtent="24"
+          albedo="0.58,0.72,0.66" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
