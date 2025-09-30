@@ -1,4 +1,4 @@
-<Scene width="1680" height="945" maxRayDepth="32" residencyStrategy="energy"
+<Scene width="960" height="540" maxRayDepth="8" residencyStrategy="energy"
        energyTargetFraction="0.36" energyMinActive="160" energyToggleBudget="1300">
     <CameraPath>
         <!-- Glide from the dim outskirts toward the bright ramp so distant dark assets unload -->

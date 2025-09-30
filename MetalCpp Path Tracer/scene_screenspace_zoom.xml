@@ -1,4 +1,4 @@
-<Scene width="1440" height="810" maxRayDepth="32" residencyStrategy="screenSpaceFootprint"
+<Scene width="960" height="540" maxRayDepth="8" residencyStrategy="screenSpaceFootprint"
        screenTargetFraction="0.18" screenMinActive="100" screenToggleBudget="750"
        screenMinPixelCoverage="18">
     <CameraPath>
