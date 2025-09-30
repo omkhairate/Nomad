@@ -2507,18 +2507,27 @@ void Renderer::processRayHitCounters() {
   if (!_pPrimitiveHitReadback)
     return;
 
+  size_t bufferLength = _pPrimitiveHitReadback->length();
+  uint32_t *hitPtr =
+      static_cast<uint32_t *>(_pPrimitiveHitReadback->contents());
+  if (!hitPtr)
+    return;
+
+  if (!_pScene ||
+      _pScene->getResidencyStrategy() != ResidencyStrategy::RayHitBudget) {
+    std::memset(hitPtr, 0, bufferLength);
+    _primitiveHitScores.clear();
+    _primitiveHitLastFrame.clear();
+    return;
+  }
+
   size_t totalPrimitiveCount = _allPrimitives.size();
   if (totalPrimitiveCount == 0)
     return;
 
-  size_t bufferCount = _pPrimitiveHitReadback->length() / sizeof(uint32_t);
+  size_t bufferCount = bufferLength / sizeof(uint32_t);
   size_t count = std::min(totalPrimitiveCount, bufferCount);
   if (count == 0)
-    return;
-
-  uint32_t *hitPtr =
-      static_cast<uint32_t *>(_pPrimitiveHitReadback->contents());
-  if (!hitPtr)
     return;
 
   if (_primitiveHitScores.size() < totalPrimitiveCount)
