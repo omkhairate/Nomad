@@ -232,6 +232,7 @@ private:
   bool evictTextureSlot(ManagedTextureSlot &slot, MTL::CommandBuffer *cmd,
                         MTL::BlitCommandEncoder *&blit);
   void releaseTextureSlot(ManagedTextureSlot &slot);
+  const char *textureSlotLabel(const ManagedTextureSlot &slot) const;
   void updateTextureResidency(MTL::CommandBuffer *cmd);
 };
 
