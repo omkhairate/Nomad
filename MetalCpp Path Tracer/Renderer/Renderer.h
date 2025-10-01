@@ -8,6 +8,7 @@
 #include <simd/simd.h>
 #include <vector>
 
+#include "GpuHeapResources.h"
 #include "Scene.h"
 
 namespace MetalCppPathTracer {
@@ -17,6 +18,13 @@ struct BlasInstanceRecord {
   uint32_t primitiveBase;
   uint32_t primitiveCount;
   uint32_t primitiveIndexBase;
+};
+
+struct ResidentObjectGpuResources {
+  GpuHeapResources resources;
+  size_t byteSize = 0;
+  bool purgeable = false;
+  bool resident = false;
 };
 
 class Renderer {
@@ -157,6 +165,8 @@ private:
   std::vector<uint32_t> _residentRemap;
   std::vector<size_t> _recentlyActivated;
   std::vector<size_t> _recentlyDeactivated;
+
+  std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
 
   uint32_t _rayHitRebuildCooldown = 0;
 
