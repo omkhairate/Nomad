@@ -46,7 +46,6 @@ void GpuHeapResources::initialize(MTL::Device *device, NS::UInteger heapSize,
 void GpuHeapResources::destroy() {
   releaseBuffer(_vertex);
   releaseBuffer(_index);
-  releaseBuffer(_boundingBox);
   releaseAccelerationStructure();
 
   if (_heap) {
@@ -92,7 +91,6 @@ NS::UInteger GpuHeapResources::alignedHeapSize(NS::UInteger size) const {
 void GpuHeapResources::releaseAllAllocations() {
   releaseBuffer(_vertex);
   releaseBuffer(_index);
-  releaseBuffer(_boundingBox);
   releaseAccelerationStructure();
   tryDestroyHeap();
 }
@@ -107,8 +105,6 @@ void GpuHeapResources::makeResourcesPurgeable() {
     _vertex.buffer->setPurgeableState(MTL::PurgeableStateEmpty);
   if (_index.buffer)
     _index.buffer->setPurgeableState(MTL::PurgeableStateEmpty);
-  if (_boundingBox.buffer)
-    _boundingBox.buffer->setPurgeableState(MTL::PurgeableStateEmpty);
   if (_accelerationStructure)
     _accelerationStructure->setPurgeableState(MTL::PurgeableStateEmpty);
 }
@@ -171,15 +167,6 @@ MTL::Buffer *GpuHeapResources::ensureIndexBuffer(NS::UInteger requiredBytes,
                                                  MTL::ResourceUsage usage) {
   return ensureOnHeapBuffer(BufferKind::Index, requiredBytes, options, usage,
                             label);
-}
-
-MTL::Buffer *
-GpuHeapResources::ensureBoundingBoxBuffer(NS::UInteger requiredBytes,
-                                          const char *label,
-                                          MTL::ResourceOptions options,
-                                          MTL::ResourceUsage usage) {
-  return ensureOnHeapBuffer(BufferKind::BoundingBox, requiredBytes, options,
-                            usage, label);
 }
 
 MTL::AccelerationStructure *
@@ -247,8 +234,6 @@ GpuHeapResources::BufferInfo &GpuHeapResources::bufferInfo(BufferKind kind) {
     return _vertex;
   case BufferKind::Index:
     return _index;
-  case BufferKind::BoundingBox:
-    return _boundingBox;
   }
   return _vertex;
 }
@@ -263,7 +248,6 @@ NS::UInteger GpuHeapResources::alignForHeap(NS::UInteger size) const {
 void GpuHeapResources::recreateHeap(NS::UInteger newSize) {
   releaseBuffer(_vertex);
   releaseBuffer(_index);
-  releaseBuffer(_boundingBox);
   releaseAccelerationStructure();
 
   if (_heap) {
@@ -290,8 +274,7 @@ void GpuHeapResources::recreateHeap(NS::UInteger newSize) {
 void GpuHeapResources::tryDestroyHeap() {
   if (!_heap)
     return;
-  if (_vertex.buffer || _index.buffer || _boundingBox.buffer ||
-      _accelerationStructure)
+  if (_vertex.buffer || _index.buffer || _accelerationStructure)
     return;
   _heap->release();
   _heap = nullptr;
