@@ -46,13 +46,7 @@ inline float3 randomInUnitSphere(thread uint32_t &seed) {
 }
 
 inline device const uchar *addressAsPointer(uint64_t address) {
-  if (address == 0)
-    return nullptr;
-#if defined(__METAL_VERSION__)
-  return static_cast<device const uchar *>(__builtin_int_to_ptr(address));
-#else
-  return reinterpret_cast<device const uchar *>(address);
-#endif
+  return as_type<device const uchar *>(address);
 }
 
 inline bool fetchTriangleFromHandle(const device GeometryHandle &handle,
@@ -71,8 +65,6 @@ inline bool fetchTriangleFromHandle(const device GeometryHandle &handle,
                                               : static_cast<uint>(sizeof(uint));
 
   device const uchar *indexBytes = addressAsPointer(handle.indexBufferAddress);
-  if (!indexBytes)
-    return false;
   uint baseIndex = triangleIndex * 3u;
   uint i0 = 0;
   uint i1 = 0;
@@ -103,8 +95,6 @@ inline bool fetchTriangleFromHandle(const device GeometryHandle &handle,
     return false;
 
   device const uchar *vertexBytes = addressAsPointer(handle.vertexBufferAddress);
-  if (!vertexBytes)
-    return false;
   auto loadVertex = [&](uint index) -> float3 {
     device const float3 *ptr =
         reinterpret_cast<device const float3 *>(vertexBytes + index * vertexStride);
