@@ -4,7 +4,6 @@
 #include <metal_stdlib>
 
 using namespace metal;
-using namespace metal::raytracing;
 
 struct v2f
 {

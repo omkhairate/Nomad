@@ -117,6 +117,7 @@ private:
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
+  MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
 
   // Core scene and geometry data
