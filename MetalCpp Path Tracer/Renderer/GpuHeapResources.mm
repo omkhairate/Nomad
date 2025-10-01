@@ -88,6 +88,22 @@ NS::UInteger GpuHeapResources::alignedHeapSize(NS::UInteger size) const {
   return alignForHeap(size);
 }
 
+void GpuHeapResources::releaseAllAllocations() {
+  releaseBuffer(_vertex);
+  releaseBuffer(_index);
+  releaseAccelerationStructure();
+  tryDestroyHeap();
+}
+
+void GpuHeapResources::makeResourcesPurgeable() {
+  if (_vertex.buffer)
+    _vertex.buffer->setPurgeableState(MTL::PurgeableStateEmpty);
+  if (_index.buffer)
+    _index.buffer->setPurgeableState(MTL::PurgeableStateEmpty);
+  if (_accelerationStructure)
+    _accelerationStructure->setPurgeableState(MTL::PurgeableStateEmpty);
+}
+
 MTL::Buffer *GpuHeapResources::ensureOnHeapBuffer(BufferKind kind,
                                                   NS::UInteger requiredBytes,
                                                   MTL::ResourceOptions options,
@@ -248,6 +264,16 @@ void GpuHeapResources::recreateHeap(NS::UInteger newSize) {
   desc->release();
 
   _heapSize = _heap ? _heap->size() : 0;
+}
+
+void GpuHeapResources::tryDestroyHeap() {
+  if (!_heap)
+    return;
+  if (_vertex.buffer || _index.buffer || _accelerationStructure)
+    return;
+  _heap->release();
+  _heap = nullptr;
+  _heapSize = 0;
 }
 
 } // namespace MetalCppPathTracer

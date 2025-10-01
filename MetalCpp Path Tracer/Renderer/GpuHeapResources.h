@@ -23,6 +23,9 @@ public:
   void ensureHeapCapacity(NS::UInteger requiredBytes);
   NS::UInteger alignedHeapSize(NS::UInteger size) const;
 
+  void releaseAllAllocations();
+  void makeResourcesPurgeable();
+
   MTL::Buffer *ensureOnHeapBuffer(BufferKind kind,
                                   NS::UInteger requiredBytes,
                                   MTL::ResourceOptions options,
@@ -69,6 +72,7 @@ private:
   BufferInfo &bufferInfo(BufferKind kind);
   NS::UInteger alignForHeap(NS::UInteger size) const;
   void recreateHeap(NS::UInteger newSize);
+  void tryDestroyHeap();
 
   MTL::Device *_device = nullptr;
   MTL::Heap *_heap = nullptr;

@@ -20,11 +20,25 @@ struct BlasInstanceRecord {
   uint32_t primitiveIndexBase;
 };
 
+class Renderer;
+
 struct ResidentObjectGpuResources {
+  enum class ResidencyState { Cold, Streaming, Resident };
+
+  bool ensureResident(Renderer &renderer, size_t objectIndex,
+                      const SceneObject &object,
+                      BlasInstanceRecord &instanceRecord,
+                      bool forceRebuild);
+  void transitionToStreaming(MTL::CommandBuffer *pending = nullptr);
+  void transitionToCold(BlasInstanceRecord &instanceRecord);
+  void clearPendingCommand();
+  bool isResident() const { return state == ResidencyState::Resident; }
+
   GpuHeapResources resources;
   size_t byteSize = 0;
-  bool purgeable = false;
-  bool resident = false;
+  ResidencyState state = ResidencyState::Cold;
+  std::chrono::steady_clock::time_point lastStateChange{};
+  MTL::CommandBuffer *pendingCommand = nullptr;
 };
 
 class Renderer {
