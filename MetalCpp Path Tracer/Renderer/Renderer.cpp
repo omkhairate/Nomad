@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <CoreFoundation/CoreFoundation.hpp>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -724,6 +725,236 @@ void Renderer::recalculateViewport() {
 
 }
 
+bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
+                               ResidentObjectGpuResources &resident) {
+  if (!_pDevice || !_pCommandQueue)
+    return false;
+
+  NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
+
+  auto cleanupPool = [&]() {
+    if (pool) {
+      pool->release();
+      pool = nullptr;
+    }
+  };
+
+  size_t first = object.firstPrimitive;
+  size_t last = std::min(first + object.primitiveCount, _allPrimitives.size());
+
+  std::vector<simd::float3> vertices;
+  std::vector<uint32_t> indices;
+  vertices.reserve((last - first) * 3);
+  indices.reserve((last - first) * 3);
+
+  for (size_t prim = first; prim < last; ++prim) {
+    if (prim >= _allPrimitives.size())
+      break;
+    const Primitive &p = _allPrimitives[prim];
+    if (p.type != PrimitiveType::Triangle)
+      continue;
+
+    uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
+    vertices.push_back(p.triangle.v0);
+    vertices.push_back(p.triangle.v1);
+    vertices.push_back(p.triangle.v2);
+    indices.push_back(baseIndex + 0);
+    indices.push_back(baseIndex + 1);
+    indices.push_back(baseIndex + 2);
+  }
+
+  size_t triangleCount = indices.size() / 3;
+
+  if (triangleCount == 0) {
+    resident.resources.ensureAccelerationStructure(0, nullptr);
+    resident.byteSize = 0;
+    resident.purgeable = false;
+    resident.resident = true;
+    cleanupPool();
+    return true;
+  }
+
+  NS::UInteger vertexBytes =
+      static_cast<NS::UInteger>(vertices.size() * sizeof(simd::float3));
+  NS::UInteger indexBytes =
+      static_cast<NS::UInteger>(indices.size() * sizeof(uint32_t));
+
+  MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc =
+      MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
+  geometryDesc->setOpaque(true);
+
+  std::string blasLabel = "ObjectBLAS_" + std::to_string(objectIndex);
+  std::string vertexLabel = "ObjectVertices_" + std::to_string(objectIndex);
+  std::string indexLabel = "ObjectIndices_" + std::to_string(objectIndex);
+
+  CFTypeRef descriptorRefs[] = {reinterpret_cast<CFTypeRef>(geometryDesc)};
+  NS::Array *geometryArray = static_cast<NS::Array *>(CFArrayCreate(
+      kCFAllocatorDefault, descriptorRefs, 1, &kCFTypeArrayCallBacks));
+
+  MTL::PrimitiveAccelerationStructureDescriptor *accelDesc =
+      MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
+  accelDesc->setGeometryDescriptors(geometryArray);
+
+  MTL::AccelerationStructureSizes sizes =
+      _pDevice->accelerationStructureSizes(accelDesc);
+  MTL::SizeAndAlign heapAlign =
+      _pDevice->heapAccelerationStructureSizeAndAlign(accelDesc);
+
+  NS::UInteger alignedAccelerationSize = static_cast<NS::UInteger>(
+      alignTo(static_cast<size_t>(heapAlign.size),
+              static_cast<size_t>(heapAlign.align)));
+  alignedAccelerationSize =
+      resident.resources.alignedHeapSize(alignedAccelerationSize);
+  NS::UInteger alignedVertexSize =
+      vertexBytes > 0 ? resident.resources.alignedHeapSize(vertexBytes) : 0;
+  NS::UInteger alignedIndexSize =
+      indexBytes > 0 ? resident.resources.alignedHeapSize(indexBytes) : 0;
+
+  NS::UInteger totalHeapBytes = alignedAccelerationSize + alignedVertexSize +
+                               alignedIndexSize;
+  resident.resources.ensureHeapCapacity(totalHeapBytes);
+
+  MTL::AccelerationStructure *accelerationStructure =
+      resident.resources.ensureAccelerationStructure(
+          sizes.accelerationStructureSize, blasLabel.c_str());
+  MTL::Buffer *vertexBuffer = resident.resources.ensureVertexBuffer(
+      vertexBytes, vertexLabel.c_str());
+  MTL::Buffer *indexBuffer = resident.resources.ensureIndexBuffer(
+      indexBytes, indexLabel.c_str());
+
+  if (!accelerationStructure || !vertexBuffer || !indexBuffer) {
+    if (geometryArray)
+      CFRelease(geometryArray);
+    geometryDesc->release();
+    accelDesc->release();
+    cleanupPool();
+    return false;
+  }
+
+  geometryDesc->setVertexBuffer(vertexBuffer);
+  geometryDesc->setVertexBufferOffset(0);
+  geometryDesc->setVertexStride(sizeof(simd::float3));
+  geometryDesc->setVertexFormat(MTL::AttributeFormat::AttributeFormatFloat3);
+  geometryDesc->setIndexBuffer(indexBuffer);
+  geometryDesc->setIndexBufferOffset(0);
+  geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
+  geometryDesc->setTriangleCount(triangleCount);
+
+  MTL::Buffer *vertexStaging = nullptr;
+  MTL::Buffer *indexStaging = nullptr;
+  if (vertexBytes > 0) {
+    vertexStaging =
+        _pDevice->newBuffer(vertexBytes, MTL::ResourceStorageModeShared);
+    if (vertexStaging) {
+      std::memcpy(vertexStaging->contents(), vertices.data(), vertexBytes);
+      vertexStaging->didModifyRange(NS::Range::Make(0, vertexBytes));
+    }
+  }
+  if (indexBytes > 0) {
+    indexStaging =
+        _pDevice->newBuffer(indexBytes, MTL::ResourceStorageModeShared);
+    if (indexStaging) {
+      std::memcpy(indexStaging->contents(), indices.data(), indexBytes);
+      indexStaging->didModifyRange(NS::Range::Make(0, indexBytes));
+    }
+  }
+
+  if ((vertexBytes > 0 && !vertexStaging) ||
+      (indexBytes > 0 && !indexStaging)) {
+    if (indexStaging)
+      indexStaging->release();
+    if (vertexStaging)
+      vertexStaging->release();
+    if (geometryArray)
+      CFRelease(geometryArray);
+    geometryDesc->release();
+    accelDesc->release();
+    cleanupPool();
+    return false;
+  }
+
+  NS::UInteger scratchSize = sizes.buildScratchBufferSize;
+  MTL::Buffer *scratchBuffer = nullptr;
+  if (scratchSize > 0)
+    scratchBuffer =
+        _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
+
+  MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
+  if (!commandBuffer) {
+    if (scratchBuffer)
+      scratchBuffer->release();
+    if (indexStaging)
+      indexStaging->release();
+    if (vertexStaging)
+      vertexStaging->release();
+    if (geometryArray)
+      CFRelease(geometryArray);
+    geometryDesc->release();
+    accelDesc->release();
+    cleanupPool();
+    return false;
+  }
+
+  MTL::BlitCommandEncoder *blitEncoder = nullptr;
+  auto ensureBlitEncoder = [&]() -> MTL::BlitCommandEncoder * {
+    if (!blitEncoder)
+      blitEncoder = commandBuffer->blitCommandEncoder();
+    return blitEncoder;
+  };
+
+  if (vertexStaging && vertexBytes > 0)
+    ensureBlitEncoder()->copyFromBuffer(vertexStaging, 0, vertexBuffer, 0,
+                                        vertexBytes);
+  if (indexStaging && indexBytes > 0)
+    ensureBlitEncoder()->copyFromBuffer(indexStaging, 0, indexBuffer, 0,
+                                        indexBytes);
+
+  if (blitEncoder)
+    blitEncoder->endEncoding();
+
+  MTL::AccelerationStructureCommandEncoder *asEncoder =
+      commandBuffer->accelerationStructureCommandEncoder();
+  if (!asEncoder) {
+    if (scratchBuffer)
+      scratchBuffer->release();
+    if (indexStaging)
+      indexStaging->release();
+    if (vertexStaging)
+      vertexStaging->release();
+    if (geometryArray)
+      CFRelease(geometryArray);
+    geometryDesc->release();
+    accelDesc->release();
+    cleanupPool();
+    return false;
+  }
+
+  asEncoder->buildAccelerationStructure(accelerationStructure, accelDesc,
+                                        scratchBuffer, 0);
+  asEncoder->endEncoding();
+
+  commandBuffer->commit();
+  commandBuffer->waitUntilCompleted();
+
+  if (scratchBuffer)
+    scratchBuffer->release();
+  if (indexStaging)
+    indexStaging->release();
+  if (vertexStaging)
+    vertexStaging->release();
+  if (geometryArray)
+    CFRelease(geometryArray);
+  geometryDesc->release();
+  accelDesc->release();
+
+  resident.byteSize = totalHeapBytes;
+  resident.purgeable = false;
+  resident.resident = true;
+
+  cleanupPool();
+  return true;
+}
+
 void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t totalPrimitiveCount = _allPrimitives.size();
   size_t cachedTotalPrimitiveCount = _cachedTotalPrimitiveCount;
@@ -826,6 +1057,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   const auto &sceneObjects = _pScene->getObjects();
   _instanceRecords.resize(sceneObjects.size());
+  std::vector<bool> objectShouldBeResident(sceneObjects.size(), false);
 
   if (_cpuActiveMask.size() < totalPrimitiveCount)
     _cpuActiveMask.resize(totalPrimitiveCount, 0);
@@ -968,6 +1200,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         }
       }
       record.blasRootIndex = anyActive ? obj.blasRootIndex : -1;
+      objectShouldBeResident[objectIndex] = anyActive;
       _instanceRecords[objectIndex] = record;
     }
   } else {
@@ -1097,6 +1330,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           for (const auto &edit : residentIndexEdits)
             if (edit.first < _primitiveToResidentIndex.size())
               _primitiveToResidentIndex[edit.first] = edit.second;
+          objectShouldBeResident[objectIndex] = false;
           _instanceRecords[objectIndex] = record;
           ++blasCacheSkipped;
           continue;
@@ -1157,6 +1391,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           record.blasRootIndex = cachedRootIndex;
           compactBVHNodes.insert(compactBVHNodes.end(), rebuiltNodes.begin(),
                                  rebuiltNodes.end());
+          objectShouldBeResident[objectIndex] = true;
           _instanceRecords[objectIndex] = record;
           ++blasCacheReused;
           assert(!encounteredEmptyLeaf &&
@@ -1194,6 +1429,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
       record.primitiveCount = static_cast<uint32_t>(activeLocalPrims.size());
       if (activeLocalPrims.empty()) {
+        objectShouldBeResident[objectIndex] = false;
         _instanceRecords[objectIndex] = record;
         continue;
       }
@@ -1217,6 +1453,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
       if (localNodeCount == 0 || localNodes.empty()) {
         record.primitiveCount = 0;
+        objectShouldBeResident[objectIndex] = false;
         _instanceRecords[objectIndex] = record;
         continue;
       }
@@ -1301,6 +1538,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       }
 
       record.blasRootIndex = static_cast<int32_t>(nodeBase);
+      objectShouldBeResident[objectIndex] = record.primitiveCount > 0;
       _instanceRecords[objectIndex] = record;
     }
 
@@ -1331,6 +1569,31 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
     _cachedLightIndices.swap(remappedLights);
     _lightCount = _cachedLightIndices.size();
+  }
+
+  for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
+    bool shouldBeResident = objectShouldBeResident[objectIndex];
+    auto &gpuResident = _residentObjectGpuResources[objectIndex];
+
+    if (shouldBeResident) {
+      bool mustBuild = needFullUpload || !gpuResident.resident;
+      if (mustBuild) {
+        bool built =
+            buildObjectBlas(objectIndex, sceneObjects[objectIndex], gpuResident);
+        if (!built) {
+          gpuResident.resident = false;
+          gpuResident.byteSize = 0;
+        }
+      }
+      gpuResident.purgeable = false;
+    } else {
+      if (gpuResident.resident || gpuResident.byteSize > 0) {
+        gpuResident.resources.ensureAccelerationStructure(0, nullptr);
+        gpuResident.byteSize = 0;
+      }
+      gpuResident.resident = false;
+      gpuResident.purgeable = true;
+    }
   }
 
   _residentRemap = remapUpload;

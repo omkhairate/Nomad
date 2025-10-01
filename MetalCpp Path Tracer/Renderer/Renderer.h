@@ -88,6 +88,8 @@ private:
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
+  bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
+                       ResidentObjectGpuResources &residentResources);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
 
