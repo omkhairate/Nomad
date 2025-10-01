@@ -1643,6 +1643,7 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
     return slot.texture;
 
   const char *label = textureSlotLabel(slot);
+  size_t totalBytes = textureByteSize(slot);
   MTL::TextureDescriptor *descriptor =
       MTL::TextureDescriptor::alloc()->init();
   descriptor->setTextureType(slot.textureType);
@@ -1660,12 +1661,13 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
                 label);
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
+    _textureResidencyStats.allocationFailures++;
     return nullptr;
   }
 
   bool logged = false;
+  bool restoredViaStaging = false;
   if (slot.stagingBuffer && slot.stagingValid && cmd) {
-    size_t totalBytes = textureByteSize(slot);
     if (totalBytes > 0 && slot.stagingCapacity >= totalBytes) {
       if (!blit)
         blit = cmd->blitCommandEncoder();
@@ -1682,10 +1684,12 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
             "[TextureResidency] Restored slot %s from staging buffer (%zu bytes).\n",
             label, totalBytes);
         logged = true;
+        restoredViaStaging = true;
       } else {
         slot.stagingValid = false;
         _needsAccumulationReset = true;
         _accumulationTargetsNeedClear = true;
+        _textureResidencyStats.blitEncoderFailures++;
         std::printf(
             "[TextureResidency] Restored slot %s without staging data: failed to "
             "obtain blit encoder.\n",
@@ -1696,6 +1700,7 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
       slot.stagingValid = false;
       _needsAccumulationReset = true;
       _accumulationTargetsNeedClear = true;
+      _textureResidencyStats.stagingFailures++;
       std::printf(
           "[TextureResidency] Restored slot %s without staging data: staging "
           "buffer capacity (%zu) insufficient for %zu bytes.\n",
@@ -1708,6 +1713,11 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
     std::printf(
         "[TextureResidency] Restored slot %s without staging data.\n", label);
   }
+
+  _textureResidencyStats.restoredSlots++;
+  _textureResidencyStats.bytesRestored += totalBytes;
+  if (restoredViaStaging)
+    _textureResidencyStats.stagedRestores++;
 
   return slot.texture;
 }
@@ -1737,6 +1747,10 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     slot.stagingValid = false;
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
+    _textureResidencyStats.evictedSlots++;
+    _textureResidencyStats.bytesEvicted += totalBytes;
+    if (totalBytes > 0 && !cmd)
+      _textureResidencyStats.blitEncoderFailures++;
     return true;
   }
 
@@ -1752,6 +1766,9 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     slot.stagingValid = false;
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
+    _textureResidencyStats.evictedSlots++;
+    _textureResidencyStats.bytesEvicted += totalBytes;
+    _textureResidencyStats.stagingFailures++;
     return true;
   }
 
@@ -1767,6 +1784,9 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     slot.stagingValid = false;
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
+    _textureResidencyStats.evictedSlots++;
+    _textureResidencyStats.bytesEvicted += totalBytes;
+    _textureResidencyStats.blitEncoderFailures++;
     return true;
   }
 
@@ -1786,6 +1806,9 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
   slot.stagingValid = true;
   slot.texture->release();
   slot.texture = nullptr;
+  _textureResidencyStats.stagedEvictions++;
+  _textureResidencyStats.bytesEvicted += totalBytes;
+  _textureResidencyStats.evictedSlots++;
   return true;
 }
 
@@ -2072,8 +2095,9 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
-  pCmd->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
-    this->completeFrameMetrics(cmd);
+  TextureResidencyStats frameStats = _textureResidencyStats;
+  pCmd->addCompletedHandler([this, frameStats](MTL::CommandBuffer *cmd) {
+    this->completeFrameMetrics(cmd, frameStats);
   });
 
   if (!haveAllTextures) {
@@ -2771,9 +2795,11 @@ void Renderer::processRayHitCounters() {
 void Renderer::beginFrameMetrics() {
   _cpuStart = std::chrono::high_resolution_clock::now();
   _lastRayCount = static_cast<size_t>(Camera::screenSize.x * Camera::screenSize.y);
+  _textureResidencyStats = {};
 }
 
-void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
+void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd,
+                                    TextureResidencyStats stats) {
   auto cpuEnd = std::chrono::high_resolution_clock::now();
   _lastCPUTime = std::chrono::duration<double>(cpuEnd - _cpuStart).count();
   _lastGPUTime = pCmd->GPUEndTime() - pCmd->GPUStartTime();
@@ -2788,6 +2814,26 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
          _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
          _lastGPUTime * 1000.0, _lastRaysPerSecond);
+
+  size_t stagedRestores = stats.stagedRestores;
+  size_t stagedEvictions = stats.stagedEvictions;
+  size_t totalRestored = stats.restoredSlots;
+  size_t totalEvicted = stats.evictedSlots;
+  size_t unstagedRestores =
+      totalRestored > stagedRestores ? totalRestored - stagedRestores : 0;
+  size_t unstagedEvictions =
+      totalEvicted > stagedEvictions ? totalEvicted - stagedEvictions : 0;
+  double restoredMB = static_cast<double>(stats.bytesRestored) /
+                      (1024.0 * 1024.0);
+  double evictedMB = static_cast<double>(stats.bytesEvicted) /
+                     (1024.0 * 1024.0);
+  printf(
+      "Texture residency: restored %zu slots (%.2f MB, %zu staged, %zu unstaged) "
+      "evicted %zu slots (%.2f MB, %zu staged, %zu unstaged) failures (staging %zu, "
+      "blit %zu, alloc %zu)\n",
+      totalRestored, restoredMB, stagedRestores, unstagedRestores, totalEvicted,
+      evictedMB, stagedEvictions, unstagedEvictions, stats.stagingFailures,
+      stats.blitEncoderFailures, stats.allocationFailures);
 }
 
 double Renderer::lastCPUTime() const { return _lastCPUTime; }
