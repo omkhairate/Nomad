@@ -104,8 +104,6 @@ struct UniformsData {
 
   uint64_t primitiveCount;
   uint64_t triangleCount;
-  uint64_t geometryHandleCount;
-  uint64_t instanceCount;
   uint64_t frameCount = 0;
   uint64_t totalPrimitiveCount;
   uint64_t tlasNodeCount;
@@ -2211,9 +2209,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         MTL::Buffer *vertexBuffer = gpuResident.resources.vertexBuffer();
         MTL::Buffer *indexBuffer = gpuResident.resources.indexBuffer();
         if (vertexBuffer && indexBuffer) {
-          handle.vertexBytes =
+          handle.vertexBufferAddress =
               vertexBuffer->gpuAddress() + gpuResident.vertexBufferOffset;
-          handle.indexBytes =
+          handle.indexBufferAddress =
               indexBuffer->gpuAddress() + gpuResident.indexBufferOffset;
           handle.vertexStride = static_cast<uint32_t>(sizeof(simd::float3));
           handle.indexStride = static_cast<uint32_t>(sizeof(uint32_t));

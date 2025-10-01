@@ -32,13 +32,8 @@ struct InstanceRecord
 
 struct GeometryHandle
 {
-#if defined(__METAL_VERSION__)
-    device const uchar *vertexBytes = nullptr;
-    device const uchar *indexBytes = nullptr;
-#else
-    uint64_t vertexBytes = 0;
-    uint64_t indexBytes = 0;
-#endif
+    uint64_t vertexBufferAddress = 0;
+    uint64_t indexBufferAddress = 0;
     uint vertexStride = 0;
     uint indexStride = 0;
     uint vertexCount = 0;
