@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <CoreFoundation/CoreFoundation.hpp>
+#include <CoreFoundation/CoreFoundation.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
