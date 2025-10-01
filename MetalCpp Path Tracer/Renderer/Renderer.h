@@ -21,8 +21,8 @@ struct BlasInstanceRecord {
 };
 
 struct GeometryHandle {
-  uint64_t vertexBufferAddress = 0;
-  uint64_t indexBufferAddress = 0;
+  uint64_t vertexBytes = 0;
+  uint64_t indexBytes = 0;
   uint32_t vertexStride = 0;
   uint32_t indexStride = 0;
   uint32_t vertexCount = 0;
