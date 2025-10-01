@@ -230,6 +230,7 @@ private:
 
   bool _residentBuffersInitialized = false;
   bool _residentCompacted = false;
+  bool _useAccelerationStructureBindings = false;
   uint32_t _compactionCooldown = 0;
   std::vector<uint8_t> _cpuActiveMask;
   std::vector<simd::float4> _cachedPrimitiveData;

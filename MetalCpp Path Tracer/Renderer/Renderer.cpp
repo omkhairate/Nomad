@@ -4,6 +4,8 @@
 #include "InputSystem.h"
 #include "Scene.h"
 #include "SceneLoader.h"
+#include <Metal/MTLArgument.hpp>
+#include <Metal/MTLComputePipeline.hpp>
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -564,12 +566,42 @@ void Renderer::buildShaders() {
   }
 
   pError = nullptr;
+  _useAccelerationStructureBindings = false;
   MTL::Function *pPathTraceFn = pLibrary->newFunction(
       NS::String::string("pathTraceKernel", UTF8StringEncoding));
   if (pPathTraceFn) {
-    _pPathTracePSO = _pDevice->newComputePipelineState(pPathTraceFn, &pError);
-    if (!_pPathTracePSO && pError) {
-      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    MTL::AutoreleasedComputePipelineReflection reflection = nullptr;
+    _pPathTracePSO = _pDevice->newComputePipelineState(
+        pPathTraceFn, MTL::PipelineOptionArgumentInfo, &reflection, &pError);
+    if (!_pPathTracePSO) {
+      if (pError) {
+        __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+      }
+      pError = nullptr;
+      reflection = nullptr;
+      _pPathTracePSO =
+          _pDevice->newComputePipelineState(pPathTraceFn, &pError);
+      if (!_pPathTracePSO && pError) {
+        __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+      }
+    }
+    if (_pPathTracePSO && reflection) {
+      NS::Array *arguments = reflection->arguments();
+      if (arguments) {
+        for (NS::UInteger i = 0; i < arguments->count(); ++i) {
+          auto *argument =
+              static_cast<MTL::Argument *>(arguments->object(i));
+          if (!argument)
+            continue;
+          if (argument->type() ==
+                  MTL::ArgumentType::ArgumentTypeInstanceAccelerationStructure ||
+              argument->bufferDataType() ==
+                  MTL::DataType::DataTypeInstanceAccelerationStructure) {
+            _useAccelerationStructureBindings = true;
+            break;
+          }
+        }
+      }
     }
     pPathTraceFn->release();
   }
@@ -2909,9 +2941,33 @@ void Renderer::updateUniforms() {
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
 
-  u.primitiveCount = _residentPrimitiveCount;
-  u.triangleCount = _residentTriangleCount;
-  u.totalPrimitiveCount = _allPrimitives.size();
+  uint64_t residentPrimitiveCount = _residentPrimitiveCount;
+  uint64_t residentTriangleCount = _residentTriangleCount;
+
+  if (_useAccelerationStructureBindings && _pTlasStructure &&
+      _pGeometryHandleBuffer) {
+    residentPrimitiveCount = 0;
+    residentTriangleCount = 0;
+    size_t sharedCount =
+        std::min(_residentObjectGpuResources.size(), _instanceRecords.size());
+    for (size_t i = 0; i < sharedCount; ++i) {
+      const auto &resident = _residentObjectGpuResources[i];
+      if (!resident.isResident() || !resident.geometryValid)
+        continue;
+      residentPrimitiveCount += _instanceRecords[i].primitiveCount;
+      residentTriangleCount += resident.triangleCount;
+    }
+  }
+
+  uint64_t totalPrimitiveCount = 0;
+  for (const auto &record : _instanceRecords)
+    totalPrimitiveCount += record.primitiveCount;
+  if (totalPrimitiveCount == 0)
+    totalPrimitiveCount = _allPrimitives.size();
+
+  u.primitiveCount = residentPrimitiveCount;
+  u.triangleCount = residentTriangleCount;
+  u.totalPrimitiveCount = totalPrimitiveCount;
   u.tlasNodeCount = _tlasNodeCount;
   u.blasNodeCount = _blasNodeCount;
   u.maxRayDepth = _pScene->maxRayDepth;
@@ -2996,20 +3052,39 @@ void Renderer::draw(MTK::View *pView) {
     MTL::ComputeCommandEncoder *pCompute = pCmd->computeCommandEncoder();
     if (pCompute) {
       pCompute->setComputePipelineState(_pPathTracePSO);
-      pCompute->setBuffer(_pBVHBuffer, 0, 0);
-      pCompute->setBuffer(_pSphereBuffer, 0, 1);
-      pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
-      pCompute->setBuffer(_pUniformsBuffer, 0, 3);
-      pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
-      pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
-      pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
-      pCompute->setBuffer(_pTLASBuffer, 0, 7);
-      pCompute->setBuffer(_pActiveBuffer, 0, 8);
-      pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
-      pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
-      pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
-      pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
-      pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+
+      bool useAccelerationStructureLayout =
+          _useAccelerationStructureBindings && _pTlasStructure &&
+          _pGeometryHandleBuffer;
+
+      if (useAccelerationStructureLayout) {
+        pCompute->setAccelerationStructure(_pTlasStructure, 0);
+        pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
+        pCompute->setBuffer(_pSphereBuffer, 0, 2);
+        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
+        pCompute->setBuffer(_pUniformsBuffer, 0, 4);
+        pCompute->setBuffer(_pActiveBuffer, 0, 5);
+        pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
+        pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
+        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
+        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
+        pCompute->setBuffer(_pInstanceBuffer, 0, 10);
+      } else {
+        pCompute->setBuffer(_pBVHBuffer, 0, 0);
+        pCompute->setBuffer(_pSphereBuffer, 0, 1);
+        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
+        pCompute->setBuffer(_pUniformsBuffer, 0, 3);
+        pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
+        pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
+        pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
+        pCompute->setBuffer(_pTLASBuffer, 0, 7);
+        pCompute->setBuffer(_pActiveBuffer, 0, 8);
+        pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
+        pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
+        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
+        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+        pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+      }
       pCompute->setTexture(accum0, 0);
       pCompute->setTexture(accum1, 1);
       pCompute->setTexture(sampleCount, 2);
