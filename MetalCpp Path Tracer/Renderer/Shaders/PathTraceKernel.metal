@@ -1,3 +1,4 @@
+#include <metal_raytracing>
 #include <metal_stdlib>
 
 using namespace metal;
@@ -5,20 +6,17 @@ using namespace metal;
 #include "PathTracing.h"
 
 kernel void pathTraceKernel(
-    device const float4 *bvhNodes [[buffer(0)]],
-    device const float4 *primitives [[buffer(1)]],
-    device const float4 *materials [[buffer(2)]],
-    device const UniformsData *uniforms [[buffer(3)]],
-    device const float3 *vertexBuffer [[buffer(4)]],
-    device const uint3 *indexBuffer [[buffer(5)]],
-    device const int *primitiveIndices [[buffer(6)]],
-    device const float4 *tlasNodes [[buffer(7)]],
-    device const uchar *activeMask [[buffer(8)]],
-    device const uint *lightIndices [[buffer(9)]],
-    device const float *lightCdf [[buffer(10)]],
-    device const uint *primitiveRemap [[buffer(11)]],
-    device atomic_uint *primitiveHitCounts [[buffer(12)]],
-    device const InstanceRecord *instanceRecords [[buffer(13)]],
+    instance_acceleration_structure tlas [[buffer(0)]],
+    device const GeometryHandle *geometryHandles [[buffer(1)]],
+    device const float4 *primitives [[buffer(2)]],
+    device const float4 *materials [[buffer(3)]],
+    device const UniformsData *uniforms [[buffer(4)]],
+    device const uchar *activeMask [[buffer(5)]],
+    device const uint *lightIndices [[buffer(6)]],
+    device const float *lightCdf [[buffer(7)]],
+    device const uint *primitiveRemap [[buffer(8)]],
+    device atomic_uint *primitiveHitCounts [[buffer(9)]],
+    device const InstanceRecord *instanceRecords [[buffer(10)]],
     texture2d<half, access::read> lastFrame [[texture(0)]],
     texture2d<half, access::write> currentFrame [[texture(1)]],
     texture2d<half, access::read_write> sampleCount [[texture(2)]],
@@ -26,11 +24,6 @@ kernel void pathTraceKernel(
     uint2 gid [[thread_position_in_grid]]) {
   if (!uniforms)
     return;
-
-  if (vertexBuffer) {
-  }
-  if (indexBuffer) {
-  }
 
   uint width = currentFrame.get_width();
   uint height = currentFrame.get_height();
@@ -77,12 +70,12 @@ kernel void pathTraceKernel(
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
 
-    accumulatedColor += rayColor(r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes,
-                                 primitives, materials, u.primitiveCount, primitiveIndices,
-                                 activeMask, instanceRecords, lightIndices, lightCdf,
-                                 primitiveRemap, primitiveHitCounts, seed, u.maxRayDepth,
-                                 u.debugAS, u.blasNodeCount, u.lightCount,
-                                 u.lightTotalWeight, static_cast<uint>(u.totalPrimitiveCount));
+    accumulatedColor += rayColor(r, rayDx, rayDy, tlas, geometryHandles, primitives,
+                                 materials, u.primitiveCount, activeMask, instanceRecords,
+                                 lightIndices, lightCdf, primitiveRemap, primitiveHitCounts,
+                                 seed, u.maxRayDepth, u.debugAS, u.lightCount,
+                                 u.lightTotalWeight, static_cast<uint>(u.totalPrimitiveCount),
+                                 u.tlasNodeCount, u.blasNodeCount);
   }
 
   float totalSamples = previousSampleCount + float(samplesThisFrame);
