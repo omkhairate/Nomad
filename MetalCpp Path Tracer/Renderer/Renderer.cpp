@@ -1313,7 +1313,8 @@ void Renderer::updateTopLevelAccelerationStructure(
       instanceDesc->release();
       return;
     }
-    enc->fillBuffer(instanceBuffer, 0, instanceBuffer->length(), 0);
+    enc->fillBuffer(instanceBuffer,
+                    NS::Range::Make(0, instanceBuffer->length()), 0);
   }
 
   if (blit)
