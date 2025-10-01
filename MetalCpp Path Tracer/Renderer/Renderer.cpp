@@ -1091,10 +1091,71 @@ bool Renderer::ensureDummyBlas() {
   MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc =
       MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
   geometryDesc->setOpaque(true);
+  const NS::UInteger dummyVertexSize =
+      static_cast<NS::UInteger>(sizeof(simd::float3) * 3);
+  const NS::UInteger dummyIndexSize =
+      static_cast<NS::UInteger>(sizeof(uint32_t) * 3);
+  MTL::Buffer *dummyVertexBuffer = _dummyBlasResources.ensureVertexBuffer(
+      dummyVertexSize, "DummyBLASVertices");
+  MTL::Buffer *dummyIndexBuffer = _dummyBlasResources.ensureIndexBuffer(
+      dummyIndexSize, "DummyBLASIndices");
+  if (!dummyVertexBuffer || !dummyIndexBuffer) {
+    geometryDesc->release();
+    return false;
+  }
   geometryDesc->setVertexStride(sizeof(simd::float3));
   geometryDesc->setVertexFormat(MTL::AttributeFormat::AttributeFormatFloat3);
   geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
   geometryDesc->setTriangleCount(0);
+  geometryDesc->setVertexBuffer(dummyVertexBuffer);
+  geometryDesc->setVertexBufferOffset(0);
+  geometryDesc->setIndexBuffer(dummyIndexBuffer);
+  geometryDesc->setIndexBufferOffset(0);
+
+  struct ZeroRequest {
+    MTL::Buffer *target = nullptr;
+    MTL::Buffer *staging = nullptr;
+    NS::UInteger size = 0;
+  };
+
+  ZeroRequest vertexZeroRequest;
+  ZeroRequest indexZeroRequest;
+
+  auto prepareZeroRequest = [&](MTL::Buffer *buffer, NS::UInteger size,
+                                ZeroRequest &request) -> bool {
+    if (!buffer || size == 0)
+      return true;
+
+    MTL::StorageMode storageMode = buffer->storageMode();
+    if (storageMode == MTL::StorageMode::StorageModeShared ||
+        storageMode == MTL::StorageMode::StorageModeManaged) {
+      if (void *contents = buffer->contents())
+        std::memset(contents, 0, size);
+      return true;
+    }
+
+    MTL::Buffer *staging =
+        _pDevice->newBuffer(size, MTL::ResourceStorageModeShared);
+    if (!staging)
+      return false;
+    if (void *contents = staging->contents())
+      std::memset(contents, 0, size);
+    request.target = buffer;
+    request.staging = staging;
+    request.size = size;
+    return true;
+  };
+
+  if (!prepareZeroRequest(dummyVertexBuffer, dummyVertexSize,
+                          vertexZeroRequest) ||
+      !prepareZeroRequest(dummyIndexBuffer, dummyIndexSize, indexZeroRequest)) {
+    if (vertexZeroRequest.staging)
+      vertexZeroRequest.staging->release();
+    if (indexZeroRequest.staging)
+      indexZeroRequest.staging->release();
+    geometryDesc->release();
+    return false;
+  }
 
   NS::Object *geometryObjects[] = {geometryDesc};
   NS::Array *geometryArray = NS::Array::alloc()->init(geometryObjects, 1);
@@ -1111,6 +1172,10 @@ bool Renderer::ensureDummyBlas() {
           sizes.accelerationStructureSize, "DummyBLAS");
 
   if (!structure) {
+    if (vertexZeroRequest.staging)
+      vertexZeroRequest.staging->release();
+    if (indexZeroRequest.staging)
+      indexZeroRequest.staging->release();
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
@@ -1127,10 +1192,41 @@ bool Renderer::ensureDummyBlas() {
   if (!commandBuffer) {
     if (scratchBuffer)
       scratchBuffer->release();
+    if (vertexZeroRequest.staging)
+      vertexZeroRequest.staging->release();
+    if (indexZeroRequest.staging)
+      indexZeroRequest.staging->release();
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     return false;
+  }
+
+  if (vertexZeroRequest.staging || indexZeroRequest.staging) {
+    MTL::BlitCommandEncoder *blitEncoder = commandBuffer->blitCommandEncoder();
+    if (!blitEncoder) {
+      if (scratchBuffer)
+        scratchBuffer->release();
+      if (vertexZeroRequest.staging)
+        vertexZeroRequest.staging->release();
+      if (indexZeroRequest.staging)
+        indexZeroRequest.staging->release();
+      geometryArray->release();
+      geometryDesc->release();
+      accelDesc->release();
+      return false;
+    }
+    if (vertexZeroRequest.staging) {
+      blitEncoder->copyFromBuffer(vertexZeroRequest.staging, 0,
+                                  vertexZeroRequest.target, 0,
+                                  vertexZeroRequest.size);
+    }
+    if (indexZeroRequest.staging) {
+      blitEncoder->copyFromBuffer(indexZeroRequest.staging, 0,
+                                  indexZeroRequest.target, 0,
+                                  indexZeroRequest.size);
+    }
+    blitEncoder->endEncoding();
   }
 
   MTL::AccelerationStructureCommandEncoder *encoder =
@@ -1138,6 +1234,10 @@ bool Renderer::ensureDummyBlas() {
   if (!encoder) {
     if (scratchBuffer)
       scratchBuffer->release();
+    if (vertexZeroRequest.staging)
+      vertexZeroRequest.staging->release();
+    if (indexZeroRequest.staging)
+      indexZeroRequest.staging->release();
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
@@ -1150,6 +1250,10 @@ bool Renderer::ensureDummyBlas() {
   commandBuffer->commit();
   commandBuffer->waitUntilCompleted();
 
+  if (vertexZeroRequest.staging)
+    vertexZeroRequest.staging->release();
+  if (indexZeroRequest.staging)
+    indexZeroRequest.staging->release();
   if (scratchBuffer)
     scratchBuffer->release();
   geometryArray->release();
