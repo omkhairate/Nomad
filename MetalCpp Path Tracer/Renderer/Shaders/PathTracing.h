@@ -2,6 +2,7 @@
 #define PATH_TRACING_H
 
 #include <metal_atomic>
+#include <metal_raytracing>
 #include <metal_stdlib>
 
 #define M_PI 3.14159265358979323846
@@ -126,267 +127,134 @@ inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,
   return false;
 }
 
-// BVH intersection helper
-inline bool intersectAABB(thread const Ray &r, float3 bmin, float3 bmax,
-                          float tMin, float tMax) {
-  for (int i = 0; i < 3; ++i) {
-    float invD = 1.0 / r.direction[i];
-    float t0 = (bmin[i] - r.origin[i]) * invD;
-    float t1 = (bmax[i] - r.origin[i]) * invD;
-    if (invD < 0.0)
-      swap(t0, t1);
-    tMin = max(tMin, t0);
-    tMax = min(tMax, t1);
-    // Use a strict comparison to allow zero-width slabs (e.g., thin rectangles)
-    if (tMax < tMin)
-      return false;
-  }
+namespace mtlrt = metal::raytracing;
+
+struct RayQueryResult {
+  bool valid = false;
+  intersection hit;
+  uint instanceId = 0;
+  uint primitiveLocal = 0;
+  float2 barycentrics = float2(0.0f);
+};
+
+inline bool loadTriangleFromHandle(const GeometryHandle &handle, uint primitiveLocal,
+                                   thread float3 &v0, thread float3 &v1,
+                                   thread float3 &v2) {
+  if (handle.vertexBufferAddress == 0 || handle.indexBufferAddress == 0)
+    return false;
+
+  uint indexStride = handle.indexStride > 0 ? handle.indexStride
+                                            : static_cast<uint>(sizeof(uint));
+  uint vertexStride =
+      handle.vertexStride > 0 ? handle.vertexStride
+                              : static_cast<uint>(sizeof(float3));
+
+  uint baseIndex = primitiveLocal * 3u;
+  if (baseIndex + 2u >= handle.indexCount)
+    return false;
+
+  device const uchar *indexBytes =
+      reinterpret_cast<device const uchar *>(handle.indexBufferAddress);
+  uint i0 = *reinterpret_cast<device const uint *>(indexBytes + indexStride * (baseIndex + 0u));
+  uint i1 = *reinterpret_cast<device const uint *>(indexBytes + indexStride * (baseIndex + 1u));
+  uint i2 = *reinterpret_cast<device const uint *>(indexBytes + indexStride * (baseIndex + 2u));
+
+  if (i0 >= handle.vertexCount || i1 >= handle.vertexCount ||
+      i2 >= handle.vertexCount)
+    return false;
+
+  device const uchar *vertexBytes =
+      reinterpret_cast<device const uchar *>(handle.vertexBufferAddress);
+  v0 = *reinterpret_cast<device const float3 *>(vertexBytes + vertexStride * i0);
+  v1 = *reinterpret_cast<device const float3 *>(vertexBytes + vertexStride * i1);
+  v2 = *reinterpret_cast<device const float3 *>(vertexBytes + vertexStride * i2);
   return true;
 }
 
-// BVH traversal version of firstHit
-inline intersection firstHitBVH(thread const Ray &r,
-                                device const float4 *bvhNodes,
-                                device const float4 *primitives,
-                                device const int *primitiveIndices,
-                                device const uchar *activeMask,
-                                int startNode) {
-  intersection in;
-  in.t = INFINITY;
-  in.primitiveId = -1;
-  in.isTriangle = 0;
-  in.nodeIndex = -1;
+inline RayQueryResult traceRay(instance_acceleration_structure tlas,
+                               device const GeometryHandle *geometryHandles,
+                               device const InstanceRecord *instanceRecords,
+                               device const uchar *activeMask,
+                               uint primitiveCount, thread const Ray &r) {
+  RayQueryResult result;
+  result.hit.t = INFINITY;
+  result.hit.primitiveId = -1;
+  result.hit.nodeIndex = -1;
+  result.hit.isTriangle = 0;
 
-  constexpr int stackSize = 64;
-  int stack[stackSize];
-  int stackPtr = 0;
-  stack[stackPtr++] = startNode;
+  if (!tlas)
+    return result;
 
-  while (stackPtr > 0) {
-    int nodeIdx = stack[--stackPtr];
+  mtlrt::ray rtRay(r.origin, r.direction, r.minDistance, r.maxDistance);
+  mtlrt::intersector<mtlrt::triangle_data, mtlrt::instancing> intersector;
+  intersector.assume_geometry_type(mtlrt::geometry_type::triangle);
+  intersector.force_opacity(mtlrt::opacity::opaque);
 
-    float3 bmin = bvhNodes[2 * nodeIdx + 0].xyz;
-    float3 bmax = bvhNodes[2 * nodeIdx + 1].xyz;
-    int leftFirst = as_type<int>(bvhNodes[2 * nodeIdx + 0].w);
-    int second = as_type<int>(bvhNodes[2 * nodeIdx + 1].w);
+  auto hit = intersector.intersect(rtRay, tlas);
+  if (hit.type != mtlrt::intersection_type::triangle)
+    return result;
 
-    if (!intersectAABB(r, bmin, bmax, 0.0001, in.t))
-      continue;
+  uint instanceId = hit.instance_id();
+  uint primitiveLocal = hit.primitive_id();
+  float distance = hit.distance();
+  float2 bary = hit.triangle_barycentric_coord();
 
-    if (second > 0) {
-      int count = second;
-      if (count <= 0 || leftFirst < 0)
-        continue;
-      for (int i = 0; i < count; ++i) {
-        int primIdx = primitiveIndices[leftFirst + i];
-        if (!activeMask[primIdx])
-          continue;
-        int base = primIdx * 3;
-        float4 p0 = primitives[base + 0];
-        float4 p1 = primitives[base + 1];
-        float4 p2 = primitives[base + 2];
+  if (!instanceRecords)
+    return result;
 
-        int primitiveType = int(p0.w);
-        float tHit = INFINITY;
-        float3 n = float3(0);
-        float3 hit = float3(0);
-        bool hitThis = false;
+  InstanceRecord record = instanceRecords[instanceId];
+  if (record.primitiveCount == 0 || primitiveLocal >= record.primitiveCount)
+    return result;
 
-        if (primitiveType == 0) {
-          float3 center = p0.xyz;
-          float radius = p1.x;
-          float3 oc = r.origin - center;
-          float a = dot(r.direction, r.direction);
-          float b = dot(oc, r.direction);
-          float c = dot(oc, oc) - radius * radius;
-          float discriminant = b * b - a * c;
+  uint primitiveIndex = record.primitiveBase + primitiveLocal;
+  if (primitiveIndex >= primitiveCount)
+    return result;
 
-          if (discriminant > 0.0) {
-            float sqrtD = sqrt(discriminant);
-            float temp = (-b - sqrtD) / a;
-            if (temp < in.t && temp > 0.0001) {
-              tHit = temp;
-              hit = r.origin + tHit * r.direction;
-              n = normalize(hit - center);
-              hitThis = true;
-            }
-          }
-        } else if (primitiveType == 1) {
-          float3 v0 = p0.xyz;
-          float3 v1 = p1.xyz;
-          float3 v2 = p2.xyz;
+  if (activeMask && !activeMask[primitiveIndex])
+    return result;
 
-          float3 edge1 = v1 - v0;
-          float3 edge2 = v2 - v0;
-          float3 h = cross(r.direction, edge2);
-          float a = dot(edge1, h);
-          if (abs(a) > 1e-5) {
-            float f = 1.0 / a;
-            float3 s = r.origin - v0;
-            float u = f * dot(s, h);
-            if (u >= 0.0 && u <= 1.0) {
-              float3 q = cross(s, edge1);
-              float v = f * dot(r.direction, q);
-              if (v >= 0.0 && u + v <= 1.0) {
-                float tt = f * dot(edge2, q);
-                if (tt > 0.0001 && tt < in.t) {
-                  tHit = tt;
-                  hit = r.origin + tHit * r.direction;
-                  n = normalize(cross(edge1, edge2));
-                  hitThis = true;
-                  in.isTriangle = 1;
-                }
-              }
-            }
-          }
-        } else if (primitiveType == 2) {
-          float3 center = p0.xyz;
-          float3 e1 = p1.xyz;
-          float3 e2 = p2.xyz;
-          float3 normal = normalize(cross(e1, e2));
-          float denom = dot(normal, r.direction);
-          if (fabs(denom) > 1e-5) {
-            float tt = dot(center - r.origin, normal) / denom;
-            if (tt > 0.0001 && tt < in.t) {
-              float3 hitPoint = r.origin + tt * r.direction;
-              float3 rel = hitPoint - center;
-              float u = dot(rel, e1) / dot(e1, e1);
-              float v = dot(rel, e2) / dot(e2, e2);
-              if (fabs(u) <= 1.0 && fabs(v) <= 1.0) {
-                tHit = tt;
-                hit = hitPoint;
-                n = normal;
-                hitThis = true;
-              }
-            }
-          }
-        }
+  uint geometryIndex = instanceId + 1u;
+  GeometryHandle handle =
+      geometryHandles ? geometryHandles[geometryIndex] : GeometryHandle{};
+  float3 v0, v1, v2;
+  if (!loadTriangleFromHandle(handle, primitiveLocal, v0, v1, v2))
+    return result;
 
-        if (hitThis && tHit < in.t) {
-          in.t = tHit;
-          in.primitiveId = primIdx;
-          in.normal = n;
-          in.point = hit;
-          in.isTriangle = primitiveType;
-          in.nodeIndex = nodeIdx;
-        }
-      }
-    } else {
-      int rightChild = -second;
-      bool leftValid = leftFirst >= 0;
-      bool rightValid = rightChild >= 0;
+  float3 edge1 = v1 - v0;
+  float3 edge2 = v2 - v0;
+  float3 normal = cross(edge1, edge2);
+  float normalLen = length(normal);
+  if (normalLen <= 0.0f)
+    return result;
+  normal /= normalLen;
 
-      if (!leftValid && !rightValid)
-        continue;
+  float b0 = 1.0f - bary.x - bary.y;
+  float b1 = bary.x;
+  float b2 = bary.y;
+  float3 point = b0 * v0 + b1 * v1 + b2 * v2;
 
-      if (leftValid && stackPtr < stackSize)
-        stack[stackPtr++] = leftFirst;
-      if (rightValid && stackPtr < stackSize)
-        stack[stackPtr++] = rightChild;
-    }
-  }
+  bool frontFace = dot(normal, r.direction) < 0.0f;
+  float3 orientedNormal = frontFace ? normal : -normal;
 
-  if (in.primitiveId != -1) {
-    in.frontFace = dot(in.normal, r.direction) < 0.0;
-    if (!in.frontFace)
-      in.normal = -in.normal;
-  }
-
-  return in;
-}
-
-inline intersection firstHitTLAS(
-    thread const Ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
-    device const float4 *bvhNodes, device const float4 *primitives,
-    device const int *primitiveIndices, device const uchar *activeMask,
-    device const InstanceRecord *instanceRecords) {
-  intersection bestHit;
-  bestHit.t = INFINITY;
-  bestHit.primitiveId = -1;
-  bestHit.nodeIndex = -1;
-  bestHit.isTriangle = 0;
-
-  if (tlasNodeCount == 0)
-    return bestHit;
-
-  constexpr int stackSize = 64;
-  int stack[stackSize];
-  int stackPtr = 0;
-  stack[stackPtr++] = 0;
-
-  while (stackPtr > 0) {
-    int nodeIdx = stack[--stackPtr];
-    float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
-    float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
-
-    if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
-      continue;
-
-    int leftChild = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
-    int rightChild = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
-
-    if (leftChild < 0) {
-      int instanceId = -(leftChild + 1);
-      InstanceRecord record = instanceRecords[instanceId];
-      int blasRoot = record.blasRootIndex;
-      if (blasRoot >= 0) {
-        intersection hit = firstHitBVH(r, bvhNodes, primitives,
-                                       primitiveIndices, activeMask, blasRoot);
-        if (hit.primitiveId != -1 && hit.t < bestHit.t)
-          bestHit = hit;
-      }
-      continue;
-    }
-
-    bool leftHit = false;
-    bool rightHit = false;
-    float leftKey = INFINITY;
-    float rightKey = INFINITY;
-
-    if (leftChild >= 0) {
-      float3 leftMin = tlasNodes[2 * leftChild + 0].xyz;
-      float3 leftMax = tlasNodes[2 * leftChild + 1].xyz;
-      leftHit = intersectAABB(r, leftMin, leftMax, 0.0001, bestHit.t);
-      leftKey = dot((leftMin + leftMax) * 0.5 - r.origin, r.direction);
-    }
-
-    if (rightChild >= 0) {
-      float3 rightMin = tlasNodes[2 * rightChild + 0].xyz;
-      float3 rightMax = tlasNodes[2 * rightChild + 1].xyz;
-      rightHit = intersectAABB(r, rightMin, rightMax, 0.0001, bestHit.t);
-      rightKey = dot((rightMin + rightMax) * 0.5 - r.origin, r.direction);
-    }
-
-    if (leftHit && rightHit) {
-      if (stackPtr + 2 <= stackSize) {
-        if (leftKey < rightKey) {
-          stack[stackPtr++] = rightChild;
-          stack[stackPtr++] = leftChild;
-        } else {
-          stack[stackPtr++] = leftChild;
-          stack[stackPtr++] = rightChild;
-        }
-      } else if (stackPtr < stackSize) {
-        stack[stackPtr++] = (leftKey < rightKey) ? leftChild : rightChild;
-      }
-    } else if (leftHit) {
-      if (stackPtr < stackSize)
-        stack[stackPtr++] = leftChild;
-    } else if (rightHit) {
-      if (stackPtr < stackSize)
-        stack[stackPtr++] = rightChild;
-    }
-  }
-
-  return bestHit;
+  result.valid = true;
+  result.instanceId = instanceId;
+  result.primitiveLocal = primitiveLocal;
+  result.barycentrics = bary;
+  result.hit.t = distance;
+  result.hit.point = point;
+  result.hit.normal = orientedNormal;
+  result.hit.frontFace = frontFace;
+  result.hit.primitiveId = static_cast<int>(primitiveIndex);
+  result.hit.isTriangle = 1;
+  result.hit.nodeIndex = static_cast<int>(primitiveLocal);
+  return result;
 }
 
 inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
-                       device const float4 *tlasNodes,
-                       uint tlasNodeCount, device const float4 *bvhNodes,
+                       instance_acceleration_structure tlas,
+                       device const GeometryHandle *geometryHandles,
                        device const float4 *primitives,
                        device const float4 *materials, uint primitiveCount,
-                       device const int *primitiveIndices,
                        device const uchar *activeMask,
                        device const InstanceRecord *instanceRecords,
                        device const uint *lightIndices,
@@ -394,29 +262,31 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                        device const uint *primitiveRemap,
                        device atomic_uint *primitiveHitCounts,
                        thread uint32_t &seed, uint maxRayDepth,
-                       uint debugAS, uint blasNodeCount, uint lightCount,
-                       float lightTotalWeight, uint totalPrimitiveCount) {
+                       uint debugAS, uint lightCount, float lightTotalWeight,
+                       uint totalPrimitiveCount, uint tlasNodeCount,
+                       uint blasNodeCount) {
   float footprint = length(cross(rayDx, rayDy));
   float lodAtten = 1.0 / (1.0 + footprint);
+
   if (debugAS == 1) {
-    for (uint i = 0; i < tlasNodeCount; ++i) {
-      float3 bmin = tlasNodes[2 * i + 0].xyz;
-      float3 bmax = tlasNodes[2 * i + 1].xyz;
-      if (intersectAABB(r, bmin, bmax, 0.0001, INFINITY)) {
-        float t = (tlasNodeCount > 1) ? float(i) / float(tlasNodeCount - 1) : 0.0;
-        return float4(t, 1.0 - t, 0.0, 1.0);
-      }
+    RayQueryResult debugHit = traceRay(tlas, geometryHandles, instanceRecords,
+                                       activeMask, primitiveCount, r);
+    if (debugHit.valid) {
+      float denom = (tlasNodeCount > 1) ? float(tlasNodeCount - 1) : 1.0f;
+      float t = denom > 0.0f ? clamp(float(debugHit.instanceId) / denom, 0.0f, 1.0f)
+                             : 0.0f;
+      return float4(t, 1.0f - t, 0.0f, 1.0f);
     }
     return float4(0.0, 0.0, 0.0, 1.0);
   } else if (debugAS == 2) {
-    intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
-                                        primitives, primitiveIndices,
-                                        activeMask, instanceRecords);
-    if (bestHit.primitiveId != -1) {
-      float t = (blasNodeCount > 1)
-                    ? float(bestHit.nodeIndex) / float(blasNodeCount - 1)
-                    : 0.0;
-      return float4(t, 0.0, 1.0 - t, 1.0);
+    RayQueryResult debugHit = traceRay(tlas, geometryHandles, instanceRecords,
+                                       activeMask, primitiveCount, r);
+    if (debugHit.valid) {
+      float denom = (blasNodeCount > 1) ? float(blasNodeCount - 1) : 1.0f;
+      float key = denom > 0.0f
+                      ? clamp(float(debugHit.hit.nodeIndex) / denom, 0.0f, 1.0f)
+                      : 0.0f;
+      return float4(key, 0.0f, 1.0f - key, 1.0f);
     }
     return float4(0.0, 0.0, 0.0, 1.0);
   }
@@ -425,29 +295,29 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
   float4 light = float4(0.0);
 
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
-    intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
-                                        primitives, primitiveIndices,
-                                        activeMask, instanceRecords);
+    RayQueryResult hit = traceRay(tlas, geometryHandles, instanceRecords,
+                                  activeMask, primitiveCount, r);
 
-    if (bestHit.primitiveId == -1) {
+    if (!hit.valid || hit.hit.primitiveId < 0) {
       float3 unitDir = normalize(r.direction);
       float t = 0.5 * (unitDir.y + 1.0);
       float3 skyColor = mix(float3(1.0), float3(0.6, 0.7, 1.0), t);
       light += absorption * float4(skyColor, 1.0);
       break;
     }
-    if (primitiveCount > 0 && bestHit.primitiveId >= 0) {
-      uint localIndex = static_cast<uint>(bestHit.primitiveId);
-      if (localIndex < primitiveCount) {
-        uint globalId = primitiveRemap[localIndex];
-        if (globalId < totalPrimitiveCount)
-          atomic_fetch_add_explicit(&primitiveHitCounts[globalId], 1u,
-                                    memory_order_relaxed);
-      }
+
+    uint localIndex = static_cast<uint>(hit.hit.primitiveId);
+    if (primitiveCount > 0 && localIndex < primitiveCount) {
+      uint globalId = primitiveRemap[localIndex];
+      if (globalId < totalPrimitiveCount)
+        atomic_fetch_add_explicit(&primitiveHitCounts[globalId], 1u,
+                                  memory_order_relaxed);
     }
-    int matIndex = bestHit.primitiveId * 2;
+
+    int matIndex = hit.hit.primitiveId * 2;
     if (matIndex + 1 >= int(primitiveCount) * 2)
       break;
+
     float4 m0 = materials[matIndex + 0];
     float4 m1 = materials[matIndex + 1];
 
@@ -460,7 +330,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
       light += absorption * float4(emissionColor, 1.0) * emissionPower;
     }
 
-    float3 offsetNormal = bestHit.frontFace ? bestHit.normal : -bestHit.normal;
+    float3 offsetNormal = hit.hit.frontFace ? hit.hit.normal : -hit.hit.normal;
 
     if (materialType == 0.0 && lightCount > 0 && lightTotalWeight > 0.0f) {
       float lightXi = randomFloat(seed);
@@ -469,7 +339,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
           selectLightOffset(lightXi, lightCdf, lightCount, lightTotalWeight);
       if (selectedOffset < lightCount) {
         uint lightPrimIndex = lightIndices[selectedOffset];
-        if (int(lightPrimIndex) != bestHit.primitiveId) {
+        if (int(lightPrimIndex) != hit.hit.primitiveId) {
           int base = int(lightPrimIndex) * 3;
           float4 lp0 = primitives[base + 0];
           float4 lp1 = primitives[base + 1];
@@ -479,12 +349,12 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
           float area = 0.0f;
           if (sampleLightPoint(int(lp0.w), lp0, lp1, lp2, seed, lightPoint,
                                lightNormal, area) && area > 0.0f) {
-            float3 toLight = lightPoint - bestHit.point;
+            float3 toLight = lightPoint - hit.hit.point;
             float dist2 = dot(toLight, toLight);
             if (dist2 > 1e-6f) {
               float dist = sqrt(dist2);
               float3 wi = toLight / dist;
-              float cosTheta = max(dot(bestHit.normal, wi), 0.0f);
+              float cosTheta = max(dot(hit.hit.normal, wi), 0.0f);
               float cosLight = max(dot(lightNormal, -wi), 0.0f);
               if (cosTheta > 0.0f && cosLight > 0.0f) {
                 float currentCdf = lightCdf[selectedOffset];
@@ -501,20 +371,20 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                   float totalPdf = lightPdf * pdfSolid;
                   if (totalPdf > 0.0f) {
                     Ray shadowRay;
-                    shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
+                    shadowRay.origin = hit.hit.point + 0.0005f * offsetNormal;
                     shadowRay.direction = wi;
                     shadowRay.minDistance = 0.0001f;
                     shadowRay.maxDistance = dist - 0.0001f;
                     if (shadowRay.maxDistance < shadowRay.minDistance)
                       shadowRay.maxDistance = shadowRay.minDistance;
-                    intersection shadowHit = firstHitTLAS(
-                        shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
-                        primitives, primitiveIndices, activeMask, instanceRecords);
+                    RayQueryResult shadowHit = traceRay(
+                        tlas, geometryHandles, instanceRecords, activeMask,
+                        primitiveCount, shadowRay);
                     bool visible = false;
-                    if (shadowHit.primitiveId == -1) {
+                    if (!shadowHit.valid || shadowHit.hit.primitiveId == -1) {
                       visible = true;
-                    } else if (shadowHit.primitiveId == int(lightPrimIndex) &&
-                               shadowHit.t >= dist - 0.001f) {
+                    } else if (shadowHit.hit.primitiveId == int(lightPrimIndex) &&
+                               shadowHit.hit.t >= dist - 0.001f) {
                       visible = true;
                     }
                     if (visible) {
@@ -537,10 +407,10 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
       }
     }
 
-    r.origin = bestHit.point + 0.0001 * offsetNormal;
+    r.origin = hit.hit.point + 0.0001 * offsetNormal;
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
-    scatter(r, bestHit, materialType, seed);
+    scatter(r, hit.hit, materialType, seed);
     seed = random(seed);
     absorption *= float4(albedo, 1.0);
 
