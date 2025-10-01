@@ -137,7 +137,8 @@ struct RayQueryResult {
   float2 barycentrics = float2(0.0f);
 };
 
-inline bool loadTriangleFromHandle(const GeometryHandle &handle, uint primitiveLocal,
+inline bool loadTriangleFromHandle(thread const GeometryHandle &handle,
+                                   uint primitiveLocal,
                                    thread float3 &v0, thread float3 &v1,
                                    thread float3 &v2) {
   if (handle.vertexBufferAddress == 0 || handle.indexBufferAddress == 0)
