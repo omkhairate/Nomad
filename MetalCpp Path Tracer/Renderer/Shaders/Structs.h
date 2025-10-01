@@ -2,6 +2,7 @@
 #define STRUCTS_H
 
 #include <metal_stdlib>
+#include <metal_raytracing>
 
 struct v2f
 {
@@ -26,6 +27,21 @@ struct InstanceRecord
     uint primitiveBase;
     uint primitiveCount;
     uint primitiveIndexBase;
+    uint geometryIndex;
+    uint geometryCount;
+};
+
+
+struct ObjectGeometry
+{
+    device float3* vertexBuffer [[id(0)]];
+    device uint* indexBuffer [[id(1)]];
+    metal::raytracing::acceleration_structure blas [[id(2)]];
+};
+
+struct ObjectGeometryTable
+{
+    array<ObjectGeometry, 1> entries;
 };
 
 

@@ -144,6 +144,8 @@ inline intersection firstHitBVH(thread const ray &r,
                                 device const float4 *primitives,
                                 device const int *primitiveIndices,
                                 device const uchar *activeMask,
+                                const thread InstanceRecord &record,
+                                constant ObjectGeometryTable &objectGeometries,
                                 int startNode) {
   intersection in;
   in.t = INFINITY;
@@ -168,6 +170,14 @@ inline intersection firstHitBVH(thread const ray &r,
       continue;
 
     if (second > 0) {
+      device const float3 *geometryVertices = nullptr;
+      device const uint *geometryIndices = nullptr;
+      if (record.geometryCount > 0) {
+        const ObjectGeometry &geometry =
+            objectGeometries.entries[record.geometryIndex];
+        geometryVertices = geometry.vertexBuffer;
+        geometryIndices = geometry.indexBuffer;
+      }
       int count = second;
       if (count <= 0 || leftFirst < 0)
         continue;
@@ -209,6 +219,21 @@ inline intersection firstHitBVH(thread const ray &r,
           float3 v0 = p0.xyz;
           float3 v1 = p1.xyz;
           float3 v2 = p2.xyz;
+
+          if (geometryVertices && geometryIndices &&
+              primIdx >= record.primitiveIndexBase) {
+            uint localIndex = static_cast<uint>(primIdx) -
+                               record.primitiveIndexBase;
+            if (localIndex < record.primitiveCount) {
+              uint baseIndex = localIndex * 3;
+              uint idx0 = geometryIndices[baseIndex + 0];
+              uint idx1 = geometryIndices[baseIndex + 1];
+              uint idx2 = geometryIndices[baseIndex + 2];
+              v0 = geometryVertices[idx0];
+              v1 = geometryVertices[idx1];
+              v2 = geometryVertices[idx2];
+            }
+          }
 
           float3 edge1 = v1 - v0;
           float3 edge2 = v2 - v0;
@@ -293,7 +318,8 @@ inline intersection firstHitTLAS(
     thread const ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
     device const float4 *bvhNodes, device const float4 *primitives,
     device const int *primitiveIndices, device const uchar *activeMask,
-    device const InstanceRecord *instanceRecords) {
+    device const InstanceRecord *instanceRecords,
+    constant ObjectGeometryTable &objectGeometries) {
   intersection bestHit;
   bestHit.t = INFINITY;
   bestHit.primitiveId = -1;
@@ -325,7 +351,8 @@ inline intersection firstHitTLAS(
       int blasRoot = record.blasRootIndex;
       if (blasRoot >= 0) {
         intersection hit = firstHitBVH(r, bvhNodes, primitives,
-                                       primitiveIndices, activeMask, blasRoot);
+                                       primitiveIndices, activeMask, record,
+                                       objectGeometries, blasRoot);
         if (hit.primitiveId != -1 && hit.t < bestHit.t)
           bestHit = hit;
       }
@@ -383,6 +410,7 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                        device const int *primitiveIndices,
                        device const uchar *activeMask,
                        device const InstanceRecord *instanceRecords,
+                       constant ObjectGeometryTable &objectGeometries,
                        device const uint *lightIndices,
                        device const float *lightCdf,
                        device const uint *primitiveRemap,
@@ -405,7 +433,8 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
   } else if (debugAS == 2) {
     intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
                                         primitives, primitiveIndices,
-                                        activeMask, instanceRecords);
+                                        activeMask, instanceRecords,
+                                        objectGeometries);
     if (bestHit.primitiveId != -1) {
       float t = (blasNodeCount > 1)
                     ? float(bestHit.nodeIndex) / float(blasNodeCount - 1)
@@ -421,7 +450,8 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
     intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
                                         primitives, primitiveIndices,
-                                        activeMask, instanceRecords);
+                                        activeMask, instanceRecords,
+                                        objectGeometries);
 
     if (bestHit.primitiveId == -1) {
       float3 unitDir = normalize(r.direction);

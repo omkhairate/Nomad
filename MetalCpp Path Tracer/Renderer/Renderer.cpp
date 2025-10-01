@@ -55,6 +55,8 @@ void ResidentObjectGpuResources::transitionToCold(
   instanceRecord.primitiveIndexBase = 0;
   instanceRecord.blasRootIndex = -1;
   instanceRecord.primitiveCount = 0;
+  instanceRecord.geometryIndex = 0;
+  instanceRecord.geometryCount = 0;
 }
 
 bool ResidentObjectGpuResources::ensureResident(
@@ -467,6 +469,10 @@ Renderer::~Renderer() {
     _pLightCdfBuffer->release();
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
+  if (_pObjectGeometryArgumentBuffer)
+    _pObjectGeometryArgumentBuffer->release();
+  if (_pObjectGeometryArgumentEncoder)
+    _pObjectGeometryArgumentEncoder->release();
 
   _cachedInstanceDescriptors.clear();
   _cachedInstancedAccelerationStructures.clear();
@@ -523,6 +529,16 @@ void Renderer::buildShaders() {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
   }
+  if (_pObjectGeometryArgumentEncoder) {
+    _pObjectGeometryArgumentEncoder->release();
+    _pObjectGeometryArgumentEncoder = nullptr;
+  }
+  if (_pObjectGeometryArgumentBuffer) {
+    _pObjectGeometryArgumentBuffer->release();
+    _pObjectGeometryArgumentBuffer = nullptr;
+    _objectGeometryCapacity = 0;
+  }
+  _objectGeometryStride = 0;
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
@@ -548,6 +564,21 @@ void Renderer::buildShaders() {
   if (!_pPSO) {
     __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     assert(false);
+  }
+
+  if (pFragFn) {
+    _pObjectGeometryArgumentEncoder =
+        pFragFn->newArgumentEncoder(NS::UInteger(14));
+    if (_pObjectGeometryArgumentEncoder) {
+      MTL::ArgumentEncoder *elementEncoder =
+          _pObjectGeometryArgumentEncoder->newArgumentEncoder(NS::UInteger(0));
+      if (elementEncoder) {
+        _objectGeometryStride = elementEncoder->encodedLength();
+        elementEncoder->release();
+      } else {
+        _objectGeometryStride = 0;
+      }
+    }
   }
 
   pError = nullptr;
@@ -1738,6 +1769,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       record.primitiveBase = static_cast<uint32_t>(remapUpload.size());
       record.primitiveIndexBase =
           static_cast<uint32_t>(compactPrimitiveIndices.size());
+      record.geometryIndex = static_cast<uint32_t>(objectIndex);
+      record.geometryCount = 0;
 
       bool hasCache = !obj.cachedBlasNodes.empty() &&
                       !obj.cachedPrimitiveIndices.empty() &&
@@ -2078,6 +2111,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     auto &gpuResident = _residentObjectGpuResources[objectIndex];
     auto &instanceRecord = _instanceRecords[objectIndex];
 
+    instanceRecord.geometryIndex = static_cast<uint32_t>(objectIndex);
+    instanceRecord.geometryCount = 0;
+
     if (shouldBeResident) {
       bool built = gpuResident.ensureResident(
           *this, objectIndex, sceneObjects[objectIndex], instanceRecord,
@@ -2090,6 +2126,70 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
     if (!shouldBeResident) {
       gpuResident.transitionToCold(instanceRecord);
+    } else if (gpuResident.isResident()) {
+      instanceRecord.geometryCount = 1;
+    }
+  }
+
+  struct ObjectGeometryBinding {
+    MTL::Buffer *vertexBuffer = nullptr;
+    MTL::Buffer *indexBuffer = nullptr;
+    MTL::AccelerationStructure *accelerationStructure = nullptr;
+  };
+
+  std::vector<ObjectGeometryBinding> geometryBindings(sceneObjects.size());
+
+  for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
+    auto &binding = geometryBindings[objectIndex];
+    const auto &gpuResident = _residentObjectGpuResources[objectIndex];
+    bool resident = gpuResident.isResident() && objectShouldBeResident[objectIndex];
+    if (!resident)
+      continue;
+
+    binding.vertexBuffer = gpuResident.resources.vertexBuffer();
+    binding.indexBuffer = gpuResident.resources.indexBuffer();
+    binding.accelerationStructure =
+        gpuResident.resources.accelerationStructure();
+
+    if (binding.vertexBuffer && binding.indexBuffer)
+      _instanceRecords[objectIndex].geometryCount = 1;
+    else
+      _instanceRecords[objectIndex].geometryCount = 0;
+  }
+
+  if (_pObjectGeometryArgumentEncoder && _objectGeometryStride > 0) {
+    size_t geometryCount = geometryBindings.size();
+    size_t requiredCount = std::max<size_t>(geometryCount, size_t(1));
+    size_t requiredBytes = requiredCount * _objectGeometryStride;
+
+    if (!_pObjectGeometryArgumentBuffer || _objectGeometryCapacity < requiredBytes) {
+      if (_pObjectGeometryArgumentBuffer)
+        _pObjectGeometryArgumentBuffer->release();
+      _pObjectGeometryArgumentBuffer =
+          _pDevice->newBuffer(requiredBytes, MTL::ResourceStorageModeShared);
+      _objectGeometryCapacity = requiredBytes;
+    }
+
+    if (_pObjectGeometryArgumentBuffer) {
+      _pObjectGeometryArgumentEncoder->setArgumentBuffer(
+          _pObjectGeometryArgumentBuffer, 0);
+      MTL::ArgumentEncoder *elementEncoder =
+          _pObjectGeometryArgumentEncoder->newArgumentEncoder(NS::UInteger(0));
+      if (elementEncoder) {
+        for (size_t objectIndex = 0; objectIndex < requiredCount; ++objectIndex) {
+          NS::UInteger offset =
+              static_cast<NS::UInteger>(_objectGeometryStride * objectIndex);
+          elementEncoder->setArgumentBuffer(_pObjectGeometryArgumentBuffer, offset);
+          ObjectGeometryBinding binding{};
+          if (objectIndex < geometryBindings.size())
+            binding = geometryBindings[objectIndex];
+          elementEncoder->setBuffer(binding.vertexBuffer, 0, NS::UInteger(0));
+          elementEncoder->setBuffer(binding.indexBuffer, 0, NS::UInteger(1));
+          elementEncoder->setAccelerationStructure(binding.accelerationStructure,
+                                                   NS::UInteger(2));
+        }
+        elementEncoder->release();
+      }
     }
   }
 
@@ -2933,6 +3033,7 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pPrimitiveRemapBuffer, 0, 11);
   pEnc->setFragmentBuffer(_pPrimitiveHitBufferGPU, 0, 12);
   pEnc->setFragmentBuffer(_pInstanceBuffer, 0, 13);
+  pEnc->setFragmentBuffer(_pObjectGeometryArgumentBuffer, 0, 14);
 
   pEnc->setFragmentTexture(accum0, 0);
   pEnc->setFragmentTexture(accum1, 1);
