@@ -2,17 +2,23 @@
 #define PATH_TRACING_H
 
 #include <metal_atomic>
-#include <metal_raytracing>
 #include <metal_stdlib>
 
 #define M_PI 3.14159265358979323846
+
+using namespace metal;
+
+struct Ray {
+  float3 origin;
+  float3 direction;
+  float minDistance = 0.0f;
+  float maxDistance = 0.0f;
+};
 
 #include "Intersect.h"
 #include "Random.h"
 #include "Scatter.h"
 #include "Structs.h"
-
-using namespace metal;
 
 template <typename T> inline void swap(thread T &a, thread T &b) {
   T tmp = a;
@@ -121,7 +127,7 @@ inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,
 }
 
 // BVH intersection helper
-inline bool intersectAABB(thread const ray &r, float3 bmin, float3 bmax,
+inline bool intersectAABB(thread const Ray &r, float3 bmin, float3 bmax,
                           float tMin, float tMax) {
   for (int i = 0; i < 3; ++i) {
     float invD = 1.0 / r.direction[i];
@@ -139,7 +145,7 @@ inline bool intersectAABB(thread const ray &r, float3 bmin, float3 bmax,
 }
 
 // BVH traversal version of firstHit
-inline intersection firstHitBVH(thread const ray &r,
+inline intersection firstHitBVH(thread const Ray &r,
                                 device const float4 *bvhNodes,
                                 device const float4 *primitives,
                                 device const int *primitiveIndices,
@@ -290,7 +296,7 @@ inline intersection firstHitBVH(thread const ray &r,
 }
 
 inline intersection firstHitTLAS(
-    thread const ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
+    thread const Ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
     device const float4 *bvhNodes, device const float4 *primitives,
     device const int *primitiveIndices, device const uchar *activeMask,
     device const InstanceRecord *instanceRecords) {
@@ -375,7 +381,7 @@ inline intersection firstHitTLAS(
   return bestHit;
 }
 
-inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
+inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                        device const float4 *tlasNodes,
                        uint tlasNodeCount, device const float4 *bvhNodes,
                        device const float4 *primitives,
@@ -494,9 +500,13 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
                   float pdfSolid = pdfArea * dist2 / cosLight;
                   float totalPdf = lightPdf * pdfSolid;
                   if (totalPdf > 0.0f) {
-                    ray shadowRay;
+                    Ray shadowRay;
                     shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
                     shadowRay.direction = wi;
+                    shadowRay.minDistance = 0.0001f;
+                    shadowRay.maxDistance = dist - 0.0001f;
+                    if (shadowRay.maxDistance < shadowRay.minDistance)
+                      shadowRay.maxDistance = shadowRay.minDistance;
                     intersection shadowHit = firstHitTLAS(
                         shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
                         primitives, primitiveIndices, activeMask, instanceRecords);
@@ -528,6 +538,8 @@ inline float4 rayColor(ray r, float3 rayDx, float3 rayDy,
     }
 
     r.origin = bestHit.point + 0.0001 * offsetNormal;
+    r.minDistance = 0.0001f;
+    r.maxDistance = INFINITY;
     scatter(r, bestHit, materialType, seed);
     seed = random(seed);
     absorption *= float4(albedo, 1.0);

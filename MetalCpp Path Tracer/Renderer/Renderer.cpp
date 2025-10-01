@@ -485,6 +485,8 @@ Renderer::~Renderer() {
   if (_pTextureClearBuffer)
     _pTextureClearBuffer->release();
 
+  if (_pPathTracePSO)
+    _pPathTracePSO->release();
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
 
@@ -519,6 +521,10 @@ void Renderer::buildShaders() {
     _pPSO->release();
     _pPSO = nullptr;
   }
+  if (_pPathTracePSO) {
+    _pPathTracePSO->release();
+    _pPathTracePSO = nullptr;
+  }
   if (_pAdaptiveSamplingPSO) {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
@@ -535,7 +541,7 @@ void Renderer::buildShaders() {
   MTL::Function *pVertexFn = pLibrary->newFunction(
       NS::String::string("vertexMain", UTF8StringEncoding));
   MTL::Function *pFragFn = pLibrary->newFunction(
-      NS::String::string("fragmentMain", UTF8StringEncoding));
+      NS::String::string("presentMain", UTF8StringEncoding));
 
   MTL::RenderPipelineDescriptor *pDesc =
       MTL::RenderPipelineDescriptor::alloc()->init();
@@ -548,6 +554,17 @@ void Renderer::buildShaders() {
   if (!_pPSO) {
     __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     assert(false);
+  }
+
+  pError = nullptr;
+  MTL::Function *pPathTraceFn = pLibrary->newFunction(
+      NS::String::string("pathTraceKernel", UTF8StringEncoding));
+  if (pPathTraceFn) {
+    _pPathTracePSO = _pDevice->newComputePipelineState(pPathTraceFn, &pError);
+    if (!_pPathTracePSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    }
+    pPathTraceFn->release();
   }
 
   pError = nullptr;
@@ -2913,31 +2930,52 @@ void Renderer::draw(MTK::View *pView) {
 
   updateAdaptiveSamplingMaps(pCmd);
 
+  if (_pPathTracePSO && haveAllTextures) {
+    MTL::ComputeCommandEncoder *pCompute = pCmd->computeCommandEncoder();
+    if (pCompute) {
+      pCompute->setComputePipelineState(_pPathTracePSO);
+      pCompute->setBuffer(_pBVHBuffer, 0, 0);
+      pCompute->setBuffer(_pSphereBuffer, 0, 1);
+      pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
+      pCompute->setBuffer(_pUniformsBuffer, 0, 3);
+      pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
+      pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
+      pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
+      pCompute->setBuffer(_pTLASBuffer, 0, 7);
+      pCompute->setBuffer(_pActiveBuffer, 0, 8);
+      pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
+      pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
+      pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
+      pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+      pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+      pCompute->setTexture(accum0, 0);
+      pCompute->setTexture(accum1, 1);
+      pCompute->setTexture(sampleCount, 2);
+      pCompute->setTexture(sampleImportance, 3);
+
+      NS::UInteger width = accum1 ? accum1->width() : 0;
+      NS::UInteger height = accum1 ? accum1->height() : 0;
+      if (width > 0 && height > 0) {
+        NS::UInteger tgWidth = std::max<NS::UInteger>(1, _pPathTracePSO->threadExecutionWidth());
+        NS::UInteger maxThreads = std::max<NS::UInteger>(tgWidth,
+            _pPathTracePSO->maxTotalThreadsPerThreadgroup());
+        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
+        MTL::Size threadsPerThreadgroup = MTL::Size::Make(tgWidth, tgHeight, 1);
+        MTL::Size threadgroups = MTL::Size::Make(
+            (width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
+            (height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height, 1);
+        pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+      }
+
+      pCompute->endEncoding();
+    }
+  }
+
   MTL::RenderPassDescriptor *pRpd = pView->currentRenderPassDescriptor();
   MTL::RenderCommandEncoder *pEnc = pCmd->renderCommandEncoder(pRpd);
 
   pEnc->setRenderPipelineState(_pPSO);
-
-  // Always bind something for each slot
-  pEnc->setFragmentBuffer(_pBVHBuffer, 0, 0); // New!
-  pEnc->setFragmentBuffer(_pSphereBuffer, 0, 1);
-  pEnc->setFragmentBuffer(_pSphereMaterialBuffer, 0, 2);
-  pEnc->setFragmentBuffer(_pUniformsBuffer, 0, 3);
-  pEnc->setFragmentBuffer(_pTriangleVertexBuffer, 0, 4);
-  pEnc->setFragmentBuffer(_pTriangleIndexBuffer, 0, 5);
-  pEnc->setFragmentBuffer(_pPrimitiveIndexBuffer, 0, 6);
-  pEnc->setFragmentBuffer(_pTLASBuffer, 0, 7);
-  pEnc->setFragmentBuffer(_pActiveBuffer, 0, 8);
-  pEnc->setFragmentBuffer(_pLightIndexBuffer, 0, 9);
-  pEnc->setFragmentBuffer(_pLightCdfBuffer, 0, 10);
-  pEnc->setFragmentBuffer(_pPrimitiveRemapBuffer, 0, 11);
-  pEnc->setFragmentBuffer(_pPrimitiveHitBufferGPU, 0, 12);
-  pEnc->setFragmentBuffer(_pInstanceBuffer, 0, 13);
-
-  pEnc->setFragmentTexture(accum0, 0);
-  pEnc->setFragmentTexture(accum1, 1);
-  pEnc->setFragmentTexture(sampleCount, 2);
-  pEnc->setFragmentTexture(sampleImportance, 3);
+  pEnc->setFragmentTexture(accum1, 0);
 
   pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
                        NS::UInteger(0), NS::UInteger(6));
