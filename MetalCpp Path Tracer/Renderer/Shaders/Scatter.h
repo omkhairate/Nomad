@@ -2,7 +2,6 @@
 #define SCATTER_H
 
 #include <metal_stdlib>
-#include <metal_raytracing>
 
 #include "Random.h"
 #include "Structs.h"
@@ -19,7 +18,8 @@ inline bool mirrorAngle(float refractionIndex, thread const float3 &normal, thre
     return ((refractionIndex * sinTheta > 1.0) || (reflectance > randomFloat(seed)));
 }
 
-inline void scatter(thread ray &r, thread const intersection &i, float materialType, thread uint32_t &seed)
+inline void scatter(thread Ray &r, thread const intersection &i, float materialType,
+                    thread uint32_t &seed)
 {
     if(!materialType)
     {

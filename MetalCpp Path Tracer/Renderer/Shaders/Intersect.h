@@ -7,7 +7,7 @@ using namespace metal;
 #include "Structs.h"
 
 // Sphere intersection (your original function)
-inline float sphereIntersection(thread const ray &ray, device const float4 &sphere)
+inline float sphereIntersection(thread const Ray &ray, device const float4 &sphere)
 {
     const float3 sphereCenter = sphere.xyz;
     const float r = sphere.w;
@@ -25,10 +25,10 @@ inline float sphereIntersection(thread const ray &ray, device const float4 &sphe
 
     float root = (h - sqrtDiscriminant) / a;
 
-    if (ray.min_distance > root || ray.max_distance < root)
+    if (ray.minDistance > root || ray.maxDistance < root)
     {
         root = (h + sqrtDiscriminant) / a;
-        if (ray.max_distance < root || ray.min_distance > root)
+        if (ray.maxDistance < root || ray.minDistance > root)
         {
             return INFINITY;
         }
@@ -40,7 +40,7 @@ inline float sphereIntersection(thread const ray &ray, device const float4 &sphe
 
 // Triangle intersection (Möller–Trumbore)
 inline bool triangleIntersection(
-    thread const ray &ray,
+    thread const Ray &ray,
     float3 v0,
     float3 v1,
     float3 v2,
@@ -73,7 +73,7 @@ inline bool triangleIntersection(
 
     float t = f * dot(edge2, q);
 
-    if (t < ray.min_distance || t > ray.max_distance)
+    if (t < ray.minDistance || t > ray.maxDistance)
         return false;
 
     // Valid intersection
@@ -84,7 +84,7 @@ inline bool triangleIntersection(
 
 // Rectangle intersection
 inline bool rectangleIntersection(
-    thread const ray &ray,
+    thread const Ray &ray,
     float3 center,
     float3 e1,
     float3 e2,
@@ -97,7 +97,7 @@ inline bool rectangleIntersection(
         return false;
 
     float t = dot(center - ray.origin, normal) / denom;
-    if (t < ray.min_distance || t > ray.max_distance)
+    if (t < ray.minDistance || t > ray.maxDistance)
         return false;
 
     float3 pHit = ray.origin + t * ray.direction;
