@@ -631,7 +631,7 @@ void Renderer::buildShaders() {
 void Renderer::updateVisibleScene() {
   if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
-        std::filesystem::path(__FILE__).parent_path() / "../scene_lod_clusters.xml";
+        std::filesystem::path(__FILE__).parent_path() / "../scene_distance_lod_sweep.xml";
     SceneLoader::LoadSceneFromXML(alt.string(), _pScene);
   }
 

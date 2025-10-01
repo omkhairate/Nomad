@@ -3,12 +3,10 @@
 
 using namespace metal;
 
-namespace mtlrt = metal::raytracing;
-
 #include "PathTracing.h"
 
 kernel void pathTraceKernel(
-    mtlrt::instance_acceleration_structure tlas [[buffer(0)]],
+    metal::raytracing::instance_acceleration_structure tlas [[buffer(0)]],
     device const GeometryHandle *geometryHandles [[buffer(1)]],
     device const float4 *primitives [[buffer(2)]],
     device const float4 *materials [[buffer(3)]],
@@ -90,3 +88,4 @@ kernel void pathTraceKernel(
   currentFrame.write(half4(result), gid);
   sampleCount.write(half4(totalSamples, half(0.0f), half(0.0f), half(0.0f)), gid);
 }
+
