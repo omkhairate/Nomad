@@ -51,6 +51,9 @@ struct ResidentObjectGpuResources {
   size_t vertexCount = 0;
   size_t vertexBufferOffset = 0;
   size_t indexBufferOffset = 0;
+  size_t boundingBoxCount = 0;
+  size_t boundingBoxBufferOffset = 0;
+  size_t boundingBoxBufferSize = 0;
   bool geometryValid = false;
   ResidencyState state = ResidencyState::Cold;
   std::chrono::steady_clock::time_point lastStateChange{};
@@ -122,7 +125,6 @@ private:
   void processRayHitCounters();
   bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
                        ResidentObjectGpuResources &residentResources);
-  bool ensureDummyBlas();
   void updateTopLevelAccelerationStructure(
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
           &descriptors,
@@ -211,9 +213,7 @@ private:
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
 
   GpuHeapResources _tlasHeap;
-  GpuHeapResources _dummyBlasResources;
   MTL::AccelerationStructure *_pTlasStructure = nullptr;
-  MTL::AccelerationStructure *_pDummyBlas = nullptr;
   std::vector<MTL::AccelerationStructureInstanceDescriptor>
       _cachedInstanceDescriptors;
   std::vector<MTL::AccelerationStructure *> _cachedInstancedAccelerationStructures;
