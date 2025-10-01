@@ -171,7 +171,7 @@ inline bool loadTriangleFromHandle(const GeometryHandle &handle, uint primitiveL
   return true;
 }
 
-inline RayQueryResult traceRay(instance_acceleration_structure tlas,
+inline RayQueryResult traceRay(mtlrt::instance_acceleration_structure tlas,
                                device const GeometryHandle *geometryHandles,
                                device const InstanceRecord *instanceRecords,
                                device const uchar *activeMask,
@@ -251,7 +251,7 @@ inline RayQueryResult traceRay(instance_acceleration_structure tlas,
 }
 
 inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
-                       instance_acceleration_structure tlas,
+                       mtlrt::instance_acceleration_structure tlas,
                        device const GeometryHandle *geometryHandles,
                        device const float4 *primitives,
                        device const float4 *materials, uint primitiveCount,
