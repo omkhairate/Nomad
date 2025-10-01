@@ -45,10 +45,20 @@ inline float3 randomInUnitSphere(thread uint32_t &seed) {
   }
 }
 
+inline device const uchar *addressAsPointer(uint64_t address) {
+  if (address == 0)
+    return nullptr;
+#if defined(__METAL_VERSION__)
+  return reinterpret_cast<device const uchar *>(static_cast<ulong>(address));
+#else
+  return reinterpret_cast<device const uchar *>(address);
+#endif
+}
+
 inline bool fetchTriangleFromHandle(const device GeometryHandle &handle,
                                     uint triangleIndex, thread float3 &v0,
                                     thread float3 &v1, thread float3 &v2) {
-  if (!handle.vertexBytes || !handle.indexBytes)
+  if (handle.vertexBufferAddress == 0 || handle.indexBufferAddress == 0)
     return false;
 
   uint triangleCount = handle.indexCount / 3;
@@ -60,7 +70,9 @@ inline bool fetchTriangleFromHandle(const device GeometryHandle &handle,
   uint indexStride = (handle.indexStride > 0) ? handle.indexStride
                                               : static_cast<uint>(sizeof(uint));
 
-  device const uchar *indexBytes = handle.indexBytes;
+  device const uchar *indexBytes = addressAsPointer(handle.indexBufferAddress);
+  if (!indexBytes)
+    return false;
   uint baseIndex = triangleIndex * 3u;
   uint i0 = 0;
   uint i1 = 0;
@@ -90,7 +102,9 @@ inline bool fetchTriangleFromHandle(const device GeometryHandle &handle,
       i2 >= handle.vertexCount)
     return false;
 
-  device const uchar *vertexBytes = handle.vertexBytes;
+  device const uchar *vertexBytes = addressAsPointer(handle.vertexBufferAddress);
+  if (!vertexBytes)
+    return false;
   auto loadVertex = [&](uint index) -> float3 {
     device const float3 *ptr =
         reinterpret_cast<device const float3 *>(vertexBytes + index * vertexStride);

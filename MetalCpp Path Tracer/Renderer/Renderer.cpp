@@ -2211,9 +2211,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         MTL::Buffer *vertexBuffer = gpuResident.resources.vertexBuffer();
         MTL::Buffer *indexBuffer = gpuResident.resources.indexBuffer();
         if (vertexBuffer && indexBuffer) {
-          handle.vertexBytes =
+          handle.vertexBufferAddress =
               vertexBuffer->gpuAddress() + gpuResident.vertexBufferOffset;
-          handle.indexBytes =
+          handle.indexBufferAddress =
               indexBuffer->gpuAddress() + gpuResident.indexBufferOffset;
           handle.vertexStride = static_cast<uint32_t>(sizeof(simd::float3));
           handle.indexStride = static_cast<uint32_t>(sizeof(uint32_t));
