@@ -81,7 +81,7 @@ private:
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
-  void resetAccumulationTargets(MTL::CommandBuffer *cmd);
+  bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -112,10 +112,24 @@ private:
   size_t _activeNodeCount = 0;
   size_t _residentNodeCount = 0;
   size_t _totalNodeCount = 0;
+  struct ManagedTextureSlot {
+    NS::UInteger width = 0;
+    NS::UInteger height = 0;
+    MTL::PixelFormat pixelFormat = MTL::PixelFormat::PixelFormatInvalid;
+    MTL::TextureUsage usage = MTL::TextureUsage(0);
+    MTL::TextureType textureType = MTL::TextureType::TextureType2D;
+    MTL::StorageMode storageMode = MTL::StorageMode::StorageModePrivate;
+    bool descriptorValid = false;
+    bool stagingValid = false;
+    MTL::Texture *texture = nullptr;
+    MTL::Buffer *stagingBuffer = nullptr;
+    size_t stagingCapacity = 0;
+  };
+
   // Accumulation framebuffers
-  MTL::Texture *_accumulationTargets[2] = {nullptr, nullptr};
-  MTL::Texture *_sampleCountTarget = nullptr;
-  MTL::Texture *_sampleImportanceTarget = nullptr;
+  ManagedTextureSlot _accumulationSlots[2];
+  ManagedTextureSlot _sampleCountSlot;
+  ManagedTextureSlot _sampleImportanceSlot;
 
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
@@ -208,6 +222,17 @@ private:
   size_t _textureClearBufferCapacity = 0;
 
   size_t setObjectActive(size_t objectIndex, bool active);
+  void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
+                            NS::UInteger height, MTL::PixelFormat format,
+                            MTL::TextureUsage usage);
+  size_t textureByteSize(const ManagedTextureSlot &slot) const;
+  MTL::Texture *requestResidentTexture(ManagedTextureSlot &slot,
+                                       MTL::CommandBuffer *cmd,
+                                       MTL::BlitCommandEncoder *&blit);
+  bool evictTextureSlot(ManagedTextureSlot &slot, MTL::CommandBuffer *cmd,
+                        MTL::BlitCommandEncoder *&blit);
+  void releaseTextureSlot(ManagedTextureSlot &slot);
+  void updateTextureResidency(MTL::CommandBuffer *cmd);
 };
 
 } // namespace MetalCppPathTracer
