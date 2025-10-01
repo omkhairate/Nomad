@@ -860,34 +860,27 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
   accelDesc->setGeometryDescriptors(geometryArray);
 
-  MTL::AccelerationStructureSizes sizes =
-      _pDevice->accelerationStructureSizes(accelDesc);
-  MTL::SizeAndAlign heapAlign =
-      _pDevice->heapAccelerationStructureSizeAndAlign(accelDesc);
-
-  NS::UInteger alignedAccelerationSize = static_cast<NS::UInteger>(
-      alignTo(static_cast<size_t>(heapAlign.size),
-              static_cast<size_t>(heapAlign.align)));
-  alignedAccelerationSize =
-      resident.resources.alignedHeapSize(alignedAccelerationSize);
   NS::UInteger alignedVertexSize =
       vertexBytes > 0 ? resident.resources.alignedHeapSize(vertexBytes) : 0;
   NS::UInteger alignedIndexSize =
       indexBytes > 0 ? resident.resources.alignedHeapSize(indexBytes) : 0;
 
-  NS::UInteger totalHeapBytes = alignedAccelerationSize + alignedVertexSize +
-                               alignedIndexSize;
-  resident.resources.ensureHeapCapacity(totalHeapBytes);
+  MTL::Buffer *vertexBuffer = nullptr;
+  MTL::Buffer *indexBuffer = nullptr;
 
-  MTL::AccelerationStructure *accelerationStructure =
-      resident.resources.ensureAccelerationStructure(
-          sizes.accelerationStructureSize, blasLabel.c_str());
-  MTL::Buffer *vertexBuffer = resident.resources.ensureVertexBuffer(
-      vertexBytes, vertexLabel.c_str());
-  MTL::Buffer *indexBuffer = resident.resources.ensureIndexBuffer(
-      indexBytes, indexLabel.c_str());
+  auto requestGeometryBuffers = [&]() -> bool {
+    NS::UInteger initialHeapBytes = alignedVertexSize + alignedIndexSize;
+    if (initialHeapBytes > 0)
+      resident.resources.ensureHeapCapacity(initialHeapBytes);
 
-  if (!accelerationStructure || !vertexBuffer || !indexBuffer) {
+    vertexBuffer = resident.resources.ensureVertexBuffer(vertexBytes,
+                                                        vertexLabel.c_str());
+    indexBuffer = resident.resources.ensureIndexBuffer(indexBytes,
+                                                      indexLabel.c_str());
+    return vertexBuffer && indexBuffer;
+  };
+
+  if (!requestGeometryBuffers()) {
     if (geometryArray)
       geometryArray->release();
     geometryDesc->release();
@@ -896,14 +889,71 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     return false;
   }
 
-  geometryDesc->setVertexBuffer(vertexBuffer);
-  geometryDesc->setVertexBufferOffset(0);
-  geometryDesc->setVertexStride(sizeof(simd::float3));
-  geometryDesc->setVertexFormat(MTL::AttributeFormat::AttributeFormatFloat3);
-  geometryDesc->setIndexBuffer(indexBuffer);
-  geometryDesc->setIndexBufferOffset(0);
-  geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
-  geometryDesc->setTriangleCount(triangleCount);
+  auto configureGeometryDescriptor = [&]() {
+    geometryDesc->setVertexBuffer(vertexBuffer);
+    geometryDesc->setVertexBufferOffset(0);
+    geometryDesc->setVertexStride(sizeof(simd::float3));
+    geometryDesc->setVertexFormat(
+        MTL::AttributeFormat::AttributeFormatFloat3);
+    geometryDesc->setIndexBuffer(indexBuffer);
+    geometryDesc->setIndexBufferOffset(0);
+    geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
+    geometryDesc->setTriangleCount(triangleCount);
+  };
+
+  NS::UInteger totalHeapBytes = 0;
+  NS::UInteger alignedAccelerationSize = 0;
+  MTL::AccelerationStructureSizes sizes{};
+  MTL::SizeAndAlign heapAlign{};
+
+  while (true) {
+    configureGeometryDescriptor();
+
+    sizes = _pDevice->accelerationStructureSizes(accelDesc);
+    heapAlign = _pDevice->heapAccelerationStructureSizeAndAlign(accelDesc);
+
+    alignedAccelerationSize = static_cast<NS::UInteger>(
+        alignTo(static_cast<size_t>(heapAlign.size),
+                static_cast<size_t>(heapAlign.align)));
+    alignedAccelerationSize =
+        resident.resources.alignedHeapSize(alignedAccelerationSize);
+
+    NS::UInteger requiredTotal = alignedAccelerationSize + alignedVertexSize +
+                                 alignedIndexSize;
+
+    if (requiredTotal > totalHeapBytes) {
+      totalHeapBytes = requiredTotal;
+      resident.resources.ensureHeapCapacity(totalHeapBytes);
+
+      if (!requestGeometryBuffers()) {
+        if (geometryArray)
+          geometryArray->release();
+        geometryDesc->release();
+        accelDesc->release();
+        cleanupPool();
+        return false;
+      }
+      continue;
+    }
+
+    totalHeapBytes = requiredTotal;
+    break;
+  }
+
+  configureGeometryDescriptor();
+
+  MTL::AccelerationStructure *accelerationStructure =
+      resident.resources.ensureAccelerationStructure(
+          sizes.accelerationStructureSize, blasLabel.c_str());
+
+  if (!accelerationStructure) {
+    if (geometryArray)
+      geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
+    cleanupPool();
+    return false;
+  }
 
   MTL::Buffer *vertexStaging = nullptr;
   MTL::Buffer *indexStaging = nullptr;
