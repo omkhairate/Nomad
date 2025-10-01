@@ -42,6 +42,8 @@ struct ResidentObjectGpuResources {
 };
 
 class Renderer {
+  friend struct ResidentObjectGpuResources;
+
 public:
   Renderer(MTL::Device *pDevice);
   ~Renderer();
