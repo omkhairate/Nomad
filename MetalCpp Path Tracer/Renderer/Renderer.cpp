@@ -72,6 +72,9 @@ size_t alignTo(size_t value, size_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
+constexpr size_t kTextureResidencyPrimitiveBudget = 1;
+constexpr double kTextureResidencyMemoryCapMB = 2048.0;
+
 size_t bytesPerPixel(MTL::PixelFormat format) {
   switch (format) {
   case MTL::PixelFormat::PixelFormatRGBA32Float:
@@ -397,14 +400,10 @@ Renderer::~Renderer() {
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
 
-  for (int i = 0; i < 2; i++)
-    if (_accumulationTargets[i])
-      _accumulationTargets[i]->release();
-
-  if (_sampleCountTarget)
-    _sampleCountTarget->release();
-  if (_sampleImportanceTarget)
-    _sampleImportanceTarget->release();
+  for (auto &slot : _accumulationSlots)
+    releaseTextureSlot(slot);
+  releaseTextureSlot(_sampleCountSlot);
+  releaseTextureSlot(_sampleImportanceSlot);
 
   if (_pTextureClearBuffer)
     _pTextureClearBuffer->release();
@@ -1575,148 +1574,275 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
 
 
-void Renderer::buildTextures() {
-  for (MTL::Texture *&target : _accumulationTargets) {
-    if (target) {
-      target->release();
-      target = nullptr;
-    }
+void Renderer::releaseTextureSlot(ManagedTextureSlot &slot) {
+  if (slot.texture) {
+    slot.texture->release();
+    slot.texture = nullptr;
   }
-  if (_sampleCountTarget) {
-    _sampleCountTarget->release();
-    _sampleCountTarget = nullptr;
+  if (slot.stagingBuffer) {
+    slot.stagingBuffer->release();
+    slot.stagingBuffer = nullptr;
+    slot.stagingCapacity = 0;
   }
-  if (_sampleImportanceTarget) {
-    _sampleImportanceTarget->release();
-    _sampleImportanceTarget = nullptr;
+  slot.stagingValid = false;
+}
+
+void Renderer::configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
+                                    NS::UInteger height,
+                                    MTL::PixelFormat format,
+                                    MTL::TextureUsage usage) {
+  bool descriptorChanged =
+      !slot.descriptorValid || slot.width != width || slot.height != height ||
+      slot.pixelFormat != format || slot.usage != usage;
+
+  if (!descriptorChanged)
+    return;
+
+  releaseTextureSlot(slot);
+
+  slot.width = width;
+  slot.height = height;
+  slot.pixelFormat = format;
+  slot.usage = usage;
+  slot.textureType = MTL::TextureType::TextureType2D;
+  slot.storageMode = MTL::StorageMode::StorageModePrivate;
+  slot.descriptorValid = true;
+  slot.stagingValid = false;
+}
+
+size_t Renderer::textureByteSize(const ManagedTextureSlot &slot) const {
+  if (!slot.descriptorValid || slot.width == 0 || slot.height == 0)
+    return 0;
+
+  size_t pixelBytes = bytesPerPixel(slot.pixelFormat);
+  if (pixelBytes == 0)
+    return 0;
+
+  size_t rowBytes = slot.width * pixelBytes;
+  size_t alignedRowBytes = alignTo(rowBytes, 256);
+  return alignedRowBytes * slot.height;
+}
+
+MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
+                                               MTL::CommandBuffer *cmd,
+                                               MTL::BlitCommandEncoder *&blit) {
+  if (slot.texture || !slot.descriptorValid || slot.width == 0 ||
+      slot.height == 0)
+    return slot.texture;
+
+  MTL::TextureDescriptor *descriptor =
+      MTL::TextureDescriptor::alloc()->init();
+  descriptor->setTextureType(slot.textureType);
+  descriptor->setWidth(slot.width);
+  descriptor->setHeight(slot.height);
+  descriptor->setPixelFormat(slot.pixelFormat);
+  descriptor->setUsage(slot.usage);
+  descriptor->setStorageMode(slot.storageMode);
+
+  slot.texture = _pDevice->newTexture(descriptor);
+  descriptor->release();
+
+  if (!slot.texture) {
+    _needsAccumulationReset = true;
+    _accumulationTargetsNeedClear = true;
+    return nullptr;
   }
 
+  if (slot.stagingBuffer && slot.stagingValid && cmd) {
+    size_t totalBytes = textureByteSize(slot);
+    if (totalBytes > 0 && slot.stagingCapacity >= totalBytes) {
+      if (!blit)
+        blit = cmd->blitCommandEncoder();
+      if (blit) {
+        size_t rowBytes = slot.width * bytesPerPixel(slot.pixelFormat);
+        size_t alignedRowBytes = alignTo(rowBytes, 256);
+        NS::UInteger bytesPerImage =
+            static_cast<NS::UInteger>(alignedRowBytes * slot.height);
+        MTL::Size size = MTL::Size::Make(slot.width, slot.height, 1);
+        MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+        blit->copyFromBuffer(slot.stagingBuffer, 0, alignedRowBytes,
+                             bytesPerImage, size, slot.texture, 0, 0, origin);
+      } else {
+        slot.stagingValid = false;
+        _needsAccumulationReset = true;
+        _accumulationTargetsNeedClear = true;
+      }
+    } else {
+      slot.stagingValid = false;
+      _needsAccumulationReset = true;
+      _accumulationTargetsNeedClear = true;
+    }
+  }
+
+  return slot.texture;
+}
+
+bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
+                                MTL::CommandBuffer *cmd,
+                                MTL::BlitCommandEncoder *&blit) {
+  if (!slot.texture)
+    return false;
+
+  size_t totalBytes = textureByteSize(slot);
+  if (totalBytes == 0 || !cmd) {
+    slot.texture->release();
+    slot.texture = nullptr;
+    slot.stagingValid = false;
+    _needsAccumulationReset = true;
+    _accumulationTargetsNeedClear = true;
+    return true;
+  }
+
+  ensureBufferCapacity(slot.stagingBuffer, totalBytes, slot.stagingCapacity,
+                       false, MTL::ResourceStorageModeShared);
+  if (!slot.stagingBuffer) {
+    slot.texture->release();
+    slot.texture = nullptr;
+    slot.stagingValid = false;
+    _needsAccumulationReset = true;
+    _accumulationTargetsNeedClear = true;
+    return true;
+  }
+
+  if (!blit)
+    blit = cmd->blitCommandEncoder();
+  if (!blit) {
+    slot.texture->release();
+    slot.texture = nullptr;
+    slot.stagingValid = false;
+    _needsAccumulationReset = true;
+    _accumulationTargetsNeedClear = true;
+    return true;
+  }
+
+  size_t rowBytes = slot.width * bytesPerPixel(slot.pixelFormat);
+  size_t alignedRowBytes = alignTo(rowBytes, 256);
+  NS::UInteger bytesPerImage =
+      static_cast<NS::UInteger>(alignedRowBytes * slot.height);
+  MTL::Size size = MTL::Size::Make(slot.width, slot.height, 1);
+  MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+  blit->copyFromTexture(slot.texture, 0, 0, origin, size, slot.stagingBuffer, 0,
+                        alignedRowBytes, bytesPerImage);
+
+  slot.stagingValid = true;
+  slot.texture->release();
+  slot.texture = nullptr;
+  return true;
+}
+
+void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
+  if (!cmd || _needsAccumulationReset)
+    return;
+
+  bool belowBudget = _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
+  bool overMemory = currentGPUMemoryMB() > kTextureResidencyMemoryCapMB;
+  if (!belowBudget && !overMemory)
+    return;
+
+  std::array<ManagedTextureSlot *, 4> slots = {
+      &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
+      &_sampleImportanceSlot};
+
+  MTL::BlitCommandEncoder *blit = nullptr;
+  for (ManagedTextureSlot *slot : slots)
+    evictTextureSlot(*slot, cmd, blit);
+  if (blit)
+    blit->endEncoding();
+}
+
+void Renderer::buildTextures() {
   NS::UInteger width = std::max<NS::UInteger>(
       1, static_cast<NS::UInteger>(Camera::screenSize.x));
   NS::UInteger height = std::max<NS::UInteger>(
       1, static_cast<NS::UInteger>(Camera::screenSize.y));
 
-  MTL::TextureDescriptor *textureDescriptor =
-      MTL::TextureDescriptor::alloc()->init();
-  textureDescriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA16Float);
-  textureDescriptor->setTextureType(MTL::TextureType::TextureType2D);
-  textureDescriptor->setWidth(width);
-  textureDescriptor->setHeight(height);
-  textureDescriptor->setStorageMode(MTL::StorageMode::StorageModePrivate);
-  textureDescriptor->setUsage(MTL::TextureUsageShaderRead |
-                              MTL::TextureUsageShaderWrite);
+  MTL::TextureUsage usage = static_cast<MTL::TextureUsage>(
+      MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
 
-  for (uint i = 0; i < 2; i++)
-    _accumulationTargets[i] = _pDevice->newTexture(textureDescriptor);
-  textureDescriptor->release();
-
-  MTL::TextureDescriptor *sampleCountDescriptor =
-      MTL::TextureDescriptor::alloc()->init();
-  sampleCountDescriptor->setPixelFormat(
-      MTL::PixelFormat::PixelFormatR16Float);
-  sampleCountDescriptor->setTextureType(MTL::TextureType::TextureType2D);
-  sampleCountDescriptor->setWidth(width);
-  sampleCountDescriptor->setHeight(height);
-  sampleCountDescriptor->setStorageMode(MTL::StorageMode::StorageModePrivate);
-  sampleCountDescriptor->setUsage(MTL::TextureUsageShaderRead |
-                                  MTL::TextureUsageShaderWrite);
-  _sampleCountTarget = _pDevice->newTexture(sampleCountDescriptor);
-  sampleCountDescriptor->release();
-
-  MTL::TextureDescriptor *sampleImportanceDescriptor =
-      MTL::TextureDescriptor::alloc()->init();
-  sampleImportanceDescriptor->setPixelFormat(
-      MTL::PixelFormat::PixelFormatR16Float);
-  sampleImportanceDescriptor->setTextureType(
-      MTL::TextureType::TextureType2D);
-  sampleImportanceDescriptor->setWidth(width);
-  sampleImportanceDescriptor->setHeight(height);
-  sampleImportanceDescriptor->setStorageMode(
-      MTL::StorageMode::StorageModePrivate);
-  sampleImportanceDescriptor->setUsage(MTL::TextureUsageShaderRead |
-                                       MTL::TextureUsageShaderWrite);
-  _sampleImportanceTarget =
-      _pDevice->newTexture(sampleImportanceDescriptor);
-  sampleImportanceDescriptor->release();
+  for (auto &slot : _accumulationSlots)
+    configureTextureSlot(slot, width, height,
+                         MTL::PixelFormat::PixelFormatRGBA16Float, usage);
+  configureTextureSlot(_sampleCountSlot, width, height,
+                       MTL::PixelFormat::PixelFormatR16Float, usage);
+  configureTextureSlot(_sampleImportanceSlot, width, height,
+                       MTL::PixelFormat::PixelFormatR16Float, usage);
 
   _needsAccumulationReset = true;
+  _accumulationTargetsNeedClear = true;
 }
 
-void Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
+bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   if (!cmd)
-    return;
+    return false;
 
-  std::array<MTL::Texture *, 4> textures = {
-      _accumulationTargets[0], _accumulationTargets[1], _sampleCountTarget,
-      _sampleImportanceTarget};
+  std::array<ManagedTextureSlot *, 4> slots = {
+      &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
+      &_sampleImportanceSlot};
 
+  bool anyDescriptors = false;
+  bool allResident = true;
   size_t maxBytes = 0;
-  for (MTL::Texture *texture : textures) {
-    if (!texture)
+  for (ManagedTextureSlot *slot : slots) {
+    if (!slot->descriptorValid)
       continue;
-    size_t pixelBytes = bytesPerPixel(texture->pixelFormat());
-    if (pixelBytes == 0)
-      continue;
-    size_t width = texture->width();
-    size_t height = texture->height();
-    if (width == 0 || height == 0)
-      continue;
-    size_t rowBytes = width * pixelBytes;
-    size_t alignedRowBytes = alignTo(rowBytes, 256);
-    size_t totalBytes = alignedRowBytes * height;
-    maxBytes = std::max(maxBytes, totalBytes);
+    anyDescriptors = true;
+    if (!slot->texture)
+      allResident = false;
+    size_t bytes = textureByteSize(*slot);
+    maxBytes = std::max(maxBytes, bytes);
   }
 
+  if (!anyDescriptors)
+    return true;
+
   if (maxBytes == 0)
-    return;
+    return allResident;
 
   ensureBufferCapacity(_pTextureClearBuffer, maxBytes,
                        _textureClearBufferCapacity, false,
                        MTL::ResourceStorageModeShared);
   if (!_pTextureClearBuffer)
-    return;
+    return false;
 
   if (void *ptr = _pTextureClearBuffer->contents())
     std::memset(ptr, 0, maxBytes);
 
   MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
   if (!blit)
-    return;
+    return false;
 
-  for (MTL::Texture *texture : textures) {
-    if (!texture)
+  for (ManagedTextureSlot *slot : slots) {
+    if (!slot->texture)
       continue;
-    size_t pixelBytes = bytesPerPixel(texture->pixelFormat());
+    size_t pixelBytes = bytesPerPixel(slot->pixelFormat);
     if (pixelBytes == 0)
       continue;
-    size_t width = texture->width();
-    size_t height = texture->height();
-    if (width == 0 || height == 0)
-      continue;
-    size_t rowBytes = width * pixelBytes;
+    size_t rowBytes = slot->width * pixelBytes;
     size_t alignedRowBytes = alignTo(rowBytes, 256);
-    size_t totalBytes = alignedRowBytes * height;
+    size_t totalBytes = alignedRowBytes * slot->height;
     if (totalBytes == 0)
       continue;
-
-    MTL::Size size = MTL::Size::Make(width, height, 1);
+    MTL::Size size = MTL::Size::Make(slot->width, slot->height, 1);
     MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
     blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
-                         size, texture, 0, 0, origin);
+                         size, slot->texture, 0, 0, origin);
+    slot->stagingValid = false;
   }
 
   blit->endEncoding();
+  return allResident;
 }
 
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
   if (!_pAdaptiveSamplingPSO || !pCmd)
     return;
-  if (!_sampleImportanceTarget || !_accumulationTargets[0] ||
-      !_pUniformsBuffer)
+  MTL::Texture *importance = _sampleImportanceSlot.texture;
+  MTL::Texture *accumulation = _accumulationSlots[0].texture;
+  if (!importance || !accumulation || !_pUniformsBuffer)
     return;
 
-  NS::UInteger width = _sampleImportanceTarget->width();
-  NS::UInteger height = _sampleImportanceTarget->height();
+  NS::UInteger width = importance->width();
+  NS::UInteger height = importance->height();
   if (width == 0 || height == 0)
     return;
 
@@ -1725,8 +1851,8 @@ void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
     return;
 
   pCompute->setComputePipelineState(_pAdaptiveSamplingPSO);
-  pCompute->setTexture(_accumulationTargets[0], 0);
-  pCompute->setTexture(_sampleImportanceTarget, 1);
+  pCompute->setTexture(accumulation, 0);
+  pCompute->setTexture(importance, 1);
   pCompute->setBuffer(_pUniformsBuffer, 0, 0);
 
   const NS::UInteger threadWidth = 8;
@@ -1837,7 +1963,7 @@ void Renderer::draw(MTK::View *pView) {
   updateResidency();
   updateUniforms();
   beginFrameMetrics();
-  std::swap(_accumulationTargets[0], _accumulationTargets[1]);
+  std::swap(_accumulationSlots[0], _accumulationSlots[1]);
 
   NS::AutoreleasePool *pPool = NS::AutoreleasePool::alloc()->init();
 
@@ -1851,14 +1977,54 @@ void Renderer::draw(MTK::View *pView) {
     return;
   }
 
-  if (_accumulationTargetsNeedClear) {
-    resetAccumulationTargets(pCmd);
-    _accumulationTargetsNeedClear = false;
-    _needsAccumulationReset = false;
+  bool belowBudget =
+      _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
+  double currentMemory = currentGPUMemoryMB();
+  bool overCap = currentMemory > kTextureResidencyMemoryCapMB;
+
+  if (!_needsAccumulationReset && (belowBudget || overCap))
+    updateTextureResidency(pCmd);
+
+  bool allowResidency =
+      _needsAccumulationReset || (!belowBudget && !overCap);
+
+  MTL::BlitCommandEncoder *restoreBlit = nullptr;
+  MTL::Texture *accum0 = _accumulationSlots[0].texture;
+  MTL::Texture *accum1 = _accumulationSlots[1].texture;
+  MTL::Texture *sampleCount = _sampleCountSlot.texture;
+  MTL::Texture *sampleImportance = _sampleImportanceSlot.texture;
+  if (allowResidency) {
+    accum0 = requestResidentTexture(_accumulationSlots[0], pCmd, restoreBlit);
+    accum1 = requestResidentTexture(_accumulationSlots[1], pCmd, restoreBlit);
+    sampleCount = requestResidentTexture(_sampleCountSlot, pCmd, restoreBlit);
+    sampleImportance =
+        requestResidentTexture(_sampleImportanceSlot, pCmd, restoreBlit);
   }
+  if (restoreBlit)
+    restoreBlit->endEncoding();
+
+  bool haveAllTextures =
+      accum0 && accum1 && sampleCount && sampleImportance;
+
+  if (_accumulationTargetsNeedClear && haveAllTextures) {
+    if (resetAccumulationTargets(pCmd)) {
+      _accumulationTargetsNeedClear = false;
+      _needsAccumulationReset = false;
+    }
+  }
+
   pCmd->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
     this->completeFrameMetrics(cmd);
   });
+
+  if (!haveAllTextures) {
+    MTL::Drawable *drawable = pView->currentDrawable();
+    if (drawable)
+      pCmd->presentDrawable(drawable);
+    pCmd->commit();
+    pPool->release();
+    return;
+  }
 
   updateAdaptiveSamplingMaps(pCmd);
 
@@ -1883,10 +2049,10 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->setFragmentBuffer(_pPrimitiveHitBufferGPU, 0, 12);
   pEnc->setFragmentBuffer(_pInstanceBuffer, 0, 13);
 
-  pEnc->setFragmentTexture(_accumulationTargets[0], 0);
-  pEnc->setFragmentTexture(_accumulationTargets[1], 1);
-  pEnc->setFragmentTexture(_sampleCountTarget, 2);
-  pEnc->setFragmentTexture(_sampleImportanceTarget, 3);
+  pEnc->setFragmentTexture(accum0, 0);
+  pEnc->setFragmentTexture(accum1, 1);
+  pEnc->setFragmentTexture(sampleCount, 2);
+  pEnc->setFragmentTexture(sampleImportance, 3);
 
   pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
                        NS::UInteger(0), NS::UInteger(6));
