@@ -594,7 +594,11 @@ void Renderer::buildShaders() {
           if (!argument)
             continue;
           if (argument->type() ==
-                  MTL::ArgumentType::ArgumentTypeInstanceAccelerationStructure ||
+              MTL::ArgumentType::ArgumentTypeInstanceAccelerationStructure) {
+            _useAccelerationStructureBindings = true;
+            break;
+          }
+          if (argument->type() == MTL::ArgumentType::ArgumentTypeBuffer &&
               argument->bufferDataType() ==
                   MTL::DataType::DataTypeInstanceAccelerationStructure) {
             _useAccelerationStructureBindings = true;
