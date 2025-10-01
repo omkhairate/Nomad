@@ -106,6 +106,11 @@ private:
   void processRayHitCounters();
   bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
                        ResidentObjectGpuResources &residentResources);
+  bool ensureDummyBlas();
+  void updateTopLevelAccelerationStructure(
+      const std::vector<MTL::AccelerationStructureInstanceDescriptor>
+          &descriptors,
+      const std::vector<MTL::AccelerationStructure *> &structures);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
 
@@ -133,6 +138,7 @@ private:
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
+  MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -185,6 +191,14 @@ private:
   std::vector<size_t> _recentlyDeactivated;
 
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
+
+  GpuHeapResources _tlasHeap;
+  GpuHeapResources _dummyBlasResources;
+  MTL::AccelerationStructure *_pTlasStructure = nullptr;
+  MTL::AccelerationStructure *_pDummyBlas = nullptr;
+  std::vector<MTL::AccelerationStructureInstanceDescriptor>
+      _cachedInstanceDescriptors;
+  std::vector<MTL::AccelerationStructure *> _cachedInstancedAccelerationStructures;
 
   uint32_t _rayHitRebuildCooldown = 0;
 
