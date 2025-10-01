@@ -177,6 +177,14 @@ void primitiveBoundsLocal(const Primitive &p, simd::float3 &pMin,
   }
 }
 
+void markBufferModified(MTL::Buffer *buffer, NS::Range range) {
+  if (!buffer)
+    return;
+
+  if (buffer->storageMode() == MTL::StorageModeManaged)
+    buffer->didModifyRange(range);
+}
+
 int buildBVHRecursive(const std::vector<Primitive> &primitives,
                       std::vector<int> &primitiveIndices,
                       std::vector<BVHNode> &nodes, size_t start, size_t end) {
@@ -721,7 +729,7 @@ void Renderer::recalculateViewport() {
   uData->rayDy = rayDy;
   uData->screenSize = Camera::screenSize;
 
-  _pUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(UniformsData)));
+  markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
 
 }
 
@@ -847,7 +855,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
         _pDevice->newBuffer(vertexBytes, MTL::ResourceStorageModeShared);
     if (vertexStaging) {
       std::memcpy(vertexStaging->contents(), vertices.data(), vertexBytes);
-      vertexStaging->didModifyRange(NS::Range::Make(0, vertexBytes));
+      markBufferModified(vertexStaging, NS::Range::Make(0, vertexBytes));
     }
   }
   if (indexBytes > 0) {
@@ -855,7 +863,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
         _pDevice->newBuffer(indexBytes, MTL::ResourceStorageModeShared);
     if (indexStaging) {
       std::memcpy(indexStaging->contents(), indices.data(), indexBytes);
-      indexStaging->didModifyRange(NS::Range::Make(0, indexBytes));
+      markBufferModified(indexStaging, NS::Range::Make(0, indexBytes));
     }
   }
 
@@ -970,8 +978,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _pUniformsBuffer =
         _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
     if (_pUniformsBuffer)
-      _pUniformsBuffer->didModifyRange(
-          NS::Range::Make(0, uniformsDataSize));
+      markBufferModified(_pUniformsBuffer,
+                         NS::Range::Make(0, uniformsDataSize));
   }
 
   if (_primitiveToResidentIndex.size() < totalPrimitiveCount)
@@ -1616,7 +1624,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                     primitiveFloat4Count * sizeof(simd::float4));
       else
         dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      _pSphereBuffer->didModifyRange(NS::Range::Make(0, primitiveBytes));
+      markBufferModified(_pSphereBuffer, NS::Range::Make(0, primitiveBytes));
     }
 
     size_t materialFloat4Count = materialSource->size();
@@ -1636,7 +1644,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         if (materialBytes >= 2 * sizeof(simd::float4))
           dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
       }
-      _pSphereMaterialBuffer->didModifyRange(NS::Range::Make(0, materialBytes));
+      markBufferModified(_pSphereMaterialBuffer,
+                         NS::Range::Make(0, materialBytes));
     }
 
     size_t primitiveIndexCount = primitiveIndexSource->size();
@@ -1651,8 +1660,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                     primitiveIndexCount * sizeof(int));
       else
         dst[0] = 0;
-      _pPrimitiveIndexBuffer->didModifyRange(
-          NS::Range::Make(0, primitiveIndexBytes));
+      markBufferModified(_pPrimitiveIndexBuffer,
+                         NS::Range::Make(0, primitiveIndexBytes));
     }
 
     size_t blasFloat4Count = bvhSource->size();
@@ -1670,7 +1679,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         if (bvhBytes >= 2 * sizeof(simd::float4))
           dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
       }
-      _pBVHBuffer->didModifyRange(NS::Range::Make(0, bvhBytes));
+      markBufferModified(_pBVHBuffer, NS::Range::Make(0, bvhBytes));
     }
 
     size_t tlasFloat4Count = tlasSource->size();
@@ -1689,7 +1698,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         if (tlasBytes >= 2 * sizeof(simd::float4))
           dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
       }
-      _pTLASBuffer->didModifyRange(NS::Range::Make(0, tlasBytes));
+      markBufferModified(_pTLASBuffer, NS::Range::Make(0, tlasBytes));
     }
 
     size_t remapCount = std::max<size_t>(_residentRemap.size(), size_t(1));
@@ -1707,8 +1716,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         if (_residentRemap.size() < remapCount)
           dst[_residentRemap.size()] = 0;
       }
-      _pPrimitiveRemapBuffer->didModifyRange(
-          NS::Range::Make(0, remapCount * sizeof(uint32_t)));
+      markBufferModified(_pPrimitiveRemapBuffer,
+                         NS::Range::Make(0, remapCount * sizeof(uint32_t)));
     }
 
     size_t vertexCount = triangleVertexSource->size();
@@ -1724,7 +1733,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                     vertexCount * sizeof(simd::float3));
       else
         dst[0] = simd::float3{0.0f, 0.0f, 0.0f};
-      _pTriangleVertexBuffer->didModifyRange(NS::Range::Make(0, vertexBytes));
+      markBufferModified(_pTriangleVertexBuffer,
+                         NS::Range::Make(0, vertexBytes));
     }
 
     size_t indexCount = triangleIndexSource->size();
@@ -1740,7 +1750,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                     indexCount * sizeof(simd::uint3));
       else
         dst[0] = simd::make_uint3(0, 0, 0);
-      _pTriangleIndexBuffer->didModifyRange(NS::Range::Make(0, indexBytes));
+      markBufferModified(_pTriangleIndexBuffer,
+                         NS::Range::Make(0, indexBytes));
     }
 
     _residentBuffersInitialized = true;
@@ -1761,7 +1772,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       if (_instanceRecords.size() < instanceCount)
         dst[_instanceRecords.size()] = BlasInstanceRecord{};
     }
-    _pInstanceBuffer->didModifyRange(NS::Range::Make(0, instanceBytes));
+    markBufferModified(_pInstanceBuffer, NS::Range::Make(0, instanceBytes));
   }
 
   size_t activeMaskCount =
@@ -1780,14 +1791,14 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       } else {
         activePtr[0] = 0;
       }
-      _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeBytes));
+      markBufferModified(_pActiveBuffer, NS::Range::Make(0, activeBytes));
     } else if (uploadAll) {
       if (totalPrimitiveCount > 0)
         std::memcpy(activePtr, _cpuActiveMask.data(),
                     totalPrimitiveCount * sizeof(uint8_t));
       else
         activePtr[0] = 0;
-      _pActiveBuffer->didModifyRange(NS::Range::Make(0, activeBytes));
+      markBufferModified(_pActiveBuffer, NS::Range::Make(0, activeBytes));
     } else {
       auto updateMask = [&](const std::vector<size_t> &indices) {
         for (size_t idx : indices) {
@@ -1797,7 +1808,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           uint8_t value = active ? 1 : 0;
           _cpuActiveMask[idx] = value;
           activePtr[idx] = value;
-          _pActiveBuffer->didModifyRange(NS::Range::Make(idx, 1));
+          markBufferModified(_pActiveBuffer, NS::Range::Make(idx, 1));
         }
       };
       updateMask(_recentlyActivated);
@@ -1817,7 +1828,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     else
       std::memcpy(dst, _cachedLightIndices.data(),
                   _cachedLightIndices.size() * sizeof(uint32_t));
-    _pLightIndexBuffer->didModifyRange(NS::Range::Make(0, lightIndexBytes));
+    markBufferModified(_pLightIndexBuffer,
+                       NS::Range::Make(0, lightIndexBytes));
   }
 
   size_t lightCdfBytes =
@@ -1831,7 +1843,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     else
       std::memcpy(dst, _cachedLightCdf.data(),
                   _cachedLightCdf.size() * sizeof(float));
-    _pLightCdfBuffer->didModifyRange(NS::Range::Make(0, lightCdfBytes));
+    markBufferModified(_pLightCdfBuffer, NS::Range::Make(0, lightCdfBytes));
   }
 
   _residentNodeCount = _blasNodeCount + _tlasNodeCount;
@@ -2300,7 +2312,7 @@ void Renderer::updateUniforms() {
   u.lightCount = static_cast<uint32_t>(_lightCount);
   u.lightTotalWeight = _lightTotalWeight;
 
-  _pUniformsBuffer->didModifyRange(NS::Range::Make(0, sizeof(UniformsData)));
+  markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
 }
 
 void Renderer::draw(MTK::View *pView) {
