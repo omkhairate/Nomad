@@ -78,8 +78,7 @@ private:
   bool updateScreenSpaceFootprint(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
-  void completeFrameMetrics(MTL::CommandBuffer *pCmd,
-                            TextureResidencyStats stats);
+  void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void processRayHitCounters();
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
@@ -125,18 +124,6 @@ private:
     MTL::Texture *texture = nullptr;
     MTL::Buffer *stagingBuffer = nullptr;
     size_t stagingCapacity = 0;
-  };
-
-  struct TextureResidencyStats {
-    size_t restoredSlots = 0;
-    size_t evictedSlots = 0;
-    size_t stagedRestores = 0;
-    size_t stagedEvictions = 0;
-    size_t bytesRestored = 0;
-    size_t bytesEvicted = 0;
-    size_t stagingFailures = 0;
-    size_t blitEncoderFailures = 0;
-    size_t allocationFailures = 0;
   };
 
   // Accumulation framebuffers
@@ -233,7 +220,6 @@ private:
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
-  TextureResidencyStats _textureResidencyStats;
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
