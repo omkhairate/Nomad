@@ -1,4 +1,4 @@
-<Scene width="960" height="540" maxRayDepth="8" residencyStrategy="distance"
+<Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="distance"
        lodEnterDistance="50" lodExitDistance="75" residencyCooldown="1" lodToggleBudget="10000">
     <CameraPath>
         <!-- Default regression path: retreat over a bridge of geometry so far clusters are unloaded -->

@@ -86,6 +86,9 @@ public:
   const ResidencyParameters &getResidencyParameters() const;
   void setResidencyParameters(const ResidencyParameters &params);
 
+  bool getStartCompacted() const;
+  void setStartCompacted(bool start);
+
   void buildBVH();
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
@@ -121,6 +124,7 @@ private:
   std::vector<TLASNode> tlasNodes;
   ResidencyStrategy residencyStrategy;
   ResidencyParameters residencyParams;
+  bool startCompacted;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives);

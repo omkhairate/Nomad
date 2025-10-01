@@ -507,6 +507,8 @@ void Renderer::updateVisibleScene() {
          _pScene->getTriangleCount(), _pScene->getRectangleCount());
 
   _residencyConfig = _pScene->getResidencyParameters();
+  _residentCompacted = _pScene->getStartCompacted();
+  _compactionCooldown = 0;
 
   printf("LOD activation threshold: %.1f, deactivation threshold: %.1f (cooldown "
          "%u frames, toggle budget %zu)\n",
@@ -707,7 +709,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t cachedTotalPrimitiveCount = _cachedTotalPrimitiveCount;
 
   if (forceFullRebuild) {
-    _residentCompacted = false;
+    bool startCompacted = _pScene ? _pScene->getStartCompacted() : false;
+    _residentCompacted = startCompacted;
     _compactionCooldown = 0;
   }
 
