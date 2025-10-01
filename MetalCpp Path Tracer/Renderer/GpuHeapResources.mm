@@ -196,7 +196,7 @@ void GpuHeapResources::releaseBuffer(BufferInfo &info) {
   }
   info.capacity = 0;
   info.options = MTL::ResourceStorageModePrivate;
-  info.usage = MTL::ResourceUsage(0);
+  info.usage = static_cast<MTL::ResourceUsage>(0);
 }
 
 void GpuHeapResources::releaseAccelerationStructure() {

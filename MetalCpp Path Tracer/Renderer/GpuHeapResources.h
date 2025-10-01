@@ -32,11 +32,11 @@ public:
   MTL::Buffer *ensureVertexBuffer(
       NS::UInteger requiredBytes, const char *label = nullptr,
       MTL::ResourceOptions options = MTL::ResourceStorageModePrivate,
-      MTL::ResourceUsage usage = MTL::ResourceUsage::ResourceUsageRead);
+      MTL::ResourceUsage usage = MTL::ResourceUsageRead);
   MTL::Buffer *ensureIndexBuffer(
       NS::UInteger requiredBytes, const char *label = nullptr,
       MTL::ResourceOptions options = MTL::ResourceStorageModePrivate,
-      MTL::ResourceUsage usage = MTL::ResourceUsage::ResourceUsageRead);
+      MTL::ResourceUsage usage = MTL::ResourceUsageRead);
   MTL::AccelerationStructure *ensureAccelerationStructure(
       NS::UInteger requiredSize, const char *label = nullptr);
 
@@ -59,7 +59,7 @@ private:
     MTL::Buffer *buffer = nullptr;
     NS::UInteger capacity = 0;
     MTL::ResourceOptions options = MTL::ResourceStorageModePrivate;
-    MTL::ResourceUsage usage = MTL::ResourceUsage(0);
+    MTL::ResourceUsage usage = static_cast<MTL::ResourceUsage>(0);
   };
 
   void releaseBuffer(BufferInfo &info);
