@@ -26,6 +26,7 @@ void Scene::clear() {
   residencyStrategy = ResidencyStrategy::DistanceLOD;
   residencyParams = ResidencyParameters{};
   startCompacted = false;
+  textureResidencyMemoryCapMB = 2048.0;
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -126,6 +127,14 @@ void Scene::setResidencyParameters(const ResidencyParameters &params) {
 bool Scene::getStartCompacted() const { return startCompacted; }
 
 void Scene::setStartCompacted(bool start) { startCompacted = start; }
+
+double Scene::getTextureResidencyMemoryCapMB() const {
+  return textureResidencyMemoryCapMB;
+}
+
+void Scene::setTextureResidencyMemoryCapMB(double capMB) {
+  textureResidencyMemoryCapMB = capMB;
+}
 
 void Scene::buildBVH() {
   primitiveIndices.resize(primitives.size());

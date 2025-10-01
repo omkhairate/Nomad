@@ -1,4 +1,5 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="distance"
+       textureResidencyMemoryCapMB="16"
        lodEnterDistance="45" lodExitDistance="65" residencyCooldown="2" lodToggleBudget="8000">
     <CameraPath>
         <!-- Climb up and orbit so outer rings fall outside the distance budget -->
