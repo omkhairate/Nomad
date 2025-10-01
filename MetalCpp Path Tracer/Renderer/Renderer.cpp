@@ -2969,15 +2969,8 @@ void Renderer::updateUniforms() {
   if (totalPrimitiveCount == 0)
     totalPrimitiveCount = _allPrimitives.size();
 
-  uint64_t geometryHandleCount = 0;
-  uint64_t instanceCount = _instanceRecords.size();
-  if (_useAccelerationStructureBindings && _pGeometryHandleBuffer)
-    geometryHandleCount = _instanceRecords.size() + 1;
-
   u.primitiveCount = residentPrimitiveCount;
   u.triangleCount = residentTriangleCount;
-  u.geometryHandleCount = geometryHandleCount;
-  u.instanceCount = instanceCount;
   u.totalPrimitiveCount = totalPrimitiveCount;
   u.tlasNodeCount = _tlasNodeCount;
   u.blasNodeCount = _blasNodeCount;
@@ -3081,17 +3074,20 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
       } else {
-        pCompute->setAccelerationStructure(nullptr, 0);
-        pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
-        pCompute->setBuffer(_pSphereBuffer, 0, 2);
-        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
-        pCompute->setBuffer(_pUniformsBuffer, 0, 4);
-        pCompute->setBuffer(_pActiveBuffer, 0, 5);
-        pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
-        pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
-        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
-        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
-        pCompute->setBuffer(_pInstanceBuffer, 0, 10);
+        pCompute->setBuffer(_pBVHBuffer, 0, 0);
+        pCompute->setBuffer(_pSphereBuffer, 0, 1);
+        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
+        pCompute->setBuffer(_pUniformsBuffer, 0, 3);
+        pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
+        pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
+        pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
+        pCompute->setBuffer(_pTLASBuffer, 0, 7);
+        pCompute->setBuffer(_pActiveBuffer, 0, 8);
+        pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
+        pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
+        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
+        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+        pCompute->setBuffer(_pInstanceBuffer, 0, 13);
       }
       pCompute->setTexture(accum0, 0);
       pCompute->setTexture(accum1, 1);
