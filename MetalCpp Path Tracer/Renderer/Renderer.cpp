@@ -411,6 +411,11 @@ Renderer::~Renderer() {
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
 
+  for (auto &resident : _residentObjectGpuResources) {
+    resident.resources.destroy();
+  }
+  _residentObjectGpuResources.clear();
+
   if (_pPSO)
     _pPSO->release();
   if (_pCommandQueue)
@@ -659,6 +664,15 @@ void Renderer::updateVisibleScene() {
   _objectBounds.resize(objectCount);
   _objectActive.assign(objectCount, false);
   _objectCooldown.assign(objectCount, 0);
+  _residentObjectGpuResources.resize(objectCount);
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    auto &resident = _residentObjectGpuResources[objectIndex];
+    resident.byteSize = 0;
+    resident.purgeable = false;
+    resident.resident = false;
+    resident.resources.initialize(_pDevice);
+  }
 
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const SceneObject &obj = _allSceneObjects[objectIndex];
