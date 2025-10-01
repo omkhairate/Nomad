@@ -4,6 +4,9 @@
 #include <metal_stdlib>
 #include <metal_raytracing>
 
+using namespace metal;
+using namespace metal::raytracing;
+
 struct v2f
 {
     float4 position [[position]];
