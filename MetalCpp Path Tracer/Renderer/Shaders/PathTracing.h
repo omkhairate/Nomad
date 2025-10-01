@@ -176,6 +176,7 @@ inline RayQueryResult traceRay(mtlrt::instance_acceleration_structure tlas,
                                device const GeometryHandle *geometryHandles,
                                device const InstanceRecord *instanceRecords,
                                device const uchar *activeMask,
+                               device const float4 *primitives,
                                uint primitiveCount, thread const Ray &r) {
   RayQueryResult result;
   result.hit.t = INFINITY;
@@ -197,54 +198,159 @@ inline RayQueryResult traceRay(mtlrt::instance_acceleration_structure tlas,
   float distance = hit.distance;
   float2 bary = hit.triangle_barycentric_coord;
 
-  if (!instanceRecords)
-    return result;
+  const float epsilon = 1e-4f;
 
-  InstanceRecord record = instanceRecords[instanceId];
-  if (record.primitiveCount == 0 || primitiveLocal >= record.primitiveCount)
-    return result;
+  float currentMin = r.minDistance;
+  float maxDistance = r.maxDistance;
 
-  uint primitiveIndex = record.primitiveBase + primitiveLocal;
-  if (primitiveIndex >= primitiveCount)
-    return result;
+  mtlrt::intersector<mtlrt::triangle_data, mtlrt::bounding_box_data,
+                     mtlrt::instancing>
+      intersector;
+  intersector.assume_geometry_type(mtlrt::geometry_type::triangle);
+  intersector.force_opacity(mtlrt::opacity::opaque);
 
-  if (activeMask && !activeMask[primitiveIndex])
-    return result;
+  while (currentMin <= maxDistance) {
+    mtlrt::ray queryRay(r.origin, r.direction, currentMin, maxDistance);
+    auto hit = intersector.intersect(queryRay, tlas);
+    if (hit.type == mtlrt::intersection_type::none)
+      break;
 
-  uint geometryIndex = instanceId + 1u;
-  GeometryHandle handle =
-      geometryHandles ? geometryHandles[geometryIndex] : GeometryHandle{};
-  float3 v0, v1, v2;
-  if (!loadTriangleFromHandle(handle, primitiveLocal, v0, v1, v2))
-    return result;
+    uint instanceId = hit.instance_id;
+    uint primitiveLocal = hit.primitive_id;
+    float hitDistance = hit.distance;
 
-  float3 edge1 = v1 - v0;
-  float3 edge2 = v2 - v0;
-  float3 normal = cross(edge1, edge2);
-  float normalLen = length(normal);
-  if (normalLen <= 0.0f)
-    return result;
-  normal /= normalLen;
+    if (!instanceRecords) {
+      currentMin = fmax(hitDistance + epsilon, currentMin + epsilon);
+      continue;
+    }
 
-  float b0 = 1.0f - bary.x - bary.y;
-  float b1 = bary.x;
-  float b2 = bary.y;
-  float3 point = b0 * v0 + b1 * v1 + b2 * v2;
+    InstanceRecord record = instanceRecords[instanceId];
+    if (record.primitiveCount == 0 || primitiveLocal >= record.primitiveCount) {
+      currentMin = fmax(hitDistance + epsilon, currentMin + epsilon);
+      continue;
+    }
 
-  bool frontFace = dot(normal, r.direction) < 0.0f;
-  float3 orientedNormal = frontFace ? normal : -normal;
+    uint primitiveIndex = record.primitiveBase + primitiveLocal;
+    if (primitiveIndex >= primitiveCount) {
+      currentMin = fmax(hitDistance + epsilon, currentMin + epsilon);
+      continue;
+    }
 
-  result.valid = true;
-  result.instanceId = instanceId;
-  result.primitiveLocal = primitiveLocal;
-  result.barycentrics = bary;
-  result.hit.t = distance;
-  result.hit.point = point;
-  result.hit.normal = orientedNormal;
-  result.hit.frontFace = frontFace;
-  result.hit.primitiveId = static_cast<int>(primitiveIndex);
-  result.hit.isTriangle = 1;
-  result.hit.nodeIndex = static_cast<int>(primitiveLocal);
+    if (activeMask && !activeMask[primitiveIndex]) {
+      currentMin = fmax(hitDistance + epsilon, currentMin + epsilon);
+      continue;
+    }
+
+    if (hit.type == mtlrt::intersection_type::triangle) {
+      uint geometryIndex = instanceId;
+      GeometryHandle handle =
+          geometryHandles ? geometryHandles[geometryIndex] : GeometryHandle{};
+      float3 v0, v1, v2;
+      if (!loadTriangleFromHandle(handle, primitiveLocal, v0, v1, v2)) {
+        currentMin = fmax(hitDistance + epsilon, currentMin + epsilon);
+        continue;
+      }
+
+      float2 bary = hit.triangle_barycentric_coord;
+      float3 edge1 = v1 - v0;
+      float3 edge2 = v2 - v0;
+      float3 normal = cross(edge1, edge2);
+      float normalLen = length(normal);
+      if (normalLen <= 0.0f) {
+        currentMin = fmax(hitDistance + epsilon, currentMin + epsilon);
+        continue;
+      }
+      normal /= normalLen;
+
+      float b0 = 1.0f - bary.x - bary.y;
+      float b1 = bary.x;
+      float b2 = bary.y;
+      float3 point = b0 * v0 + b1 * v1 + b2 * v2;
+
+      bool frontFace = dot(normal, r.direction) < 0.0f;
+      float3 orientedNormal = frontFace ? normal : -normal;
+
+      result.valid = true;
+      result.instanceId = instanceId;
+      result.primitiveLocal = primitiveLocal;
+      result.barycentrics = bary;
+      result.hit.t = hitDistance;
+      result.hit.point = point;
+      result.hit.normal = orientedNormal;
+      result.hit.frontFace = frontFace;
+      result.hit.primitiveId = static_cast<int>(primitiveIndex);
+      result.hit.isTriangle = 1;
+      result.hit.nodeIndex = static_cast<int>(primitiveLocal);
+      return result;
+    } else if (hit.type == mtlrt::intersection_type::bounding_box) {
+      if (!primitives) {
+        currentMin = fmax(hitDistance + epsilon, currentMin + epsilon);
+        continue;
+      }
+
+      uint base = primitiveIndex * 3u;
+      float4 prim0 = primitives[base + 0];
+      float4 prim1 = primitives[base + 1];
+      float4 prim2 = primitives[base + 2];
+      int primitiveType = static_cast<int>(prim0.w + 0.5f);
+
+      bool accepted = false;
+      float tHit = INFINITY;
+      float3 point = float3(0.0f);
+      float3 normal = float3(0.0f);
+      bool frontFace = false;
+
+      if (primitiveType == 0) {
+        float radius = prim1.x;
+        float4 sphereData = float4(prim0.xyz, radius);
+        float distance = sphereIntersection(r, sphereData);
+        if (isfinite(distance) && distance < INFINITY) {
+          point = r.origin + distance * r.direction;
+          float3 rawNormal = point - prim0.xyz;
+          float len = length(rawNormal);
+          if (len > 0.0f) {
+            normal = rawNormal / len;
+            frontFace = dot(normal, r.direction) < 0.0f;
+            if (!frontFace)
+              normal = -normal;
+            tHit = distance;
+            accepted = distance >= r.minDistance && distance <= r.maxDistance;
+          }
+        }
+      } else if (primitiveType == 2) {
+        float localTHit;
+        float3 rectNormal;
+        if (rectangleIntersection(r, prim0.xyz, prim1.xyz, prim2.xyz, localTHit,
+                                  rectNormal)) {
+          point = r.origin + localTHit * r.direction;
+          rectNormal = normalize(rectNormal);
+          frontFace = dot(rectNormal, r.direction) < 0.0f;
+          normal = frontFace ? rectNormal : -rectNormal;
+          tHit = localTHit;
+          accepted = true;
+        }
+      }
+
+      if (accepted && isfinite(tHit) && tHit >= r.minDistance &&
+          tHit <= r.maxDistance) {
+        result.valid = true;
+        result.instanceId = instanceId;
+        result.primitiveLocal = primitiveLocal;
+        result.barycentrics = float2(0.0f);
+        result.hit.t = tHit;
+        result.hit.point = point;
+        result.hit.normal = normal;
+        result.hit.frontFace = frontFace;
+        result.hit.primitiveId = static_cast<int>(primitiveIndex);
+        result.hit.isTriangle = 0;
+        result.hit.nodeIndex = static_cast<int>(primitiveLocal);
+        return result;
+      }
+    }
+
+    currentMin = fmax(hitDistance + epsilon, currentMin + epsilon);
+  }
+
   return result;
 }
 
@@ -268,7 +374,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
 
   if (debugAS == 1) {
     RayQueryResult debugHit = traceRay(tlas, geometryHandles, instanceRecords,
-                                       activeMask, primitiveCount, r);
+                                       activeMask, primitives, primitiveCount, r);
     if (debugHit.valid) {
       float denom = (tlasNodeCount > 1) ? float(tlasNodeCount - 1) : 1.0f;
       float t = denom > 0.0f ? clamp(float(debugHit.instanceId) / denom, 0.0f, 1.0f)
@@ -278,7 +384,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
     return float4(0.0, 0.0, 0.0, 1.0);
   } else if (debugAS == 2) {
     RayQueryResult debugHit = traceRay(tlas, geometryHandles, instanceRecords,
-                                       activeMask, primitiveCount, r);
+                                       activeMask, primitives, primitiveCount, r);
     if (debugHit.valid) {
       float denom = (blasNodeCount > 1) ? float(blasNodeCount - 1) : 1.0f;
       float key = denom > 0.0f
@@ -294,7 +400,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
 
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
     RayQueryResult hit = traceRay(tlas, geometryHandles, instanceRecords,
-                                  activeMask, primitiveCount, r);
+                                  activeMask, primitives, primitiveCount, r);
 
     if (!hit.valid || hit.hit.primitiveId < 0) {
       float3 unitDir = normalize(r.direction);
