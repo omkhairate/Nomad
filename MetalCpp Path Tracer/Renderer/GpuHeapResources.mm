@@ -96,6 +96,11 @@ void GpuHeapResources::releaseAllAllocations() {
 }
 
 void GpuHeapResources::makeResourcesPurgeable() {
+  if (_heap) {
+    _heap->setPurgeableState(MTL::PurgeableStateEmpty);
+    return;
+  }
+
   if (_vertex.buffer)
     _vertex.buffer->setPurgeableState(MTL::PurgeableStateEmpty);
   if (_index.buffer)
