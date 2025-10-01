@@ -104,8 +104,6 @@ struct UniformsData {
 
   uint64_t primitiveCount;
   uint64_t triangleCount;
-  uint64_t geometryHandleCount;
-  uint64_t instanceCount;
   uint64_t frameCount = 0;
   uint64_t totalPrimitiveCount;
   uint64_t tlasNodeCount;
