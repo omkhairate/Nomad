@@ -89,6 +89,9 @@ public:
   bool getStartCompacted() const;
   void setStartCompacted(bool start);
 
+  double getTextureResidencyMemoryCapMB() const;
+  void setTextureResidencyMemoryCapMB(double capMB);
+
   void buildBVH();
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
@@ -125,6 +128,7 @@ private:
   ResidencyStrategy residencyStrategy;
   ResidencyParameters residencyParams;
   bool startCompacted;
+  double textureResidencyMemoryCapMB;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives);

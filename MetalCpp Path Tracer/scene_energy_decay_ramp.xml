@@ -1,4 +1,5 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="energy"
+       textureResidencyMemoryCapMB="16"
        energyTargetFraction="0.36" energyMinActive="160" energyToggleBudget="1300">
     <CameraPath>
         <!-- Glide from the dim outskirts toward the bright ramp so distant dark assets unload -->

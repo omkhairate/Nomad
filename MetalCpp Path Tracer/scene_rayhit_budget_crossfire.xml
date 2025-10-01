@@ -1,4 +1,5 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="rayHitBudget"
+       textureResidencyMemoryCapMB="16"
        rayHitTargetFraction="0.32" rayHitMinActive="150" rayHitToggleBudget="1100"
        rayHitCooldown="16" rayHitDecay="0.78">
     <CameraPath>

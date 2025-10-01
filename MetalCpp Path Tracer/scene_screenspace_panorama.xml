@@ -1,4 +1,5 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="screenSpaceFootprint"
+       textureResidencyMemoryCapMB="16"
        screenTargetFraction="0.22" screenMinActive="120" screenToggleBudget="900"
        screenMinPixelCoverage="24">
     <CameraPath>

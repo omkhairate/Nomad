@@ -73,7 +73,7 @@ size_t alignTo(size_t value, size_t alignment) {
 }
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
-constexpr double kTextureResidencyMemoryCapMB = 2048.0;
+constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
 
 size_t bytesPerPixel(MTL::PixelFormat format) {
   switch (format) {
@@ -507,6 +507,12 @@ void Renderer::updateVisibleScene() {
          _pScene->getTriangleCount(), _pScene->getRectangleCount());
 
   _residencyConfig = _pScene->getResidencyParameters();
+  _textureResidencyMemoryCapMB =
+      std::max(_pScene->getTextureResidencyMemoryCapMB(), 0.0);
+  if (_textureResidencyMemoryCapMB <= 0.0)
+    _textureResidencyMemoryCapMB = kDefaultTextureResidencyMemoryCapMB;
+  printf("Texture residency memory cap: %.1f MB\n",
+         _textureResidencyMemoryCapMB);
   _residentCompacted = _pScene->getStartCompacted();
   _compactionCooldown = 0;
 
@@ -1797,7 +1803,7 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
     return;
 
   bool belowBudget = _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
-  bool overMemory = currentGPUMemoryMB() > kTextureResidencyMemoryCapMB;
+  bool overMemory = currentGPUMemoryMB() > _textureResidencyMemoryCapMB;
   if (!belowBudget && !overMemory)
     return;
 
@@ -2042,7 +2048,7 @@ void Renderer::draw(MTK::View *pView) {
   bool belowBudget =
       _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
   double currentMemory = currentGPUMemoryMB();
-  bool overCap = currentMemory > kTextureResidencyMemoryCapMB;
+  bool overCap = currentMemory > _textureResidencyMemoryCapMB;
 
   if (!_needsAccumulationReset && (belowBudget || overCap))
     updateTextureResidency(pCmd);
