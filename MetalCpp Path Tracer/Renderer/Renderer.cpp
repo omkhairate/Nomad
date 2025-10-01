@@ -424,6 +424,8 @@ bool Renderer::isInView(const BoundingSphere &b) {
 Renderer::Renderer(MTL::Device *pDevice)
     : _pDevice(pDevice->retain()), _pScene(new Scene()) {
   _pCommandQueue = _pDevice->newCommandQueue();
+  _tlasHeap.initialize(_pDevice);
+  _dummyBlasResources.initialize(_pDevice);
 
   Camera::reset();
 
@@ -465,6 +467,15 @@ Renderer::~Renderer() {
     _pLightCdfBuffer->release();
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
+
+  _cachedInstanceDescriptors.clear();
+  _cachedInstancedAccelerationStructures.clear();
+  _pTlasInstanceDescriptorBuffer = nullptr;
+  _pTlasStructure = nullptr;
+  _pDummyBlas = nullptr;
+
+  _tlasHeap.destroy();
+  _dummyBlasResources.destroy();
 
   for (auto &slot : _accumulationSlots)
     releaseTextureSlot(slot);
@@ -1066,6 +1077,279 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
 
   cleanupPool();
   return true;
+}
+
+bool Renderer::ensureDummyBlas() {
+  if (_pDummyBlas)
+    return true;
+
+  if (!_pDevice || !_pCommandQueue)
+    return false;
+
+  _dummyBlasResources.initialize(_pDevice);
+
+  MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc =
+      MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
+  geometryDesc->setOpaque(true);
+  geometryDesc->setVertexStride(sizeof(simd::float3));
+  geometryDesc->setVertexFormat(MTL::AttributeFormat::AttributeFormatFloat3);
+  geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
+  geometryDesc->setTriangleCount(0);
+
+  NS::Object *geometryObjects[] = {geometryDesc};
+  NS::Array *geometryArray = NS::Array::alloc()->init(geometryObjects, 1);
+
+  MTL::PrimitiveAccelerationStructureDescriptor *accelDesc =
+      MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
+  accelDesc->setGeometryDescriptors(geometryArray);
+
+  MTL::AccelerationStructureSizes sizes =
+      _pDevice->accelerationStructureSizes(accelDesc);
+
+  MTL::AccelerationStructure *structure =
+      _dummyBlasResources.ensureAccelerationStructure(
+          sizes.accelerationStructureSize, "DummyBLAS");
+
+  if (!structure) {
+    geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
+    return false;
+  }
+
+  NS::UInteger scratchSize = sizes.buildScratchBufferSize;
+  MTL::Buffer *scratchBuffer = nullptr;
+  if (scratchSize > 0)
+    scratchBuffer =
+        _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
+
+  MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
+  if (!commandBuffer) {
+    if (scratchBuffer)
+      scratchBuffer->release();
+    geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
+    return false;
+  }
+
+  MTL::AccelerationStructureCommandEncoder *encoder =
+      commandBuffer->accelerationStructureCommandEncoder();
+  if (!encoder) {
+    if (scratchBuffer)
+      scratchBuffer->release();
+    geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
+    return false;
+  }
+
+  encoder->buildAccelerationStructure(structure, accelDesc, scratchBuffer, 0);
+  encoder->endEncoding();
+
+  commandBuffer->commit();
+  commandBuffer->waitUntilCompleted();
+
+  if (scratchBuffer)
+    scratchBuffer->release();
+  geometryArray->release();
+  geometryDesc->release();
+  accelDesc->release();
+
+  _pDummyBlas = structure;
+  return true;
+}
+
+void Renderer::updateTopLevelAccelerationStructure(
+    const std::vector<MTL::AccelerationStructureInstanceDescriptor> &descriptors,
+    const std::vector<MTL::AccelerationStructure *> &structures) {
+  if (!_pDevice || !_pCommandQueue)
+    return;
+
+  if (!ensureDummyBlas())
+    return;
+
+  _tlasHeap.initialize(_pDevice);
+
+  std::vector<MTL::AccelerationStructure *> instancedStructures;
+  instancedStructures.reserve(structures.size() + 1);
+  instancedStructures.push_back(_pDummyBlas);
+  for (MTL::AccelerationStructure *structure : structures) {
+    instancedStructures.push_back(structure ? structure : _pDummyBlas);
+  }
+
+  bool structureListChanged =
+      instancedStructures.size() != _cachedInstancedAccelerationStructures.size();
+  if (!structureListChanged) {
+    for (size_t i = 0; i < instancedStructures.size(); ++i) {
+      if (instancedStructures[i] != _cachedInstancedAccelerationStructures[i]) {
+        structureListChanged = true;
+        break;
+      }
+    }
+  }
+
+  bool descriptorCountChanged =
+      descriptors.size() != _cachedInstanceDescriptors.size();
+  bool descriptorContentChanged = descriptorCountChanged;
+  if (!descriptorContentChanged && !descriptors.empty()) {
+    descriptorContentChanged =
+        std::memcmp(descriptors.data(), _cachedInstanceDescriptors.data(),
+                    descriptors.size() *
+                        sizeof(MTL::AccelerationStructureInstanceDescriptor)) != 0;
+  }
+
+  bool needsRebuild = structureListChanged || descriptorCountChanged ||
+                      (_pTlasStructure == nullptr);
+  bool needsDescriptorUpload = descriptorContentChanged || needsRebuild;
+
+  size_t descriptorCount = descriptors.size();
+  size_t descriptorBytes =
+      descriptorCount * sizeof(MTL::AccelerationStructureInstanceDescriptor);
+  size_t uploadBytes =
+      std::max<size_t>(descriptorCount, size_t(1)) *
+      sizeof(MTL::AccelerationStructureInstanceDescriptor);
+
+  MTL::Buffer *instanceBuffer = _tlasHeap.ensureVertexBuffer(
+      static_cast<NS::UInteger>(uploadBytes),
+      "TLASInstanceDescriptors", MTL::ResourceStorageModePrivate,
+      static_cast<MTL::ResourceUsage>(MTL::ResourceUsageRead));
+  if (!instanceBuffer)
+    return;
+
+  _pTlasInstanceDescriptorBuffer = instanceBuffer;
+
+  MTL::Buffer *stagingBuffer = nullptr;
+  if (needsDescriptorUpload && descriptorBytes > 0) {
+    stagingBuffer =
+        _pDevice->newBuffer(descriptorBytes, MTL::ResourceStorageModeShared);
+    if (!stagingBuffer)
+      return;
+
+    std::memcpy(stagingBuffer->contents(), descriptors.data(), descriptorBytes);
+    NS::UInteger stagingLength =
+        static_cast<NS::UInteger>(descriptorBytes);
+    markBufferModified(stagingBuffer, NS::Range::Make(0, stagingLength));
+  }
+
+  MTL::InstanceAccelerationStructureDescriptor *instanceDesc =
+      MTL::InstanceAccelerationStructureDescriptor::alloc()->init();
+  instanceDesc->setInstanceCount(static_cast<NS::UInteger>(descriptorCount));
+  instanceDesc->setInstanceDescriptorBuffer(instanceBuffer);
+  instanceDesc->setInstanceDescriptorBufferOffset(0);
+  instanceDesc->setInstanceDescriptorStride(
+      sizeof(MTL::AccelerationStructureInstanceDescriptor));
+  instanceDesc->setInstanceDescriptorType(
+      MTL::AccelerationStructureInstanceDescriptorTypeDefault);
+
+  if (!instancedStructures.empty()) {
+    std::vector<NS::Object *> nsStructures(instancedStructures.size());
+    for (size_t i = 0; i < instancedStructures.size(); ++i)
+      nsStructures[i] = instancedStructures[i];
+    NS::Array *structuresArray =
+        NS::Array::alloc()->init(nsStructures.data(), nsStructures.size());
+    instanceDesc->setInstancedAccelerationStructures(structuresArray);
+    structuresArray->release();
+  }
+
+  MTL::AccelerationStructureSizes sizes =
+      _pDevice->accelerationStructureSizes(instanceDesc);
+
+  if (needsRebuild) {
+    MTL::AccelerationStructure *structure =
+        _tlasHeap.ensureAccelerationStructure(
+            sizes.accelerationStructureSize, "SceneTLAS");
+    if (!structure) {
+      instanceDesc->release();
+      if (stagingBuffer)
+        stagingBuffer->release();
+      return;
+    }
+    _pTlasStructure = structure;
+  }
+
+  NS::UInteger scratchSize = needsRebuild ? sizes.buildScratchBufferSize
+                                          : sizes.refitScratchBufferSize;
+  MTL::Buffer *scratchBuffer = nullptr;
+  if (scratchSize > 0)
+    scratchBuffer =
+        _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
+
+  MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
+  if (!commandBuffer) {
+    if (scratchBuffer)
+      scratchBuffer->release();
+    if (stagingBuffer)
+      stagingBuffer->release();
+    instanceDesc->release();
+    return;
+  }
+
+  MTL::BlitCommandEncoder *blit = nullptr;
+  auto ensureBlitEncoder = [&]() -> MTL::BlitCommandEncoder * {
+    if (!blit)
+      blit = commandBuffer->blitCommandEncoder();
+    return blit;
+  };
+
+  if (stagingBuffer && descriptorBytes > 0) {
+    MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
+    if (!enc) {
+      if (scratchBuffer)
+        scratchBuffer->release();
+      stagingBuffer->release();
+      instanceDesc->release();
+      return;
+    }
+    enc->copyFromBuffer(stagingBuffer, 0, instanceBuffer, 0, descriptorBytes);
+  } else if (needsDescriptorUpload && descriptorBytes == 0 && instanceBuffer &&
+             instanceBuffer->length() > 0) {
+    MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
+    if (!enc) {
+      if (scratchBuffer)
+        scratchBuffer->release();
+      if (stagingBuffer)
+        stagingBuffer->release();
+      instanceDesc->release();
+      return;
+    }
+    enc->fillBuffer(instanceBuffer, 0, instanceBuffer->length(), 0);
+  }
+
+  if (blit)
+    blit->endEncoding();
+
+  MTL::AccelerationStructureCommandEncoder *encoder =
+      commandBuffer->accelerationStructureCommandEncoder();
+  if (!encoder) {
+    if (scratchBuffer)
+      scratchBuffer->release();
+    if (stagingBuffer)
+      stagingBuffer->release();
+    instanceDesc->release();
+    return;
+  }
+
+  if (needsRebuild) {
+    encoder->buildAccelerationStructure(_pTlasStructure, instanceDesc,
+                                        scratchBuffer, 0);
+  } else {
+    encoder->refitAccelerationStructure(_pTlasStructure, instanceDesc,
+                                        _pTlasStructure, scratchBuffer, 0);
+  }
+  encoder->endEncoding();
+
+  commandBuffer->commit();
+  commandBuffer->waitUntilCompleted();
+
+  if (scratchBuffer)
+    scratchBuffer->release();
+  if (stagingBuffer)
+    stagingBuffer->release();
+  instanceDesc->release();
+
+  _cachedInstanceDescriptors = descriptors;
+  _cachedInstancedAccelerationStructures = instancedStructures;
 }
 
 void Renderer::rebuildResidentResources(bool forceFullRebuild) {
@@ -1703,6 +1987,45 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       gpuResident.transitionToCold(instanceRecord);
     }
   }
+
+  std::vector<MTL::AccelerationStructureInstanceDescriptor> instanceDescriptors(
+      sceneObjects.size());
+  std::vector<MTL::AccelerationStructure *> instancedStructures(
+      sceneObjects.size(), nullptr);
+  MTL::PackedFloat4x3 identityMatrix;
+  identityMatrix[0] = MTL::PackedFloat3(1.0f, 0.0f, 0.0f);
+  identityMatrix[1] = MTL::PackedFloat3(0.0f, 1.0f, 0.0f);
+  identityMatrix[2] = MTL::PackedFloat3(0.0f, 0.0f, 1.0f);
+  identityMatrix[3] = MTL::PackedFloat3(0.0f, 0.0f, 0.0f);
+
+  for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
+       ++objectIndex) {
+    auto &desc = instanceDescriptors[objectIndex];
+    desc.transformationMatrix = identityMatrix;
+    desc.options = MTL::AccelerationStructureInstanceOptionNone;
+    desc.intersectionFunctionTableOffset = 0;
+    desc.accelerationStructureIndex =
+        static_cast<uint32_t>(objectIndex + 1);
+
+    bool resident = false;
+    if (objectIndex < _residentObjectGpuResources.size()) {
+      const auto &gpuResident = _residentObjectGpuResources[objectIndex];
+      resident = gpuResident.isResident() && objectShouldBeResident[objectIndex];
+      if (resident) {
+        MTL::AccelerationStructure *structure =
+            gpuResident.resources.accelerationStructure();
+        if (structure) {
+          instancedStructures[objectIndex] = structure;
+        } else {
+          resident = false;
+        }
+      }
+    }
+
+    desc.mask = resident ? 0xFFu : 0u;
+  }
+
+  updateTopLevelAccelerationStructure(instanceDescriptors, instancedStructures);
 
   _residentRemap = remapUpload;
 
