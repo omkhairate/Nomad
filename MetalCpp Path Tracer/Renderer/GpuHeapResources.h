@@ -20,11 +20,25 @@ public:
                       MTL::HazardTrackingModeTracked);
   void destroy();
 
+  void ensureHeapCapacity(NS::UInteger requiredBytes);
+  NS::UInteger alignedHeapSize(NS::UInteger size) const;
+
   MTL::Buffer *ensureOnHeapBuffer(BufferKind kind,
                                   NS::UInteger requiredBytes,
                                   MTL::ResourceOptions options,
                                   MTL::ResourceUsage usage,
                                   const char *label = nullptr);
+
+  MTL::Buffer *ensureVertexBuffer(
+      NS::UInteger requiredBytes, const char *label = nullptr,
+      MTL::ResourceOptions options = MTL::ResourceStorageModePrivate,
+      MTL::ResourceUsage usage = MTL::ResourceUsage::ResourceUsageRead);
+  MTL::Buffer *ensureIndexBuffer(
+      NS::UInteger requiredBytes, const char *label = nullptr,
+      MTL::ResourceOptions options = MTL::ResourceStorageModePrivate,
+      MTL::ResourceUsage usage = MTL::ResourceUsage::ResourceUsageRead);
+  MTL::AccelerationStructure *ensureAccelerationStructure(
+      NS::UInteger requiredSize, const char *label = nullptr);
 
   MTL::Heap *heap() const { return _heap; }
   MTL::Device *device() const { return _device; }
@@ -33,6 +47,12 @@ public:
   MTL::Buffer *indexBuffer() const { return _index.buffer; }
   NS::UInteger vertexCapacity() const { return _vertex.capacity; }
   NS::UInteger indexCapacity() const { return _index.capacity; }
+  MTL::AccelerationStructure *accelerationStructure() const {
+    return _accelerationStructure;
+  }
+  NS::UInteger accelerationStructureCapacity() const {
+    return _accelerationSize;
+  }
 
 private:
   struct BufferInfo {
@@ -43,6 +63,7 @@ private:
   };
 
   void releaseBuffer(BufferInfo &info);
+  void releaseAccelerationStructure();
   BufferInfo &bufferInfo(BufferKind kind);
   NS::UInteger alignForHeap(NS::UInteger size) const;
   void recreateHeap(NS::UInteger newSize);
@@ -51,8 +72,10 @@ private:
   MTL::Heap *_heap = nullptr;
   BufferInfo _vertex;
   BufferInfo _index;
+  MTL::AccelerationStructure *_accelerationStructure = nullptr;
   NS::UInteger _heapSize = 0;
   NS::UInteger _defaultHeapSize = 0;
+  NS::UInteger _accelerationSize = 0;
   MTL::StorageMode _storageMode = MTL::StorageMode::StorageModePrivate;
   MTL::HazardTrackingMode _hazardMode = MTL::HazardTrackingModeTracked;
 };
