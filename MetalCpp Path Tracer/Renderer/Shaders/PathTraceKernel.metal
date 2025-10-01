@@ -2,12 +2,11 @@
 #include <metal_stdlib>
 
 using namespace metal;
-using namespace metal::raytracing;
 
 #include "PathTracing.h"
 
 kernel void pathTraceKernel(
-    acceleration_structure<instancing> sceneAS [[buffer(0)]],
+    acceleration_structure<instance_acceleration_structure> sceneAS [[buffer(0)]],
     device const GeometryHandle *geometryHandles [[buffer(1)]],
     device const float4 *primitives [[buffer(2)]],
     device const float4 *materials [[buffer(3)]],
