@@ -787,9 +787,9 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   std::string vertexLabel = "ObjectVertices_" + std::to_string(objectIndex);
   std::string indexLabel = "ObjectIndices_" + std::to_string(objectIndex);
 
-  CFTypeRef descriptorRefs[] = {reinterpret_cast<CFTypeRef>(geometryDesc)};
-  NS::Array *geometryArray = static_cast<NS::Array *>(CFArrayCreate(
-      kCFAllocatorDefault, descriptorRefs, 1, &kCFTypeArrayCallBacks));
+  NS::Object *descriptorObjects[] = {geometryDesc};
+  NS::Array *geometryArray =
+      NS::Array::alloc()->init(descriptorObjects, 1);
 
   MTL::PrimitiveAccelerationStructureDescriptor *accelDesc =
       MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
@@ -824,7 +824,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
 
   if (!accelerationStructure || !vertexBuffer || !indexBuffer) {
     if (geometryArray)
-      CFRelease(geometryArray);
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -866,7 +866,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     if (vertexStaging)
       vertexStaging->release();
     if (geometryArray)
-      CFRelease(geometryArray);
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -888,7 +888,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     if (vertexStaging)
       vertexStaging->release();
     if (geometryArray)
-      CFRelease(geometryArray);
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -922,7 +922,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     if (vertexStaging)
       vertexStaging->release();
     if (geometryArray)
-      CFRelease(geometryArray);
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -943,7 +943,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   if (vertexStaging)
     vertexStaging->release();
   if (geometryArray)
-    CFRelease(geometryArray);
+    geometryArray->release();
   geometryDesc->release();
   accelDesc->release();
 
