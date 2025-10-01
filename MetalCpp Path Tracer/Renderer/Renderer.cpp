@@ -23,6 +23,63 @@
 #include <string>
 #include <utility>
 
+namespace MetalCppPathTracer {
+
+void ResidentObjectGpuResources::clearPendingCommand() {
+  if (pendingCommand) {
+    pendingCommand->release();
+    pendingCommand = nullptr;
+  }
+}
+
+void ResidentObjectGpuResources::transitionToStreaming(
+    MTL::CommandBuffer *pending) {
+  clearPendingCommand();
+  if (pending) {
+    pendingCommand = pending;
+    pendingCommand->retain();
+  }
+  state = ResidencyState::Streaming;
+  lastStateChange = std::chrono::steady_clock::now();
+}
+
+void ResidentObjectGpuResources::transitionToCold(
+    BlasInstanceRecord &instanceRecord) {
+  clearPendingCommand();
+  resources.makeResourcesPurgeable();
+  resources.releaseAllAllocations();
+  byteSize = 0;
+  state = ResidencyState::Cold;
+  lastStateChange = std::chrono::steady_clock::now();
+  instanceRecord.primitiveBase = 0;
+  instanceRecord.primitiveIndexBase = 0;
+  instanceRecord.blasRootIndex = -1;
+  instanceRecord.primitiveCount = 0;
+}
+
+bool ResidentObjectGpuResources::ensureResident(
+    Renderer &renderer, size_t objectIndex, const SceneObject &object,
+    BlasInstanceRecord &instanceRecord, bool forceRebuild) {
+  if (isResident() && !forceRebuild) {
+    lastStateChange = std::chrono::steady_clock::now();
+    return true;
+  }
+
+  transitionToStreaming();
+  bool built = renderer.buildObjectBlas(objectIndex, object, *this);
+  if (!built) {
+    transitionToCold(instanceRecord);
+    return false;
+  }
+
+  clearPendingCommand();
+  state = ResidencyState::Resident;
+  lastStateChange = std::chrono::steady_clock::now();
+  return true;
+}
+
+} // namespace MetalCppPathTracer
+
 using namespace MetalCppPathTracer;
 
 struct UniformsData {
@@ -421,6 +478,7 @@ Renderer::~Renderer() {
     _pAdaptiveSamplingPSO->release();
 
   for (auto &resident : _residentObjectGpuResources) {
+    resident.clearPendingCommand();
     resident.resources.destroy();
   }
   _residentObjectGpuResources.clear();
@@ -677,9 +735,10 @@ void Renderer::updateVisibleScene() {
 
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     auto &resident = _residentObjectGpuResources[objectIndex];
+    resident.clearPendingCommand();
     resident.byteSize = 0;
-    resident.purgeable = false;
-    resident.resident = false;
+    resident.state = ResidentObjectGpuResources::ResidencyState::Cold;
+    resident.lastStateChange = std::chrono::steady_clock::now();
     resident.resources.initialize(_pDevice);
   }
 
@@ -776,8 +835,6 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   if (triangleCount == 0) {
     resident.resources.ensureAccelerationStructure(0, nullptr);
     resident.byteSize = 0;
-    resident.purgeable = false;
-    resident.resident = true;
     cleanupPool();
     return true;
   }
@@ -956,8 +1013,6 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   accelDesc->release();
 
   resident.byteSize = totalHeapBytes;
-  resident.purgeable = false;
-  resident.resident = true;
 
   cleanupPool();
   return true;
@@ -1582,25 +1637,20 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
     auto &gpuResident = _residentObjectGpuResources[objectIndex];
+    auto &instanceRecord = _instanceRecords[objectIndex];
 
     if (shouldBeResident) {
-      bool mustBuild = needFullUpload || !gpuResident.resident;
-      if (mustBuild) {
-        bool built =
-            buildObjectBlas(objectIndex, sceneObjects[objectIndex], gpuResident);
-        if (!built) {
-          gpuResident.resident = false;
-          gpuResident.byteSize = 0;
-        }
+      bool built = gpuResident.ensureResident(
+          *this, objectIndex, sceneObjects[objectIndex], instanceRecord,
+          needFullUpload);
+      if (!built) {
+        shouldBeResident = false;
+        objectShouldBeResident[objectIndex] = false;
       }
-      gpuResident.purgeable = false;
-    } else {
-      if (gpuResident.resident || gpuResident.byteSize > 0) {
-        gpuResident.resources.ensureAccelerationStructure(0, nullptr);
-        gpuResident.byteSize = 0;
-      }
-      gpuResident.resident = false;
-      gpuResident.purgeable = true;
+    }
+
+    if (!shouldBeResident) {
+      gpuResident.transitionToCold(instanceRecord);
     }
   }
 
@@ -2885,7 +2935,20 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
 void Renderer::flushResidencyChanges(bool forceFullRebuild) {
   if (!forceFullRebuild && _recentlyActivated.empty() &&
       _recentlyDeactivated.empty()) {
-    // No state changes to apply this frame.
+    for (size_t objectIndex = 0;
+         objectIndex < _residentObjectGpuResources.size(); ++objectIndex) {
+      auto &resident = _residentObjectGpuResources[objectIndex];
+      auto &record = _instanceRecords[objectIndex];
+      bool pending = resident.pendingCommand &&
+                     resident.pendingCommand->status() !=
+                         MTL::CommandBufferStatusCompleted;
+      if (resident.pendingCommand && !pending)
+        resident.clearPendingCommand();
+
+      if (!resident.isResident() && !pending) {
+        resident.transitionToCold(record);
+      }
+    }
     return;
   }
   rebuildResidentResources(forceFullRebuild);
