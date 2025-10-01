@@ -49,7 +49,7 @@ inline device const uchar *addressAsPointer(uint64_t address) {
   if (address == 0)
     return nullptr;
 #if defined(__METAL_VERSION__)
-  return static_cast<device const uchar *>(__builtin_int_to_ptr(address));
+  return reinterpret_cast<device const uchar *>(static_cast<ulong>(address));
 #else
   return reinterpret_cast<device const uchar *>(address);
 #endif
