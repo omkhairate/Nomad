@@ -49,6 +49,11 @@ void ResidentObjectGpuResources::transitionToCold(
   resources.makeResourcesPurgeable();
   resources.releaseAllAllocations();
   byteSize = 0;
+  triangleCount = 0;
+  vertexCount = 0;
+  vertexBufferOffset = 0;
+  indexBufferOffset = 0;
+  geometryValid = false;
   state = ResidencyState::Cold;
   lastStateChange = std::chrono::steady_clock::now();
   instanceRecord.primitiveBase = 0;
@@ -863,6 +868,11 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   if (triangleCount == 0) {
     resident.resources.ensureAccelerationStructure(0, nullptr);
     resident.byteSize = 0;
+    resident.triangleCount = 0;
+    resident.vertexCount = 0;
+    resident.vertexBufferOffset = 0;
+    resident.indexBufferOffset = 0;
+    resident.geometryValid = false;
     cleanupPool();
     return true;
   }
@@ -1091,6 +1101,11 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   accelDesc->release();
 
   resident.byteSize = totalHeapBytes;
+  resident.triangleCount = triangleCount;
+  resident.vertexCount = vertices.size();
+  resident.vertexBufferOffset = 0;
+  resident.indexBufferOffset = 0;
+  resident.geometryValid = true;
 
   cleanupPool();
   return true;
