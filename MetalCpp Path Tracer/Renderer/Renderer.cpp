@@ -1587,6 +1587,18 @@ void Renderer::releaseTextureSlot(ManagedTextureSlot &slot) {
   slot.stagingValid = false;
 }
 
+const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
+  if (&slot == &_accumulationSlots[0])
+    return "_accumulationSlots[0]";
+  if (&slot == &_accumulationSlots[1])
+    return "_accumulationSlots[1]";
+  if (&slot == &_sampleCountSlot)
+    return "_sampleCountSlot";
+  if (&slot == &_sampleImportanceSlot)
+    return "_sampleImportanceSlot";
+  return "<unknown texture slot>";
+}
+
 void Renderer::configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
                                     NS::UInteger height,
                                     MTL::PixelFormat format,
@@ -1630,6 +1642,7 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
       slot.height == 0)
     return slot.texture;
 
+  const char *label = textureSlotLabel(slot);
   MTL::TextureDescriptor *descriptor =
       MTL::TextureDescriptor::alloc()->init();
   descriptor->setTextureType(slot.textureType);
@@ -1643,11 +1656,14 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
   descriptor->release();
 
   if (!slot.texture) {
+    std::printf("[TextureResidency] Failed to restore slot %s: texture allocation returned null.\n",
+                label);
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
     return nullptr;
   }
 
+  bool logged = false;
   if (slot.stagingBuffer && slot.stagingValid && cmd) {
     size_t totalBytes = textureByteSize(slot);
     if (totalBytes > 0 && slot.stagingCapacity >= totalBytes) {
@@ -1662,16 +1678,35 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
         MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
         blit->copyFromBuffer(slot.stagingBuffer, 0, alignedRowBytes,
                              bytesPerImage, size, slot.texture, 0, 0, origin);
+        std::printf(
+            "[TextureResidency] Restored slot %s from staging buffer (%zu bytes).\n",
+            label, totalBytes);
+        logged = true;
       } else {
         slot.stagingValid = false;
         _needsAccumulationReset = true;
         _accumulationTargetsNeedClear = true;
+        std::printf(
+            "[TextureResidency] Restored slot %s without staging data: failed to "
+            "obtain blit encoder.\n",
+            label);
+        logged = true;
       }
     } else {
       slot.stagingValid = false;
       _needsAccumulationReset = true;
       _accumulationTargetsNeedClear = true;
+      std::printf(
+          "[TextureResidency] Restored slot %s without staging data: staging "
+          "buffer capacity (%zu) insufficient for %zu bytes.\n",
+          label, slot.stagingCapacity, totalBytes);
+      logged = true;
     }
+  }
+
+  if (!logged) {
+    std::printf(
+        "[TextureResidency] Restored slot %s without staging data.\n", label);
   }
 
   return slot.texture;
@@ -1683,8 +1718,20 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
   if (!slot.texture)
     return false;
 
+  const char *label = textureSlotLabel(slot);
   size_t totalBytes = textureByteSize(slot);
   if (totalBytes == 0 || !cmd) {
+    std::string reason;
+    if (totalBytes == 0)
+      reason += "zero-sized texture";
+    if (!cmd) {
+      if (!reason.empty())
+        reason += ", ";
+      reason += "no command buffer";
+    }
+    std::printf(
+        "[TextureResidency] Evicting slot %s: releasing without staging (%s).\n",
+        label, reason.c_str());
     slot.texture->release();
     slot.texture = nullptr;
     slot.stagingValid = false;
@@ -1696,6 +1743,10 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
   ensureBufferCapacity(slot.stagingBuffer, totalBytes, slot.stagingCapacity,
                        false, MTL::ResourceStorageModeShared);
   if (!slot.stagingBuffer) {
+    std::printf(
+        "[TextureResidency] Evicting slot %s: releasing without staging (failed "
+        "to allocate staging buffer).\n",
+        label);
     slot.texture->release();
     slot.texture = nullptr;
     slot.stagingValid = false;
@@ -1707,6 +1758,10 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
   if (!blit)
     blit = cmd->blitCommandEncoder();
   if (!blit) {
+    std::printf(
+        "[TextureResidency] Evicting slot %s: releasing without staging (failed "
+        "to create blit encoder).\n",
+        label);
     slot.texture->release();
     slot.texture = nullptr;
     slot.stagingValid = false;
@@ -1724,6 +1779,10 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
   blit->copyFromTexture(slot.texture, 0, 0, origin, size, slot.stagingBuffer, 0,
                         alignedRowBytes, bytesPerImage);
 
+  std::printf(
+      "[TextureResidency] Evicting slot %s: copied %zu bytes to staging buffer "
+      "before release.\n",
+      label, totalBytes);
   slot.stagingValid = true;
   slot.texture->release();
   slot.texture = nullptr;
