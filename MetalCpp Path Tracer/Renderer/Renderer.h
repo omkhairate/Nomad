@@ -20,6 +20,17 @@ struct BlasInstanceRecord {
   uint32_t primitiveIndexBase;
 };
 
+struct GeometryHandle {
+  uint64_t vertexBufferAddress = 0;
+  uint64_t indexBufferAddress = 0;
+  uint32_t vertexStride = 0;
+  uint32_t indexStride = 0;
+  uint32_t vertexCount = 0;
+  uint32_t indexCount = 0;
+  uint32_t instanceSlot = 0;
+  uint32_t padding = 0;
+};
+
 class Renderer;
 
 struct ResidentObjectGpuResources {
@@ -145,6 +156,7 @@ private:
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
+  MTL::Buffer *_pGeometryHandleBuffer = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -249,6 +261,7 @@ private:
   size_t _primitiveRemapBufferCapacity = 0;
   size_t _primitiveHitBufferCapacity = 0;
   size_t _instanceBufferCapacity = 0;
+  size_t _geometryHandleBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;

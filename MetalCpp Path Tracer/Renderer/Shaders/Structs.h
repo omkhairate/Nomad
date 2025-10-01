@@ -30,6 +30,18 @@ struct InstanceRecord
     uint primitiveIndexBase;
 };
 
+struct GeometryHandle
+{
+    uint64_t vertexBufferAddress = 0;
+    uint64_t indexBufferAddress = 0;
+    uint vertexStride = 0;
+    uint indexStride = 0;
+    uint vertexCount = 0;
+    uint indexCount = 0;
+    uint instanceSlot = 0;
+    uint padding = 0;
+};
+
 
 struct UniformsData
 {
