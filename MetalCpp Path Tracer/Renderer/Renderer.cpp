@@ -472,6 +472,8 @@ Renderer::~Renderer() {
     _pLightCdfBuffer->release();
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
+  if (_pGeometryHandleBuffer)
+    _pGeometryHandleBuffer->release();
 
   _cachedInstanceDescriptors.clear();
   _cachedInstancedAccelerationStructures.clear();
@@ -2129,6 +2131,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       sceneObjects.size());
   std::vector<MTL::AccelerationStructure *> instancedStructures(
       sceneObjects.size(), nullptr);
+  std::vector<GeometryHandle> geometryHandles(sceneObjects.size() + 1);
+  if (!geometryHandles.empty())
+    geometryHandles[0] = GeometryHandle{};
   MTL::PackedFloat4x3 identityMatrix;
   identityMatrix[0] = MTL::PackedFloat3(1.0f, 0.0f, 0.0f);
   identityMatrix[1] = MTL::PackedFloat3(0.0f, 1.0f, 0.0f);
@@ -2160,6 +2165,29 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     desc.mask = resident ? 0xFFu : 0u;
+
+    GeometryHandle handle{};
+    if (resident && objectIndex < _residentObjectGpuResources.size()) {
+      const auto &gpuResident = _residentObjectGpuResources[objectIndex];
+      if (gpuResident.geometryValid) {
+        MTL::Buffer *vertexBuffer = gpuResident.resources.vertexBuffer();
+        MTL::Buffer *indexBuffer = gpuResident.resources.indexBuffer();
+        if (vertexBuffer && indexBuffer) {
+          handle.vertexBufferAddress =
+              vertexBuffer->gpuAddress() + gpuResident.vertexBufferOffset;
+          handle.indexBufferAddress =
+              indexBuffer->gpuAddress() + gpuResident.indexBufferOffset;
+          handle.vertexStride = static_cast<uint32_t>(sizeof(simd::float3));
+          handle.indexStride = static_cast<uint32_t>(sizeof(uint32_t));
+          handle.vertexCount =
+              static_cast<uint32_t>(gpuResident.vertexCount);
+          handle.indexCount =
+              static_cast<uint32_t>(gpuResident.triangleCount * 3);
+          handle.instanceSlot = static_cast<uint32_t>(objectIndex + 1);
+        }
+      }
+    }
+    geometryHandles[objectIndex + 1] = handle;
   }
 
   updateTopLevelAccelerationStructure(instanceDescriptors, instancedStructures);
@@ -2333,6 +2361,25 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         dst[_instanceRecords.size()] = BlasInstanceRecord{};
     }
     markBufferModified(_pInstanceBuffer, NS::Range::Make(0, instanceBytes));
+  }
+
+  size_t geometryHandleCount = geometryHandles.size();
+  size_t geometryHandleBytes =
+      std::max<size_t>(geometryHandleCount, size_t(1)) *
+      sizeof(GeometryHandle);
+  ensureBufferCapacity(_pGeometryHandleBuffer, geometryHandleBytes,
+                       _geometryHandleBufferCapacity, allowShrink);
+  if (_pGeometryHandleBuffer) {
+    auto *dst = static_cast<GeometryHandle *>(
+        _pGeometryHandleBuffer->contents());
+    if (!geometryHandles.empty()) {
+      std::memcpy(dst, geometryHandles.data(),
+                  geometryHandles.size() * sizeof(GeometryHandle));
+    } else {
+      *dst = GeometryHandle{};
+    }
+    markBufferModified(_pGeometryHandleBuffer,
+                       NS::Range::Make(0, geometryHandleBytes));
   }
 
   size_t activeMaskCount =
