@@ -36,6 +36,11 @@ struct ResidentObjectGpuResources {
 
   GpuHeapResources resources;
   size_t byteSize = 0;
+  size_t triangleCount = 0;
+  size_t vertexCount = 0;
+  size_t vertexBufferOffset = 0;
+  size_t indexBufferOffset = 0;
+  bool geometryValid = false;
   ResidencyState state = ResidencyState::Cold;
   std::chrono::steady_clock::time_point lastStateChange{};
   MTL::CommandBuffer *pendingCommand = nullptr;
