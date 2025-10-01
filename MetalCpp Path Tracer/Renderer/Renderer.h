@@ -18,8 +18,6 @@ struct BlasInstanceRecord {
   uint32_t primitiveBase;
   uint32_t primitiveCount;
   uint32_t primitiveIndexBase;
-  uint32_t geometryIndex;
-  uint32_t geometryCount;
 };
 
 class Renderer;
@@ -141,10 +139,6 @@ private:
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
-  MTL::Buffer *_pObjectGeometryArgumentBuffer = nullptr;
-  MTL::ArgumentEncoder *_pObjectGeometryArgumentEncoder = nullptr;
-  size_t _objectGeometryCapacity = 0;
-  size_t _objectGeometryStride = 0;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
