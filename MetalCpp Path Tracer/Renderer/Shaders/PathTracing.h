@@ -183,22 +183,22 @@ inline RayQueryResult traceRay(mtlrt::instance_acceleration_structure tlas,
   result.hit.nodeIndex = -1;
   result.hit.isTriangle = 0;
 
-  if (!tlas)
+  if (tlas == nullptr)
     return result;
 
   mtlrt::ray rtRay(r.origin, r.direction, r.minDistance, r.maxDistance);
   mtlrt::intersector<mtlrt::triangle_data, mtlrt::instancing> intersector;
   intersector.assume_geometry_type(mtlrt::geometry_type::triangle);
-  intersector.force_opacity(mtlrt::opacity::opaque);
+  intersector.force_opacity(metal::raytracing::opacity_mode::opaque);
 
   auto hit = intersector.intersect(rtRay, tlas);
   if (hit.type != mtlrt::intersection_type::triangle)
     return result;
 
-  uint instanceId = hit.instance_id();
-  uint primitiveLocal = hit.primitive_id();
-  float distance = hit.distance();
-  float2 bary = hit.triangle_barycentric_coord();
+  uint instanceId = hit.instance_id;
+  uint primitiveLocal = hit.primitive_id;
+  float distance = hit.distance;
+  float2 bary = hit.triangle_barycentric_coord;
 
   if (!instanceRecords)
     return result;
