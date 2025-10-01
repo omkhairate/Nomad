@@ -321,6 +321,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
 
     scene->setResidencyParameters(params);
 
+    bool startCompacted = root->BoolAttribute("startCompacted", scene->getStartCompacted());
+    scene->setStartCompacted(startCompacted);
+
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
         std::string tag = e->Name();
         if (tag == "Sphere") {

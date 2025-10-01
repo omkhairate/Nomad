@@ -25,6 +25,7 @@ void Scene::clear() {
   maxRayDepth = 32;
   residencyStrategy = ResidencyStrategy::DistanceLOD;
   residencyParams = ResidencyParameters{};
+  startCompacted = false;
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -121,6 +122,10 @@ const ResidencyParameters &Scene::getResidencyParameters() const {
 void Scene::setResidencyParameters(const ResidencyParameters &params) {
   residencyParams = params;
 }
+
+bool Scene::getStartCompacted() const { return startCompacted; }
+
+void Scene::setStartCompacted(bool start) { startCompacted = start; }
 
 void Scene::buildBVH() {
   primitiveIndices.resize(primitives.size());
