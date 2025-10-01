@@ -1,4 +1,4 @@
-<Scene width="960" height="540" maxRayDepth="8" residencyStrategy="distance"
+<Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="distance"
        lodEnterDistance="55" lodExitDistance="80" residencyCooldown="0" lodToggleBudget="12000">
     <CameraPath>
         <!-- Slow dolly backwards so distant clusters can be released from memory -->
