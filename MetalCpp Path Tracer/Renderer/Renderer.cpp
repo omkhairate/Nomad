@@ -176,23 +176,9 @@ float luminance(const simd::float3 &c) {
 }
 
 float primitiveArea(const Primitive &p) {
-  switch (p.type) {
-  case PrimitiveType::Sphere: {
-    float r = p.sphere.radius;
-    return 4.0f * static_cast<float>(M_PI) * r * r;
-  }
-  case PrimitiveType::Triangle: {
-    simd::float3 e1 = p.triangle.v1 - p.triangle.v0;
-    simd::float3 e2 = p.triangle.v2 - p.triangle.v0;
-    return 0.5f * simd::length(simd::cross(e1, e2));
-  }
-  case PrimitiveType::Rectangle: {
-    simd::float3 e1 = p.rectangle.u;
-    simd::float3 e2 = p.rectangle.v;
-    return 4.0f * simd::length(simd::cross(e1, e2));
-  }
-  }
-  return 0.0f;
+  simd::float3 e1 = p.triangle.v1 - p.triangle.v0;
+  simd::float3 e2 = p.triangle.v2 - p.triangle.v0;
+  return 0.5f * simd::length(simd::cross(e1, e2));
 }
 
 float primitiveImportance(const Primitive &p) {
@@ -222,39 +208,15 @@ float boundingSurfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) {
 }
 
 float primitiveAxisValueLocal(const Primitive &p, int axis) {
-  switch (p.type) {
-  case PrimitiveType::Sphere:
-    return p.sphere.center[axis];
-  case PrimitiveType::Rectangle:
-    return p.rectangle.center[axis];
-  case PrimitiveType::Triangle:
-    return (p.triangle.v0[axis] + p.triangle.v1[axis] + p.triangle.v2[axis]) /
-           3.0f;
-  }
-  return 0.0f;
+  return (p.triangle.v0[axis] + p.triangle.v1[axis] + p.triangle.v2[axis]) /
+         3.0f;
 }
 
 void primitiveBoundsLocal(const Primitive &p, simd::float3 &pMin,
                           simd::float3 &pMax) {
-  if (p.type == PrimitiveType::Sphere) {
-    float r = p.sphere.radius;
-    pMin = p.sphere.center - r;
-    pMax = p.sphere.center + r;
-  } else if (p.type == PrimitiveType::Rectangle) {
-    simd::float3 c = p.rectangle.center;
-    simd::float3 e1 = p.rectangle.u;
-    simd::float3 e2 = p.rectangle.v;
-    simd::float3 c1 = c - e1 - e2;
-    simd::float3 c2 = c - e1 + e2;
-    simd::float3 c3 = c + e1 - e2;
-    simd::float3 c4 = c + e1 + e2;
-    pMin = simd::min(simd::min(c1, c2), simd::min(c3, c4));
-    pMax = simd::max(simd::max(c1, c2), simd::max(c3, c4));
-  } else {
-    const auto &t = p.triangle;
-    pMin = simd::min(t.v0, simd::min(t.v1, t.v2));
-    pMax = simd::max(t.v0, simd::max(t.v1, t.v2));
-  }
+  const auto &t = p.triangle;
+  pMin = simd::min(t.v0, simd::min(t.v1, t.v2));
+  pMax = simd::max(t.v0, simd::max(t.v1, t.v2));
 }
 
 void markBufferModified(MTL::Buffer *buffer, NS::Range range) {
@@ -660,10 +622,8 @@ void Renderer::updateVisibleScene() {
     Camera::up = {0, 1, 0};
   }
 
-  printf("Scene loaded: %zu total primitives (%zu spheres, %zu triangles, %zu "
-         "rectangles)\n",
-         _pScene->getPrimitiveCount(), _pScene->getSphereCount(),
-         _pScene->getTriangleCount(), _pScene->getRectangleCount());
+  printf("Scene loaded: %zu total primitives (triangles only)\n",
+         _pScene->getPrimitiveCount());
 
   _residencyConfig = _pScene->getResidencyParameters();
   _textureResidencyMemoryCapMB =
@@ -738,18 +698,11 @@ void Renderer::updateVisibleScene() {
   _maxTriangleIndexCount = std::max<size_t>(totalTriangleCount, 1);
   for (size_t i = 0; i < primCount; ++i) {
     const Primitive &p = _allPrimitives[i];
-    if (p.type == PrimitiveType::Sphere) {
-      _primitiveBounds[i] = {p.sphere.center, p.sphere.radius};
-    } else if (p.type == PrimitiveType::Triangle) {
-      simd::float3 c = (p.triangle.v0 + p.triangle.v1 + p.triangle.v2) / 3.0f;
-      float r = simd::length(p.triangle.v0 - c);
-      r = std::max(r, (float)simd::length(p.triangle.v1 - c));
-      r = std::max(r, (float)simd::length(p.triangle.v2 - c));
-      _primitiveBounds[i] = {c, r};
-    } else {
-      float r = simd::length(p.rectangle.u) + simd::length(p.rectangle.v);
-      _primitiveBounds[i] = {p.rectangle.center, r};
-    }
+    simd::float3 c = (p.triangle.v0 + p.triangle.v1 + p.triangle.v2) / 3.0f;
+    float r = simd::length(p.triangle.v0 - c);
+    r = std::max(r, (float)simd::length(p.triangle.v1 - c));
+    r = std::max(r, (float)simd::length(p.triangle.v2 - c));
+    _primitiveBounds[i] = {c, r};
     _primitiveImportance[i] = primitiveImportance(p);
     _energySortedIndices[i] = i;
     if (i < _rayHitSortedIndices.size())
@@ -901,64 +854,27 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   std::vector<MTL::AxisAlignedBoundingBox> proceduralBoundingBoxes;
   vertices.reserve((last - first) * 3);
   indices.reserve((last - first) * 3);
-  proceduralBoundingBoxes.reserve((last - first));
+  proceduralBoundingBoxes.reserve(0);
 
   for (size_t prim = first; prim < last; ++prim) {
     if (prim >= _allPrimitives.size())
       break;
     const Primitive &p = _allPrimitives[prim];
 
-    auto appendProceduralBounds =
-        [&](const simd::float3 &boundsMin, const simd::float3 &boundsMax) {
-          MTL::AxisAlignedBoundingBox bbox{};
-          bbox.min = MTL::PackedFloat3(boundsMin.x, boundsMin.y, boundsMin.z);
-          bbox.max = MTL::PackedFloat3(boundsMax.x, boundsMax.y, boundsMax.z);
-          proceduralBoundingBoxes.push_back(bbox);
-        };
+    if (p.type != PrimitiveType::Triangle)
+      continue;
 
-    switch (p.type) {
-    case PrimitiveType::Triangle: {
-      uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
-      simd::float3 v0 = p.triangle.v0;
-      simd::float3 v1 = p.triangle.v1;
-      simd::float3 v2 = p.triangle.v2;
+    uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
+    simd::float3 v0 = p.triangle.v0;
+    simd::float3 v1 = p.triangle.v1;
+    simd::float3 v2 = p.triangle.v2;
 
-      vertices.push_back(v0);
-      vertices.push_back(v1);
-      vertices.push_back(v2);
-      indices.push_back(baseIndex + 0);
-      indices.push_back(baseIndex + 1);
-      indices.push_back(baseIndex + 2);
-
-      // Axis-aligned bounds record for triangle primitives.
-      simd::float3 triMin = simd::fmin(simd::fmin(v0, v1), v2);
-      simd::float3 triMax = simd::fmax(simd::fmax(v0, v1), v2);
-      (void)triMin;
-      (void)triMax;
-      break;
-    }
-    case PrimitiveType::Sphere: {
-      simd::float3 center = p.sphere.center;
-      simd::float3 extent = {p.sphere.radius, p.sphere.radius, p.sphere.radius};
-      appendProceduralBounds(center - extent, center + extent);
-      break;
-    }
-    case PrimitiveType::Rectangle: {
-      simd::float3 center = p.rectangle.center;
-      simd::float3 u = p.rectangle.u;
-      simd::float3 v = p.rectangle.v;
-      simd::float3 corner0 = center + u + v;
-      simd::float3 corner1 = center + u - v;
-      simd::float3 corner2 = center - u + v;
-      simd::float3 corner3 = center - u - v;
-      simd::float3 boundsMin =
-          simd::fmin(simd::fmin(corner0, corner1), simd::fmin(corner2, corner3));
-      simd::float3 boundsMax =
-          simd::fmax(simd::fmax(corner0, corner1), simd::fmax(corner2, corner3));
-      appendProceduralBounds(boundsMin, boundsMax);
-      break;
-    }
-    }
+    vertices.push_back(v0);
+    vertices.push_back(v1);
+    vertices.push_back(v2);
+    indices.push_back(baseIndex + 0);
+    indices.push_back(baseIndex + 1);
+    indices.push_back(baseIndex + 2);
   }
 
   size_t triangleCount = indices.size() / 3;
@@ -1739,30 +1655,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       simd::float4 *primBase = &_cachedPrimitiveData[3 * i];
       simd::float4 *matBase = &_cachedMaterialData[2 * i];
 
-      switch (p.type) {
-      case PrimitiveType::Sphere: {
-        primBase[0] =
-            simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(
-            simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
-        primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        break;
-      }
-      case PrimitiveType::Rectangle: {
-        primBase[0] =
-            simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
-        primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
-        break;
-      }
-      case PrimitiveType::Triangle: {
-        primBase[0] =
-            simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(p.triangle.v1, 0.0f);
-        primBase[2] = simd::make_float4(p.triangle.v2, 0.0f);
-        break;
-      }
-      }
+      primBase[0] =
+          simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+      primBase[1] = simd::make_float4(p.triangle.v1, 0.0f);
+      primBase[2] = simd::make_float4(p.triangle.v2, 0.0f);
 
       const Material &m = p.material;
       matBase[0] = simd::make_float4(m.albedo, m.materialType);
@@ -1838,8 +1734,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     bool active = i < _activePrimitive.size() && _activePrimitive[i];
     if (active) {
       activeIndices.push_back(i);
-      if (_allPrimitives[i].type == PrimitiveType::Triangle)
-        ++activeTriangleCount;
+      ++activeTriangleCount;
 
       const Material &m = _allPrimitives[i].material;
       float emissionStrength = m.emissionPower * luminance(m.emissionColor);
@@ -1945,11 +1840,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       size_t objectTriangleCount = 0;
       size_t objectProceduralCount = 0;
       for (size_t prim = first; prim < last && prim < _allPrimitives.size(); ++prim) {
-        const Primitive &p = _allPrimitives[prim];
-        if (p.type == PrimitiveType::Triangle)
-          ++objectTriangleCount;
-        else
-          ++objectProceduralCount;
+        ++objectTriangleCount;
         if (prim < _activePrimitive.size() && _activePrimitive[prim])
           anyActive = true;
       }
@@ -2035,44 +1926,19 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           }
 
           const Primitive &p = _allPrimitives[globalIndex];
-          simd::float4 prim0;
-          simd::float4 prim1;
-          simd::float4 prim2;
-          switch (p.type) {
-          case PrimitiveType::Sphere: {
-            prim0 =
-                simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-            prim1 = simd::make_float4(
-                simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
-            prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-            ++objectProceduralCount;
-            break;
-          }
-          case PrimitiveType::Rectangle: {
-            prim0 = simd::make_float4(p.rectangle.center,
-                                      static_cast<float>(p.type));
-            prim1 = simd::make_float4(p.rectangle.u, 0.0f);
-            prim2 = simd::make_float4(p.rectangle.v, 0.0f);
-            ++objectProceduralCount;
-            break;
-          }
-          case PrimitiveType::Triangle: {
-            prim0 =
-                simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-            prim1 = simd::make_float4(p.triangle.v1, 0.0f);
-            prim2 = simd::make_float4(p.triangle.v2, 0.0f);
-            size_t baseVertex = compactTriangleVertices.size();
-            compactTriangleVertices.push_back(p.triangle.v0);
-            compactTriangleVertices.push_back(p.triangle.v1);
-            compactTriangleVertices.push_back(p.triangle.v2);
-            compactTriangleIndices.push_back(simd::make_uint3(
-                static_cast<uint32_t>(baseVertex),
-                static_cast<uint32_t>(baseVertex + 1),
-                static_cast<uint32_t>(baseVertex + 2)));
-            ++objectTriangleCount;
-            break;
-          }
-          }
+          simd::float4 prim0 =
+              simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+          simd::float4 prim1 = simd::make_float4(p.triangle.v1, 0.0f);
+          simd::float4 prim2 = simd::make_float4(p.triangle.v2, 0.0f);
+          size_t baseVertex = compactTriangleVertices.size();
+          compactTriangleVertices.push_back(p.triangle.v0);
+          compactTriangleVertices.push_back(p.triangle.v1);
+          compactTriangleVertices.push_back(p.triangle.v2);
+          compactTriangleIndices.push_back(
+              simd::make_uint3(static_cast<uint32_t>(baseVertex),
+                                static_cast<uint32_t>(baseVertex + 1),
+                                static_cast<uint32_t>(baseVertex + 2)));
+          ++objectTriangleCount;
 
           compactPrimitiveData.push_back(prim0);
           compactPrimitiveData.push_back(prim1);
@@ -2243,41 +2109,19 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
               static_cast<int32_t>(record.primitiveBase + local);
 
         const Primitive &p = subset[local];
-        simd::float4 prim0;
-        simd::float4 prim1;
-        simd::float4 prim2;
-        switch (p.type) {
-        case PrimitiveType::Sphere: {
-          prim0 = simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-          prim1 = simd::make_float4(
-              simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
-          prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-          ++objectProceduralCount;
-          break;
-        }
-        case PrimitiveType::Rectangle: {
-          prim0 = simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-          prim1 = simd::make_float4(p.rectangle.u, 0.0f);
-          prim2 = simd::make_float4(p.rectangle.v, 0.0f);
-          ++objectProceduralCount;
-          break;
-        }
-        case PrimitiveType::Triangle: {
-          prim0 = simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-          prim1 = simd::make_float4(p.triangle.v1, 0.0f);
-          prim2 = simd::make_float4(p.triangle.v2, 0.0f);
-          size_t baseVertex = compactTriangleVertices.size();
-          compactTriangleVertices.push_back(p.triangle.v0);
-          compactTriangleVertices.push_back(p.triangle.v1);
-          compactTriangleVertices.push_back(p.triangle.v2);
-          compactTriangleIndices.push_back(simd::make_uint3(
-              static_cast<uint32_t>(baseVertex),
-              static_cast<uint32_t>(baseVertex + 1),
-              static_cast<uint32_t>(baseVertex + 2)));
-          ++objectTriangleCount;
-          break;
-        }
-        }
+        simd::float4 prim0 =
+            simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+        simd::float4 prim1 = simd::make_float4(p.triangle.v1, 0.0f);
+        simd::float4 prim2 = simd::make_float4(p.triangle.v2, 0.0f);
+        size_t baseVertex = compactTriangleVertices.size();
+        compactTriangleVertices.push_back(p.triangle.v0);
+        compactTriangleVertices.push_back(p.triangle.v1);
+        compactTriangleVertices.push_back(p.triangle.v2);
+        compactTriangleIndices.push_back(
+            simd::make_uint3(static_cast<uint32_t>(baseVertex),
+                              static_cast<uint32_t>(baseVertex + 1),
+                              static_cast<uint32_t>(baseVertex + 2)));
+        ++objectTriangleCount;
 
         compactPrimitiveData.push_back(prim0);
         compactPrimitiveData.push_back(prim1);

@@ -58,42 +58,15 @@ size_t Scene::addObjectInternal(const Primitive *prims, size_t count,
   object.primitiveCount = count;
   objects.push_back(object);
 
-  if (logPrimitives) {
-    for (size_t i = 0; i < count; ++i) {
-      const Primitive &p = primitives[start + i];
-      if (p.type == PrimitiveType::Sphere) {
-        const auto &s = p.sphere;
-        printf("Sphere -> Position: (%.2f, %.2f, %.2f), Radius: %.2f\n",
-               s.center.x, s.center.y, s.center.z, s.radius);
-      }
-    }
-  }
-
   return primitives.size() - 1;
 }
 
 size_t Scene::getPrimitiveCount() const { return primitives.size(); }
 
-size_t Scene::getSphereCount() const {
-  size_t count = 0;
-  for (const auto &p : primitives)
-    if (p.type == PrimitiveType::Sphere)
-      count++;
-  return count;
-}
-
 size_t Scene::getTriangleCount() const {
   size_t count = 0;
   for (const auto &p : primitives)
     if (p.type == PrimitiveType::Triangle)
-      count++;
-  return count;
-}
-
-size_t Scene::getRectangleCount() const {
-  size_t count = 0;
-  for (const auto &p : primitives)
-    if (p.type == PrimitiveType::Rectangle)
       count++;
   return count;
 }
@@ -207,23 +180,11 @@ simd::float4 *Scene::createTransformsBuffer() const {
   simd::float4 *buffer = new simd::float4[primitives.size() * 3];
   for (size_t i = 0; i < primitives.size(); ++i) {
     const auto &p = primitives[i];
-    if (p.type == PrimitiveType::Sphere) {
-      buffer[3 * i + 0] =
-          simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-      buffer[3 * i + 1] =
-          simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
-      buffer[3 * i + 2] = simd::make_float4(simd::float3(0), 0);
-    } else if (p.type == PrimitiveType::Rectangle) {
-      buffer[3 * i + 0] =
-          simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-      buffer[3 * i + 1] = simd::make_float4(p.rectangle.u, 0);
-      buffer[3 * i + 2] = simd::make_float4(p.rectangle.v, 0);
-    } else {
-      buffer[3 * i + 0] =
-          simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-      buffer[3 * i + 1] = simd::make_float4(p.triangle.v1, 0);
-      buffer[3 * i + 2] = simd::make_float4(p.triangle.v2, 0);
-    }
+    const auto &t = p.triangle;
+    buffer[3 * i + 0] =
+        simd::make_float4(t.v0, static_cast<float>(p.type));
+    buffer[3 * i + 1] = simd::make_float4(t.v1, 0);
+    buffer[3 * i + 2] = simd::make_float4(t.v2, 0);
   }
   return buffer;
 }
@@ -238,75 +199,18 @@ simd::float4 *Scene::createMaterialsBuffer() const {
   return buffer;
 }
 
-simd::float4 *Scene::createSphereBuffer() {
-  size_t sphereCount = getSphereCount();
-  simd::float4 *buffer = new simd::float4[sphereCount];
-
-  size_t index = 0;
-  for (const auto &p : primitives) {
-    if (p.type == PrimitiveType::Sphere) {
-      buffer[index++] = simd::make_float4(p.sphere.center, p.sphere.radius);
-    }
-  }
-
-  return buffer;
-}
-
-simd::float4 *Scene::createSphereMaterialsBuffer() {
-  size_t sphereCount = getSphereCount();
-  simd::float4 *buffer = new simd::float4[2 * sphereCount];
-
-  size_t index = 0;
-  for (const auto &p : primitives) {
-    if (p.type == PrimitiveType::Sphere) {
-      const auto &m = p.material;
-      buffer[2 * index + 0] = simd::make_float4(m.albedo, m.materialType);
-      buffer[2 * index + 1] =
-          simd::make_float4(m.emissionColor, m.emissionPower);
-      index++;
-    }
-  }
-
-  return buffer;
-}
-
 namespace {
 
 void subsetPrimitiveBounds(const Primitive &p, simd::float3 &pMin,
                            simd::float3 &pMax) {
-  if (p.type == PrimitiveType::Sphere) {
-    float r = p.sphere.radius;
-    pMin = p.sphere.center - r;
-    pMax = p.sphere.center + r;
-  } else if (p.type == PrimitiveType::Rectangle) {
-    simd::float3 c = p.rectangle.center;
-    simd::float3 e1 = p.rectangle.u;
-    simd::float3 e2 = p.rectangle.v;
-    simd::float3 c1 = c - e1 - e2;
-    simd::float3 c2 = c - e1 + e2;
-    simd::float3 c3 = c + e1 - e2;
-    simd::float3 c4 = c + e1 + e2;
-    pMin = simd::min(simd::min(c1, c2), simd::min(c3, c4));
-    pMax = simd::max(simd::max(c1, c2), simd::max(c3, c4));
-  } else {
-    const auto &t = p.triangle;
-    pMin = simd::min(t.v0, simd::min(t.v1, t.v2));
-    pMax = simd::max(t.v0, simd::max(t.v1, t.v2));
-  }
+  const auto &t = p.triangle;
+  pMin = simd::min(t.v0, simd::min(t.v1, t.v2));
+  pMax = simd::max(t.v0, simd::max(t.v1, t.v2));
 }
 
 float subsetPrimitiveAxisValue(const Primitive &p, int axis) {
-  switch (p.type) {
-  case PrimitiveType::Sphere:
-    return p.sphere.center[axis];
-  case PrimitiveType::Rectangle:
-    return p.rectangle.center[axis];
-  case PrimitiveType::Triangle:
-    return (p.triangle.v0[axis] + p.triangle.v1[axis] +
-            p.triangle.v2[axis]) /
-           3.0f;
-  }
-  return 0.0f;
+  return (p.triangle.v0[axis] + p.triangle.v1[axis] + p.triangle.v2[axis]) /
+         3.0f;
 }
 
 float subsetSurfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) {
@@ -771,13 +675,8 @@ float Scene::surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) {
 }
 
 float Scene::primitiveAxisValue(const Primitive &p, int axis) const {
-  if (p.type == PrimitiveType::Sphere)
-    return p.sphere.center[axis];
-  else if (p.type == PrimitiveType::Rectangle)
-    return p.rectangle.center[axis];
-  else
-    return (p.triangle.v0[axis] + p.triangle.v1[axis] + p.triangle.v2[axis]) /
-           3.0f;
+  return (p.triangle.v0[axis] + p.triangle.v1[axis] + p.triangle.v2[axis]) /
+         3.0f;
 }
 
 float Scene::objectAxisValue(size_t objectIndex, int axis) const {
@@ -787,25 +686,9 @@ float Scene::objectAxisValue(size_t objectIndex, int axis) const {
 
 void Scene::primitiveBounds(const Primitive &p, simd::float3 &pMin,
                             simd::float3 &pMax) const {
-  if (p.type == PrimitiveType::Sphere) {
-    float r = p.sphere.radius;
-    pMin = p.sphere.center - r;
-    pMax = p.sphere.center + r;
-  } else if (p.type == PrimitiveType::Rectangle) {
-    simd::float3 c = p.rectangle.center;
-    simd::float3 e1 = p.rectangle.u;
-    simd::float3 e2 = p.rectangle.v;
-    simd::float3 c1 = c - e1 - e2;
-    simd::float3 c2 = c - e1 + e2;
-    simd::float3 c3 = c + e1 - e2;
-    simd::float3 c4 = c + e1 + e2;
-    pMin = simd::min(simd::min(c1, c2), simd::min(c3, c4));
-    pMax = simd::max(simd::max(c1, c2), simd::max(c3, c4));
-  } else {
-    const auto &t = p.triangle;
-    pMin = simd::min(t.v0, simd::min(t.v1, t.v2));
-    pMax = simd::max(t.v0, simd::max(t.v1, t.v2));
-  }
+  const auto &t = p.triangle;
+  pMin = simd::min(t.v0, simd::min(t.v1, t.v2));
+  pMax = simd::max(t.v0, simd::max(t.v1, t.v2));
 }
 
 } // namespace MetalCppPathTracer

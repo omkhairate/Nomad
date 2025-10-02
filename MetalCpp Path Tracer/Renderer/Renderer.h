@@ -109,8 +109,6 @@ public:
   size_t residentNodeCount() const;
   size_t totalNodeCount() const;
 
-  std::vector<std::pair<simd::float3, float>> _allSpheres;
-
   struct Chunk {
     std::vector<std::pair<simd::float4, simd::float4>>
         spheres; // (transform, material)
