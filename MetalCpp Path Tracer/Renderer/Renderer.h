@@ -124,6 +124,7 @@ private:
                             bool allowShrink = false,
                             MTL::ResourceOptions storageMode =
                                 MTL::ResourceStorageModeManaged);
+  void ensureIntersectionFunctionTableCapacity(size_t requiredCount);
   struct BoundingSphere {
     simd::float3 center;
     float radius;
@@ -154,6 +155,14 @@ private:
   MTL::RenderPipelineState *_pPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
+  MTL::IntersectionFunctionTable *_pIntersectionFunctionTable = nullptr;
+  MTL::Function *_pSphereIntersectionFunction = nullptr;
+  MTL::Function *_pRectangleIntersectionFunction = nullptr;
+  MTL::FunctionHandle *_pSphereIntersectionHandle = nullptr;
+  MTL::FunctionHandle *_pRectangleIntersectionHandle = nullptr;
+  size_t _intersectionFunctionTableCapacity = 0;
+  size_t _intersectionFunctionTableRequiredCount = 1;
+  bool _intersectionFunctionTableDirty = true;
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
@@ -218,6 +227,7 @@ private:
   std::vector<size_t> _rayHitSortedIndices;
   std::vector<float> _primitiveScreenCoverage;
   std::vector<size_t> _screenCoverageSortedIndices;
+  std::vector<PrimitiveType> _proceduralPrimitiveTypes;
   float _totalPrimitiveImportance = 0.0f;
   double _textureResidencyMemoryCapMB = 2048.0;
 
