@@ -429,46 +429,6 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
   currentCapacity = buffer ? buffer->length() : 0;
 }
 
-void Renderer::ensureIntersectionFunctionTableCapacity(size_t requiredCount) {
-  requiredCount = std::max<size_t>(requiredCount, size_t(1));
-  _intersectionFunctionTableRequiredCount = requiredCount;
-
-  if (!_pPathTracePSO) {
-    if (_pIntersectionFunctionTable) {
-      _pIntersectionFunctionTable->release();
-      _pIntersectionFunctionTable = nullptr;
-      _intersectionFunctionTableCapacity = 0;
-    }
-    return;
-  }
-
-  if (_pIntersectionFunctionTable &&
-      requiredCount <= _intersectionFunctionTableCapacity) {
-    return;
-  }
-
-  if (_pIntersectionFunctionTable) {
-    _pIntersectionFunctionTable->release();
-    _pIntersectionFunctionTable = nullptr;
-    _intersectionFunctionTableCapacity = 0;
-  }
-
-  MTL::IntersectionFunctionTableDescriptor *descriptor =
-      MTL::IntersectionFunctionTableDescriptor::alloc()->init();
-  descriptor->setFunctionCount(static_cast<NS::UInteger>(requiredCount));
-
-  MTL::IntersectionFunctionTable *table =
-      _pPathTracePSO->newIntersectionFunctionTable(descriptor);
-  descriptor->release();
-
-  if (!table)
-    return;
-
-  _pIntersectionFunctionTable = table;
-  _intersectionFunctionTableCapacity = requiredCount;
-  _intersectionFunctionTableDirty = true;
-}
-
 bool Renderer::isInView(const BoundingSphere &b) {
   simd::float3 toCenter = b.center - Camera::position;
   float dist = simd::length(toCenter);
@@ -550,17 +510,6 @@ Renderer::~Renderer() {
   if (_pTextureClearBuffer)
     _pTextureClearBuffer->release();
 
-  if (_pIntersectionFunctionTable)
-    _pIntersectionFunctionTable->release();
-  if (_pSphereIntersectionHandle)
-    _pSphereIntersectionHandle->release();
-  if (_pRectangleIntersectionHandle)
-    _pRectangleIntersectionHandle->release();
-  if (_pSphereIntersectionFunction)
-    _pSphereIntersectionFunction->release();
-  if (_pRectangleIntersectionFunction)
-    _pRectangleIntersectionFunction->release();
-
   if (_pPathTracePSO)
     _pPathTracePSO->release();
   if (_pAdaptiveSamplingPSO)
@@ -592,29 +541,6 @@ void Renderer::setDeltaTime(double deltaSeconds) {
 
 void Renderer::buildShaders() {
   using NS::StringEncoding::UTF8StringEncoding;
-
-  if (_pIntersectionFunctionTable) {
-    _pIntersectionFunctionTable->release();
-    _pIntersectionFunctionTable = nullptr;
-  }
-  if (_pSphereIntersectionHandle) {
-    _pSphereIntersectionHandle->release();
-    _pSphereIntersectionHandle = nullptr;
-  }
-  if (_pRectangleIntersectionHandle) {
-    _pRectangleIntersectionHandle->release();
-    _pRectangleIntersectionHandle = nullptr;
-  }
-  if (_pSphereIntersectionFunction) {
-    _pSphereIntersectionFunction->release();
-    _pSphereIntersectionFunction = nullptr;
-  }
-  if (_pRectangleIntersectionFunction) {
-    _pRectangleIntersectionFunction->release();
-    _pRectangleIntersectionFunction = nullptr;
-  }
-  _intersectionFunctionTableCapacity = 0;
-  _intersectionFunctionTableDirty = true;
 
   if (_pPSO) {
     _pPSO->release();
@@ -697,22 +623,6 @@ void Renderer::buildShaders() {
         }
       }
     }
-
-    if (_pPathTracePSO) {
-      _pSphereIntersectionFunction = pLibrary->newFunction(
-          NS::String::string("sphereIntersectionFunction", UTF8StringEncoding));
-      if (_pSphereIntersectionFunction)
-        _pSphereIntersectionHandle =
-            _pPathTracePSO->functionHandle(_pSphereIntersectionFunction);
-
-      _pRectangleIntersectionFunction = pLibrary->newFunction(
-          NS::String::string("rectangleIntersectionFunction", UTF8StringEncoding));
-      if (_pRectangleIntersectionFunction)
-        _pRectangleIntersectionHandle =
-            _pPathTracePSO->functionHandle(_pRectangleIntersectionFunction);
-
-      _intersectionFunctionTableDirty = true;
-    }
     pPathTraceFn->release();
   }
 
@@ -731,7 +641,6 @@ void Renderer::buildShaders() {
   pVertexFn->release();
   pFragFn->release();
   pDesc->release();
-  ensureIntersectionFunctionTableCapacity(_intersectionFunctionTableRequiredCount);
   pLibrary->release();
 }
 
@@ -1995,8 +1904,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   std::vector<simd::float4> compactBVHNodes;
   std::vector<simd::float3> compactTriangleVertices;
   std::vector<simd::uint3> compactTriangleIndices;
-  std::vector<PrimitiveType> proceduralTypes;
-  proceduralTypes.reserve(totalPrimitiveCount);
 
   size_t triangleLeafCursor = 0;
   size_t proceduralLeafCursor = 0;
@@ -2041,10 +1948,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         const Primitive &p = _allPrimitives[prim];
         if (p.type == PrimitiveType::Triangle)
           ++objectTriangleCount;
-        else {
+        else
           ++objectProceduralCount;
-          proceduralTypes.push_back(p.type);
-        }
         if (prim < _activePrimitive.size() && _activePrimitive[prim])
           anyActive = true;
       }
@@ -2141,7 +2046,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                 simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
             prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
             ++objectProceduralCount;
-            proceduralTypes.push_back(p.type);
             break;
           }
           case PrimitiveType::Rectangle: {
@@ -2150,7 +2054,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             prim1 = simd::make_float4(p.rectangle.u, 0.0f);
             prim2 = simd::make_float4(p.rectangle.v, 0.0f);
             ++objectProceduralCount;
-            proceduralTypes.push_back(p.type);
             break;
           }
           case PrimitiveType::Triangle: {
@@ -2350,7 +2253,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
               simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
           prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
           ++objectProceduralCount;
-          proceduralTypes.push_back(p.type);
           break;
         }
         case PrimitiveType::Rectangle: {
@@ -2358,7 +2260,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           prim1 = simd::make_float4(p.rectangle.u, 0.0f);
           prim2 = simd::make_float4(p.rectangle.v, 0.0f);
           ++objectProceduralCount;
-          proceduralTypes.push_back(p.type);
           break;
         }
         case PrimitiveType::Triangle: {
@@ -2842,11 +2743,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   _recentlyActivated.clear();
   _recentlyDeactivated.clear();
-
-  _proceduralPrimitiveTypes = std::move(proceduralTypes);
-  size_t requiredIntersectionSlots = _proceduralPrimitiveTypes.size() + 1;
-  ensureIntersectionFunctionTableCapacity(requiredIntersectionSlots);
-  _intersectionFunctionTableDirty = true;
 
   _needsAccumulationReset = true;
 }
@@ -3400,45 +3296,10 @@ void Renderer::draw(MTK::View *pView) {
           _useAccelerationStructureBindings && _pTlasStructure &&
           _pGeometryHandleBuffer;
 
-      if (useAccelerationStructureLayout) {
+      if (useAccelerationStructureLayout)
         pCompute->setAccelerationStructure(_pTlasStructure, 0);
-
-        bool haveHandles = _pSphereIntersectionHandle || _pRectangleIntersectionHandle;
-        if (haveHandles) {
-          size_t requiredCount = _proceduralPrimitiveTypes.size() + 1;
-          ensureIntersectionFunctionTableCapacity(requiredCount);
-
-          if (_pIntersectionFunctionTable) {
-            if (_intersectionFunctionTableDirty ||
-                requiredCount > _intersectionFunctionTableCapacity) {
-              NS::UInteger capacity =
-                  static_cast<NS::UInteger>(_intersectionFunctionTableCapacity);
-              NS::UInteger used =
-                  static_cast<NS::UInteger>(_proceduralPrimitiveTypes.size());
-              for (NS::UInteger i = 0; i < capacity; ++i) {
-                MTL::FunctionHandle *handle = nullptr;
-                if (i < used) {
-                  PrimitiveType type = _proceduralPrimitiveTypes[i];
-                  if (type == PrimitiveType::Sphere)
-                    handle = _pSphereIntersectionHandle;
-                  else if (type == PrimitiveType::Rectangle)
-                    handle = _pRectangleIntersectionHandle;
-                }
-                _pIntersectionFunctionTable->setFunction(handle, i);
-              }
-              _intersectionFunctionTableDirty = false;
-            }
-            pCompute->setIntersectionFunctionTable(_pIntersectionFunctionTable, 0);
-          } else {
-            pCompute->setIntersectionFunctionTable(nullptr, 0);
-          }
-        } else {
-          pCompute->setIntersectionFunctionTable(nullptr, 0);
-        }
-      } else {
+      else
         pCompute->setAccelerationStructure(nullptr, 0);
-        pCompute->setIntersectionFunctionTable(nullptr, 0);
-      }
 
       pCompute->setBuffer(useAccelerationStructureLayout ? _pGeometryHandleBuffer
                                                          : nullptr,
