@@ -67,6 +67,12 @@ void ResidentObjectGpuResources::transitionToCold(
   instanceRecord.primitiveIndexBase = 0;
   instanceRecord.blasRootIndex = -1;
   instanceRecord.primitiveCount = 0;
+  instanceRecord.triangleBase = 0;
+  instanceRecord.triangleCount = 0;
+  instanceRecord.proceduralBase = 0;
+  instanceRecord.proceduralCount = 0;
+  triangleBase = 0;
+  proceduralBase = 0;
 }
 
 bool ResidentObjectGpuResources::ensureResident(
@@ -87,6 +93,11 @@ bool ResidentObjectGpuResources::ensureResident(
   clearPendingCommand();
   state = ResidencyState::Resident;
   lastStateChange = std::chrono::steady_clock::now();
+  instanceRecord.triangleBase = static_cast<uint32_t>(triangleBase);
+  instanceRecord.triangleCount = static_cast<uint32_t>(triangleCount);
+  instanceRecord.proceduralBase = static_cast<uint32_t>(proceduralBase);
+  instanceRecord.proceduralCount =
+      static_cast<uint32_t>(boundingBoxCount);
   return true;
 }
 
@@ -1894,6 +1905,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   std::vector<simd::float3> compactTriangleVertices;
   std::vector<simd::uint3> compactTriangleIndices;
 
+  size_t triangleLeafCursor = 0;
+  size_t proceduralLeafCursor = 0;
+
   const std::vector<simd::float4> *primitiveSource = &_cachedPrimitiveData;
   const std::vector<simd::float4> *materialSource = &_cachedMaterialData;
   const std::vector<int> *primitiveIndexSource = &_cachedPrimitiveIndices;
@@ -1923,19 +1937,29 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       record.primitiveBase = static_cast<uint32_t>(obj.firstPrimitive);
       record.primitiveCount = static_cast<uint32_t>(obj.primitiveCount);
       record.primitiveIndexBase = static_cast<uint32_t>(obj.firstPrimitive);
+      record.triangleBase = static_cast<uint32_t>(triangleLeafCursor);
+      record.proceduralBase = static_cast<uint32_t>(proceduralLeafCursor);
       bool anyActive = false;
       size_t first = obj.firstPrimitive;
       size_t last = first + obj.primitiveCount;
-      for (size_t prim = first;
-           prim < last && prim < _activePrimitive.size(); ++prim) {
-        if (_activePrimitive[prim]) {
+      size_t objectTriangleCount = 0;
+      size_t objectProceduralCount = 0;
+      for (size_t prim = first; prim < last && prim < _allPrimitives.size(); ++prim) {
+        const Primitive &p = _allPrimitives[prim];
+        if (p.type == PrimitiveType::Triangle)
+          ++objectTriangleCount;
+        else
+          ++objectProceduralCount;
+        if (prim < _activePrimitive.size() && _activePrimitive[prim])
           anyActive = true;
-          break;
-        }
       }
+      record.triangleCount = static_cast<uint32_t>(objectTriangleCount);
+      record.proceduralCount = static_cast<uint32_t>(objectProceduralCount);
       record.blasRootIndex = anyActive ? obj.blasRootIndex : -1;
       objectShouldBeResident[objectIndex] = anyActive;
       _instanceRecords[objectIndex] = record;
+      triangleLeafCursor += objectTriangleCount;
+      proceduralLeafCursor += objectProceduralCount;
     }
   } else {
     remapUpload.clear();
@@ -1970,6 +1994,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       record.primitiveBase = static_cast<uint32_t>(remapUpload.size());
       record.primitiveIndexBase =
           static_cast<uint32_t>(compactPrimitiveIndices.size());
+      record.triangleBase = static_cast<uint32_t>(triangleLeafCursor);
+      record.proceduralBase = static_cast<uint32_t>(proceduralLeafCursor);
+      size_t objectTriangleCount = 0;
+      size_t objectProceduralCount = 0;
 
       bool hasCache = !obj.cachedBlasNodes.empty() &&
                       !obj.cachedPrimitiveIndices.empty() &&
@@ -2017,6 +2045,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             prim1 = simd::make_float4(
                 simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
             prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+            ++objectProceduralCount;
             break;
           }
           case PrimitiveType::Rectangle: {
@@ -2024,6 +2053,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                                       static_cast<float>(p.type));
             prim1 = simd::make_float4(p.rectangle.u, 0.0f);
             prim2 = simd::make_float4(p.rectangle.v, 0.0f);
+            ++objectProceduralCount;
             break;
           }
           case PrimitiveType::Triangle: {
@@ -2039,6 +2069,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                 static_cast<uint32_t>(baseVertex),
                 static_cast<uint32_t>(baseVertex + 1),
                 static_cast<uint32_t>(baseVertex + 2)));
+            ++objectTriangleCount;
             break;
           }
           }
@@ -2060,12 +2091,16 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         }
 
         record.primitiveCount = static_cast<uint32_t>(activeCount);
+        record.triangleCount = static_cast<uint32_t>(objectTriangleCount);
+        record.proceduralCount = static_cast<uint32_t>(objectProceduralCount);
         if (activeCount == 0) {
           for (const auto &edit : residentIndexEdits)
             if (edit.first < _primitiveToResidentIndex.size())
               _primitiveToResidentIndex[edit.first] = edit.second;
           objectShouldBeResident[objectIndex] = false;
           _instanceRecords[objectIndex] = record;
+          objectTriangleCount = 0;
+          objectProceduralCount = 0;
           ++blasCacheSkipped;
           continue;
         }
@@ -2127,6 +2162,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                                  rebuiltNodes.end());
           objectShouldBeResident[objectIndex] = true;
           _instanceRecords[objectIndex] = record;
+          triangleLeafCursor += objectTriangleCount;
+          proceduralLeafCursor += objectProceduralCount;
           ++blasCacheReused;
           assert(!encounteredEmptyLeaf &&
                  "Cached BLAS leaf with zero primitives reached upload");
@@ -2149,6 +2186,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             _primitiveToResidentIndex[edit.first] = edit.second;
 
         record.blasRootIndex = -1;
+        objectTriangleCount = 0;
+        objectProceduralCount = 0;
+        record.triangleCount = 0;
+        record.proceduralCount = 0;
       }
 
       activeLocalPrims.reserve(obj.primitiveCount);
@@ -2165,6 +2206,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       if (activeLocalPrims.empty()) {
         objectShouldBeResident[objectIndex] = false;
         _instanceRecords[objectIndex] = record;
+        record.triangleCount = 0;
+        record.proceduralCount = 0;
         continue;
       }
 
@@ -2209,12 +2252,14 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           prim1 = simd::make_float4(
               simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
           prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          ++objectProceduralCount;
           break;
         }
         case PrimitiveType::Rectangle: {
           prim0 = simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
           prim1 = simd::make_float4(p.rectangle.u, 0.0f);
           prim2 = simd::make_float4(p.rectangle.v, 0.0f);
+          ++objectProceduralCount;
           break;
         }
         case PrimitiveType::Triangle: {
@@ -2229,6 +2274,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
               static_cast<uint32_t>(baseVertex),
               static_cast<uint32_t>(baseVertex + 1),
               static_cast<uint32_t>(baseVertex + 2)));
+          ++objectTriangleCount;
           break;
         }
         }
@@ -2272,8 +2318,14 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       }
 
       record.blasRootIndex = static_cast<int32_t>(nodeBase);
+      record.triangleCount = static_cast<uint32_t>(objectTriangleCount);
+      record.proceduralCount = static_cast<uint32_t>(objectProceduralCount);
       objectShouldBeResident[objectIndex] = record.primitiveCount > 0;
       _instanceRecords[objectIndex] = record;
+      if (record.primitiveCount > 0) {
+        triangleLeafCursor += objectTriangleCount;
+        proceduralLeafCursor += objectProceduralCount;
+      }
     }
 
     printf("BLAS cache stats: reused %zu, rebuilt %zu, skipped %zu\n",
@@ -2309,6 +2361,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
     auto &gpuResident = _residentObjectGpuResources[objectIndex];
     auto &instanceRecord = _instanceRecords[objectIndex];
+
+    gpuResident.triangleBase = instanceRecord.triangleBase;
+    gpuResident.proceduralBase = instanceRecord.proceduralBase;
 
     if (shouldBeResident) {
       bool built = gpuResident.ensureResident(
@@ -2367,6 +2422,19 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     GeometryHandle handle{};
     if (resident && objectIndex < _residentObjectGpuResources.size()) {
       const auto &gpuResident = _residentObjectGpuResources[objectIndex];
+      if (gpuResident.boundingBoxCount > 0)
+        desc.intersectionFunctionTableOffset =
+            _instanceRecords[objectIndex].proceduralBase;
+      else
+        desc.intersectionFunctionTableOffset = 0;
+      handle.triangleBase = _instanceRecords[objectIndex].triangleBase;
+      handle.triangleCount = _instanceRecords[objectIndex].triangleCount;
+      handle.proceduralBase = _instanceRecords[objectIndex].proceduralBase;
+      handle.proceduralCount = _instanceRecords[objectIndex].proceduralCount;
+      handle.boundingBoxCount =
+          static_cast<uint32_t>(gpuResident.boundingBoxCount);
+      handle.boundingBoxStride =
+          static_cast<uint32_t>(sizeof(MTL::AxisAlignedBoundingBox));
       if (gpuResident.geometryValid) {
         MTL::Buffer *vertexBuffer = gpuResident.resources.vertexBuffer();
         MTL::Buffer *indexBuffer = gpuResident.resources.indexBuffer();
@@ -2375,6 +2443,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
               vertexBuffer->gpuAddress() + gpuResident.vertexBufferOffset;
           handle.indexBufferAddress =
               indexBuffer->gpuAddress() + gpuResident.indexBufferOffset;
+          if (gpuResident.boundingBoxBuffer) {
+            handle.boundingBoxBufferAddress =
+                gpuResident.boundingBoxBuffer->gpuAddress() +
+                gpuResident.boundingBoxBufferOffset;
+          }
           handle.vertexStride = static_cast<uint32_t>(sizeof(simd::float3));
           handle.indexStride = static_cast<uint32_t>(sizeof(uint32_t));
           handle.vertexCount =
