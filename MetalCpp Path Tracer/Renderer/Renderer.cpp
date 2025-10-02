@@ -3396,45 +3396,39 @@ void Renderer::draw(MTK::View *pView) {
     if (pCompute) {
       pCompute->setComputePipelineState(_pPathTracePSO);
 
-      bool bindAccelerationStructure =
-          _useAccelerationStructureBindings && _pTlasStructure;
-      bool haveGeometryHandleBuffer =
-          bindAccelerationStructure && _pGeometryHandleBuffer;
+      bool useAccelerationStructureLayout =
+          _useAccelerationStructureBindings && _pTlasStructure &&
+          _pGeometryHandleBuffer;
 
-      if (bindAccelerationStructure) {
+      if (useAccelerationStructureLayout) {
         pCompute->setAccelerationStructure(_pTlasStructure, 0);
 
-        if (haveGeometryHandleBuffer) {
-          bool haveHandles =
-              _pSphereIntersectionHandle || _pRectangleIntersectionHandle;
-          if (haveHandles) {
-            size_t requiredCount = _proceduralPrimitiveTypes.size() + 1;
-            ensureIntersectionFunctionTableCapacity(requiredCount);
+        bool haveHandles = _pSphereIntersectionHandle || _pRectangleIntersectionHandle;
+        if (haveHandles) {
+          size_t requiredCount = _proceduralPrimitiveTypes.size() + 1;
+          ensureIntersectionFunctionTableCapacity(requiredCount);
 
-            if (_pIntersectionFunctionTable) {
-              if (_intersectionFunctionTableDirty ||
-                  requiredCount > _intersectionFunctionTableCapacity) {
-                NS::UInteger capacity =
-                    static_cast<NS::UInteger>(_intersectionFunctionTableCapacity);
-                NS::UInteger used =
-                    static_cast<NS::UInteger>(_proceduralPrimitiveTypes.size());
-                for (NS::UInteger i = 0; i < capacity; ++i) {
-                  MTL::FunctionHandle *handle = nullptr;
-                  if (i < used) {
-                    PrimitiveType type = _proceduralPrimitiveTypes[i];
-                    if (type == PrimitiveType::Sphere)
-                      handle = _pSphereIntersectionHandle;
-                    else if (type == PrimitiveType::Rectangle)
-                      handle = _pRectangleIntersectionHandle;
-                  }
-                  _pIntersectionFunctionTable->setFunction(handle, i);
+          if (_pIntersectionFunctionTable) {
+            if (_intersectionFunctionTableDirty ||
+                requiredCount > _intersectionFunctionTableCapacity) {
+              NS::UInteger capacity =
+                  static_cast<NS::UInteger>(_intersectionFunctionTableCapacity);
+              NS::UInteger used =
+                  static_cast<NS::UInteger>(_proceduralPrimitiveTypes.size());
+              for (NS::UInteger i = 0; i < capacity; ++i) {
+                MTL::FunctionHandle *handle = nullptr;
+                if (i < used) {
+                  PrimitiveType type = _proceduralPrimitiveTypes[i];
+                  if (type == PrimitiveType::Sphere)
+                    handle = _pSphereIntersectionHandle;
+                  else if (type == PrimitiveType::Rectangle)
+                    handle = _pRectangleIntersectionHandle;
                 }
-                _intersectionFunctionTableDirty = false;
+                _pIntersectionFunctionTable->setFunction(handle, i);
               }
-              pCompute->setIntersectionFunctionTable(_pIntersectionFunctionTable, 0);
-            } else {
-              pCompute->setIntersectionFunctionTable(nullptr, 0);
+              _intersectionFunctionTableDirty = false;
             }
+            pCompute->setIntersectionFunctionTable(_pIntersectionFunctionTable, 0);
           } else {
             pCompute->setIntersectionFunctionTable(nullptr, 0);
           }
@@ -3446,10 +3440,9 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setIntersectionFunctionTable(nullptr, 0);
       }
 
-      if (_pGeometryHandleBuffer)
-        pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
-      else
-        pCompute->setBuffer(nullptr, 0, 1);
+      pCompute->setBuffer(useAccelerationStructureLayout ? _pGeometryHandleBuffer
+                                                         : nullptr,
+                          0, 1);
       pCompute->setBuffer(_pSphereBuffer, 0, 2);
       pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
       pCompute->setBuffer(_pUniformsBuffer, 0, 4);
