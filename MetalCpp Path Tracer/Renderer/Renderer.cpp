@@ -6,11 +6,13 @@
 #include "SceneLoader.h"
 #include <Metal/MTLArgument.hpp>
 #include <Metal/MTLComputePipeline.hpp>
+#include <Foundation/Foundation.hpp>
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <CoreFoundation/CoreFoundation.h>
 #include <cmath>
+#include <objc/runtime.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +50,7 @@ void ResidentObjectGpuResources::transitionToStreaming(
 void ResidentObjectGpuResources::transitionToCold(
     BlasInstanceRecord &instanceRecord) {
   clearPendingCommand();
+  mpsSafeRelease(mpsAccelerationStructure);
   resources.makeResourcesPurgeable();
   resources.releaseAllAllocations();
   byteSize = 0;
@@ -135,6 +138,33 @@ size_t alignTo(size_t value, size_t alignment) {
   if (alignment == 0)
     return value;
   return (value + alignment - 1) & ~(alignment - 1);
+}
+
+template <typename T> void mpsSafeRelease(T *&object) {
+  if (!object)
+    return;
+  SEL releaseSel = sel_registerName("release");
+  NS::Object::sendMessage<void>(object, releaseSel);
+  object = nullptr;
+}
+
+template <typename T> T *mpsAlloc(const char *className) {
+  if (!className)
+    return nullptr;
+  Class cls = objc_getClass(className);
+  if (!cls)
+    return nullptr;
+  SEL allocSel = sel_registerName("alloc");
+  return NS::Object::sendMessage<T *>(cls, allocSel);
+}
+
+template <typename T>
+T *mpsInitWithDevice(T *object, MTL::Device *device) {
+  if (!object || !device)
+    return nullptr;
+  id<MTLDevice> nativeDevice = NS::Object::bridgingCast<id<MTLDevice>>(device);
+  SEL initSel = sel_registerName("initWithDevice:");
+  return NS::Object::sendMessage<T *>(object, initSel, nativeDevice);
 }
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
@@ -430,9 +460,34 @@ bool Renderer::isInView(const BoundingSphere &b) {
 
 Renderer::Renderer(MTL::Device *pDevice)
     : _pDevice(pDevice->retain()), _pScene(new Scene()) {
+  bool deviceSupportsHardwareRayTracing = false;
+  if (_pDevice) {
+    SEL supportsSel = sel_registerName("supportsRaytracing");
+    if (NS::Object::respondsToSelector(_pDevice, supportsSel)) {
+      deviceSupportsHardwareRayTracing = NS::Object::sendMessage<BOOL>(
+          _pDevice, supportsSel);
+    }
+  }
+
+  _useMpsRayTracing = !deviceSupportsHardwareRayTracing;
+
   _pCommandQueue = _pDevice->newCommandQueue();
   _tlasHeap.initialize(_pDevice);
   _dummyBlasResources.initialize(_pDevice);
+
+  if (_useMpsRayTracing) {
+    _mpsRayIntersector = mpsInitWithDevice(
+        mpsAlloc<MPSRayIntersector>("MPSRayIntersector"), _pDevice);
+    _pMpsInstanceAccelerationStructure = mpsInitWithDevice(
+        mpsAlloc<MPSInstanceAccelerationStructure>(
+            "MPSInstanceAccelerationStructure"),
+        _pDevice);
+    if (!_mpsRayIntersector || !_pMpsInstanceAccelerationStructure) {
+      mpsSafeRelease(_mpsRayIntersector);
+      mpsSafeRelease(_pMpsInstanceAccelerationStructure);
+      _useMpsRayTracing = false;
+    }
+  }
 
   Camera::reset();
 
@@ -477,8 +532,13 @@ Renderer::~Renderer() {
   if (_pGeometryHandleBuffer)
     _pGeometryHandleBuffer->release();
 
+  _pActiveTlas = nullptr;
+  mpsSafeRelease(_pMpsInstanceAccelerationStructure);
+  mpsSafeRelease(_mpsRayIntersector);
+
   _cachedInstanceDescriptors.clear();
   _cachedInstancedAccelerationStructures.clear();
+  _cachedMpsInstancedAccelerationStructures.clear();
   _pTlasInstanceDescriptorBuffer = nullptr;
   _pTlasStructure = nullptr;
   _pDummyBlas = nullptr;
@@ -501,6 +561,7 @@ Renderer::~Renderer() {
 
   for (auto &resident : _residentObjectGpuResources) {
     resident.clearPendingCommand();
+    mpsSafeRelease(resident.mpsAccelerationStructure);
     resident.resources.destroy();
   }
   _residentObjectGpuResources.clear();
@@ -877,6 +938,10 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     }
   };
 
+  mpsSafeRelease(resident.mpsAccelerationStructure);
+  if (_useMpsRayTracing)
+    resident.resources.ensureAccelerationStructure(0, nullptr);
+
   size_t first = object.firstPrimitive;
   size_t last = std::min(first + object.primitiveCount, _allPrimitives.size());
 
@@ -885,20 +950,60 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   vertices.reserve((last - first) * 3);
   indices.reserve((last - first) * 3);
 
+  auto appendTriangle = [&](const simd::float3 &a, const simd::float3 &b,
+                            const simd::float3 &c) {
+    uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
+    vertices.push_back(a);
+    vertices.push_back(b);
+    vertices.push_back(c);
+    indices.push_back(baseIndex + 0);
+    indices.push_back(baseIndex + 1);
+    indices.push_back(baseIndex + 2);
+  };
+
   for (size_t prim = first; prim < last; ++prim) {
     if (prim >= _allPrimitives.size())
       break;
     const Primitive &p = _allPrimitives[prim];
-    if (p.type != PrimitiveType::Triangle)
-      continue;
 
-    uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
-    vertices.push_back(p.triangle.v0);
-    vertices.push_back(p.triangle.v1);
-    vertices.push_back(p.triangle.v2);
-    indices.push_back(baseIndex + 0);
-    indices.push_back(baseIndex + 1);
-    indices.push_back(baseIndex + 2);
+    switch (p.type) {
+    case PrimitiveType::Triangle:
+      appendTriangle(p.triangle.v0, p.triangle.v1, p.triangle.v2);
+      break;
+    case PrimitiveType::Sphere:
+      if (_useMpsRayTracing) {
+        const simd::float3 &c = p.sphere.center;
+        float r = p.sphere.radius;
+        simd::float3 top = c + simd::make_float3(0.0f, r, 0.0f);
+        simd::float3 bottom = c - simd::make_float3(0.0f, r, 0.0f);
+        simd::float3 right = c + simd::make_float3(r, 0.0f, 0.0f);
+        simd::float3 left = c - simd::make_float3(r, 0.0f, 0.0f);
+        simd::float3 front = c + simd::make_float3(0.0f, 0.0f, r);
+        simd::float3 back = c - simd::make_float3(0.0f, 0.0f, r);
+        appendTriangle(top, right, front);
+        appendTriangle(top, front, left);
+        appendTriangle(top, left, back);
+        appendTriangle(top, back, right);
+        appendTriangle(bottom, front, right);
+        appendTriangle(bottom, left, front);
+        appendTriangle(bottom, back, left);
+        appendTriangle(bottom, right, back);
+      }
+      break;
+    case PrimitiveType::Rectangle:
+      if (_useMpsRayTracing) {
+        const simd::float3 &center = p.rectangle.center;
+        const simd::float3 &u = p.rectangle.u;
+        const simd::float3 &v = p.rectangle.v;
+        simd::float3 p0 = center - u - v;
+        simd::float3 p1 = center + u - v;
+        simd::float3 p2 = center + u + v;
+        simd::float3 p3 = center - u + v;
+        appendTriangle(p0, p1, p2);
+        appendTriangle(p0, p2, p3);
+      }
+      break;
+    }
   }
 
   size_t triangleCount = indices.size() / 3;
@@ -1018,11 +1123,13 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
 
   configureGeometryDescriptor();
 
-  MTL::AccelerationStructure *accelerationStructure =
-      resident.resources.ensureAccelerationStructure(
-          sizes.accelerationStructureSize, blasLabel.c_str());
+  MTL::AccelerationStructure *accelerationStructure = nullptr;
+  if (!_useMpsRayTracing) {
+    accelerationStructure = resident.resources.ensureAccelerationStructure(
+        sizes.accelerationStructureSize, blasLabel.c_str());
+  }
 
-  if (!accelerationStructure) {
+  if (!_useMpsRayTracing && !accelerationStructure) {
     if (geometryArray)
       geometryArray->release();
     geometryDesc->release();
@@ -1102,6 +1209,92 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
 
   if (blitEncoder)
     blitEncoder->endEncoding();
+
+  if (_useMpsRayTracing) {
+    if (scratchBuffer)
+      scratchBuffer->release();
+    scratchBuffer = nullptr;
+
+    id<MTLBuffer> nativeVertexBuffer =
+        NS::Object::bridgingCast<id<MTLBuffer>>(vertexBuffer);
+    id<MTLBuffer> nativeIndexBuffer =
+        NS::Object::bridgingCast<id<MTLBuffer>>(indexBuffer);
+
+    resident.mpsAccelerationStructure = mpsInitWithDevice(
+        mpsAlloc<MPSPolygonAccelerationStructure>(
+            "MPSPolygonAccelerationStructure"),
+        _pDevice);
+    if (!resident.mpsAccelerationStructure) {
+      if (indexStaging)
+        indexStaging->release();
+      if (vertexStaging)
+        vertexStaging->release();
+      if (geometryArray)
+        geometryArray->release();
+      geometryDesc->release();
+      accelDesc->release();
+      cleanupPool();
+      return false;
+    }
+
+    SEL setVertexBufferSel = sel_registerName("setVertexBuffer:");
+    NS::Object::sendMessage<void>(resident.mpsAccelerationStructure,
+                                  setVertexBufferSel, nativeVertexBuffer);
+    SEL setVertexOffsetSel = sel_registerName("setVertexBufferOffset:");
+    NS::Object::sendMessage<void>(resident.mpsAccelerationStructure,
+                                  setVertexOffsetSel, static_cast<NS::UInteger>(0));
+    SEL setVertexStrideSel = sel_registerName("setVertexStride:");
+    NS::Object::sendMessage<void>(resident.mpsAccelerationStructure,
+                                  setVertexStrideSel,
+                                  static_cast<NS::UInteger>(sizeof(simd::float3)));
+
+    SEL setIndexBufferSel = sel_registerName("setIndexBuffer:");
+    NS::Object::sendMessage<void>(resident.mpsAccelerationStructure,
+                                  setIndexBufferSel, nativeIndexBuffer);
+    SEL setIndexOffsetSel = sel_registerName("setIndexBufferOffset:");
+    NS::Object::sendMessage<void>(resident.mpsAccelerationStructure,
+                                  setIndexOffsetSel, static_cast<NS::UInteger>(0));
+    SEL setIndexTypeSel = sel_registerName("setIndexType:");
+    NS::Object::sendMessage<void>(
+        resident.mpsAccelerationStructure, setIndexTypeSel,
+        static_cast<NS::UInteger>(MPSPolygonAccelerationStructureIndexTypeUInt32));
+
+    SEL setTriangleCountSel = sel_registerName("setTriangleCount:");
+    NS::Object::sendMessage<void>(resident.mpsAccelerationStructure,
+                                  setTriangleCountSel,
+                                  static_cast<NS::UInteger>(triangleCount));
+
+    id<MTLCommandBuffer> nativeCommandBuffer =
+        NS::Object::bridgingCast<id<MTLCommandBuffer>>(commandBuffer);
+    SEL rebuildSel = sel_registerName("rebuildWithCommandBuffer:");
+    NS::Object::sendMessage<void>(resident.mpsAccelerationStructure, rebuildSel,
+                                  nativeCommandBuffer);
+
+    commandBuffer->commit();
+    commandBuffer->waitUntilCompleted();
+
+    if (indexStaging)
+      indexStaging->release();
+    if (vertexStaging)
+      vertexStaging->release();
+    if (geometryArray)
+      geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
+
+    resident.byteSize = alignedVertexSize + alignedIndexSize;
+    resident.triangleCount = triangleCount;
+    resident.vertexCount = vertices.size();
+    resident.vertexBufferOffset = 0;
+    resident.indexBufferOffset = 0;
+    resident.geometryValid = triangleCount > 0;
+
+    _cachedInstancedAccelerationStructures.clear();
+    _pActiveTlas = _pMpsInstanceAccelerationStructure;
+
+    cleanupPool();
+    return true;
+  }
 
   MTL::AccelerationStructureCommandEncoder *asEncoder =
       commandBuffer->accelerationStructureCommandEncoder();
@@ -1336,7 +1529,8 @@ bool Renderer::ensureDummyBlas() {
 
 void Renderer::updateTopLevelAccelerationStructure(
     const std::vector<MTL::AccelerationStructureInstanceDescriptor> &descriptors,
-    const std::vector<MTL::AccelerationStructure *> &structures) {
+    const std::vector<MTL::AccelerationStructure *> &structures,
+    const std::vector<MPSPolygonAccelerationStructure *> &mpsStructures) {
   if (!_pDevice || !_pCommandQueue)
     return;
 
@@ -1344,6 +1538,146 @@ void Renderer::updateTopLevelAccelerationStructure(
     return;
 
   _tlasHeap.initialize(_pDevice);
+
+  if (_useMpsRayTracing) {
+    if (!_pMpsInstanceAccelerationStructure) {
+      _pMpsInstanceAccelerationStructure = mpsInitWithDevice(
+          mpsAlloc<MPSInstanceAccelerationStructure>(
+              "MPSInstanceAccelerationStructure"),
+          _pDevice);
+    }
+
+    if (!_pMpsInstanceAccelerationStructure)
+      return;
+
+    bool descriptorCountChanged =
+        descriptors.size() != _cachedInstanceDescriptors.size();
+    bool descriptorContentChanged = descriptorCountChanged;
+    if (!descriptorContentChanged && !descriptors.empty()) {
+      descriptorContentChanged =
+          std::memcmp(descriptors.data(), _cachedInstanceDescriptors.data(),
+                      descriptors.size() *
+                          sizeof(MTL::AccelerationStructureInstanceDescriptor)) != 0;
+    }
+
+    bool structureListChanged =
+        mpsStructures.size() != _cachedMpsInstancedAccelerationStructures.size();
+    if (!structureListChanged) {
+      for (size_t i = 0; i < mpsStructures.size(); ++i) {
+        if (mpsStructures[i] !=
+            _cachedMpsInstancedAccelerationStructures[i]) {
+          structureListChanged = true;
+          break;
+        }
+      }
+    }
+
+    bool needsRebuild =
+        descriptorContentChanged || descriptorCountChanged || structureListChanged;
+
+    size_t descriptorCount = descriptors.size();
+    size_t descriptorBytes =
+        descriptorCount * sizeof(MTL::AccelerationStructureInstanceDescriptor);
+    size_t uploadBytes =
+        std::max<size_t>(descriptorCount, size_t(1)) *
+        sizeof(MTL::AccelerationStructureInstanceDescriptor);
+
+    MTL::Buffer *instanceBuffer = _tlasHeap.ensureVertexBuffer(
+        static_cast<NS::UInteger>(uploadBytes),
+        "TLASInstanceDescriptors", MTL::ResourceStorageModePrivate,
+        static_cast<MTL::ResourceUsage>(MTL::ResourceUsageRead));
+    if (!instanceBuffer)
+      return;
+
+    _pTlasInstanceDescriptorBuffer = instanceBuffer;
+
+    MTL::Buffer *stagingBuffer = nullptr;
+    if (descriptorContentChanged && descriptorBytes > 0) {
+      stagingBuffer =
+          _pDevice->newBuffer(descriptorBytes, MTL::ResourceStorageModeShared);
+      if (!stagingBuffer)
+        return;
+      std::memcpy(stagingBuffer->contents(), descriptors.data(), descriptorBytes);
+      markBufferModified(stagingBuffer,
+                         NS::Range::Make(0, descriptorBytes));
+    }
+
+    MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
+    if (!commandBuffer) {
+      if (stagingBuffer)
+        stagingBuffer->release();
+      return;
+    }
+
+    MTL::BlitCommandEncoder *blit = nullptr;
+    if (stagingBuffer && descriptorBytes > 0) {
+      blit = commandBuffer->blitCommandEncoder();
+      if (!blit) {
+        stagingBuffer->release();
+        return;
+      }
+      blit->copyFromBuffer(stagingBuffer, 0, instanceBuffer, 0, descriptorBytes);
+      blit->endEncoding();
+    } else if (descriptorContentChanged && descriptorBytes == 0 && instanceBuffer &&
+               instanceBuffer->length() > 0) {
+      blit = commandBuffer->blitCommandEncoder();
+      if (!blit) {
+        if (stagingBuffer)
+          stagingBuffer->release();
+        return;
+      }
+      blit->fillBuffer(instanceBuffer,
+                       NS::Range::Make(0, instanceBuffer->length()), 0);
+      blit->endEncoding();
+    }
+
+    id<MTLCommandBuffer> nativeCommandBuffer =
+        NS::Object::bridgingCast<id<MTLCommandBuffer>>(commandBuffer);
+    id<MTLBuffer> nativeInstanceBuffer =
+        NS::Object::bridgingCast<id<MTLBuffer>>(instanceBuffer);
+
+    SEL setInstanceBufferSel = sel_registerName("setInstanceBuffer:");
+    NS::Object::sendMessage<void>(_pMpsInstanceAccelerationStructure,
+                                  setInstanceBufferSel, nativeInstanceBuffer);
+
+    SEL setInstanceBufferOffsetSel =
+        sel_registerName("setInstanceBufferOffset:");
+    NS::Object::sendMessage<void>(
+        _pMpsInstanceAccelerationStructure, setInstanceBufferOffsetSel,
+        static_cast<NS::UInteger>(0));
+
+    SEL setInstanceCountSel = sel_registerName("setInstanceCount:");
+    NS::Object::sendMessage<void>(_pMpsInstanceAccelerationStructure,
+                                  setInstanceCountSel,
+                                  static_cast<NS::UInteger>(descriptorCount));
+
+    if (!mpsStructures.empty()) {
+      std::vector<NS::Object *> nsStructures(mpsStructures.size());
+      for (size_t i = 0; i < mpsStructures.size(); ++i)
+        nsStructures[i] = mpsStructures[i];
+      NS::Array *structuresArray =
+          NS::Array::alloc()->init(nsStructures.data(), nsStructures.size());
+      SEL setStructuresSel = sel_registerName("setAccelerationStructures:");
+      NS::Object::sendMessage<void>(_pMpsInstanceAccelerationStructure,
+                                    setStructuresSel, structuresArray);
+      structuresArray->release();
+    }
+
+    SEL rebuildSel = sel_registerName("rebuildWithCommandBuffer:");
+    NS::Object::sendMessage<void>(_pMpsInstanceAccelerationStructure, rebuildSel,
+                                  nativeCommandBuffer);
+
+    commandBuffer->commit();
+    commandBuffer->waitUntilCompleted();
+
+    if (stagingBuffer)
+      stagingBuffer->release();
+
+    _cachedInstanceDescriptors = descriptors;
+    _cachedMpsInstancedAccelerationStructures = mpsStructures;
+    _pActiveTlas = _pMpsInstanceAccelerationStructure;
+    return;
+  }
 
   std::vector<MTL::AccelerationStructure *> instancedStructures;
   instancedStructures.reserve(structures.size() + 1);
@@ -1525,6 +1859,8 @@ void Renderer::updateTopLevelAccelerationStructure(
 
   _cachedInstanceDescriptors = descriptors;
   _cachedInstancedAccelerationStructures = instancedStructures;
+  _cachedMpsInstancedAccelerationStructures.clear();
+  _pActiveTlas = _pTlasStructure;
 }
 
 void Renderer::rebuildResidentResources(bool forceFullRebuild) {
@@ -2167,6 +2503,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       sceneObjects.size());
   std::vector<MTL::AccelerationStructure *> instancedStructures(
       sceneObjects.size(), nullptr);
+  std::vector<MPSPolygonAccelerationStructure *> instancedMpsStructures(
+      sceneObjects.size(), nullptr);
   std::vector<GeometryHandle> geometryHandles(sceneObjects.size() + 1);
   if (!geometryHandles.empty())
     geometryHandles[0] = GeometryHandle{};
@@ -2190,12 +2528,21 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       const auto &gpuResident = _residentObjectGpuResources[objectIndex];
       resident = gpuResident.isResident() && objectShouldBeResident[objectIndex];
       if (resident) {
-        MTL::AccelerationStructure *structure =
-            gpuResident.resources.accelerationStructure();
-        if (structure) {
-          instancedStructures[objectIndex] = structure;
+        if (_useMpsRayTracing) {
+          if (gpuResident.mpsAccelerationStructure) {
+            instancedMpsStructures[objectIndex] =
+                gpuResident.mpsAccelerationStructure;
+          } else {
+            resident = false;
+          }
         } else {
-          resident = false;
+          MTL::AccelerationStructure *structure =
+              gpuResident.resources.accelerationStructure();
+          if (structure) {
+            instancedStructures[objectIndex] = structure;
+          } else {
+            resident = false;
+          }
         }
       }
     }
@@ -2226,7 +2573,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     geometryHandles[objectIndex + 1] = handle;
   }
 
-  updateTopLevelAccelerationStructure(instanceDescriptors, instancedStructures);
+  updateTopLevelAccelerationStructure(instanceDescriptors, instancedStructures,
+                                      instancedMpsStructures);
 
   _residentRemap = remapUpload;
 
@@ -2948,7 +3296,7 @@ void Renderer::updateUniforms() {
   uint64_t residentPrimitiveCount = _residentPrimitiveCount;
   uint64_t residentTriangleCount = _residentTriangleCount;
 
-  if (_useAccelerationStructureBindings && _pTlasStructure &&
+  if (_useAccelerationStructureBindings && !_useMpsRayTracing && _pTlasStructure &&
       _pGeometryHandleBuffer) {
     residentPrimitiveCount = 0;
     residentTriangleCount = 0;
@@ -3058,7 +3406,7 @@ void Renderer::draw(MTK::View *pView) {
       pCompute->setComputePipelineState(_pPathTracePSO);
 
       bool useAccelerationStructureLayout =
-          _useAccelerationStructureBindings && _pTlasStructure &&
+          _useAccelerationStructureBindings && !_useMpsRayTracing && _pTlasStructure &&
           _pGeometryHandleBuffer;
 
       if (useAccelerationStructureLayout)

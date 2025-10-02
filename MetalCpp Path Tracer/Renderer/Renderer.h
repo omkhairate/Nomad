@@ -3,6 +3,7 @@
 
 #include <Metal/Metal.hpp>
 #include <MetalKit/MetalKit.hpp>
+#include <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #include <chrono>
 #include <cstdint>
 #include <simd/simd.h>
@@ -55,6 +56,7 @@ struct ResidentObjectGpuResources {
   ResidencyState state = ResidencyState::Cold;
   std::chrono::steady_clock::time_point lastStateChange{};
   MTL::CommandBuffer *pendingCommand = nullptr;
+  MPSPolygonAccelerationStructure *mpsAccelerationStructure = nullptr;
 };
 
 class Renderer {
@@ -126,7 +128,8 @@ private:
   void updateTopLevelAccelerationStructure(
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
           &descriptors,
-      const std::vector<MTL::AccelerationStructure *> &structures);
+      const std::vector<MTL::AccelerationStructure *> &structures,
+      const std::vector<MPSPolygonAccelerationStructure *> &mpsStructures);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
 
@@ -217,6 +220,7 @@ private:
   std::vector<MTL::AccelerationStructureInstanceDescriptor>
       _cachedInstanceDescriptors;
   std::vector<MTL::AccelerationStructure *> _cachedInstancedAccelerationStructures;
+  std::vector<MPSPolygonAccelerationStructure *> _cachedMpsInstancedAccelerationStructures;
 
   uint32_t _rayHitRebuildCooldown = 0;
 
@@ -231,6 +235,7 @@ private:
   bool _residentBuffersInitialized = false;
   bool _residentCompacted = false;
   bool _useAccelerationStructureBindings = false;
+  bool _useMpsRayTracing = false;
   uint32_t _compactionCooldown = 0;
   std::vector<uint8_t> _cpuActiveMask;
   std::vector<simd::float4> _cachedPrimitiveData;
@@ -283,6 +288,10 @@ private:
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
+
+  MPSRayIntersector *_mpsRayIntersector = nullptr;
+  MPSInstanceAccelerationStructure *_pMpsInstanceAccelerationStructure = nullptr;
+  NS::Object *_pActiveTlas = nullptr;
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
