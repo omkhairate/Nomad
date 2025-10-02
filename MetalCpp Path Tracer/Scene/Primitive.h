@@ -2,26 +2,18 @@
 #define PRIMITIVE_H
 
 #include "Material.h"
-#include "Sphere.h"
 #include "Triangle.h"
-#include "Rectangle.h"
 
 namespace MetalCppPathTracer {
 
 enum class PrimitiveType {
-    Sphere = 0,
-    Triangle = 1,
-    Rectangle = 2
+    Triangle = 0
 };
 
 struct Primitive {
-    PrimitiveType type;
+    PrimitiveType type{PrimitiveType::Triangle};
     Material material;
-    union {
-        Sphere sphere;
-        Triangle triangle;
-        Rectangle rectangle;
-    };
+    Triangle triangle;
 };
 
 } // namespace MetalCppPathTracer

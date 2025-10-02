@@ -330,32 +330,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
 
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
         std::string tag = e->Name();
-        if (tag == "Sphere") {
-            Primitive p{};
-            p.type = PrimitiveType::Sphere;
-            p.sphere.center = parseVec3(e->Attribute("position"));
-            p.sphere.radius = e->FloatAttribute("radius", 1.0f);
-
-            p.material.albedo = parseVec3(e->Attribute("albedo"));
-            p.material.emissionColor = parseVec3(e->Attribute("emission"));
-            p.material.materialType = e->FloatAttribute("materialType", 0);
-            p.material.emissionPower = e->FloatAttribute("emissionPower", 0);
-
-            scene->addPrimitive(p);
-        }
-        else if (tag == "Rectangle") {
-            Primitive p{};
-            p.type = PrimitiveType::Rectangle;
-            p.rectangle.center = parseVec3(e->Attribute("position"));
-            p.rectangle.u = parseVec3(e->Attribute("u"));
-            p.rectangle.v = parseVec3(e->Attribute("v"));
-
-            p.material.albedo = parseVec3(e->Attribute("albedo"));
-            p.material.emissionColor = parseVec3(e->Attribute("emission"));
-            p.material.materialType = e->FloatAttribute("materialType", 0);
-            p.material.emissionPower = e->FloatAttribute("emissionPower", 0);
-
-            scene->addPrimitive(p);
+        if (tag == "Sphere" || tag == "Rectangle") {
+            std::fprintf(stderr,
+                         "Warning: primitive type '%s' is no longer supported and will be ignored.\n",
+                         tag.c_str());
         }
         else if (tag == "Mesh") {
             // Build full path to mesh file relative to the scene's directory
@@ -392,10 +370,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             meshPrimitives.reserve(meshData.indices.size());
             for (const auto& tri : meshData.indices) {
                 Primitive p{};
-                p.type = PrimitiveType::Triangle;
                 p.triangle.v0 = pos + scale * meshData.vertices[tri.x];
                 p.triangle.v1 = pos + scale * meshData.vertices[tri.y];
                 p.triangle.v2 = pos + scale * meshData.vertices[tri.z];
+                p.type = PrimitiveType::Triangle;
                 p.material = m;
                 meshPrimitives.push_back(p);
             }

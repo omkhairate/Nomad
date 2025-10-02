@@ -72,9 +72,7 @@ public:
   size_t addObject(const std::vector<Primitive> &prims);
   size_t addObjectSilent(const std::vector<Primitive> &prims);
   size_t getPrimitiveCount() const;
-  size_t getSphereCount() const;
   size_t getTriangleCount() const;
-  size_t getRectangleCount() const;
 
   const std::vector<Primitive> &getPrimitives() const;
   const std::vector<size_t> &getPrimitiveIndices() const;
@@ -101,8 +99,6 @@ public:
 
   simd::float4 *createTransformsBuffer() const;
   simd::float4 *createMaterialsBuffer() const;
-  simd::float4 *createSphereBuffer();
-  simd::float4 *createSphereMaterialsBuffer();
   simd::float4 *createBVHBuffer() const;
   simd::float4 *createBVHBuffer(const std::vector<Primitive> &subset,
                                 std::vector<int> &primitiveIndices,
