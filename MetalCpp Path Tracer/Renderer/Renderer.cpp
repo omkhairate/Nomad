@@ -928,7 +928,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     }
     case PrimitiveType::Sphere: {
       simd::float3 center = p.sphere.center;
-      simd::float3 extent(p.sphere.radius, p.sphere.radius, p.sphere.radius);
+      simd::float3 extent = {p.sphere.radius, p.sphere.radius, p.sphere.radius};
       appendProceduralBounds(center - extent, center + extent);
       break;
     }
