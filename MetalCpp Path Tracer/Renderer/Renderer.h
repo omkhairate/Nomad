@@ -18,17 +18,30 @@ struct BlasInstanceRecord {
   uint32_t primitiveBase;
   uint32_t primitiveCount;
   uint32_t primitiveIndexBase;
+  uint32_t triangleBase;
+  uint32_t triangleCount;
+  uint32_t proceduralBase;
+  uint32_t proceduralCount;
 };
 
 struct GeometryHandle {
   uint64_t vertexBufferAddress = 0;
   uint64_t indexBufferAddress = 0;
+  uint64_t boundingBoxBufferAddress = 0;
   uint32_t vertexStride = 0;
   uint32_t indexStride = 0;
+  uint32_t boundingBoxStride = 0;
   uint32_t vertexCount = 0;
   uint32_t indexCount = 0;
+  uint32_t boundingBoxCount = 0;
+  uint32_t triangleBase = 0;
+  uint32_t triangleCount = 0;
+  uint32_t proceduralBase = 0;
+  uint32_t proceduralCount = 0;
   uint32_t instanceSlot = 0;
-  uint32_t padding = 0;
+  uint32_t padding0 = 0;
+  uint32_t padding1 = 0;
+  uint32_t padding2 = 0;
 };
 
 class Renderer;
@@ -55,6 +68,8 @@ struct ResidentObjectGpuResources {
   size_t boundingBoxBufferCapacity = 0;
   size_t boundingBoxBufferOffset = 0;
   size_t boundingBoxCount = 0;
+  size_t triangleBase = 0;
+  size_t proceduralBase = 0;
   bool geometryValid = false;
   ResidencyState state = ResidencyState::Cold;
   std::chrono::steady_clock::time_point lastStateChange{};
