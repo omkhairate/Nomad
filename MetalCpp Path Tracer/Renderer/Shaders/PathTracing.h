@@ -64,67 +64,30 @@ inline uint selectLightOffset(float xi, device const float *lightCdf,
   return min(low, lightCount - 1);
 }
 
-inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,
+inline bool sampleLightPoint(float4 p0, float4 p1, float4 p2,
                              thread uint32_t &seed, thread float3 &position,
                              thread float3 &normal, thread float &area) {
-  if (primitiveType == 0) {
-    float radius = p1.x;
-    if (radius <= 0.0f)
-      return false;
-    float u1 = randomFloat(seed);
-    seed = random(seed);
-    float u2 = randomFloat(seed);
-    seed = random(seed);
-    float z = 2.0 * u1 - 1.0;
-    float phi = 2.0 * M_PI * u2;
-    float r = sqrt(max(0.0f, 1.0f - z * z));
-    float3 dir = float3(r * cos(phi), r * sin(phi), z);
-    position = p0.xyz + radius * dir;
-    normal = dir;
-    area = 4.0f * M_PI * radius * radius;
-    return area > 0.0f;
-  } else if (primitiveType == 1) {
-    float u1 = randomFloat(seed);
-    seed = random(seed);
-    float u2 = randomFloat(seed);
-    seed = random(seed);
-    float su1 = sqrt(u1);
-    float b0 = 1.0 - su1;
-    float b1 = su1 * (1.0 - u2);
-    float b2 = su1 * u2;
-    float3 v0 = p0.xyz;
-    float3 v1 = p1.xyz;
-    float3 v2 = p2.xyz;
-    position = b0 * v0 + b1 * v1 + b2 * v2;
-    float3 e1 = v1 - v0;
-    float3 e2 = v2 - v0;
-    float3 n = cross(e1, e2);
-    float lenN = length(n);
-    if (lenN <= 0.0f)
-      return false;
-    normal = n / lenN;
-    area = 0.5f * lenN;
-    return area > 0.0f;
-  } else if (primitiveType == 2) {
-    float u1 = randomFloat(seed);
-    seed = random(seed);
-    float u2 = randomFloat(seed);
-    seed = random(seed);
-    float su = u1 * 2.0 - 1.0;
-    float sv = u2 * 2.0 - 1.0;
-    float3 center = p0.xyz;
-    float3 e1 = p1.xyz;
-    float3 e2 = p2.xyz;
-    position = center + su * e1 + sv * e2;
-    float3 n = cross(e1, e2);
-    float lenN = length(n);
-    if (lenN <= 0.0f)
-      return false;
-    normal = n / lenN;
-    area = 4.0f * lenN;
-    return area > 0.0f;
-  }
-  return false;
+  float u1 = randomFloat(seed);
+  seed = random(seed);
+  float u2 = randomFloat(seed);
+  seed = random(seed);
+  float su1 = sqrt(u1);
+  float b0 = 1.0 - su1;
+  float b1 = su1 * (1.0 - u2);
+  float b2 = su1 * u2;
+  float3 v0 = p0.xyz;
+  float3 v1 = p1.xyz;
+  float3 v2 = p2.xyz;
+  position = b0 * v0 + b1 * v1 + b2 * v2;
+  float3 e1 = v1 - v0;
+  float3 e2 = v2 - v0;
+  float3 n = cross(e1, e2);
+  float lenN = length(n);
+  if (lenN <= 0.0f)
+    return false;
+  normal = n / lenN;
+  area = 0.5f * lenN;
+  return area > 0.0f;
 }
 
 namespace mtlrt = metal::raytracing;
@@ -345,8 +308,8 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
           float3 lightPoint;
           float3 lightNormal;
           float area = 0.0f;
-          if (sampleLightPoint(int(lp0.w), lp0, lp1, lp2, seed, lightPoint,
-                               lightNormal, area) && area > 0.0f) {
+          if (sampleLightPoint(lp0, lp1, lp2, seed, lightPoint, lightNormal,
+                               area) && area > 0.0f) {
             float3 toLight = lightPoint - hit.hit.point;
             float dist2 = dot(toLight, toLight);
             if (dist2 > 1e-6f) {

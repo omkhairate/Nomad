@@ -30,29 +30,19 @@ struct InstanceRecord
     uint primitiveIndexBase;
     uint triangleBase;
     uint triangleCount;
-    uint proceduralBase;
-    uint proceduralCount;
 };
 
 struct GeometryHandle
 {
     uint64_t vertexBufferAddress = 0;
     uint64_t indexBufferAddress = 0;
-    uint64_t boundingBoxBufferAddress = 0;
     uint vertexStride = 0;
     uint indexStride = 0;
-    uint boundingBoxStride = 0;
     uint vertexCount = 0;
     uint indexCount = 0;
-    uint boundingBoxCount = 0;
     uint triangleBase = 0;
     uint triangleCount = 0;
-    uint proceduralBase = 0;
-    uint proceduralCount = 0;
     uint instanceSlot = 0;
-    uint padding0 = 0;
-    uint padding1 = 0;
-    uint padding2 = 0;
 };
 
 
