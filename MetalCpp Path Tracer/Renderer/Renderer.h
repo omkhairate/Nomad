@@ -51,6 +51,10 @@ struct ResidentObjectGpuResources {
   size_t vertexCount = 0;
   size_t vertexBufferOffset = 0;
   size_t indexBufferOffset = 0;
+  MTL::Buffer *boundingBoxBuffer = nullptr;
+  size_t boundingBoxBufferCapacity = 0;
+  size_t boundingBoxBufferOffset = 0;
+  size_t boundingBoxCount = 0;
   bool geometryValid = false;
   ResidencyState state = ResidencyState::Cold;
   std::chrono::steady_clock::time_point lastStateChange{};

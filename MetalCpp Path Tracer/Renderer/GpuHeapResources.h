@@ -7,7 +7,7 @@ namespace MetalCppPathTracer {
 
 class GpuHeapResources {
 public:
-  enum class BufferKind { Vertex, Index };
+  enum class BufferKind { Vertex, Index, BoundingBox };
 
   GpuHeapResources() = default;
   ~GpuHeapResources();
@@ -42,6 +42,11 @@ public:
       MTL::ResourceOptions options = MTL::ResourceStorageModePrivate,
       MTL::ResourceUsage usage =
           static_cast<MTL::ResourceUsage>(MTL::ResourceUsageRead));
+  MTL::Buffer *ensureBoundingBoxBuffer(
+      NS::UInteger requiredBytes, const char *label = nullptr,
+      MTL::ResourceOptions options = MTL::ResourceStorageModePrivate,
+      MTL::ResourceUsage usage =
+          static_cast<MTL::ResourceUsage>(MTL::ResourceUsageRead));
   MTL::AccelerationStructure *ensureAccelerationStructure(
       NS::UInteger requiredSize, const char *label = nullptr);
 
@@ -50,8 +55,10 @@ public:
 
   MTL::Buffer *vertexBuffer() const { return _vertex.buffer; }
   MTL::Buffer *indexBuffer() const { return _index.buffer; }
+  MTL::Buffer *boundingBoxBuffer() const { return _boundingBox.buffer; }
   NS::UInteger vertexCapacity() const { return _vertex.capacity; }
   NS::UInteger indexCapacity() const { return _index.capacity; }
+  NS::UInteger boundingBoxCapacity() const { return _boundingBox.capacity; }
   MTL::AccelerationStructure *accelerationStructure() const {
     return _accelerationStructure;
   }
@@ -78,6 +85,7 @@ private:
   MTL::Heap *_heap = nullptr;
   BufferInfo _vertex;
   BufferInfo _index;
+  BufferInfo _boundingBox;
   MTL::AccelerationStructure *_accelerationStructure = nullptr;
   NS::UInteger _heapSize = 0;
   NS::UInteger _defaultHeapSize = 0;
