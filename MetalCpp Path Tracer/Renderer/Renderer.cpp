@@ -989,7 +989,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
                 ->init()
           : nullptr;
   if (boundingDesc) {
-    boundingDesc->setAllowsDuplicateIntersectionFunctionInvocation(true);
+    boundingDesc->setAllowDuplicateIntersectionFunctionInvocation(true);
   }
 
   std::string blasLabel = "ObjectBLAS_" + std::to_string(objectIndex);
