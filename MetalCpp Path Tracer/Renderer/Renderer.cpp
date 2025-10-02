@@ -887,41 +887,72 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
 
   std::vector<simd::float3> vertices;
   std::vector<uint32_t> indices;
-  std::vector<MTL::AxisAlignedBoundingBox> boundingBoxes;
+  std::vector<MTL::AxisAlignedBoundingBox> proceduralBoundingBoxes;
   vertices.reserve((last - first) * 3);
   indices.reserve((last - first) * 3);
-  boundingBoxes.reserve((last - first));
+  proceduralBoundingBoxes.reserve((last - first));
 
   for (size_t prim = first; prim < last; ++prim) {
     if (prim >= _allPrimitives.size())
       break;
     const Primitive &p = _allPrimitives[prim];
-    if (p.type != PrimitiveType::Triangle)
-      continue;
 
-    uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
-    simd::float3 v0 = p.triangle.v0;
-    simd::float3 v1 = p.triangle.v1;
-    simd::float3 v2 = p.triangle.v2;
+    auto appendProceduralBounds =
+        [&](const simd::float3 &boundsMin, const simd::float3 &boundsMax) {
+          MTL::AxisAlignedBoundingBox bbox{};
+          bbox.min = MTL::PackedFloat3(boundsMin.x, boundsMin.y, boundsMin.z);
+          bbox.max = MTL::PackedFloat3(boundsMax.x, boundsMax.y, boundsMax.z);
+          proceduralBoundingBoxes.push_back(bbox);
+        };
 
-    vertices.push_back(v0);
-    vertices.push_back(v1);
-    vertices.push_back(v2);
-    indices.push_back(baseIndex + 0);
-    indices.push_back(baseIndex + 1);
-    indices.push_back(baseIndex + 2);
+    switch (p.type) {
+    case PrimitiveType::Triangle: {
+      uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
+      simd::float3 v0 = p.triangle.v0;
+      simd::float3 v1 = p.triangle.v1;
+      simd::float3 v2 = p.triangle.v2;
 
-    simd::float3 triMin = simd::fmin(simd::fmin(v0, v1), v2);
-    simd::float3 triMax = simd::fmax(simd::fmax(v0, v1), v2);
-    MTL::AxisAlignedBoundingBox bbox{};
-    bbox.min = MTL::PackedFloat3(triMin.x, triMin.y, triMin.z);
-    bbox.max = MTL::PackedFloat3(triMax.x, triMax.y, triMax.z);
-    boundingBoxes.push_back(bbox);
+      vertices.push_back(v0);
+      vertices.push_back(v1);
+      vertices.push_back(v2);
+      indices.push_back(baseIndex + 0);
+      indices.push_back(baseIndex + 1);
+      indices.push_back(baseIndex + 2);
+
+      // Axis-aligned bounds record for triangle primitives.
+      simd::float3 triMin = simd::fmin(simd::fmin(v0, v1), v2);
+      simd::float3 triMax = simd::fmax(simd::fmax(v0, v1), v2);
+      (void)triMin;
+      (void)triMax;
+      break;
+    }
+    case PrimitiveType::Sphere: {
+      simd::float3 center = p.sphere.center;
+      simd::float3 extent(p.sphere.radius, p.sphere.radius, p.sphere.radius);
+      appendProceduralBounds(center - extent, center + extent);
+      break;
+    }
+    case PrimitiveType::Rectangle: {
+      simd::float3 center = p.rectangle.center;
+      simd::float3 u = p.rectangle.u;
+      simd::float3 v = p.rectangle.v;
+      simd::float3 corner0 = center + u + v;
+      simd::float3 corner1 = center + u - v;
+      simd::float3 corner2 = center - u + v;
+      simd::float3 corner3 = center - u - v;
+      simd::float3 boundsMin =
+          simd::fmin(simd::fmin(corner0, corner1), simd::fmin(corner2, corner3));
+      simd::float3 boundsMax =
+          simd::fmax(simd::fmax(corner0, corner1), simd::fmax(corner2, corner3));
+      appendProceduralBounds(boundsMin, boundsMax);
+      break;
+    }
+    }
   }
 
   size_t triangleCount = indices.size() / 3;
-
-  if (triangleCount == 0) {
+  size_t proceduralCount = proceduralBoundingBoxes.size();
+  if (triangleCount == 0 && proceduralCount == 0) {
     resident.resources.ensureAccelerationStructure(0, nullptr);
     resident.resources.ensureBoundingBoxBuffer(0, nullptr);
     resident.byteSize = 0;
@@ -943,11 +974,23 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   NS::UInteger indexBytes =
       static_cast<NS::UInteger>(indices.size() * sizeof(uint32_t));
   NS::UInteger boundingBoxBytes = static_cast<NS::UInteger>(
-      boundingBoxes.size() * sizeof(MTL::AxisAlignedBoundingBox));
-
+      proceduralBoundingBoxes.size() * sizeof(MTL::AxisAlignedBoundingBox));
   MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc =
-      MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
-  geometryDesc->setOpaque(true);
+      triangleCount > 0
+          ? MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()
+                ->init()
+          : nullptr;
+  if (geometryDesc)
+    geometryDesc->setOpaque(true);
+
+  MTL::AccelerationStructureBoundingBoxGeometryDescriptor *boundingDesc =
+      proceduralCount > 0
+          ? MTL::AccelerationStructureBoundingBoxGeometryDescriptor::alloc()
+                ->init()
+          : nullptr;
+  if (boundingDesc) {
+    boundingDesc->setAllowsDuplicateIntersectionFunctionInvocation(true);
+  }
 
   std::string blasLabel = "ObjectBLAS_" + std::to_string(objectIndex);
   std::string vertexLabel = "ObjectVertices_" + std::to_string(objectIndex);
@@ -955,9 +998,31 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   std::string boundingLabel =
       "ObjectBounds_" + std::to_string(objectIndex);
 
-  NS::Object *descriptorObjects[] = {geometryDesc};
+  auto releaseGeometryDescriptors = [&]() {
+    if (geometryDesc) {
+      geometryDesc->release();
+      geometryDesc = nullptr;
+    }
+    if (boundingDesc) {
+      boundingDesc->release();
+      boundingDesc = nullptr;
+    }
+  };
+
+  std::vector<NS::Object *> descriptorObjects;
+  if (geometryDesc)
+    descriptorObjects.push_back(geometryDesc);
+  if (boundingDesc)
+    descriptorObjects.push_back(boundingDesc);
+
+  if (descriptorObjects.empty()) {
+    releaseGeometryDescriptors();
+    cleanupPool();
+    return false;
+  }
+
   NS::Array *geometryArray =
-      NS::Array::alloc()->init(descriptorObjects, 1);
+      NS::Array::alloc()->init(descriptorObjects.data(), descriptorObjects.size());
 
   MTL::PrimitiveAccelerationStructureDescriptor *accelDesc =
       MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
@@ -982,36 +1047,66 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     if (initialHeapBytes > 0)
       resident.resources.ensureHeapCapacity(initialHeapBytes);
 
-    vertexBuffer = resident.resources.ensureVertexBuffer(vertexBytes,
-                                                        vertexLabel.c_str());
-    indexBuffer = resident.resources.ensureIndexBuffer(indexBytes,
-                                                      indexLabel.c_str());
-    boundingBoxBuffer = resident.resources.ensureBoundingBoxBuffer(
-        boundingBoxBytes, boundingLabel.c_str());
-    if (boundingBoxBytes > 0 && !boundingBoxBuffer)
-      return false;
-    return vertexBuffer && indexBuffer;
+    if (vertexBytes > 0) {
+      vertexBuffer = resident.resources.ensureVertexBuffer(
+          vertexBytes, vertexLabel.c_str());
+      if (!vertexBuffer)
+        return false;
+    } else {
+      vertexBuffer = nullptr;
+    }
+
+    if (indexBytes > 0) {
+      indexBuffer = resident.resources.ensureIndexBuffer(indexBytes,
+                                                        indexLabel.c_str());
+      if (!indexBuffer)
+        return false;
+    } else {
+      indexBuffer = nullptr;
+    }
+
+    if (boundingBoxBytes > 0) {
+      boundingBoxBuffer = resident.resources.ensureBoundingBoxBuffer(
+          boundingBoxBytes, boundingLabel.c_str());
+      if (!boundingBoxBuffer)
+        return false;
+    } else {
+      boundingBoxBuffer = nullptr;
+      resident.resources.ensureBoundingBoxBuffer(0, nullptr);
+    }
+
+    return true;
   };
 
   if (!requestGeometryBuffers()) {
     if (geometryArray)
       geometryArray->release();
-    geometryDesc->release();
+    releaseGeometryDescriptors();
     accelDesc->release();
     cleanupPool();
     return false;
   }
 
-  auto configureGeometryDescriptor = [&]() {
-    geometryDesc->setVertexBuffer(vertexBuffer);
-    geometryDesc->setVertexBufferOffset(0);
-    geometryDesc->setVertexStride(sizeof(simd::float3));
-    geometryDesc->setVertexFormat(
-        MTL::AttributeFormat::AttributeFormatFloat3);
-    geometryDesc->setIndexBuffer(indexBuffer);
-    geometryDesc->setIndexBufferOffset(0);
-    geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
-    geometryDesc->setTriangleCount(triangleCount);
+  auto configureGeometryDescriptors = [&]() {
+    if (geometryDesc) {
+      geometryDesc->setVertexBuffer(vertexBuffer);
+      geometryDesc->setVertexBufferOffset(0);
+      geometryDesc->setVertexStride(sizeof(simd::float3));
+      geometryDesc->setVertexFormat(
+          MTL::AttributeFormat::AttributeFormatFloat3);
+      geometryDesc->setIndexBuffer(indexBuffer);
+      geometryDesc->setIndexBufferOffset(0);
+      geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
+      geometryDesc->setTriangleCount(triangleCount);
+    }
+    if (boundingDesc) {
+      boundingDesc->setBoundingBoxBuffer(boundingBoxBuffer);
+      boundingDesc->setBoundingBoxBufferOffset(0);
+      boundingDesc->setBoundingBoxStride(
+          sizeof(MTL::AxisAlignedBoundingBox));
+      boundingDesc->setBoundingBoxCount(
+          static_cast<NS::UInteger>(proceduralCount));
+    }
   };
 
   NS::UInteger totalHeapBytes = 0;
@@ -1020,7 +1115,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   MTL::SizeAndAlign heapAlign{};
 
   while (true) {
-    configureGeometryDescriptor();
+    configureGeometryDescriptors();
 
     sizes = _pDevice->accelerationStructureSizes(accelDesc);
     heapAlign = _pDevice->heapAccelerationStructureSizeAndAlign(accelDesc);
@@ -1041,7 +1136,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       if (!requestGeometryBuffers()) {
         if (geometryArray)
           geometryArray->release();
-        geometryDesc->release();
+        releaseGeometryDescriptors();
         accelDesc->release();
         cleanupPool();
         return false;
@@ -1053,7 +1148,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     break;
   }
 
-  configureGeometryDescriptor();
+  configureGeometryDescriptors();
 
   MTL::AccelerationStructure *accelerationStructure =
       resident.resources.ensureAccelerationStructure(
@@ -1062,7 +1157,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   if (!accelerationStructure) {
     if (geometryArray)
       geometryArray->release();
-    geometryDesc->release();
+    releaseGeometryDescriptors();
     accelDesc->release();
     cleanupPool();
     return false;
@@ -1091,7 +1186,8 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     boundingBoxStaging = _pDevice->newBuffer(boundingBoxBytes,
                                              MTL::ResourceStorageModeShared);
     if (boundingBoxStaging) {
-      std::memcpy(boundingBoxStaging->contents(), boundingBoxes.data(),
+      std::memcpy(boundingBoxStaging->contents(),
+                  proceduralBoundingBoxes.data(),
                   boundingBoxBytes);
       markBufferModified(boundingBoxStaging,
                          NS::Range::Make(0, boundingBoxBytes));
@@ -1109,7 +1205,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       boundingBoxStaging->release();
     if (geometryArray)
       geometryArray->release();
-    geometryDesc->release();
+    releaseGeometryDescriptors();
     accelDesc->release();
     cleanupPool();
     return false;
@@ -1133,7 +1229,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       boundingBoxStaging->release();
     if (geometryArray)
       geometryArray->release();
-    geometryDesc->release();
+    releaseGeometryDescriptors();
     accelDesc->release();
     cleanupPool();
     return false;
@@ -1173,7 +1269,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       boundingBoxStaging->release();
     if (geometryArray)
       geometryArray->release();
-    geometryDesc->release();
+    releaseGeometryDescriptors();
     accelDesc->release();
     cleanupPool();
     return false;
@@ -1196,7 +1292,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     boundingBoxStaging->release();
   if (geometryArray)
     geometryArray->release();
-  geometryDesc->release();
+  releaseGeometryDescriptors();
   accelDesc->release();
 
   resident.byteSize = totalHeapBytes;
@@ -1208,7 +1304,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   resident.boundingBoxBufferCapacity =
       resident.resources.boundingBoxCapacity();
   resident.boundingBoxBufferOffset = 0;
-  resident.boundingBoxCount = boundingBoxes.size();
+  resident.boundingBoxCount = proceduralBoundingBoxes.size();
   resident.geometryValid = true;
 
   cleanupPool();
