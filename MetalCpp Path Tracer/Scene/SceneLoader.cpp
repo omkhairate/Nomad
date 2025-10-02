@@ -3,6 +3,7 @@
 #include <tinyxml2.h>
 #include <simd/simd.h>
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <cstdio>
 #include <fstream>
@@ -330,10 +331,130 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
 
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
         std::string tag = e->Name();
-        if (tag == "Sphere" || tag == "Rectangle") {
-            std::fprintf(stderr,
-                         "Warning: primitive type '%s' is no longer supported and will be ignored.\n",
-                         tag.c_str());
+        if (tag == "Sphere") {
+            simd::float3 center = parseVec3(e->Attribute("position"));
+            float radius = e->FloatAttribute("radius", 1.0f);
+
+            size_t stacks = static_cast<size_t>(e->Unsigned64Attribute("stacks", 32));
+            size_t slices = static_cast<size_t>(e->Unsigned64Attribute("slices", 64));
+            stacks = std::max<size_t>(3, stacks);
+            slices = std::max<size_t>(3, slices);
+
+            Material m{};
+            m.albedo = parseVec3(e->Attribute("albedo"));
+            m.emissionColor = parseVec3(e->Attribute("emission"));
+            m.materialType = e->FloatAttribute("materialType", 0);
+            m.emissionPower = e->FloatAttribute("emissionPower", 0);
+
+            size_t clusterMaxTriangles = static_cast<size_t>(
+                e->Unsigned64Attribute("clusterMaxTriangles", 0));
+            float clusterMaxExtent =
+                e->FloatAttribute("clusterMaxExtent", 0.0f);
+
+            const float pi = 3.14159265358979323846f;
+            const float twoPi = 2.0f * pi;
+
+            std::vector<simd::float3> vertices((stacks + 1) * (slices + 1));
+            for (size_t stack = 0; stack <= stacks; ++stack) {
+                float v = static_cast<float>(stack) / static_cast<float>(stacks);
+                float theta = v * pi;
+                float sinTheta = std::sin(theta);
+                float cosTheta = std::cos(theta);
+
+                for (size_t slice = 0; slice <= slices; ++slice) {
+                    float u = static_cast<float>(slice) / static_cast<float>(slices);
+                    float phi = u * twoPi;
+                    float sinPhi = std::sin(phi);
+                    float cosPhi = std::cos(phi);
+
+                    simd::float3 dir = simd::make_float3(
+                        sinTheta * cosPhi,
+                        cosTheta,
+                        sinTheta * sinPhi);
+                    vertices[stack * (slices + 1) + slice] = center + radius * dir;
+                }
+            }
+
+            std::vector<Primitive> spherePrimitives;
+            spherePrimitives.reserve(stacks * slices * 2);
+
+            auto emitTriangle = [&](const simd::float3& a, const simd::float3& b,
+                                    const simd::float3& c) {
+                Primitive p{};
+                p.type = PrimitiveType::Triangle;
+                p.triangle.v0 = a;
+                p.triangle.v1 = b;
+                p.triangle.v2 = c;
+                p.material = m;
+                spherePrimitives.push_back(p);
+            };
+
+            for (size_t stack = 0; stack < stacks; ++stack) {
+                for (size_t slice = 0; slice < slices; ++slice) {
+                    size_t i0 = stack * (slices + 1) + slice;
+                    size_t i1 = i0 + 1;
+                    size_t i2 = i0 + (slices + 1);
+                    size_t i3 = i2 + 1;
+
+                    const simd::float3& v0 = vertices[i0];
+                    const simd::float3& v1 = vertices[i1];
+                    const simd::float3& v2 = vertices[i2];
+                    const simd::float3& v3 = vertices[i3];
+
+                    if (stack > 0) {
+                        emitTriangle(v0, v2, v1);
+                    }
+                    if (stack < stacks - 1) {
+                        emitTriangle(v1, v2, v3);
+                    }
+                }
+            }
+
+            EmitMeshPartitions(scene, spherePrimitives, clusterMaxTriangles,
+                               clusterMaxExtent);
+        }
+        else if (tag == "Rectangle") {
+            simd::float3 center = parseVec3(e->Attribute("position"));
+            simd::float3 u = parseVec3(e->Attribute("u"));
+            simd::float3 v = parseVec3(e->Attribute("v"));
+
+            Material m{};
+            m.albedo = parseVec3(e->Attribute("albedo"));
+            m.emissionColor = parseVec3(e->Attribute("emission"));
+            m.materialType = e->FloatAttribute("materialType", 0);
+            m.emissionPower = e->FloatAttribute("emissionPower", 0);
+
+            size_t clusterMaxTriangles = static_cast<size_t>(
+                e->Unsigned64Attribute("clusterMaxTriangles", 0));
+            float clusterMaxExtent =
+                e->FloatAttribute("clusterMaxExtent", 0.0f);
+
+            simd::float3 p0 = center - u - v;
+            simd::float3 p1 = center + u - v;
+            simd::float3 p2 = center + u + v;
+            simd::float3 p3 = center - u + v;
+
+            std::vector<Primitive> rectPrimitives;
+            rectPrimitives.reserve(2);
+
+            Primitive t0{};
+            t0.type = PrimitiveType::Triangle;
+            t0.triangle.v0 = p0;
+            t0.triangle.v1 = p1;
+            t0.triangle.v2 = p2;
+            t0.material = m;
+            rectPrimitives.push_back(t0);
+
+            Primitive t1{};
+            t1.type = PrimitiveType::Triangle;
+            t1.triangle.v0 = p0;
+            t1.triangle.v1 = p2;
+            t1.triangle.v2 = p3;
+            t1.material = m;
+            rectPrimitives.push_back(t1);
+
+            EmitMeshPartitions(scene, rectPrimitives, clusterMaxTriangles,
+                               clusterMaxExtent);
         }
         else if (tag == "Mesh") {
             // Build full path to mesh file relative to the scene's directory
