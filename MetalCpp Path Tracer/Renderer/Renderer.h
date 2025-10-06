@@ -116,6 +116,7 @@ private:
   bool updateEnergyImportance(bool forceAllToggles);
   bool updateRayHitBudget(bool forceAllToggles);
   bool updateScreenSpaceFootprint(bool forceAllToggles);
+  bool updateAlwaysResident(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);

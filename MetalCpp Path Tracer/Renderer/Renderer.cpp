@@ -676,6 +676,9 @@ void Renderer::updateVisibleScene() {
   case ResidencyStrategy::ScreenSpaceFootprint:
     strategyName = "Screen-space footprint";
     break;
+  case ResidencyStrategy::AlwaysResident:
+    strategyName = "Always resident";
+    break;
   case ResidencyStrategy::DistanceLOD:
   default:
     strategyName = "Distance-based LOD";
@@ -3166,6 +3169,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
     break;
+  case ResidencyStrategy::AlwaysResident:
+    changed = updateAlwaysResident(forceAllToggles);
+    break;
   case ResidencyStrategy::DistanceLOD:
   default:
     changed = updateLODByDistance(forceAllToggles);
@@ -3174,6 +3180,51 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
 
   if (changed || forceFullRebuild)
     flushResidencyChanges(forceFullRebuild);
+}
+
+bool Renderer::updateAlwaysResident(bool /*forceAllToggles*/) {
+  bool changed = false;
+
+  for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size(); ++objectIndex) {
+    size_t toggled = setObjectActive(objectIndex, true);
+    if (toggled > 0)
+      changed = true;
+  }
+
+  for (size_t primIndex = 0; primIndex < _activePrimitive.size(); ++primIndex) {
+    if (setPrimitiveActive(primIndex, true))
+      changed = true;
+  }
+
+  bool anyInactivePrimitive =
+      std::any_of(_activePrimitive.begin(), _activePrimitive.end(),
+                  [](bool active) { return !active; });
+  bool anyInactiveObject = false;
+  for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size(); ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    if (obj.primitiveCount == 0)
+      continue;
+    bool active =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    if (!active) {
+      anyInactiveObject = true;
+      break;
+    }
+  }
+
+  if (anyInactivePrimitive || anyInactiveObject || !_recentlyDeactivated.empty()) {
+    printf("Always-resident strategy detected attempted eviction (%zu primitives pending).\n",
+           _recentlyDeactivated.size());
+  }
+
+  assert(!anyInactivePrimitive &&
+         "Always-resident strategy should keep all primitives active");
+  assert(!anyInactiveObject &&
+         "Always-resident strategy should keep populated objects active");
+  assert(_recentlyDeactivated.empty() &&
+         "Always-resident strategy should not queue primitive deactivations");
+
+  return changed;
 }
 
 bool Renderer::updateLODByDistance(bool forceAllToggles) {
