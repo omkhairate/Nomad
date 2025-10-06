@@ -135,8 +135,14 @@ static void PartitionTrianglesRecursive(std::vector<Primitive>& prims,
 }
 
 static void EmitMeshPartitions(Scene* scene, std::vector<Primitive>& prims,
-                               size_t maxTriangles, float maxExtent) {
+                               size_t maxTriangles, float maxExtent,
+                               bool disablePartitioning) {
     if (prims.empty()) {
+        return;
+    }
+
+    if (disablePartitioning) {
+        scene->addObject(prims);
         return;
     }
 
@@ -325,6 +331,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
 
     scene->setResidencyParameters(params);
 
+    bool disableMeshPartitioning =
+        root->BoolAttribute("disableMeshPartitioning", false);
+
     bool startCompacted = root->BoolAttribute("startCompacted", scene->getStartCompacted());
     scene->setStartCompacted(startCompacted);
 
@@ -414,7 +423,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             }
 
             EmitMeshPartitions(scene, spherePrimitives, clusterMaxTriangles,
-                               clusterMaxExtent);
+                               clusterMaxExtent, disableMeshPartitioning);
         }
         else if (tag == "Rectangle") {
             simd::float3 center = parseVec3(e->Attribute("position"));
@@ -457,7 +466,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             rectPrimitives.push_back(t1);
 
             EmitMeshPartitions(scene, rectPrimitives, clusterMaxTriangles,
-                               clusterMaxExtent);
+                               clusterMaxExtent, disableMeshPartitioning);
         }
         else if (tag == "Mesh") {
             // Build full path to mesh file relative to the scene's directory
@@ -502,7 +511,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 meshPrimitives.push_back(p);
             }
             EmitMeshPartitions(scene, meshPrimitives, clusterMaxTriangles,
-                               clusterMaxExtent);
+                               clusterMaxExtent, disableMeshPartitioning);
         }
         else if (tag == "CameraPath") {
             for (auto* kf = e->FirstChildElement("Keyframe"); kf; kf = kf->NextSiblingElement("Keyframe")) {
