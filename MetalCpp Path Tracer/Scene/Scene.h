@@ -14,6 +14,7 @@ enum class ResidencyStrategy {
   EnergyImportance = 1,
   RayHitBudget = 2,
   ScreenSpaceFootprint = 3,
+  FullScene = 4,
 };
 
 struct SceneObject {
