@@ -3,6 +3,7 @@
 
 #include <Metal/Metal.hpp>
 #include <MetalKit/MetalKit.hpp>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <simd/simd.h>
@@ -101,6 +102,7 @@ public:
   };
 
 private:
+  static constexpr size_t kMaxFramesInFlight = 3;
   void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                             size_t &currentCapacity,
@@ -131,6 +133,9 @@ private:
       const std::vector<MTL::AccelerationStructure *> &structures);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
+  UniformsData &currentFrameUniforms();
+  const UniformsData &currentFrameUniforms() const;
+  void uploadCurrentFrameUniforms();
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -255,6 +260,7 @@ private:
   size_t _materialBufferCapacity = 0;
   size_t _triangleVertexBufferCapacity = 0;
   size_t _triangleIndexBufferCapacity = 0;
+  size_t _uniformBufferCapacity = 0;
   size_t _bvhBufferCapacity = 0;
   size_t _tlasBufferCapacity = 0;
   size_t _primitiveIndexBufferCapacity = 0;
@@ -285,6 +291,13 @@ private:
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
+
+  size_t _frameCounter = 0;
+  size_t _currentFrameSlot = 0;
+  size_t _uniformBufferStride = 0;
+  size_t _uniformBufferOffset = 0;
+  std::array<MTL::CommandBuffer *, kMaxFramesInFlight> _inFlightCommandBuffers{};
+  std::array<UniformsData, kMaxFramesInFlight> _frameUniformData{};
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
