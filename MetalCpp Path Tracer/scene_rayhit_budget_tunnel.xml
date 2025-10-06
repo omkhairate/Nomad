@@ -1,0 +1,54 @@
+<Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="rayHitBudget"
+       textureResidencyMemoryCapMB="16"
+       rayHitTargetFraction="0.28" rayHitMinActive="140" rayHitToggleBudget="900"
+       rayHitCooldown="12" rayHitDecay="0.82">
+    <CameraPath>
+        <!-- March through a tunnel; occlusion spikes cause hit count drops that should free residency -->
+        <Keyframe frame="0" position="0,6,40" lookAt="0,5,0" />
+        <Keyframe frame="50" position="0,6,10" lookAt="0,5,-35" />
+        <Keyframe frame="120" position="0,6,-30" lookAt="0,5,-80" />
+    </CameraPath>
+
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.65,0.65,0.65" emission="0,0,0"
+            materialType="0" emissionPower="0" />
+
+    <!-- Tall corridor walls create strong visibility drops for downstream geometry -->
+    <Rectangle position="-18,12,-10" u="0,0,50" v="0,24,0" albedo="0.55,0.55,0.58"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="18,12,-10" u="0,0,50" v="0,24,0" albedo="0.55,0.58,0.55"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="0,24,-10" u="18,0,0" v="0,0,50" albedo="0.5,0.5,0.55"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Rectangle position="0,6,-60" u="18,0,0" v="0,12,0" albedo="1.0,1.0,1.0"
+               emission="0.9,0.9,0.85" materialType="-1" emissionPower="18" />
+
+    <!-- Dense mesh banks provide the heavy acceleration structure load -->
+    <Mesh file="assets/bunny.obj" position="-10,0,5" scale="7.5"
+          clusterMaxTriangles="1152" clusterMaxExtent="28"
+          albedo="0.7,0.65,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="10,0,5" scale="7.5"
+          clusterMaxTriangles="1152" clusterMaxExtent="28"
+          albedo="0.6,0.7,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="-12,0,-15" scale="9.0"
+          clusterMaxTriangles="1152" clusterMaxExtent="28"
+          albedo="0.68,0.63,0.58" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="12,0,-15" scale="9.0"
+          clusterMaxTriangles="1152" clusterMaxExtent="28"
+          albedo="0.58,0.68,0.63" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="-14,0,-40" scale="10.5"
+          clusterMaxTriangles="1152" clusterMaxExtent="28"
+          albedo="0.65,0.6,0.62" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="14,0,-40" scale="10.5"
+          clusterMaxTriangles="1152" clusterMaxExtent="28"
+          albedo="0.62,0.6,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="-16,0,-70" scale="11.5"
+          clusterMaxTriangles="1152" clusterMaxExtent="28"
+          albedo="0.6,0.62,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="16,0,-70" scale="11.5"
+          clusterMaxTriangles="1152" clusterMaxExtent="28"
+          albedo="0.65,0.6,0.62" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
