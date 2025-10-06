@@ -3014,7 +3014,6 @@ void Renderer::updateUniforms() {
   u.lightCount = static_cast<uint32_t>(_lightCount);
   u.lightTotalWeight = _lightTotalWeight;
 
-  uploadCurrentFrameUniforms();
 }
 
 void Renderer::draw(MTK::View *pView) {
@@ -3022,14 +3021,10 @@ void Renderer::draw(MTK::View *pView) {
   size_t previousSlot = _currentFrameSlot;
   _currentFrameSlot = frameSlot;
 
-  if (frameSlot < _inFlightCommandBuffers.size()) {
-    MTL::CommandBuffer *pending = _inFlightCommandBuffers[frameSlot];
-    if (pending) {
-      pending->waitUntilCompleted();
-      _inFlightCommandBuffers[frameSlot] = nullptr;
-      pending->release();
-    }
-  }
+  MTL::CommandBuffer *pending =
+      (frameSlot < _inFlightCommandBuffers.size())
+          ? _inFlightCommandBuffers[frameSlot]
+          : nullptr;
 
   if (_uniformBufferStride == 0 && _pUniformsBuffer)
     _uniformBufferStride = alignTo(sizeof(UniformsData), 256);
@@ -3043,6 +3038,17 @@ void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
   updateResidency();
   updateUniforms();
+
+  if (pending) {
+    pending->waitUntilCompleted();
+    if (frameSlot < _inFlightCommandBuffers.size() &&
+        _inFlightCommandBuffers[frameSlot] == pending)
+      _inFlightCommandBuffers[frameSlot] = nullptr;
+    pending->release();
+    pending = nullptr;
+  }
+
+  uploadCurrentFrameUniforms();
   beginFrameMetrics();
   std::swap(_accumulationSlots[0], _accumulationSlots[1]);
 
