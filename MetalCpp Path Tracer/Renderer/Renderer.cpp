@@ -431,6 +431,14 @@ Renderer::Renderer(MTL::Device *pDevice)
 }
 
 Renderer::~Renderer() {
+  for (MTL::CommandBuffer *&cmd : _inFlightCommandBuffers) {
+    if (cmd) {
+      cmd->waitUntilCompleted();
+      cmd->release();
+      cmd = nullptr;
+    }
+  }
+
   if (_pPrimitiveBuffer)
     _pPrimitiveBuffer->release();
   if (_pMaterialBuffer)
@@ -827,16 +835,14 @@ void Renderer::recalculateViewport() {
   simd::float3 rayDx = viewportU / Camera::screenSize.x;
   simd::float3 rayDy = viewportV / Camera::screenSize.y;
 
-  UniformsData *uData = (UniformsData *)_pUniformsBuffer->contents();
-  uData->cameraPosition = Camera::position;
-  uData->viewportU = viewportU;
-  uData->viewportV = viewportV;
-  uData->firstPixelPosition = firstPixelPosition;
-  uData->rayDx = rayDx;
-  uData->rayDy = rayDy;
-  uData->screenSize = Camera::screenSize;
-
-  markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
+  UniformsData &u = currentFrameUniforms();
+  u.cameraPosition = Camera::position;
+  u.viewportU = viewportU;
+  u.viewportV = viewportV;
+  u.firstPixelPosition = firstPixelPosition;
+  u.rayDx = rayDx;
+  u.rayDy = rayDy;
+  u.screenSize = Camera::screenSize;
 
 }
 
@@ -1574,13 +1580,19 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   }
 
   const size_t uniformsDataSize = sizeof(UniformsData);
-  if (!_pUniformsBuffer) {
-    _pUniformsBuffer =
-        _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
-    if (_pUniformsBuffer)
-      markBufferModified(_pUniformsBuffer,
-                         NS::Range::Make(0, uniformsDataSize));
+  if (_uniformBufferStride == 0)
+    _uniformBufferStride = alignTo(uniformsDataSize, 256);
+
+  size_t uniformBufferSize =
+      std::max<size_t>(_uniformBufferStride * kMaxFramesInFlight, uniformsDataSize);
+  ensureBufferCapacity(_pUniformsBuffer, uniformBufferSize, _uniformBufferCapacity);
+  if (_pUniformsBuffer) {
+    if (void *contents = _pUniformsBuffer->contents())
+      std::memset(contents, 0, uniformBufferSize);
+    markBufferModified(_pUniformsBuffer,
+                       NS::Range::Make(0, uniformBufferSize));
   }
+  _frameUniformData.fill(UniformsData{});
 
   if (_primitiveToResidentIndex.size() < totalPrimitiveCount)
     _primitiveToResidentIndex.resize(totalPrimitiveCount, -1);
@@ -2829,6 +2841,32 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   return allResident;
 }
 
+UniformsData &Renderer::currentFrameUniforms() {
+  size_t slot = std::min(_currentFrameSlot, kMaxFramesInFlight - 1);
+  return _frameUniformData[slot];
+}
+
+const UniformsData &Renderer::currentFrameUniforms() const {
+  size_t slot = std::min(_currentFrameSlot, kMaxFramesInFlight - 1);
+  return _frameUniformData[slot];
+}
+
+void Renderer::uploadCurrentFrameUniforms() {
+  size_t slot = std::min(_currentFrameSlot, kMaxFramesInFlight - 1);
+  if (!_pUniformsBuffer || _uniformBufferStride == 0)
+    return;
+
+  uint8_t *base = static_cast<uint8_t *>(_pUniformsBuffer->contents());
+  if (!base)
+    return;
+
+  std::memcpy(base + _uniformBufferOffset, &_frameUniformData[slot],
+              sizeof(UniformsData));
+  markBufferModified(
+      _pUniformsBuffer,
+      NS::Range::Make(_uniformBufferOffset, sizeof(UniformsData)));
+}
+
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
   if (!_pAdaptiveSamplingPSO || !pCmd)
     return;
@@ -2849,7 +2887,7 @@ void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
   pCompute->setComputePipelineState(_pAdaptiveSamplingPSO);
   pCompute->setTexture(accumulation, 0);
   pCompute->setTexture(importance, 1);
-  pCompute->setBuffer(_pUniformsBuffer, 0, 0);
+  pCompute->setBuffer(_pUniformsBuffer, _uniformBufferOffset, 0);
 
   const NS::UInteger threadWidth = 8;
   const NS::UInteger threadHeight = 8;
@@ -2915,7 +2953,8 @@ bool Renderer::updateCamera() {
 }
 
 void Renderer::updateUniforms() {
-  UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
+  UniformsData &u = currentFrameUniforms();
+  u.primitiveIndex = -1;
 
   bool cameraChanged = updateCamera();
   if (cameraChanged)
@@ -2975,10 +3014,32 @@ void Renderer::updateUniforms() {
   u.lightCount = static_cast<uint32_t>(_lightCount);
   u.lightTotalWeight = _lightTotalWeight;
 
-  markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
+  uploadCurrentFrameUniforms();
 }
 
 void Renderer::draw(MTK::View *pView) {
+  size_t frameSlot = (_frameCounter++) % kMaxFramesInFlight;
+  size_t previousSlot = _currentFrameSlot;
+  _currentFrameSlot = frameSlot;
+
+  if (frameSlot < _inFlightCommandBuffers.size()) {
+    MTL::CommandBuffer *pending = _inFlightCommandBuffers[frameSlot];
+    if (pending) {
+      pending->waitUntilCompleted();
+      _inFlightCommandBuffers[frameSlot] = nullptr;
+      pending->release();
+    }
+  }
+
+  if (_uniformBufferStride == 0 && _pUniformsBuffer)
+    _uniformBufferStride = alignTo(sizeof(UniformsData), 256);
+
+  _uniformBufferOffset =
+      (_uniformBufferStride > 0) ? _uniformBufferStride * frameSlot : 0;
+
+  if (_frameCounter > 1 && previousSlot != _currentFrameSlot)
+    _frameUniformData[_currentFrameSlot] = _frameUniformData[previousSlot];
+
   processRayHitCounters();
   updateResidency();
   updateUniforms();
@@ -2996,6 +3057,18 @@ void Renderer::draw(MTK::View *pView) {
     pPool->release();
     return;
   }
+
+  size_t capturedSlot = frameSlot;
+  pCmd->retain();
+  _inFlightCommandBuffers[capturedSlot] = pCmd;
+  pCmd->addCompletedHandler([this, capturedSlot](MTL::CommandBuffer *cmd) {
+    this->completeFrameMetrics(cmd);
+    if (capturedSlot < _inFlightCommandBuffers.size() &&
+        _inFlightCommandBuffers[capturedSlot] == cmd) {
+      _inFlightCommandBuffers[capturedSlot] = nullptr;
+      cmd->release();
+    }
+  });
 
   bool belowBudget =
       _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
@@ -3033,10 +3106,6 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
-  pCmd->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
-    this->completeFrameMetrics(cmd);
-  });
-
   if (!haveAllTextures) {
     MTL::Drawable *drawable = pView->currentDrawable();
     if (drawable)
@@ -3067,7 +3136,7 @@ void Renderer::draw(MTK::View *pView) {
                           0, 1);
       pCompute->setBuffer(_pPrimitiveBuffer, 0, 2);
       pCompute->setBuffer(_pMaterialBuffer, 0, 3);
-      pCompute->setBuffer(_pUniformsBuffer, 0, 4);
+      pCompute->setBuffer(_pUniformsBuffer, _uniformBufferOffset, 4);
       pCompute->setBuffer(_pActiveBuffer, 0, 5);
       pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
       pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
