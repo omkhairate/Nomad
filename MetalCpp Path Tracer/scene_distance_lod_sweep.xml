@@ -1,6 +1,7 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="distance"
        textureResidencyMemoryCapMB="16"
-       lodEnterDistance="55" lodExitDistance="80" residencyCooldown="0" lodToggleBudget="12000">
+       lodEnterDistance="55" lodExitDistance="115" residencyCooldown="0" lodToggleBudget="12000">
+    <!-- Keep meshes resident through the full pullback so the grid stays visible at the last keyframe -->
     <CameraPath>
         <!-- Slow dolly backwards so distant clusters can be released from memory -->
         <Keyframe frame="0" position="0,12,20" lookAt="0,5,-60" />
