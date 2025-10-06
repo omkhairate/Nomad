@@ -3195,23 +3195,9 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
     if (active)
       ++activeCount;
 
-  if (activeCount == 0 && !_allSceneObjects.empty()) {
-    // Ensure at least one nearby object remains visible to avoid a blank
-    // scene. Prefer the closest object and fall back to a primitive toggle if
-    // object activation fails for any reason.
-    size_t fallbackObject = !sortedIndices.empty() ? sortedIndices.front()
-                                                   : size_t(0);
-    bool activated = false;
-    if (fallbackObject < _allSceneObjects.size()) {
-      size_t toggled = setObjectActive(fallbackObject, true);
-      if (toggled > 0)
-        activated = true;
-    }
-    if (!activated && !_activePrimitive.empty()) {
-      if (setPrimitiveActive(0, true))
-        activated = true;
-    }
-    if (activated)
+  if (activeCount == 0 && !_activePrimitive.empty()) {
+    // Ensure at least one primitive remains visible to avoid a blank scene
+    if (setPrimitiveActive(0, true))
       changed = true;
   }
 
@@ -3308,20 +3294,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (activeCount == 0 && !_activePrimitive.empty()) {
     size_t fallback = !_energySortedIndices.empty() ? _energySortedIndices.front()
                                                     : size_t(0);
-    bool activated = false;
-    if (fallback < _primitiveToObject.size()) {
-      size_t fallbackObject = _primitiveToObject[fallback];
-      if (fallbackObject < _allSceneObjects.size()) {
-        size_t toggled = setObjectActive(fallbackObject, true);
-        if (toggled > 0)
-          activated = true;
-      }
-    }
-    if (!activated) {
-      if (setPrimitiveActive(fallback, true))
-        activated = true;
-    }
-    if (activated)
+    if (setPrimitiveActive(fallback, true))
       changed = true;
   }
 
@@ -3418,20 +3391,7 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
   if (activeCount == 0 && !_activePrimitive.empty()) {
     size_t fallback = !_rayHitSortedIndices.empty() ? _rayHitSortedIndices.front()
                                                     : size_t(0);
-    bool activated = false;
-    if (fallback < _primitiveToObject.size()) {
-      size_t fallbackObject = _primitiveToObject[fallback];
-      if (fallbackObject < _allSceneObjects.size()) {
-        size_t toggled = setObjectActive(fallbackObject, true);
-        if (toggled > 0)
-          activated = true;
-      }
-    }
-    if (!activated) {
-      if (setPrimitiveActive(fallback, true))
-        activated = true;
-    }
-    if (activated)
+    if (setPrimitiveActive(fallback, true))
       changed = true;
   }
 
@@ -3566,20 +3526,7 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     size_t fallback = !_screenCoverageSortedIndices.empty()
                           ? _screenCoverageSortedIndices.front()
                           : size_t(0);
-    bool activated = false;
-    if (fallback < _primitiveToObject.size()) {
-      size_t fallbackObject = _primitiveToObject[fallback];
-      if (fallbackObject < _allSceneObjects.size()) {
-        size_t toggled = setObjectActive(fallbackObject, true);
-        if (toggled > 0)
-          activated = true;
-      }
-    }
-    if (!activated) {
-      if (setPrimitiveActive(fallback, true))
-        activated = true;
-    }
-    if (activated)
+    if (setPrimitiveActive(fallback, true))
       changed = true;
   }
 
