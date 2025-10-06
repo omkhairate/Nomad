@@ -642,6 +642,13 @@ void Renderer::updateVisibleScene() {
   printf("Texture residency memory cap: %.1f MB\n",
          _textureResidencyMemoryCapMB);
   _residentCompacted = _pScene->getStartCompacted();
+  bool fullSceneResidency =
+      _pScene->getResidencyStrategy() == ResidencyStrategy::FullScene;
+  if (fullSceneResidency && _residentCompacted) {
+    printf("Full-scene residency requires all geometry to remain uploaded; "
+           "disabling initial compaction.\n");
+    _residentCompacted = false;
+  }
   _compactionCooldown = 0;
 
   printf("LOD activation threshold: %.1f, deactivation threshold: %.1f (cooldown "
@@ -660,6 +667,9 @@ void Renderer::updateVisibleScene() {
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
     strategyName = "Screen-space footprint";
+    break;
+  case ResidencyStrategy::FullScene:
+    strategyName = "Full-scene residency";
     break;
   case ResidencyStrategy::DistanceLOD:
   default:
@@ -1569,6 +1579,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   if (forceFullRebuild) {
     bool startCompacted = _pScene ? _pScene->getStartCompacted() : false;
+    if (_pScene &&
+        _pScene->getResidencyStrategy() == ResidencyStrategy::FullScene) {
+      startCompacted = false;
+    }
     _residentCompacted = startCompacted;
     _compactionCooldown = 0;
   }
@@ -3151,6 +3165,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
     break;
+  case ResidencyStrategy::FullScene:
+    changed = activateFullSceneResidency();
+    break;
   case ResidencyStrategy::DistanceLOD:
   default:
     changed = updateLODByDistance(forceAllToggles);
@@ -3159,6 +3176,43 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
 
   if (changed || forceFullRebuild)
     flushResidencyChanges(forceFullRebuild);
+}
+
+bool Renderer::activateFullSceneResidency() {
+  bool changed = false;
+  const size_t primCount = _activePrimitive.size();
+  for (size_t i = 0; i < primCount; ++i) {
+    if (!_activePrimitive[i]) {
+      if (setPrimitiveActive(i, true))
+        changed = true;
+    }
+  }
+
+  if (_objectActive.size() < _allSceneObjects.size())
+    _objectActive.resize(_allSceneObjects.size(), false);
+  if (_objectCooldown.size() < _allSceneObjects.size())
+    _objectCooldown.resize(_allSceneObjects.size(), 0);
+
+  for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+       ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    size_t first = obj.firstPrimitive;
+    size_t last = first + obj.primitiveCount;
+    bool anyActive = false;
+    for (size_t prim = first; prim < last && prim < primCount; ++prim) {
+      if (_activePrimitive[prim]) {
+        anyActive = true;
+        break;
+      }
+    }
+    if (_objectActive[objectIndex] != anyActive) {
+      _objectActive[objectIndex] = anyActive;
+      _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
+      changed = true;
+    }
+  }
+
+  return changed;
 }
 
 bool Renderer::updateLODByDistance(bool forceAllToggles) {

@@ -277,6 +277,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                    value == "screen_space_footprint" || value == "footprint" ||
                    value == "screenspace") {
             scene->setResidencyStrategy(ResidencyStrategy::ScreenSpaceFootprint);
+        } else if (value == "none" || value == "all" || value == "fullscene" ||
+                   value == "full_scene" || value == "full") {
+            scene->setResidencyStrategy(ResidencyStrategy::FullScene);
         } else {
             printf("Unknown residency strategy '%s', defaulting to distance LOD.\n",
                    residencyAttr);
