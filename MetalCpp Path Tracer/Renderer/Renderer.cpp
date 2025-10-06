@@ -48,24 +48,44 @@ void ResidentObjectGpuResources::transitionToStreaming(
 
 void ResidentObjectGpuResources::transitionToCold(
     BlasInstanceRecord &instanceRecord) {
-  clearPendingCommand();
-  resources.makeResourcesPurgeable();
-  resources.releaseAllAllocations();
-  byteSize = 0;
-  triangleCount = 0;
-  vertexCount = 0;
-  vertexBufferOffset = 0;
-  indexBufferOffset = 0;
+  auto finalizeCold = [this]() {
+    resources.makeResourcesPurgeable();
+    resources.releaseAllAllocations();
+    byteSize = 0;
+    triangleCount = 0;
+    vertexCount = 0;
+    vertexBufferOffset = 0;
+    indexBufferOffset = 0;
+    triangleBase = 0;
+    clearPendingCommand();
+  };
+
   geometryValid = false;
-  state = ResidencyState::Cold;
-  lastStateChange = std::chrono::steady_clock::now();
   instanceRecord.primitiveBase = 0;
   instanceRecord.primitiveIndexBase = 0;
   instanceRecord.blasRootIndex = -1;
   instanceRecord.primitiveCount = 0;
   instanceRecord.triangleBase = 0;
   instanceRecord.triangleCount = 0;
-  triangleBase = 0;
+
+  bool hasPending = pendingCommand &&
+                    pendingCommand->status() !=
+                        MTL::CommandBufferStatusCompleted &&
+                    pendingCommand->status() !=
+                        MTL::CommandBufferStatusError;
+  if (hasPending) {
+    MTL::CommandBuffer *pending = pendingCommand;
+    pending->retain();
+    pending->addCompletedHandler([this, finalizeCold](MTL::CommandBuffer *) {
+      finalizeCold();
+    });
+    pending->release();
+  } else {
+    finalizeCold();
+  }
+
+  state = ResidencyState::Cold;
+  lastStateChange = std::chrono::steady_clock::now();
 }
 
 bool ResidentObjectGpuResources::ensureResident(
@@ -83,7 +103,6 @@ bool ResidentObjectGpuResources::ensureResident(
     return false;
   }
 
-  clearPendingCommand();
   state = ResidencyState::Resident;
   lastStateChange = std::chrono::steady_clock::now();
   instanceRecord.triangleBase = static_cast<uint32_t>(triangleBase);
@@ -735,7 +754,6 @@ void Renderer::updateVisibleScene() {
         initBlit->endEncoding();
       }
       initCmd->commit();
-      initCmd->waitUntilCompleted();
     }
   }
 
@@ -1119,19 +1137,27 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
                                         scratchBuffer, 0);
   asEncoder->endEncoding();
 
-  commandBuffer->commit();
-  commandBuffer->waitUntilCompleted();
-
-  if (scratchBuffer)
-    scratchBuffer->release();
-  if (indexStaging)
-    indexStaging->release();
-  if (vertexStaging)
-    vertexStaging->release();
   if (geometryArray)
     geometryArray->release();
   releaseGeometryDescriptors();
   accelDesc->release();
+
+  resident.transitionToStreaming(commandBuffer);
+
+  ResidentObjectGpuResources *residentPtr = &resident;
+  commandBuffer->addCompletedHandler(
+      [residentPtr, scratchBuffer, indexStaging,
+       vertexStaging](MTL::CommandBuffer *) {
+        if (vertexStaging)
+          vertexStaging->release();
+        if (indexStaging)
+          indexStaging->release();
+        if (scratchBuffer)
+          scratchBuffer->release();
+        residentPtr->clearPendingCommand();
+      });
+
+  commandBuffer->commit();
 
   resident.byteSize = totalHeapBytes;
   resident.triangleCount = triangleCount;
@@ -1312,18 +1338,26 @@ bool Renderer::ensureDummyBlas() {
   encoder->buildAccelerationStructure(structure, accelDesc, scratchBuffer, 0);
   encoder->endEncoding();
 
-  commandBuffer->commit();
-  commandBuffer->waitUntilCompleted();
-
-  if (vertexZeroRequest.staging)
-    vertexZeroRequest.staging->release();
-  if (indexZeroRequest.staging)
-    indexZeroRequest.staging->release();
-  if (scratchBuffer)
-    scratchBuffer->release();
   geometryArray->release();
   geometryDesc->release();
   accelDesc->release();
+
+  if (scratchBuffer || vertexZeroRequest.staging || indexZeroRequest.staging) {
+    MTL::Buffer *scratch = scratchBuffer;
+    MTL::Buffer *vertexStage = vertexZeroRequest.staging;
+    MTL::Buffer *indexStage = indexZeroRequest.staging;
+    commandBuffer->addCompletedHandler(
+        [scratch, vertexStage, indexStage](MTL::CommandBuffer *) {
+          if (vertexStage)
+            vertexStage->release();
+          if (indexStage)
+            indexStage->release();
+          if (scratch)
+            scratch->release();
+        });
+  }
+
+  commandBuffer->commit();
 
   _pDummyBlas = structure;
   return true;
@@ -1509,14 +1543,21 @@ void Renderer::updateTopLevelAccelerationStructure(
   }
   encoder->endEncoding();
 
-  commandBuffer->commit();
-  commandBuffer->waitUntilCompleted();
-
-  if (scratchBuffer)
-    scratchBuffer->release();
-  if (stagingBuffer)
-    stagingBuffer->release();
   instanceDesc->release();
+
+  if (scratchBuffer || stagingBuffer) {
+    MTL::Buffer *scratch = scratchBuffer;
+    MTL::Buffer *staging = stagingBuffer;
+    commandBuffer->addCompletedHandler(
+        [scratch, staging](MTL::CommandBuffer *) {
+          if (scratch)
+            scratch->release();
+          if (staging)
+            staging->release();
+        });
+  }
+
+  commandBuffer->commit();
 
   _cachedInstanceDescriptors = descriptors;
   _cachedInstancedAccelerationStructures = instancedStructures;
