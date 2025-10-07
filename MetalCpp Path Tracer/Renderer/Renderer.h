@@ -193,6 +193,7 @@ private:
   std::vector<bool> _objectActive;
   std::vector<uint32_t> _objectCooldown;
   std::vector<float> _primitiveImportance;
+  std::vector<float> _objectImportance;
   std::vector<size_t> _energySortedIndices;
   std::vector<float> _primitiveHitScores;
   std::vector<float> _primitiveHitScoresSnapshot;
