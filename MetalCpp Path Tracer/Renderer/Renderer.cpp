@@ -3717,22 +3717,27 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   for (size_t idx : _screenCoverageSortedIndices) {
     if (idx >= _allSceneObjects.size())
       continue;
+    if (accumulatedPrimitives >= minActivePrimitives &&
+        accumulatedCoverage >= targetCoverage)
+      break;
+
     const SceneObject &obj = _allSceneObjects[idx];
     float coverage =
         (idx < _primitiveScreenCoverage.size()) ? _primitiveScreenCoverage[idx]
                                                 : 0.0f;
-    if (accumulatedPrimitives >= minActivePrimitives &&
-        accumulatedCoverage >= targetCoverage)
-      break;
-    if (accumulatedPrimitives >= minActivePrimitives &&
-        coverage < _residencyConfig.screenFootprintMinPixelCoverage)
-      break;
-    if (coverage <= 0.0f && accumulatedPrimitives >= minActivePrimitives)
+    size_t futurePrimitives = accumulatedPrimitives + obj.primitiveCount;
+    float futureCoverage = accumulatedCoverage + coverage;
+    bool futureNeedsPrimitives = futurePrimitives < minActivePrimitives;
+    bool futureNeedsCoverage = futureCoverage < targetCoverage;
+    bool meetsPixelThreshold =
+        coverage >= _residencyConfig.screenFootprintMinPixelCoverage;
+
+    if (!futureNeedsPrimitives && !futureNeedsCoverage && !meetsPixelThreshold)
       break;
 
     desiredObjects[idx] = true;
-    accumulatedCoverage += coverage;
-    accumulatedPrimitives += obj.primitiveCount;
+    accumulatedCoverage = futureCoverage;
+    accumulatedPrimitives = futurePrimitives;
   }
 
   size_t ensuredPrimitives = 0;
