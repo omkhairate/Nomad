@@ -3442,17 +3442,29 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
 
     const SceneObject &obj = _allSceneObjects[objectIndex];
     size_t estimatedCost = std::max(obj.primitiveCount, size_t(1));
+    size_t cappedCost = estimatedCost;
     if (!forceAllToggles) {
       if (objectIndex < _objectCooldown.size() && _objectCooldown[objectIndex] > 0)
         continue;
-      if (toggles + estimatedCost > _residencyConfig.energyMaxTogglesPerFrame)
+      size_t remainingBudget =
+          (_residencyConfig.energyMaxTogglesPerFrame > toggles)
+              ? (_residencyConfig.energyMaxTogglesPerFrame - toggles)
+              : 0;
+      if (remainingBudget == 0)
+        break;
+      cappedCost = std::min(estimatedCost, remainingBudget);
+      if (cappedCost == 0)
         continue;
     }
 
     size_t toggledPrimitives = setObjectActive(objectIndex, shouldBeActive);
-    size_t actualCost =
-        (toggledPrimitives > 0) ? toggledPrimitives : estimatedCost;
     if (toggledPrimitives > 0 || shouldBeActive != currentlyActive) {
+      size_t actualCost;
+      if (forceAllToggles) {
+        actualCost = (toggledPrimitives > 0) ? toggledPrimitives : estimatedCost;
+      } else {
+        actualCost = cappedCost;
+      }
       toggles += actualCost;
       changed = true;
       if (!forceAllToggles &&
