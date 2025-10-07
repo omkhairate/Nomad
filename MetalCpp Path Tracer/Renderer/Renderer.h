@@ -192,8 +192,6 @@ private:
   std::vector<BoundingSphere> _objectBounds;
   std::vector<bool> _objectActive;
   std::vector<uint32_t> _objectCooldown;
-  std::vector<float> _objectImportance;
-  std::vector<size_t> _objectEnergySortedIndices;
   std::vector<float> _primitiveImportance;
   std::vector<size_t> _energySortedIndices;
   std::vector<float> _primitiveHitScores;
@@ -203,7 +201,6 @@ private:
   std::vector<float> _primitiveScreenCoverage;
   std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;
-  float _totalObjectImportance = 0.0f;
   double _textureResidencyMemoryCapMB = 2048.0;
 
   std::vector<BlasInstanceRecord> _instanceRecords;

@@ -702,45 +702,6 @@ void Renderer::updateVisibleScene() {
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
-  _allSceneObjects = _pScene->getObjects();
-  size_t objectCount = _allSceneObjects.size();
-  _objectBounds.resize(objectCount);
-  _objectActive.assign(objectCount, false);
-  _objectCooldown.assign(objectCount, 0);
-  _objectImportance.assign(objectCount, 0.0f);
-  _objectEnergySortedIndices.resize(objectCount);
-  _totalObjectImportance = 0.0f;
-  _residentObjectGpuResources.resize(objectCount);
-
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-    _objectEnergySortedIndices[objectIndex] = objectIndex;
-
-    const SceneObject &obj = _allSceneObjects[objectIndex];
-    simd::float3 boundsMin = obj.boundsMin;
-    simd::float3 boundsMax = obj.boundsMax;
-    simd::float3 center = (boundsMin + boundsMax) * 0.5f;
-    float radius = simd::length(boundsMax - center);
-    _objectBounds[objectIndex] = {center, radius};
-
-    size_t first = obj.firstPrimitive;
-    size_t last = std::min(first + obj.primitiveCount, primCount);
-    for (size_t prim = first; prim < last && prim < _primitiveToObject.size(); ++prim)
-      _primitiveToObject[prim] = objectIndex;
-  }
-
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-    auto &resident = _residentObjectGpuResources[objectIndex];
-    resident.clearPendingCommand();
-    resident.byteSize = 0;
-    resident.triangleCount = 0;
-    resident.vertexCount = 0;
-    resident.vertexBufferOffset = 0;
-    resident.indexBufferOffset = 0;
-    resident.geometryValid = false;
-    resident.state = ResidentObjectGpuResources::ResidencyState::Cold;
-    resident.lastStateChange = std::chrono::steady_clock::now();
-    resident.resources.initialize(_pDevice);
-  }
 
   _residentPrimitives.clear();
   _residentRemap.clear();
@@ -776,46 +737,19 @@ void Renderer::updateVisibleScene() {
       float r = simd::length(p.rectangle.u) + simd::length(p.rectangle.v);
       _primitiveBounds[i] = {p.rectangle.center, r};
     }
-    float importance = primitiveImportance(p);
-    _primitiveImportance[i] = importance;
+    _primitiveImportance[i] = primitiveImportance(p);
     _energySortedIndices[i] = i;
     if (i < _rayHitSortedIndices.size())
       _rayHitSortedIndices[i] = i;
     if (i < _screenCoverageSortedIndices.size())
       _screenCoverageSortedIndices[i] = i;
-
-    float clampedImportance = std::max(importance, 0.0f);
-    _totalPrimitiveImportance += clampedImportance;
-
-    if (i < _primitiveToObject.size()) {
-      size_t objectIndex = _primitiveToObject[i];
-      if (objectIndex != std::numeric_limits<size_t>::max() &&
-          objectIndex < _objectImportance.size()) {
-        _objectImportance[objectIndex] += clampedImportance;
-      }
-    }
+    _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
   }
-
-  _totalObjectImportance =
-      std::accumulate(_objectImportance.begin(), _objectImportance.end(), 0.0f);
 
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
             [this](size_t a, size_t b) {
               float scoreA = sanitizeSortValue(_primitiveImportance[a]);
               float scoreB = sanitizeSortValue(_primitiveImportance[b]);
-              if (scoreA == scoreB)
-                return a < b;
-              return scoreA > scoreB;
-            });
-
-  std::sort(_objectEnergySortedIndices.begin(), _objectEnergySortedIndices.end(),
-            [this](size_t a, size_t b) {
-              float rawA = (a < _objectImportance.size()) ? _objectImportance[a]
-                                                          : 0.0f;
-              float rawB = (b < _objectImportance.size()) ? _objectImportance[b]
-                                                          : 0.0f;
-              float scoreA = sanitizeSortValue(rawA);
-              float scoreB = sanitizeSortValue(rawB);
               if (scoreA == scoreB)
                 return a < b;
               return scoreA > scoreB;
@@ -865,6 +799,37 @@ void Renderer::updateVisibleScene() {
   }
   _maxTlasNodeCount = std::max<size_t>(fullTlasCount, _maxTlasNodeCount);
   _totalNodeCount = _maxBlasNodeCount + _maxTlasNodeCount;
+
+  _allSceneObjects = _pScene->getObjects();
+  size_t objectCount = _allSceneObjects.size();
+  _objectBounds.resize(objectCount);
+  _objectActive.assign(objectCount, false);
+  _objectCooldown.assign(objectCount, 0);
+  _residentObjectGpuResources.resize(objectCount);
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    auto &resident = _residentObjectGpuResources[objectIndex];
+    resident.clearPendingCommand();
+    resident.byteSize = 0;
+    resident.state = ResidentObjectGpuResources::ResidencyState::Cold;
+    resident.lastStateChange = std::chrono::steady_clock::now();
+    resident.resources.initialize(_pDevice);
+  }
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    simd::float3 boundsMin = obj.boundsMin;
+    simd::float3 boundsMax = obj.boundsMax;
+    simd::float3 center = (boundsMin + boundsMax) * 0.5f;
+    float radius = simd::length(boundsMax - center);
+    _objectBounds[objectIndex] = {center, radius};
+
+    size_t first = obj.firstPrimitive;
+    size_t last = first + obj.primitiveCount;
+    for (size_t prim = first; prim < last && prim < _primitiveToObject.size();
+         ++prim)
+      _primitiveToObject[prim] = objectIndex;
+  }
 
   updateResidency(true, true);
 }
@@ -3381,150 +3346,61 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
 }
 
 bool Renderer::updateEnergyImportance(bool forceAllToggles) {
-  const size_t objectCount = _allSceneObjects.size();
-  if (objectCount == 0) {
-    if (_activePrimitive.empty())
-      return false;
+  if (_activePrimitive.empty())
+    return false;
 
-    const size_t primCount = _activePrimitive.size();
-    std::vector<bool> desiredState(primCount, false);
-    size_t minActive =
-        std::min(primCount, _residencyConfig.energyMinActivePrimitives);
-
-    if (_totalPrimitiveImportance <= 0.0f) {
-      for (size_t i = 0; i < minActive && i < _energySortedIndices.size(); ++i)
-        desiredState[_energySortedIndices[i]] = true;
-    } else {
-      float cumulative = 0.0f;
-      float targetImportance =
-          _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
-      size_t enabled = 0;
-      for (size_t rank = 0; rank < _energySortedIndices.size(); ++rank) {
-        size_t index = _energySortedIndices[rank];
-        if (enabled >= minActive && cumulative >= targetImportance)
-          break;
-        desiredState[index] = true;
-        cumulative += std::max(_primitiveImportance[index], 0.0f);
-        ++enabled;
-      }
-
-      for (size_t i = 0; i < minActive && i < _energySortedIndices.size(); ++i)
-        desiredState[_energySortedIndices[i]] = true;
-    }
-
-    bool changed = false;
-    size_t toggles = 0;
-    for (size_t i = 0; i < primCount; ++i) {
-      bool shouldBeActive = desiredState[i];
-      if (shouldBeActive == _activePrimitive[i])
-        continue;
-      if (!forceAllToggles) {
-        if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
-          continue;
-        if (toggles >= _residencyConfig.energyMaxTogglesPerFrame)
-          break;
-      }
-      if (setPrimitiveActive(i, shouldBeActive)) {
-        changed = true;
-        ++toggles;
-      }
-    }
-
-    bool anyActivePrimitive = std::any_of(
-        _activePrimitive.begin(), _activePrimitive.end(), [](bool active) {
-          return active;
-        });
-    if (!anyActivePrimitive && !_activePrimitive.empty()) {
-      size_t fallback =
-          !_energySortedIndices.empty() ? _energySortedIndices.front() : size_t(0);
-      if (setPrimitiveActive(fallback, true))
-        changed = true;
-    }
-
-    return changed;
-  }
-
-  if (_objectActive.size() < objectCount)
-    _objectActive.resize(objectCount, false);
-  if (_objectCooldown.size() < objectCount)
-    _objectCooldown.resize(objectCount, 0);
-  if (_objectImportance.size() < objectCount)
-    _objectImportance.resize(objectCount, 0.0f);
-  if (_objectEnergySortedIndices.size() < objectCount) {
-    size_t oldSize = _objectEnergySortedIndices.size();
-    _objectEnergySortedIndices.resize(objectCount);
-    std::iota(_objectEnergySortedIndices.begin() + oldSize,
-              _objectEnergySortedIndices.end(), oldSize);
-  }
-
-  std::vector<bool> desiredState(objectCount, false);
+  const size_t primCount = _activePrimitive.size();
+  std::vector<bool> desiredState(primCount, false);
   size_t minActive =
-      std::min(objectCount, _residencyConfig.energyMinActivePrimitives);
+      std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
-  if (_totalObjectImportance <= 0.0f) {
-    for (size_t i = 0; i < minActive && i < _objectEnergySortedIndices.size(); ++i)
-      desiredState[_objectEnergySortedIndices[i]] = true;
+  if (_totalPrimitiveImportance <= 0.0f) {
+    for (size_t i = 0; i < minActive && i < _energySortedIndices.size(); ++i)
+      desiredState[_energySortedIndices[i]] = true;
   } else {
     float cumulative = 0.0f;
     float targetImportance =
-        _totalObjectImportance * _residencyConfig.energyTargetFraction;
+        _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
     size_t enabled = 0;
-    for (size_t rank = 0; rank < _objectEnergySortedIndices.size(); ++rank) {
-      size_t index = _objectEnergySortedIndices[rank];
+    for (size_t rank = 0; rank < _energySortedIndices.size(); ++rank) {
+      size_t index = _energySortedIndices[rank];
       if (enabled >= minActive && cumulative >= targetImportance)
         break;
       desiredState[index] = true;
-      float contribution =
-          (index < _objectImportance.size()) ? _objectImportance[index] : 0.0f;
-      cumulative += std::max(contribution, 0.0f);
+      cumulative += std::max(_primitiveImportance[index], 0.0f);
       ++enabled;
     }
 
-    for (size_t i = 0; i < minActive && i < _objectEnergySortedIndices.size(); ++i)
-      desiredState[_objectEnergySortedIndices[i]] = true;
+    for (size_t i = 0; i < minActive && i < _energySortedIndices.size(); ++i)
+      desiredState[_energySortedIndices[i]] = true;
   }
 
   bool changed = false;
   size_t toggles = 0;
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-    bool shouldBeActive = desiredState[objectIndex];
-    bool currentlyActive =
-        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
-    if (shouldBeActive == currentlyActive)
+  for (size_t i = 0; i < primCount; ++i) {
+    bool shouldBeActive = desiredState[i];
+    if (shouldBeActive == _activePrimitive[i])
       continue;
     if (!forceAllToggles) {
-      if (objectIndex < _objectCooldown.size() &&
-          _objectCooldown[objectIndex] > 0)
+      if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
         continue;
       if (toggles >= _residencyConfig.energyMaxTogglesPerFrame)
         break;
     }
-
-    size_t toggledPrimitives = setObjectActive(objectIndex, shouldBeActive);
-    if (toggledPrimitives > 0 || shouldBeActive != currentlyActive) {
+    if (setPrimitiveActive(i, shouldBeActive)) {
       changed = true;
       ++toggles;
     }
   }
 
-  bool anyActiveObject = std::any_of(
-      _objectActive.begin(), _objectActive.end(), [](bool active) { return active; });
-  if (!anyActiveObject && !_objectEnergySortedIndices.empty()) {
-    size_t fallback = _objectEnergySortedIndices.front();
-    bool wasActive =
-        (fallback < _objectActive.size()) ? _objectActive[fallback] : false;
-    size_t toggled = setObjectActive(fallback, true);
-    if (toggled > 0 || !wasActive)
-      changed = true;
-  }
+  size_t activeCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activeCount;
 
-  bool anyActivePrimitive = std::any_of(
-      _activePrimitive.begin(), _activePrimitive.end(), [](bool active) {
-        return active;
-      });
-  if (!anyActivePrimitive && !_activePrimitive.empty()) {
-    size_t fallback =
-        !_energySortedIndices.empty() ? _energySortedIndices.front() : size_t(0);
+  if (activeCount == 0 && !_activePrimitive.empty()) {
+    size_t fallback = !_energySortedIndices.empty() ? _energySortedIndices.front()
+                                                    : size_t(0);
     if (setPrimitiveActive(fallback, true))
       changed = true;
   }
