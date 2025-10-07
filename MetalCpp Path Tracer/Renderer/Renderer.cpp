@@ -3500,9 +3500,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       if (objectIndex < _objectBounds.size())
         sphereCoverage = coverageForSphere(_objectBounds[objectIndex]);
       float combinedCoverage = std::max(coverage, sphereCoverage);
-      float normalized =
-          std::clamp(combinedCoverage / screenArea, 0.0f, 1.0f);
-      float multiplier = 1.0f + (visibilityBoost - 1.0f) * normalized;
+      float visibilityFactor = combinedCoverage > 0.0f ? 1.0f : 0.0f;
+      float multiplier = 1.0f + (visibilityBoost - 1.0f) * visibilityFactor;
       _objectImportance[objectIndex] = totalImportance * multiplier;
     } else {
       _objectImportance[objectIndex] = totalImportance;
