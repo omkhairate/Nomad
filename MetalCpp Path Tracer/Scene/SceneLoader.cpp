@@ -301,6 +301,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "energyMinActive", static_cast<uint64_t>(params.energyMinActivePrimitives)));
     params.energyMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "energyToggleBudget", static_cast<uint64_t>(params.energyMaxTogglesPerFrame)));
+    params.energyVisibilityBoost =
+        root->FloatAttribute("energyVisibilityBoost", params.energyVisibilityBoost);
 
     params.rayHitDecay = root->FloatAttribute("rayHitDecay", params.rayHitDecay);
     params.rayHitTargetFraction =
