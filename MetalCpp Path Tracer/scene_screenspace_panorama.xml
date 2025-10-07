@@ -1,7 +1,7 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="screenSpaceFootprint"
        textureResidencyMemoryCapMB="16"
-       screenTargetFraction="0.22" screenMinActive="120" screenToggleBudget="900"
-       screenMinPixelCoverage="24">
+       screenTargetFraction="0.08" screenMinActive="80" screenToggleBudget="900"
+       screenMinPixelCoverage="8">
     <CameraPath>
         <!-- Pan across a wide stage so objects shrink on screen and release residency -->
         <Keyframe frame="0" position="-90,18,20" lookAt="0,10,0" />
