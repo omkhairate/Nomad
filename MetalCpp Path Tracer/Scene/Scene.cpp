@@ -30,23 +30,25 @@ void Scene::clear() {
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
-  return addObjectInternal(&p, 1, true);
+  return addObjectInternal(&p, 1, true, -1);
 }
 
-size_t Scene::addObject(const std::vector<Primitive> &prims) {
+size_t Scene::addObject(const std::vector<Primitive> &prims,
+                        int meshGroupId) {
   if (prims.empty())
     return primitives.size();
-  return addObjectInternal(prims.data(), prims.size(), true);
+  return addObjectInternal(prims.data(), prims.size(), true, meshGroupId);
 }
 
-size_t Scene::addObjectSilent(const std::vector<Primitive> &prims) {
+size_t Scene::addObjectSilent(const std::vector<Primitive> &prims,
+                              int meshGroupId) {
   if (prims.empty())
     return primitives.size();
-  return addObjectInternal(prims.data(), prims.size(), false);
+  return addObjectInternal(prims.data(), prims.size(), false, meshGroupId);
 }
 
 size_t Scene::addObjectInternal(const Primitive *prims, size_t count,
-                                bool logPrimitives) {
+                                bool logPrimitives, int meshGroupId) {
   if (count == 0)
     return primitives.size();
 
@@ -56,6 +58,7 @@ size_t Scene::addObjectInternal(const Primitive *prims, size_t count,
   SceneObject object;
   object.firstPrimitive = start;
   object.primitiveCount = count;
+  object.meshGroupId = meshGroupId;
   objects.push_back(object);
 
   if (logPrimitives) {

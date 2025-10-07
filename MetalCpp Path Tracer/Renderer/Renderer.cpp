@@ -24,6 +24,7 @@
 #include <simd/simd.h>
 #include <string>
 #include <utility>
+#include <unordered_map>
 
 namespace MetalCppPathTracer {
 
@@ -3430,6 +3431,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
             size_t(0));
 
   std::vector<size_t> objectPrimitiveCounts(objectCount, 0);
+  bool anyMeshGroups = false;
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const SceneObject &obj = _allSceneObjects[objectIndex];
     size_t first = obj.firstPrimitive;
@@ -3443,6 +3445,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     }
     _objectImportance[objectIndex] = totalImportance;
     objectPrimitiveCounts[objectIndex] = count;
+    if (obj.meshGroupId >= 0)
+      anyMeshGroups = true;
   }
 
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
@@ -3462,18 +3466,225 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   const size_t minActivePrimitives =
       std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
-  std::vector<bool> desiredObjectState(objectCount, false);
+  if (!anyMeshGroups) {
+    std::vector<bool> desiredObjectState(objectCount, false);
+    size_t primitivesEnabled = 0;
+
+    if (_totalPrimitiveImportance <= 0.0f) {
+      for (size_t idx : _energySortedIndices) {
+        if (idx >= objectPrimitiveCounts.size())
+          continue;
+        size_t count = objectPrimitiveCounts[idx];
+        if (count == 0)
+          continue;
+        desiredObjectState[idx] = true;
+        primitivesEnabled += count;
+        if (primitivesEnabled >= minActivePrimitives)
+          break;
+      }
+    } else {
+      float cumulativeImportance = 0.0f;
+      float targetImportance =
+          _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
+      for (size_t idx : _energySortedIndices) {
+        if (idx >= objectPrimitiveCounts.size())
+          continue;
+        size_t count = objectPrimitiveCounts[idx];
+        float importance =
+            (idx < _objectImportance.size()) ? _objectImportance[idx] : 0.0f;
+        if (count == 0 && importance <= 0.0f)
+          continue;
+        desiredObjectState[idx] = true;
+        primitivesEnabled += count;
+        cumulativeImportance += std::max(importance, 0.0f);
+        if (primitivesEnabled >= minActivePrimitives &&
+            cumulativeImportance >= targetImportance)
+          break;
+      }
+    }
+
+    if (primitivesEnabled < minActivePrimitives) {
+      for (size_t idx : _energySortedIndices) {
+        if (idx >= objectPrimitiveCounts.size())
+          continue;
+        if (desiredObjectState[idx])
+          continue;
+        size_t count = objectPrimitiveCounts[idx];
+        if (count == 0)
+          continue;
+        desiredObjectState[idx] = true;
+        primitivesEnabled += count;
+        if (primitivesEnabled >= minActivePrimitives)
+          break;
+      }
+    }
+
+    bool changed = false;
+    size_t toggledPrimitiveCount = 0;
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+      bool shouldBeActive = desiredObjectState[objectIndex];
+      bool currentlyActive =
+          objectIndex < _objectActive.size() && _objectActive[objectIndex];
+      if (shouldBeActive == currentlyActive)
+        continue;
+
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      size_t togglesNeeded = 0;
+      bool canToggle = true;
+      for (size_t prim = first; prim < last && prim < _activePrimitive.size();
+           ++prim) {
+        if (_activePrimitive[prim] == shouldBeActive)
+          continue;
+        if (!forceAllToggles && prim < _primitiveCooldown.size() &&
+            _primitiveCooldown[prim] > 0) {
+          canToggle = false;
+          break;
+        }
+        ++togglesNeeded;
+      }
+
+      if (!canToggle || togglesNeeded == 0)
+        continue;
+
+      // Allow large object toggles to saturate the frame budget instead of
+      // being rejected outright. We only stop once the current frame's budget
+      // has already been consumed, matching the behaviour of other residency
+      // passes.
+      if (!forceAllToggles &&
+          toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
+        continue;
+
+      size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+      if (toggled > 0) {
+        toggledPrimitiveCount =
+            std::min(toggledPrimitiveCount + toggled,
+                     _residencyConfig.energyMaxTogglesPerFrame);
+        changed = true;
+      }
+    }
+
+    bool anyActiveObject = false;
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+      if (objectIndex >= _objectActive.size() ||
+          objectIndex >= objectPrimitiveCounts.size())
+        continue;
+      if (objectPrimitiveCounts[objectIndex] == 0)
+        continue;
+      if (_objectActive[objectIndex]) {
+        anyActiveObject = true;
+        break;
+      }
+    }
+
+    if (!anyActiveObject) {
+      for (size_t idx : _energySortedIndices) {
+        if (idx >= objectPrimitiveCounts.size())
+          continue;
+        if (objectPrimitiveCounts[idx] == 0)
+          continue;
+        if (setObjectActive(idx, true) > 0) {
+          changed = true;
+          anyActiveObject = true;
+        }
+        if (anyActiveObject)
+          break;
+      }
+    }
+
+    if (!anyActiveObject && !_activePrimitive.empty()) {
+      size_t fallbackObject = std::numeric_limits<size_t>::max();
+      for (size_t idx : _energySortedIndices) {
+        if (idx >= objectPrimitiveCounts.size())
+          continue;
+        if (objectPrimitiveCounts[idx] == 0)
+          continue;
+        fallbackObject = idx;
+        break;
+      }
+
+      if (fallbackObject < _allSceneObjects.size()) {
+        if (setObjectActive(fallbackObject, true) > 0)
+          changed = true;
+      } else {
+        if (setPrimitiveActive(0, true))
+          changed = true;
+      }
+    }
+
+    return changed;
+  }
+
+  struct MeshGroupSummary {
+    int meshId = -1;
+    std::vector<size_t> objectIndices;
+    float importance = 0.0f;
+    size_t primitiveCount = 0;
+  };
+
+  std::vector<MeshGroupSummary> meshGroups;
+  meshGroups.reserve(objectCount);
+  std::unordered_map<int, size_t> meshToGroup;
+  meshToGroup.reserve(objectCount);
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    int meshId = obj.meshGroupId;
+    size_t groupIndex = std::numeric_limits<size_t>::max();
+    if (meshId >= 0) {
+      auto it = meshToGroup.find(meshId);
+      if (it == meshToGroup.end()) {
+        meshGroups.emplace_back();
+        groupIndex = meshGroups.size() - 1;
+        meshGroups[groupIndex].meshId = meshId;
+        meshToGroup.emplace(meshId, groupIndex);
+      } else {
+        groupIndex = it->second;
+      }
+    } else {
+      meshGroups.emplace_back();
+      groupIndex = meshGroups.size() - 1;
+      meshGroups[groupIndex].meshId = meshId;
+    }
+
+    MeshGroupSummary &group = meshGroups[groupIndex];
+    group.objectIndices.push_back(objectIndex);
+    group.importance += (objectIndex < _objectImportance.size())
+                            ? _objectImportance[objectIndex]
+                            : 0.0f;
+    group.primitiveCount += (objectIndex < objectPrimitiveCounts.size())
+                                ? objectPrimitiveCounts[objectIndex]
+                                : size_t(0);
+  }
+
+  std::vector<size_t> meshSortedIndices(meshGroups.size());
+  std::iota(meshSortedIndices.begin(), meshSortedIndices.end(), size_t(0));
+  std::sort(meshSortedIndices.begin(), meshSortedIndices.end(),
+            [&meshGroups](size_t a, size_t b) {
+              float scoreA = (a < meshGroups.size())
+                                 ? sanitizeSortValue(meshGroups[a].importance)
+                                 : 0.0f;
+              float scoreB = (b < meshGroups.size())
+                                 ? sanitizeSortValue(meshGroups[b].importance)
+                                 : 0.0f;
+              if (scoreA == scoreB)
+                return a < b;
+              return scoreA > scoreB;
+            });
+
+  std::vector<bool> desiredGroupState(meshGroups.size(), false);
   size_t primitivesEnabled = 0;
 
   if (_totalPrimitiveImportance <= 0.0f) {
-    for (size_t idx : _energySortedIndices) {
-      if (idx >= objectPrimitiveCounts.size())
+    for (size_t idx : meshSortedIndices) {
+      if (idx >= meshGroups.size())
         continue;
-      size_t count = objectPrimitiveCounts[idx];
-      if (count == 0)
+      const MeshGroupSummary &group = meshGroups[idx];
+      if (group.primitiveCount == 0)
         continue;
-      desiredObjectState[idx] = true;
-      primitivesEnabled += count;
+      desiredGroupState[idx] = true;
+      primitivesEnabled += group.primitiveCount;
       if (primitivesEnabled >= minActivePrimitives)
         break;
     }
@@ -3481,17 +3692,15 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     float cumulativeImportance = 0.0f;
     float targetImportance =
         _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
-    for (size_t idx : _energySortedIndices) {
-      if (idx >= objectPrimitiveCounts.size())
+    for (size_t idx : meshSortedIndices) {
+      if (idx >= meshGroups.size())
         continue;
-      size_t count = objectPrimitiveCounts[idx];
-      float importance =
-          (idx < _objectImportance.size()) ? _objectImportance[idx] : 0.0f;
-      if (count == 0 && importance <= 0.0f)
+      const MeshGroupSummary &group = meshGroups[idx];
+      if (group.primitiveCount == 0 && group.importance <= 0.0f)
         continue;
-      desiredObjectState[idx] = true;
-      primitivesEnabled += count;
-      cumulativeImportance += std::max(importance, 0.0f);
+      desiredGroupState[idx] = true;
+      primitivesEnabled += group.primitiveCount;
+      cumulativeImportance += std::max(group.importance, 0.0f);
       if (primitivesEnabled >= minActivePrimitives &&
           cumulativeImportance >= targetImportance)
         break;
@@ -3499,61 +3708,97 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   }
 
   if (primitivesEnabled < minActivePrimitives) {
-    for (size_t idx : _energySortedIndices) {
-      if (idx >= objectPrimitiveCounts.size())
+    for (size_t idx : meshSortedIndices) {
+      if (idx >= meshGroups.size())
         continue;
-      if (desiredObjectState[idx])
+      const MeshGroupSummary &group = meshGroups[idx];
+      if (group.primitiveCount == 0)
         continue;
-      size_t count = objectPrimitiveCounts[idx];
-      if (count == 0)
+      if (desiredGroupState[idx])
         continue;
-      desiredObjectState[idx] = true;
-      primitivesEnabled += count;
+      desiredGroupState[idx] = true;
+      primitivesEnabled += group.primitiveCount;
       if (primitivesEnabled >= minActivePrimitives)
         break;
     }
   }
 
+  std::vector<bool> desiredObjectState(objectCount, false);
+  for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
+    if (!desiredGroupState[groupIndex])
+      continue;
+    for (size_t objectIndex : meshGroups[groupIndex].objectIndices) {
+      if (objectIndex < desiredObjectState.size())
+        desiredObjectState[objectIndex] = true;
+    }
+  }
+
   bool changed = false;
   size_t toggledPrimitiveCount = 0;
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-    bool shouldBeActive = desiredObjectState[objectIndex];
-    bool currentlyActive =
-        objectIndex < _objectActive.size() && _objectActive[objectIndex];
-    if (shouldBeActive == currentlyActive)
-      continue;
+  for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
+    const MeshGroupSummary &group = meshGroups[groupIndex];
+    bool groupShouldBeActive = desiredGroupState[groupIndex];
+    size_t groupToggleCount = 0;
+    bool groupNeedsToggle = false;
+    bool groupCanToggle = true;
 
-    const SceneObject &obj = _allSceneObjects[objectIndex];
-    size_t first = obj.firstPrimitive;
-    size_t last = first + obj.primitiveCount;
-    size_t togglesNeeded = 0;
-    bool canToggle = true;
-    for (size_t prim = first; prim < last && prim < _activePrimitive.size();
-         ++prim) {
-      if (_activePrimitive[prim] == shouldBeActive)
+    for (size_t objectIndex : group.objectIndices) {
+      bool shouldBeActive =
+          (objectIndex < desiredObjectState.size())
+              ? desiredObjectState[objectIndex]
+              : groupShouldBeActive;
+      bool currentlyActive =
+          (objectIndex < _objectActive.size()) ? _objectActive[objectIndex]
+                                               : false;
+      if (shouldBeActive == currentlyActive)
         continue;
-      if (!forceAllToggles && prim < _primitiveCooldown.size() &&
-          _primitiveCooldown[prim] > 0) {
-        canToggle = false;
-        break;
+      groupNeedsToggle = true;
+
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      for (size_t prim = first; prim < last && prim < _activePrimitive.size();
+           ++prim) {
+        if (_activePrimitive[prim] == shouldBeActive)
+          continue;
+        if (!forceAllToggles && prim < _primitiveCooldown.size() &&
+            _primitiveCooldown[prim] > 0) {
+          groupCanToggle = false;
+          break;
+        }
+        ++groupToggleCount;
       }
-      ++togglesNeeded;
+
+      if (!groupCanToggle)
+        break;
     }
 
-    if (!canToggle || togglesNeeded == 0)
+    if (!groupNeedsToggle || !groupCanToggle)
       continue;
 
-    // Allow large object toggles to saturate the frame budget instead of being
-    // rejected outright. We only stop once the current frame's budget has
-    // already been consumed, matching the behaviour of other residency passes.
+    // Toggle all partitions belonging to the mesh together so the frame budget
+    // is charged against the combined primitive count for the group.
     if (!forceAllToggles &&
         toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
       continue;
 
-    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
-    if (toggled > 0) {
+    size_t toggledThisGroup = 0;
+    for (size_t objectIndex : group.objectIndices) {
+      bool shouldBeActive =
+          (objectIndex < desiredObjectState.size())
+              ? desiredObjectState[objectIndex]
+              : groupShouldBeActive;
+      bool currentlyActive =
+          (objectIndex < _objectActive.size()) ? _objectActive[objectIndex]
+                                               : false;
+      if (shouldBeActive == currentlyActive)
+        continue;
+      toggledThisGroup += setObjectActive(objectIndex, shouldBeActive);
+    }
+
+    if (toggledThisGroup > 0) {
       toggledPrimitiveCount =
-          std::min(toggledPrimitiveCount + toggled,
+          std::min(toggledPrimitiveCount + toggledThisGroup,
                    _residencyConfig.energyMaxTogglesPerFrame);
       changed = true;
     }
@@ -3573,12 +3818,16 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   }
 
   if (!anyActiveObject) {
-    for (size_t idx : _energySortedIndices) {
-      if (idx >= objectPrimitiveCounts.size())
+    for (size_t idx : meshSortedIndices) {
+      if (idx >= meshGroups.size())
         continue;
-      if (objectPrimitiveCounts[idx] == 0)
+      const MeshGroupSummary &group = meshGroups[idx];
+      if (group.primitiveCount == 0)
         continue;
-      if (setObjectActive(idx, true) > 0) {
+      size_t toggled = 0;
+      for (size_t objectIndex : group.objectIndices)
+        toggled += setObjectActive(objectIndex, true);
+      if (toggled > 0) {
         changed = true;
         anyActiveObject = true;
       }
@@ -3588,18 +3837,21 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   }
 
   if (!anyActiveObject && !_activePrimitive.empty()) {
-    size_t fallbackObject = std::numeric_limits<size_t>::max();
-    for (size_t idx : _energySortedIndices) {
-      if (idx >= objectPrimitiveCounts.size())
+    size_t fallbackGroup = std::numeric_limits<size_t>::max();
+    for (size_t idx : meshSortedIndices) {
+      if (idx >= meshGroups.size())
         continue;
-      if (objectPrimitiveCounts[idx] == 0)
+      if (meshGroups[idx].primitiveCount == 0)
         continue;
-      fallbackObject = idx;
+      fallbackGroup = idx;
       break;
     }
 
-    if (fallbackObject < _allSceneObjects.size()) {
-      if (setObjectActive(fallbackObject, true) > 0)
+    if (fallbackGroup < meshGroups.size()) {
+      size_t toggled = 0;
+      for (size_t objectIndex : meshGroups[fallbackGroup].objectIndices)
+        toggled += setObjectActive(objectIndex, true);
+      if (toggled > 0)
         changed = true;
     } else {
       if (setPrimitiveActive(0, true))

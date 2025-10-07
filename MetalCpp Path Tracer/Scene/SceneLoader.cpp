@@ -134,13 +134,14 @@ static void PartitionTrianglesRecursive(std::vector<Primitive>& prims,
 }
 
 static void EmitMeshPartitions(Scene* scene, std::vector<Primitive>& prims,
-                               size_t maxTriangles, float maxExtent) {
+                               size_t maxTriangles, float maxExtent,
+                               int meshGroupId) {
     if (prims.empty()) {
         return;
     }
 
     if ((maxTriangles == 0 && maxExtent <= 0.0f) || prims.size() <= 1) {
-        scene->addObject(prims);
+        scene->addObject(prims, meshGroupId);
         return;
     }
 
@@ -151,7 +152,7 @@ static void EmitMeshPartitions(Scene* scene, std::vector<Primitive>& prims,
     for (const auto& range : partitions) {
         std::vector<Primitive> chunk(prims.begin() + range.first,
                                      prims.begin() + range.second);
-        scene->addObject(chunk);
+        scene->addObject(chunk, meshGroupId);
     }
 }
 
@@ -331,6 +332,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "textureResidencyMemoryCapMB", scene->getTextureResidencyMemoryCapMB());
     scene->setTextureResidencyMemoryCapMB(textureCap);
 
+    int nextMeshGroupId = 0;
+
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
         std::string tag = e->Name();
         if (tag == "Sphere") {
@@ -402,8 +405,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 p.material = m;
                 meshPrimitives.push_back(p);
             }
+            int meshGroupId = nextMeshGroupId++;
             EmitMeshPartitions(scene, meshPrimitives, clusterMaxTriangles,
-                               clusterMaxExtent);
+                               clusterMaxExtent, meshGroupId);
         }
         else if (tag == "CameraPath") {
             for (auto* kf = e->FirstChildElement("Keyframe"); kf; kf = kf->NextSiblingElement("Keyframe")) {
