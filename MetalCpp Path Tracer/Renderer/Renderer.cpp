@@ -3543,14 +3543,18 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     if (!canToggle || togglesNeeded == 0)
       continue;
 
+    // Allow large object toggles to saturate the frame budget instead of being
+    // rejected outright. We only stop once the current frame's budget has
+    // already been consumed, matching the behaviour of other residency passes.
     if (!forceAllToggles &&
-        toggledPrimitiveCount + togglesNeeded >
-            _residencyConfig.energyMaxTogglesPerFrame)
+        toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
       continue;
 
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
     if (toggled > 0) {
-      toggledPrimitiveCount += toggled;
+      toggledPrimitiveCount =
+          std::min(toggledPrimitiveCount + toggled,
+                   _residencyConfig.energyMaxTogglesPerFrame);
       changed = true;
     }
   }
