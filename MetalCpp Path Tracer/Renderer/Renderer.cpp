@@ -3658,6 +3658,16 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
                                 : size_t(0);
   }
 
+  std::vector<float> meshGroupAverageImportance(meshGroups.size(), 0.0f);
+  for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
+    const MeshGroupSummary &group = meshGroups[groupIndex];
+    if (group.primitiveCount > 0) {
+      meshGroupAverageImportance[groupIndex] =
+          group.importance /
+          static_cast<float>(group.primitiveCount);
+    }
+  }
+
   std::vector<size_t> meshSortedIndices(meshGroups.size());
   std::iota(meshSortedIndices.begin(), meshSortedIndices.end(), size_t(0));
   std::sort(meshSortedIndices.begin(), meshSortedIndices.end(),
@@ -3676,6 +3686,12 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   std::vector<bool> desiredGroupState(meshGroups.size(), false);
   size_t primitivesEnabled = 0;
 
+  bool meshTargetSatisfied = false;
+  float meshLastPrimaryAverage = 0.0f;
+  float meshPrevPrimaryAverage = std::numeric_limits<float>::quiet_NaN();
+  bool meshHasPrimaryAverage = false;
+  size_t meshLastPrimarySortedPos = std::numeric_limits<size_t>::max();
+
   if (_totalPrimitiveImportance <= 0.0f) {
     for (size_t idx : meshSortedIndices) {
       if (idx >= meshGroups.size())
@@ -3692,7 +3708,9 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     float cumulativeImportance = 0.0f;
     float targetImportance =
         _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
-    for (size_t idx : meshSortedIndices) {
+    for (size_t sortedPos = 0; sortedPos < meshSortedIndices.size();
+         ++sortedPos) {
+      size_t idx = meshSortedIndices[sortedPos];
       if (idx >= meshGroups.size())
         continue;
       const MeshGroupSummary &group = meshGroups[idx];
@@ -3701,9 +3719,19 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       desiredGroupState[idx] = true;
       primitivesEnabled += group.primitiveCount;
       cumulativeImportance += std::max(group.importance, 0.0f);
+      if (meshHasPrimaryAverage)
+        meshPrevPrimaryAverage = meshLastPrimaryAverage;
+      meshLastPrimaryAverage =
+          (idx < meshGroupAverageImportance.size())
+              ? meshGroupAverageImportance[idx]
+              : 0.0f;
+      meshHasPrimaryAverage = true;
+      meshLastPrimarySortedPos = sortedPos;
       if (primitivesEnabled >= minActivePrimitives &&
-          cumulativeImportance >= targetImportance)
+          cumulativeImportance >= targetImportance) {
+        meshTargetSatisfied = true;
         break;
+      }
     }
   }
 
@@ -3720,6 +3748,52 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       primitivesEnabled += group.primitiveCount;
       if (primitivesEnabled >= minActivePrimitives)
         break;
+    }
+  }
+
+  if (meshTargetSatisfied && meshHasPrimaryAverage &&
+      meshLastPrimaryAverage > 0.0f) {
+    // Expand the selection to include mesh siblings whose per-primitive
+    // averages are comparable to the last group that satisfied the target.
+    // The tolerance adapts to the neighbourhood of the cutoff instead of
+    // relying on a fixed constant threshold.
+    float prevDiff = std::numeric_limits<float>::infinity();
+    if (!std::isnan(meshPrevPrimaryAverage))
+      prevDiff =
+          std::fabs(meshLastPrimaryAverage - meshPrevPrimaryAverage);
+
+    float nextDiff = std::numeric_limits<float>::infinity();
+    size_t nextSortedPos = meshLastPrimarySortedPos + 1;
+    if (nextSortedPos < meshSortedIndices.size()) {
+      size_t nextIdx = meshSortedIndices[nextSortedPos];
+      if (nextIdx < meshGroupAverageImportance.size()) {
+        float nextAverage = meshGroupAverageImportance[nextIdx];
+        if (std::isfinite(nextAverage))
+          nextDiff = std::fabs(meshLastPrimaryAverage - nextAverage);
+      }
+    }
+
+    float allowedDelta = std::min(prevDiff, nextDiff);
+    if (!std::isfinite(allowedDelta) || allowedDelta <= 0.0f ||
+        allowedDelta >= meshLastPrimaryAverage)
+      allowedDelta = 0.0f;
+
+    if (allowedDelta > 0.0f) {
+      float epsilon = std::max(1e-5f, meshLastPrimaryAverage * 1e-3f);
+      for (size_t groupIndex = 0; groupIndex < meshGroups.size();
+           ++groupIndex) {
+        if (desiredGroupState[groupIndex])
+          continue;
+        const MeshGroupSummary &group = meshGroups[groupIndex];
+        if (group.primitiveCount == 0)
+          continue;
+        float average = meshGroupAverageImportance[groupIndex];
+        if (average <= 0.0f)
+          continue;
+        float difference = meshLastPrimaryAverage - average;
+        if (difference <= allowedDelta + epsilon)
+          desiredGroupState[groupIndex] = true;
+      }
     }
   }
 
@@ -3777,7 +3851,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       continue;
 
     // Toggle all partitions belonging to the mesh together so the frame budget
-    // is charged against the combined primitive count for the group.
+    // is charged against the combined primitive count for the group, even when
+    // the adaptive sibling pass activates several related meshes at once.
     if (!forceAllToggles &&
         toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
       continue;
