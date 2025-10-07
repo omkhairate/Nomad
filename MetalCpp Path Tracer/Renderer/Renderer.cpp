@@ -3430,6 +3430,55 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   std::iota(_energySortedIndices.begin(), _energySortedIndices.end(),
             size_t(0));
 
+  float screenArea = Camera::screenSize.x * Camera::screenSize.y;
+  if (screenArea <= 0.0f)
+    screenArea = 1.0f;
+
+  float visibilityBoost = std::max(_residencyConfig.energyVisibilityBoost, 1.0f);
+  const bool applyVisibilityBoost = visibilityBoost > 1.0001f;
+
+  simd::float3 forward = simd::normalize(Camera::forward);
+  simd::float3 up = simd::normalize(Camera::up);
+  simd::float3 right = simd::cross(forward, up);
+  float rightLenSq = simd::length_squared(right);
+  if (rightLenSq < 1e-6f)
+    right = {1.0f, 0.0f, 0.0f};
+  else
+    right /= std::sqrt(rightLenSq);
+
+  float halfFov = Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
+  float tanHalfFov = std::tan(halfFov);
+  if (tanHalfFov <= 0.0f)
+    tanHalfFov = 1e-3f;
+
+  float aspect = Camera::screenSize.y > 0.0f
+                     ? Camera::screenSize.x / Camera::screenSize.y
+                     : 1.0f;
+  float horizontalHalfFov = std::atan(tanHalfFov * aspect);
+
+  auto coverageForSphere = [&](const BoundingSphere &b) -> float {
+    if (!applyVisibilityBoost)
+      return 0.0f;
+    if (!isInView(b))
+      return 0.0f;
+    simd::float3 toCenter = b.center - Camera::position;
+    float depth = simd::dot(toCenter, forward);
+    if (depth <= 1e-3f)
+      return 0.0f;
+    float dist = simd::length(toCenter);
+    float cosAngle = depth / std::max(dist, 1e-3f);
+    float horiz = simd::dot(toCenter, right);
+    float horizAngle = std::atan2(std::fabs(horiz), depth);
+    if (horizAngle > horizontalHalfFov + 0.1f)
+      return 0.0f;
+    float radiusPixels = (b.radius / depth) / tanHalfFov *
+                         (Camera::screenSize.y * 0.5f);
+    radiusPixels = std::max(radiusPixels, 0.0f);
+    float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
+    float angleFactor = std::max(cosAngle, 0.0f);
+    return std::min(area * angleFactor, screenArea);
+  };
+
   std::vector<size_t> objectPrimitiveCounts(objectCount, 0);
   bool anyMeshGroups = false;
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
@@ -3438,12 +3487,26 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     size_t last = first + obj.primitiveCount;
     float totalImportance = 0.0f;
     size_t count = 0;
+    float coverage = 0.0f;
     for (size_t prim = first; prim < last && prim < _primitiveImportance.size();
          ++prim) {
       totalImportance += std::max(_primitiveImportance[prim], 0.0f);
+      if (applyVisibilityBoost && prim < _primitiveScreenCoverage.size())
+        coverage += std::max(_primitiveScreenCoverage[prim], 0.0f);
       ++count;
     }
-    _objectImportance[objectIndex] = totalImportance;
+    if (applyVisibilityBoost) {
+      float sphereCoverage = 0.0f;
+      if (objectIndex < _objectBounds.size())
+        sphereCoverage = coverageForSphere(_objectBounds[objectIndex]);
+      float combinedCoverage = std::max(coverage, sphereCoverage);
+      float normalized =
+          std::clamp(combinedCoverage / screenArea, 0.0f, 1.0f);
+      float multiplier = 1.0f + (visibilityBoost - 1.0f) * normalized;
+      _objectImportance[objectIndex] = totalImportance * multiplier;
+    } else {
+      _objectImportance[objectIndex] = totalImportance;
+    }
     objectPrimitiveCounts[objectIndex] = count;
     if (obj.meshGroupId >= 0)
       anyMeshGroups = true;
