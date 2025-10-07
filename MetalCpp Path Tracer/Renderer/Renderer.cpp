@@ -702,13 +702,6 @@ void Renderer::updateVisibleScene() {
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
-
-  // Build the acceleration structures before copying the scene objects so
-  // their cached bounds are populated for residency heuristics.
-  _maxBlasNodeCount = 1;
-  _maxTlasNodeCount = 1;
-  _pScene->buildBVH();
-
   _allSceneObjects = _pScene->getObjects();
   size_t objectCount = _allSceneObjects.size();
   _objectBounds.resize(objectCount);
@@ -858,6 +851,10 @@ void Renderer::updateVisibleScene() {
 
   _rayHitRebuildCooldown = 0;
 
+  _maxBlasNodeCount = 1;
+  _maxTlasNodeCount = 1;
+
+  _pScene->buildBVH();
   size_t blasNodeCount = _pScene->getBVHNodeCount();
   _maxBlasNodeCount = std::max<size_t>(blasNodeCount, _maxBlasNodeCount);
 
