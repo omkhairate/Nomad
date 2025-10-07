@@ -4039,9 +4039,10 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
-  printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
-         _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
-         _lastGPUTime * 1000.0, _lastRaysPerSecond);
+  printf(
+      "Active nodes: %zu resident nodes: %zu total nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+      _activeNodeCount, _residentNodeCount, _totalNodeCount, offloaded,
+      _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond);
 }
 
 double Renderer::lastCPUTime() const { return _lastCPUTime; }
