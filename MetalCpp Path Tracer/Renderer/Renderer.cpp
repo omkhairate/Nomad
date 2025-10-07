@@ -3755,8 +3755,9 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       meshLastPrimaryAverage > 0.0f) {
     // Expand the selection to include mesh siblings whose per-primitive
     // averages are comparable to the last group that satisfied the target.
-    // The tolerance adapts to the neighbourhood of the cutoff instead of
-    // relying on a fixed constant threshold.
+    // The tolerance derives from the relative separation between the cutoff
+    // group and its neighbours so groups with similar intensity ratios remain
+    // together even when the absolute gap collapses toward zero.
     float prevDiff = std::numeric_limits<float>::infinity();
     if (!std::isnan(meshPrevPrimaryAverage))
       prevDiff =
@@ -3773,10 +3774,18 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       }
     }
 
-    float allowedDelta = std::min(prevDiff, nextDiff);
-    if (!std::isfinite(allowedDelta) || allowedDelta <= 0.0f ||
-        allowedDelta >= meshLastPrimaryAverage)
-      allowedDelta = 0.0f;
+    float minNeighborDiff = std::min(prevDiff, nextDiff);
+    float allowedRatio = 0.0f;
+    if (std::isfinite(minNeighborDiff) && minNeighborDiff > 0.0f)
+      allowedRatio = minNeighborDiff /
+                     std::max(meshLastPrimaryAverage, std::numeric_limits<float>::min());
+
+    // Fall back to a gentle relative epsilon so identical neighbours are kept
+    // together instead of being filtered out by a zero-width band.
+    const float kRelativeFallback = 0.01f;
+    allowedRatio = std::max(allowedRatio, kRelativeFallback);
+
+    float allowedDelta = meshLastPrimaryAverage * allowedRatio;
 
     if (allowedDelta > 0.0f) {
       float epsilon = std::max(1e-5f, meshLastPrimaryAverage * 1e-3f);
