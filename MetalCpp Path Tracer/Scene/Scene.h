@@ -39,6 +39,7 @@ struct ResidencyParameters {
   size_t energyMinActivePrimitives = 16;
   size_t energyMaxTogglesPerFrame = 32;
   float energyVisibilityBoost = 1.75f;
+  float energyVisibilityReferenceCoverage = 0.003f;
 
   float rayHitDecay = 0.85f;
   float rayHitTargetFraction = 0.6f;

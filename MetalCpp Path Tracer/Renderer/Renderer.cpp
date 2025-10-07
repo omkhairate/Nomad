@@ -3436,6 +3436,16 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
 
   float visibilityBoost = std::max(_residencyConfig.energyVisibilityBoost, 1.0f);
   const bool applyVisibilityBoost = visibilityBoost > 1.0001f;
+  float referenceCoverageFraction =
+      std::max(_residencyConfig.energyVisibilityReferenceCoverage, 1e-5f);
+  float referenceCoverage = screenArea * referenceCoverageFraction;
+  if (referenceCoverage <= 0.0f)
+    referenceCoverage = 1.0f;
+  const float averageImportanceAcrossObjects =
+      (objectCount > 0)
+          ? _totalPrimitiveImportance /
+                std::max(static_cast<float>(objectCount), 1.0f)
+          : 0.0f;
 
   simd::float3 forward = simd::normalize(Camera::forward);
   simd::float3 up = simd::normalize(Camera::up);
@@ -3500,9 +3510,16 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       if (objectIndex < _objectBounds.size())
         sphereCoverage = coverageForSphere(_objectBounds[objectIndex]);
       float combinedCoverage = std::max(coverage, sphereCoverage);
-      float visibilityFactor = combinedCoverage > 0.0f ? 1.0f : 0.0f;
-      float multiplier = 1.0f + (visibilityBoost - 1.0f) * visibilityFactor;
-      _objectImportance[objectIndex] = totalImportance * multiplier;
+      float normalizedCoverage = 0.0f;
+      if (combinedCoverage > 0.0f && referenceCoverage > 0.0f)
+        normalizedCoverage =
+            std::clamp(combinedCoverage / referenceCoverage, 0.0f, 1.0f);
+      float multiplier = 1.0f + (visibilityBoost - 1.0f) * normalizedCoverage;
+      float coverageFloor = normalizedCoverage * visibilityBoost *
+                            averageImportanceAcrossObjects;
+      float weightedImportance = totalImportance * multiplier;
+      _objectImportance[objectIndex] =
+          std::max(weightedImportance, coverageFloor);
     } else {
       _objectImportance[objectIndex] = totalImportance;
     }
