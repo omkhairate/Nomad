@@ -22,6 +22,7 @@ struct SceneObject {
   size_t primitiveCount = 0;
   simd::float3 boundsMin = simd::make_float3(0.0f, 0.0f, 0.0f);
   simd::float3 boundsMax = simd::make_float3(0.0f, 0.0f, 0.0f);
+  int meshGroupId = -1;
   int blasRootIndex = -1;
   int cachedBlasRootIndex = -1;
   std::vector<BVHNode> cachedBlasNodes;
@@ -70,8 +71,10 @@ public:
   void clear();
 
   size_t addPrimitive(const Primitive &p);
-  size_t addObject(const std::vector<Primitive> &prims);
-  size_t addObjectSilent(const std::vector<Primitive> &prims);
+  size_t addObject(const std::vector<Primitive> &prims,
+                   int meshGroupId = -1);
+  size_t addObjectSilent(const std::vector<Primitive> &prims,
+                         int meshGroupId = -1);
   size_t getPrimitiveCount() const;
   size_t getSphereCount() const;
   size_t getTriangleCount() const;
@@ -132,7 +135,7 @@ private:
   double textureResidencyMemoryCapMB;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
-                          bool logPrimitives);
+                          bool logPrimitives, int meshGroupId);
   int buildBVHRecursive(size_t start, size_t end);
   int buildTLASRecursive(size_t start, size_t end);
   float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax);
