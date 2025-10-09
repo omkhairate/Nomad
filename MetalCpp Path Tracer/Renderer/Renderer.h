@@ -187,7 +187,6 @@ private:
     MTL::StorageMode storageMode = MTL::StorageMode::StorageModePrivate;
     bool descriptorValid = false;
     bool stagingValid = false;
-    bool needsClear = false;
     MTL::Texture *texture = nullptr;
     MTL::Buffer *stagingBuffer = nullptr;
     size_t stagingCapacity = 0;
@@ -347,7 +346,6 @@ private:
   uint32_t _maxSamplesPerPixel = 4;
   bool _needsAccumulationReset = true;
   bool _accumulationTargetsNeedClear = false;
-  bool _accumulationResetSeeded = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
 
