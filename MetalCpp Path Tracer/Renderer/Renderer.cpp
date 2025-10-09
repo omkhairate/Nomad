@@ -4165,76 +4165,154 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     _primitiveScreenCoverage[i] = coverage;
   }
 
-  std::sort(_screenCoverageSortedIndices.begin(),
-            _screenCoverageSortedIndices.end(), [this](size_t a, size_t b) {
-              float rawA = (a < _primitiveScreenCoverage.size())
-                               ? _primitiveScreenCoverage[a]
-                               : 0.0f;
-              float rawB = (b < _primitiveScreenCoverage.size())
-                               ? _primitiveScreenCoverage[b]
-                               : 0.0f;
-              float ca = sanitizeSortValue(rawA);
-              float cb = sanitizeSortValue(rawB);
+  const size_t objectCount = _allSceneObjects.size();
+  if (objectCount == 0)
+    return false;
+
+  std::vector<float> objectCoverage(objectCount, 0.0f);
+  std::vector<size_t> objectPrimitiveContribution(objectCount, 0);
+  for (size_t primIndex = 0; primIndex < primCount; ++primIndex) {
+    size_t objectIndex =
+        primIndex < _primitiveToObject.size() ? _primitiveToObject[primIndex]
+                                              : std::numeric_limits<size_t>::max();
+    if (objectIndex >= objectCount)
+      continue;
+    objectCoverage[objectIndex] += _primitiveScreenCoverage[primIndex];
+    ++objectPrimitiveContribution[objectIndex];
+  }
+
+  std::vector<size_t> sortedObjects(objectCount);
+  std::iota(sortedObjects.begin(), sortedObjects.end(), size_t(0));
+  std::sort(sortedObjects.begin(), sortedObjects.end(),
+            [&objectCoverage](size_t a, size_t b) {
+              float ca = sanitizeSortValue(objectCoverage[a]);
+              float cb = sanitizeSortValue(objectCoverage[b]);
               if (ca == cb)
                 return a < b;
               return ca > cb;
             });
 
-  std::vector<bool> desired(primCount, false);
-  const size_t minActive =
-      std::min(primCount, _residencyConfig.screenFootprintMinActivePrimitives);
-  float accumulated = 0.0f;
-  size_t enabled = 0;
-  float targetCoverage =
+  std::vector<bool> desiredObjectState(objectCount, false);
+  const size_t minActivePrimitives = std::min(
+      primCount, _residencyConfig.screenFootprintMinActivePrimitives);
+  const float targetCoverage =
       screenArea * _residencyConfig.screenFootprintTargetFraction;
-  for (size_t idx : _screenCoverageSortedIndices) {
-    if (idx >= _primitiveScreenCoverage.size())
+  size_t primitivesEnabled = 0;
+  float accumulatedCoverage = 0.0f;
+
+  for (size_t objectIndex : sortedObjects) {
+    size_t declaredPrimitiveCount =
+        objectIndex < _allSceneObjects.size()
+            ? _allSceneObjects[objectIndex].primitiveCount
+            : size_t(0);
+    if (declaredPrimitiveCount == 0)
+      declaredPrimitiveCount = objectPrimitiveContribution[objectIndex];
+    if (declaredPrimitiveCount == 0)
       continue;
-    float coverage = _primitiveScreenCoverage[idx];
-    if (enabled >= minActive && accumulated >= targetCoverage)
+
+    float coverage = objectCoverage[objectIndex];
+    bool minPrimitivesSatisfied = primitivesEnabled >= minActivePrimitives;
+    bool coverageSatisfied = accumulatedCoverage >= targetCoverage;
+    if (minPrimitivesSatisfied && coverageSatisfied)
       break;
-    if (enabled >= minActive &&
+    if (minPrimitivesSatisfied &&
         coverage < _residencyConfig.screenFootprintMinPixelCoverage)
       break;
-    if (coverage <= 0.0f && enabled >= minActive)
+    if (minPrimitivesSatisfied && coverage <= 0.0f)
       break;
-    desired[idx] = true;
-    accumulated += coverage;
-    ++enabled;
+
+    desiredObjectState[objectIndex] = true;
+    primitivesEnabled += declaredPrimitiveCount;
+    accumulatedCoverage += coverage;
   }
 
-  for (size_t i = 0; i < minActive && i < _screenCoverageSortedIndices.size(); ++i)
-    desired[_screenCoverageSortedIndices[i]] = true;
-
-  size_t toggles = 0;
-  bool changed = false;
-  for (size_t i = 0; i < primCount; ++i) {
-    bool shouldBeActive = desired[i];
-    if (shouldBeActive == _activePrimitive[i])
+  for (size_t objectIndex : sortedObjects) {
+    if (primitivesEnabled >= minActivePrimitives)
+      break;
+    if (desiredObjectState[objectIndex])
       continue;
+    size_t declaredPrimitiveCount =
+        objectIndex < _allSceneObjects.size()
+            ? _allSceneObjects[objectIndex].primitiveCount
+            : size_t(0);
+    if (declaredPrimitiveCount == 0)
+      declaredPrimitiveCount = objectPrimitiveContribution[objectIndex];
+    if (declaredPrimitiveCount == 0)
+      continue;
+    desiredObjectState[objectIndex] = true;
+    primitivesEnabled += declaredPrimitiveCount;
+    accumulatedCoverage += objectCoverage[objectIndex];
+  }
+
+  bool changed = false;
+  size_t toggledPrimitiveCount = 0;
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    bool shouldBeActive = desiredObjectState[objectIndex];
+    bool currentlyActive =
+        objectIndex < _objectActive.size() && _objectActive[objectIndex];
+    if (shouldBeActive == currentlyActive)
+      continue;
+
     if (!forceAllToggles) {
-      if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+      if (objectIndex < _objectCooldown.size() &&
+          _objectCooldown[objectIndex] > 0)
         continue;
-      if (toggles >= _residencyConfig.screenFootprintMaxTogglesPerFrame)
+      if (toggledPrimitiveCount >=
+          _residencyConfig.screenFootprintMaxTogglesPerFrame)
         break;
     }
-    if (setPrimitiveActive(i, shouldBeActive)) {
-      ++toggles;
+
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    size_t first = obj.firstPrimitive;
+    size_t last = first + obj.primitiveCount;
+    size_t togglesNeeded = 0;
+    bool canToggle = true;
+    for (size_t prim = first; prim < last && prim < _activePrimitive.size();
+         ++prim) {
+      if (_activePrimitive[prim] == shouldBeActive)
+        continue;
+      if (!forceAllToggles && prim < _primitiveCooldown.size() &&
+          _primitiveCooldown[prim] > 0) {
+        canToggle = false;
+        break;
+      }
+      ++togglesNeeded;
+    }
+
+    if (!canToggle || togglesNeeded == 0)
+      continue;
+
+    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+    if (toggled > 0) {
+      toggledPrimitiveCount = std::min(
+          toggledPrimitiveCount + toggled,
+          _residencyConfig.screenFootprintMaxTogglesPerFrame);
       changed = true;
     }
   }
 
-  size_t activeCount = 0;
-  for (bool active : _activePrimitive)
-    if (active)
-      ++activeCount;
+  bool anyActivePrimitive = false;
+  for (bool active : _activePrimitive) {
+    if (active) {
+      anyActivePrimitive = true;
+      break;
+    }
+  }
 
-  if (activeCount == 0 && !_activePrimitive.empty()) {
-    size_t fallback = !_screenCoverageSortedIndices.empty()
-                          ? _screenCoverageSortedIndices.front()
-                          : size_t(0);
-    if (setPrimitiveActive(fallback, true))
-      changed = true;
+  if (!anyActivePrimitive) {
+    for (size_t objectIndex : sortedObjects) {
+      if (objectIndex >= _allSceneObjects.size())
+        continue;
+      if (_allSceneObjects[objectIndex].primitiveCount == 0 &&
+          objectPrimitiveContribution[objectIndex] == 0)
+        continue;
+      if (setObjectActive(objectIndex, true) > 0) {
+        changed = true;
+        anyActivePrimitive = true;
+      }
+      if (anyActivePrimitive)
+        break;
+    }
   }
 
   return changed;
