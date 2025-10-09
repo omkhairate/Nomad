@@ -5,6 +5,10 @@
 #include <MetalKit/MetalKit.hpp>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <simd/simd.h>
 #include <vector>
 
@@ -90,6 +94,9 @@ public:
   size_t residentNodeCount() const;
   size_t totalNodeCount() const;
 
+  void setBenchmarkMode(bool enabled);
+  bool benchmarkModeEnabled() const;
+
   std::vector<std::pair<simd::float3, float>> _allSpheres;
 
   struct Chunk {
@@ -119,7 +126,9 @@ private:
   bool updateAlwaysResident(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
-  void completeFrameMetrics(MTL::CommandBuffer *pCmd);
+  struct FrameMetricsState;
+  void completeFrameMetrics(MTL::CommandBuffer *pCmd,
+                            std::shared_ptr<FrameMetricsState> frameMetrics);
   void flushRayHitCopy();
   void processRayHitCounters();
   bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
@@ -131,6 +140,9 @@ private:
       const std::vector<MTL::AccelerationStructure *> &structures);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
+  void snapshotFrameMetrics(FrameMetricsState &state);
+  void ensureBenchmarkStream();
+  std::string currentBenchmarkFile() const { return _benchmarkFilePath; }
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -270,11 +282,58 @@ private:
   size_t _geometryHandleBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
 
-  std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
   double _lastGPUTime = 0.0;
   double _lastRaysPerSecond = 0.0;
   size_t _lastRayCount = 0;
+
+  struct FrameMetricsState {
+    uint64_t frameIndex = 0;
+    std::chrono::high_resolution_clock::time_point cpuStart;
+    size_t rayCount = 0;
+    ResidencyStrategy strategy = ResidencyStrategy::AlwaysResident;
+    size_t primitiveActivations = 0;
+    size_t primitiveDeactivations = 0;
+    size_t primitiveToggleRequests = 0;
+    size_t objectActivations = 0;
+    size_t objectDeactivations = 0;
+    size_t objectToggleRequests = 0;
+    size_t residencyPromotions = 0;
+    size_t residencyEvictions = 0;
+    size_t activeNodeCount = 0;
+    size_t residentNodeCount = 0;
+    size_t totalNodeCount = 0;
+    size_t activePrimitiveCount = 0;
+    size_t residentPrimitiveCount = 0;
+    size_t totalPrimitiveCount = 0;
+    size_t activeTriangleCount = 0;
+    size_t residentTriangleCount = 0;
+    size_t totalTriangleCount = 0;
+    size_t activeObjectCount = 0;
+    size_t totalObjectCount = 0;
+    size_t residentObjectCount = 0;
+    size_t residencyBytes = 0;
+    double gpuMemoryMB = 0.0;
+    double cpuTimeSeconds = 0.0;
+    double gpuTimeSeconds = 0.0;
+    double raysPerSecond = 0.0;
+    uint32_t minSamplesPerPixel = 0;
+    uint32_t maxSamplesPerPixel = 0;
+    bool needsAccumulationReset = false;
+    double deltaTimeSeconds = 0.0;
+    double textureResidencyCapMB = 0.0;
+    float totalPrimitiveImportance = 0.0f;
+    size_t lightCount = 0;
+    float lightTotalWeight = 0.0f;
+  };
+
+  std::shared_ptr<FrameMetricsState> _currentFrameMetrics;
+  uint64_t _frameCounter = 0;
+  bool _benchmarkModeEnabled = false;
+  std::ofstream _benchmarkStream;
+  std::string _benchmarkFilePath;
+  bool _benchmarkHeaderWritten = false;
+  mutable std::mutex _benchmarkMutex;
 
   double _deltaTimeSeconds = 0.0;
 
