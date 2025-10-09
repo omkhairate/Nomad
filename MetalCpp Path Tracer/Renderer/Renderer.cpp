@@ -4741,14 +4741,16 @@ void Renderer::processRayHitCounters() {
   if (_primitiveHitLastFrame.size() < totalPrimitiveCount)
     _primitiveHitLastFrame.resize(totalPrimitiveCount, 0);
 
-  for (size_t i = 0; i < count; ++i) {
-    uint32_t hits = hitPtr[i];
-    _primitiveHitLastFrame[i] = hits;
-    _primitiveHitScores[i] =
-        _primitiveHitScores[i] * _residencyConfig.rayHitDecay +
-        static_cast<float>(hits);
-    hitPtr[i] = 0;
-  }
+  parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
+    for (size_t i = chunkStart; i < chunkEnd; ++i) {
+      uint32_t hits = hitPtr[i];
+      _primitiveHitLastFrame[i] = hits;
+      _primitiveHitScores[i] =
+          _primitiveHitScores[i] * _residencyConfig.rayHitDecay +
+          static_cast<float>(hits);
+      hitPtr[i] = 0;
+    }
+  });
 }
 
 void Renderer::beginFrameMetrics() {
