@@ -469,6 +469,11 @@ Renderer::~Renderer() {
     _pPrimitiveHitBufferGPU->release();
   if (_pPrimitiveHitReadback)
     _pPrimitiveHitReadback->release();
+  if (_lastRayHitCommandBuffer) {
+    _lastRayHitCommandBuffer->waitUntilCompleted();
+    _lastRayHitCommandBuffer->release();
+    _lastRayHitCommandBuffer = nullptr;
+  }
   if (_pLightIndexBuffer)
     _pLightIndexBuffer->release();
   if (_pLightCdfBuffer)
@@ -3122,7 +3127,8 @@ void Renderer::draw(MTK::View *pView) {
   pEnc->endEncoding();
 
   MTL::BlitCommandEncoder *pBlit = pCmd->blitCommandEncoder();
-  if (_pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
+  bool performedRayHitReadback = false;
+  if (pBlit && _pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
     size_t bytes =
         std::min(_pPrimitiveHitBufferGPU->length(),
                  _pPrimitiveHitReadback->length());
@@ -3130,12 +3136,21 @@ void Renderer::draw(MTK::View *pView) {
       pBlit->copyFromBuffer(_pPrimitiveHitBufferGPU, 0, _pPrimitiveHitReadback, 0,
                             bytes);
       pBlit->fillBuffer(_pPrimitiveHitBufferGPU, NS::Range::Make(0, bytes), 0);
+      performedRayHitReadback = true;
     }
   }
-  pBlit->endEncoding();
+  if (pBlit)
+    pBlit->endEncoding();
 
   pCmd->presentDrawable(pView->currentDrawable());
   pCmd->commit();
+
+  if (performedRayHitReadback) {
+    if (_lastRayHitCommandBuffer)
+      _lastRayHitCommandBuffer->release();
+    _lastRayHitCommandBuffer = pCmd;
+    _lastRayHitCommandBuffer->retain();
+  }
 
   pPool->release();
 }
@@ -4562,6 +4577,12 @@ double Renderer::currentGPUMemoryMB() const {
 }
 
 void Renderer::processRayHitCounters() {
+  if (_lastRayHitCommandBuffer) {
+    _lastRayHitCommandBuffer->waitUntilCompleted();
+    _lastRayHitCommandBuffer->release();
+    _lastRayHitCommandBuffer = nullptr;
+  }
+
   if (!_pPrimitiveHitReadback)
     return;
 
