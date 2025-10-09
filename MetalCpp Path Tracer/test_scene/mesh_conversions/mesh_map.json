@@ -1,0 +1,467 @@
+{
+  "groups": [
+    {
+      "hash": "98ac9e09d2542d3a570000c666f19fb5cfbb7659952ed79757377a4f2c2e52c2",
+      "canonical": "Circle.001.ply",
+      "instances": [
+        "Circle.001.ply"
+      ]
+    },
+    {
+      "hash": "512af72ed4653b6a6248c5e5be45b5cdbaaea47d8ac1d1e9ca3fb2a87f684973",
+      "canonical": "Circle.002.ply",
+      "instances": [
+        "Circle.002.ply"
+      ]
+    },
+    {
+      "hash": "bc1c7ad31c861552560d3d7451221027c1e27f2b9b449bbf334debbebd8ac2e6",
+      "canonical": "Circle.003.ply",
+      "instances": [
+        "Circle.003.ply"
+      ]
+    },
+    {
+      "hash": "5e49ce9e73e62e428c69f856a3ac641c4c5759aa30e52cd1d730c02b209fbca8",
+      "canonical": "Cube.002.ply",
+      "instances": [
+        "Cube.002.ply"
+      ]
+    },
+    {
+      "hash": "a6ad156207410f9b79b67dd2dd451e2aca3be8e0799f302eab6382d65e3c7f89",
+      "canonical": "Cube.005.ply",
+      "instances": [
+        "Cube.005.ply",
+        "Cube.008.ply"
+      ]
+    },
+    {
+      "hash": "fe66c8e56d5c42fd75ca1153fd079f94e0b674f72071597df6923ad1591cc5fd",
+      "canonical": "Cube.006.ply",
+      "instances": [
+        "Cube.006.ply"
+      ]
+    },
+    {
+      "hash": "3df64024395e9ddcbda5981760e1a65e7f572e8448e2b399cf037fb8e56b0a8f",
+      "canonical": "Cube.007.ply",
+      "instances": [
+        "Cube.007.ply"
+      ]
+    },
+    {
+      "hash": "8b451d253b93c27496ff7b1e13d6ac280d7bfa0f35ab91fc3a12386bfcb13893",
+      "canonical": "Cube.009.ply",
+      "instances": [
+        "Cube.009.ply"
+      ]
+    },
+    {
+      "hash": "056ce2d25d1e20c94dce4a776464f98e752bdf9871cbd0b5f37f30b45a2e06b6",
+      "canonical": "Cube.010.ply",
+      "instances": [
+        "Cube.010.ply"
+      ]
+    },
+    {
+      "hash": "6fd9944ff738ad902c679a4f6f7a5833570e6517b4a0920db4bd868ddcdb0890",
+      "canonical": "Cube.011.ply",
+      "instances": [
+        "Cube.011.ply"
+      ]
+    },
+    {
+      "hash": "9da5eac81ce3cea7ee17e966c63bb47478b5336fa964b42229e6c70c47818439",
+      "canonical": "Cube.015.ply",
+      "instances": [
+        "Cube.015.ply"
+      ]
+    },
+    {
+      "hash": "44b5d4958531a6c562e06a6fd28a3f0be3f7b0b6cc3bc7e2196eae07310b8d01",
+      "canonical": "Cube.018.ply",
+      "instances": [
+        "Cube.018.ply"
+      ]
+    },
+    {
+      "hash": "7bb653b641adcd0be98752c0a6e3dd96df91ebcb6e18f9ad2ebdc96894f46b62",
+      "canonical": "Cube.019.ply",
+      "instances": [
+        "Cube.019.ply"
+      ]
+    },
+    {
+      "hash": "67319718c32a1f7ec4591bce7d8357a0107f5adef95067a6114c51d1e61b08fa",
+      "canonical": "Cube.021.ply",
+      "instances": [
+        "Cube.021.ply"
+      ]
+    },
+    {
+      "hash": "3deba334779a06094c32a27e2903584cc430328b09e42af66c68af41dbac4b0c",
+      "canonical": "Cube.037.ply",
+      "instances": [
+        "Cube.037.ply"
+      ]
+    },
+    {
+      "hash": "fe6bee133403104207737def8a17c3c722a0f0c1a0939481332b87a827c54747",
+      "canonical": "Cube.038.ply",
+      "instances": [
+        "Cube.038.ply"
+      ]
+    },
+    {
+      "hash": "3c77d4e11ed47561735c22dee29411bef33773a29265c7f6fa230a136754df21",
+      "canonical": "Cylinder.002.ply",
+      "instances": [
+        "Cylinder.002.ply"
+      ]
+    },
+    {
+      "hash": "27e997ec8dbb7233f975ec8148b5273d2444dac7a3d24cd8e727e72a7b9f6aaf",
+      "canonical": "Cylinder.003.ply",
+      "instances": [
+        "Cylinder.003.ply"
+      ]
+    },
+    {
+      "hash": "587e1ba8bd4e0b7d91f19765ed6cc8e101a106d31c05348b332dc878ed29275a",
+      "canonical": "Cylinder.004.ply",
+      "instances": [
+        "Cylinder.004.ply"
+      ]
+    },
+    {
+      "hash": "c054b2b832b0fe64957d1d3e4a0f7617b8d0fbc3786f0b6e4cadca8b04f9c4f8",
+      "canonical": "Cylinder.005.ply",
+      "instances": [
+        "Cylinder.005.ply"
+      ]
+    },
+    {
+      "hash": "a46eb4da4eb93e4acf91ebc24bdc7007140d3d2e33029452ede9047005a99dc6",
+      "canonical": "Cylinder.006.ply",
+      "instances": [
+        "Cylinder.006.ply"
+      ]
+    },
+    {
+      "hash": "3e7f8b772dd479b33272a7f1658dc18958fdc436ff3b53de2277de389742f1ca",
+      "canonical": "Cylinder.007.ply",
+      "instances": [
+        "Cylinder.007.ply"
+      ]
+    },
+    {
+      "hash": "b64a270c28d1b3a83a1a79b4a7f367a10681b77f1f6bf0920b7df840baf5f2c5",
+      "canonical": "Cylinder.ply",
+      "instances": [
+        "Cylinder.ply"
+      ]
+    },
+    {
+      "hash": "74e1b9ba13fb8a80fc8cc19b54826a0e30c4e1712a7e6d542d6beabd22ea22ec",
+      "canonical": "Mesh.000.ply",
+      "instances": [
+        "Mesh.000.ply"
+      ]
+    },
+    {
+      "hash": "97c940444df77aea4ae07ee6b91dd3d86a727ffa8aa73ada9fba8192a1ac5808",
+      "canonical": "Mesh.001.ply",
+      "instances": [
+        "Mesh.001.ply"
+      ]
+    },
+    {
+      "hash": "e1d56b249f19b2a81a1fce30d91d496a4761ac1c29629aa33cc6d691d3b86589",
+      "canonical": "Mesh.002.ply",
+      "instances": [
+        "Mesh.002.ply"
+      ]
+    },
+    {
+      "hash": "e6883a28df1e0a82a2df3ba06ee6f5458ad885d747db6be2060028258354a6cf",
+      "canonical": "Mesh.003.ply",
+      "instances": [
+        "Mesh.003.ply"
+      ]
+    },
+    {
+      "hash": "3c98135f3f3856b8eff6fdcabf7f8117b2aa39655aa9489ad3686367cf1acc20",
+      "canonical": "Mesh.004.ply",
+      "instances": [
+        "Mesh.004.ply"
+      ]
+    },
+    {
+      "hash": "2bfeeffd944d62248bffd21866b51ff7963ba74d831c8273d9b2ce88aa85cf01",
+      "canonical": "Mesh.008.ply",
+      "instances": [
+        "Mesh.008.ply"
+      ]
+    },
+    {
+      "hash": "793ebc7aa5553b2ce2bbdc849625b46ad4a42c217503c7df349d706cb704c42a",
+      "canonical": "Plane.001.ply",
+      "instances": [
+        "Plane.001.ply"
+      ]
+    },
+    {
+      "hash": "8f88f9582f231376444216a758774b2cf1b5a80aa7c2754337c095b2243f076d",
+      "canonical": "Plane.ply",
+      "instances": [
+        "Plane.ply"
+      ]
+    },
+    {
+      "hash": "899b7eb3aa461b31cc6e1d8527d3663455b59d81b72ca4d964e7e8f810095132",
+      "canonical": "Sphere.000.ply",
+      "instances": [
+        "Sphere.000.ply"
+      ]
+    },
+    {
+      "hash": "731d1c0622432be6f431d3a75f9fdea3315db0a08dd56b53880a557e7763ba7b",
+      "canonical": "Sphere.001.ply",
+      "instances": [
+        "Sphere.001.ply"
+      ]
+    },
+    {
+      "hash": "f88d971eafc098528d9c7f8e50b085eb32a673fd7b682c5879896e6a1faf0cc7",
+      "canonical": "Sphere.002.ply",
+      "instances": [
+        "Sphere.002.ply"
+      ]
+    },
+    {
+      "hash": "75b5e71dfd532496407d2f05e6adbbf0d2ffef4671ae33550ad0b2a39455f8d2",
+      "canonical": "Sphere.ply",
+      "instances": [
+        "Sphere.ply"
+      ]
+    },
+    {
+      "hash": "c503f6d7dbfd32b577504b63a8d409340e61dc19a7cd17d8dbf2fee6041a264a",
+      "canonical": "Torus.001.ply",
+      "instances": [
+        "Torus.001.ply",
+        "Torus.ply"
+      ]
+    },
+    {
+      "hash": "06685cb0302561e51bcf6620f6ff65f8f84f0406b482cea28dd652f8f1549046",
+      "canonical": "_m_0_Circle.004.ply",
+      "instances": [
+        "_m_0_Circle.004.ply"
+      ]
+    },
+    {
+      "hash": "5b169f518c2a094df533b4ab45c1a4c853c317a9beacadf0e783e8b83dc2345a",
+      "canonical": "_m_0_Circle.ply",
+      "instances": [
+        "_m_0_Circle.ply"
+      ]
+    },
+    {
+      "hash": "139f91825b2d4f9bca10df5c8383d57945025164451f1cea585cd29b428dd901",
+      "canonical": "_m_0_Cube.001.ply",
+      "instances": [
+        "_m_0_Cube.001.ply",
+        "_m_0_Cube.023.ply",
+        "_m_5_Cube.014.ply",
+        "_m_5_Cube.016.ply",
+        "_m_5_Cube.022.ply",
+        "_m_5_Cube.024.ply"
+      ]
+    },
+    {
+      "hash": "ec3e4988ad2d70f6088cb99d7f3582ee39bdb2639e6af8e655543de1821db8c7",
+      "canonical": "_m_0_Cube.003.ply",
+      "instances": [
+        "_m_0_Cube.003.ply"
+      ]
+    },
+    {
+      "hash": "d97bd4595f768346c260e8327185501472cc6dab04a0e5a75296b92b98d3da01",
+      "canonical": "_m_0_Cube.013.ply",
+      "instances": [
+        "_m_0_Cube.013.ply"
+      ]
+    },
+    {
+      "hash": "8ff90c11d9ab033fc21f79959ca5c895ee91cac39f4c0979dc413d779f52c13c",
+      "canonical": "_m_0_Cube.017.ply",
+      "instances": [
+        "_m_0_Cube.017.ply"
+      ]
+    },
+    {
+      "hash": "5789bc04da79e8fccc5b92ccba98de258b17f02966a339324406be38db7a80e4",
+      "canonical": "_m_0_Cube.ply",
+      "instances": [
+        "_m_0_Cube.ply"
+      ]
+    },
+    {
+      "hash": "c7127aa47dc256e24707a8f99076c05b08d9242befb2679c87dfac3a378720d2",
+      "canonical": "_m_0_Cylinder.001.ply",
+      "instances": [
+        "_m_0_Cylinder.001.ply"
+      ]
+    },
+    {
+      "hash": "2b09b89b53e9bbc2114b6f00d94731a3e63e3e3500a609c3a4afc93cdbe5a293",
+      "canonical": "_m_0_Lampholder.001.ply",
+      "instances": [
+        "_m_0_Lampholder.001.ply"
+      ]
+    },
+    {
+      "hash": "388ec1b0d625d3d903a184f9070e581d1b53e62f5714f164a7d905725b038480",
+      "canonical": "_m_0_Mesh.006.ply",
+      "instances": [
+        "_m_0_Mesh.006.ply"
+      ]
+    },
+    {
+      "hash": "4a53ca3b8d6b5394fc6eaccaf7007fbe8e625e459b075dfd75f3a2f5cc27bdcb",
+      "canonical": "_m_1_Circle.004.ply",
+      "instances": [
+        "_m_1_Circle.004.ply"
+      ]
+    },
+    {
+      "hash": "6f3b7c77c256f5fa1ee7f5520cbb5996bdf1ec3ada195e90eea65e2074dea1c1",
+      "canonical": "_m_1_Circle.ply",
+      "instances": [
+        "_m_1_Circle.ply"
+      ]
+    },
+    {
+      "hash": "0933ed5ee4a62956e6d9f7d540eb933987d8ff3f2f5b05b0ffc06159e0836946",
+      "canonical": "_m_1_Cube.003.ply",
+      "instances": [
+        "_m_1_Cube.003.ply"
+      ]
+    },
+    {
+      "hash": "d0563f08b736fb762ff074ccd974892750fd6005075cbc1a1c1d609ebbd5ee0c",
+      "canonical": "_m_1_Cube.013.ply",
+      "instances": [
+        "_m_1_Cube.013.ply"
+      ]
+    },
+    {
+      "hash": "b5b640f7cb3920f9cb6fb74a94fd774a87dd0dd80ba99614c1503b4f25e72899",
+      "canonical": "_m_1_Cube.017.ply",
+      "instances": [
+        "_m_1_Cube.017.ply"
+      ]
+    },
+    {
+      "hash": "3140c69baab9246b07ed32126c639a81f712930cc97c17a2e557b7252864e10a",
+      "canonical": "_m_1_Cube.ply",
+      "instances": [
+        "_m_1_Cube.ply"
+      ]
+    },
+    {
+      "hash": "4d6286371ac4d11dd935f00a7d90a236540acd99eaad03d8311751288bdb8c07",
+      "canonical": "_m_1_Cylinder.001.ply",
+      "instances": [
+        "_m_1_Cylinder.001.ply"
+      ]
+    },
+    {
+      "hash": "aeb2ad117aaaa90189402e940342383d5d0c94f9b52f94dc573ae35f0f943f39",
+      "canonical": "_m_1_Lampholder.001.ply",
+      "instances": [
+        "_m_1_Lampholder.001.ply"
+      ]
+    },
+    {
+      "hash": "5fed50e98ade3308323aad0a38332621cb5693bf0b1bf4843dcd9801d907f92d",
+      "canonical": "_m_1_Mesh.006.ply",
+      "instances": [
+        "_m_1_Mesh.006.ply"
+      ]
+    },
+    {
+      "hash": "6e276bf80fac80d63c4b2ea3a338e5f4447bc3b7b108a572fe22237254e3cd69",
+      "canonical": "_m_2_Circle.004.ply",
+      "instances": [
+        "_m_2_Circle.004.ply"
+      ]
+    },
+    {
+      "hash": "ee04d19f7a6e9df18e33ba6093dfb598afc59f1bd0bfdc4bf38c27de00b69dbd",
+      "canonical": "_m_2_Cube.001.ply",
+      "instances": [
+        "_m_2_Cube.001.ply",
+        "_m_2_Cube.014.ply",
+        "_m_2_Cube.016.ply",
+        "_m_2_Cube.022.ply",
+        "_m_2_Cube.023.ply",
+        "_m_2_Cube.024.ply"
+      ]
+    },
+    {
+      "hash": "feb3d661e134d768abe8aefcd5dcf959a2b1d1791d324b22c20a8bdd92bd444d",
+      "canonical": "_m_2_Cube.003.ply",
+      "instances": [
+        "_m_2_Cube.003.ply"
+      ]
+    },
+    {
+      "hash": "01f92a45a9d6b512fa675c5f22566056cf14aef060ca99e653985ba2a0ac34cb",
+      "canonical": "_m_2_Cube.ply",
+      "instances": [
+        "_m_2_Cube.ply"
+      ]
+    },
+    {
+      "hash": "c47e75bd2b2bd8ad38aa1fa3c870d3aeefc659c2fb5ac0d579400164f58221bb",
+      "canonical": "_m_2_Mesh.006.ply",
+      "instances": [
+        "_m_2_Mesh.006.ply"
+      ]
+    },
+    {
+      "hash": "cc5bfb61c2f2462594c571204d750d29bb85fdb81776c20fdb406d9c60ea815c",
+      "canonical": "_m_3_Cube.001.ply",
+      "instances": [
+        "_m_3_Cube.001.ply",
+        "_m_3_Cube.014.ply",
+        "_m_3_Cube.016.ply",
+        "_m_3_Cube.022.ply",
+        "_m_3_Cube.023.ply",
+        "_m_3_Cube.024.ply"
+      ]
+    },
+    {
+      "hash": "c602ac57b9637feb0010f25bd0173a27480136d02593653eec207a53aef18862",
+      "canonical": "_m_3_Mesh.006.ply",
+      "instances": [
+        "_m_3_Mesh.006.ply"
+      ]
+    },
+    {
+      "hash": "774332192ff3d0320ba779aae76145ac3cee813ddc72de50c49a3650cb67e1f9",
+      "canonical": "_m_4_Cube.001.ply",
+      "instances": [
+        "_m_4_Cube.001.ply",
+        "_m_4_Cube.014.ply",
+        "_m_4_Cube.016.ply",
+        "_m_4_Cube.022.ply",
+        "_m_4_Cube.023.ply",
+        "_m_4_Cube.024.ply"
+      ]
+    }
+  ]
+}
