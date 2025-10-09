@@ -9,13 +9,13 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <future>
 #include <CoreFoundation/CoreFoundation.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <dispatch/dispatch.h>
 #include <thread>
 #include <limits>
 #include <functional>
@@ -167,6 +167,7 @@ void parallelChunkedAsync(size_t start, size_t end, Func &&func) {
   if (end <= start)
     return;
 
+  auto work = std::forward<Func>(func);
   const size_t total = end - start;
   const unsigned int threadCount =
       std::max(1u, std::thread::hardware_concurrency());
@@ -174,19 +175,23 @@ void parallelChunkedAsync(size_t start, size_t end, Func &&func) {
       1, (total + static_cast<size_t>(threadCount) - 1) /
              static_cast<size_t>(threadCount));
 
-  std::vector<std::future<void>> tasks;
-  tasks.reserve((total + chunkSize - 1) / chunkSize);
+  struct Context {
+    size_t start;
+    size_t end;
+    size_t chunkSize;
+    decltype(work) *func;
+  } ctx{start, end, chunkSize, &work};
 
-  for (size_t chunkStart = start; chunkStart < end; chunkStart += chunkSize) {
-    size_t chunkEnd = std::min(chunkStart + chunkSize, end);
-    tasks.emplace_back(std::async(std::launch::async,
-                                  [chunkStart, chunkEnd, &func]() {
-                                    func(chunkStart, chunkEnd);
-                                  }));
-  }
-
-  for (auto &task : tasks)
-    task.get();
+  const size_t chunkCount = (total + chunkSize - 1) / chunkSize;
+  dispatch_queue_t queue =
+      dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+  dispatch_apply_f(chunkCount, queue, &ctx, [](void *rawCtx, size_t chunkIndex) {
+    auto &ctx = *static_cast<Context *>(rawCtx);
+    size_t chunkBegin = ctx.start + chunkIndex * ctx.chunkSize;
+    size_t chunkEnd = std::min(chunkBegin + ctx.chunkSize, ctx.end);
+    if (chunkBegin < ctx.end)
+      (*ctx.func)(chunkBegin, chunkEnd);
+  });
 }
 
 float primitiveArea(const Primitive &p) {
