@@ -701,6 +701,7 @@ void Renderer::updateVisibleScene() {
   _energySortedIndices.clear();
   _primitiveHitScores.assign(primCount, 0.0f);
   _primitiveHitLastFrame.assign(primCount, 0);
+  _primitiveVisible.assign(primCount, false);
   _rayHitSortedIndices.resize(primCount);
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
@@ -4052,12 +4053,41 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
               _primitiveHitScoresSnapshot.begin() + primCount, 0.0f);
   }
 
-  const auto &hitScores = _primitiveHitScoresSnapshot;
+  if (_primitiveVisible.size() < primCount)
+    _primitiveVisible.resize(primCount, false);
+  if (_primitiveHitLastFrame.size() < primCount)
+    _primitiveHitLastFrame.resize(primCount, 0);
+
+  auto &hitScores = _primitiveHitScoresSnapshot;
+  for (size_t i = 0; i < primCount; ++i) {
+    bool visible = false;
+    if (i < _primitiveBounds.size())
+      visible = isInView(_primitiveBounds[i]);
+    _primitiveVisible[i] = visible;
+
+    float score = (i < hitScores.size()) ? hitScores[i] : 0.0f;
+    uint32_t hitsLast =
+        (i < _primitiveHitLastFrame.size()) ? _primitiveHitLastFrame[i] : 0;
+
+    if (!visible) {
+      if (hitsLast == 0)
+        score = 0.0f;
+      else
+        score *= 0.5f;
+    } else if (score <= 0.0f) {
+      score = 1.0f;
+    }
+
+    if (i < hitScores.size())
+      hitScores[i] = score;
+  }
+
+  const auto &adjustedScores = hitScores;
 
   std::sort(_rayHitSortedIndices.begin(), _rayHitSortedIndices.end(),
-            [&hitScores](size_t a, size_t b) {
-              float rawA = (a < hitScores.size()) ? hitScores[a] : 0.0f;
-              float rawB = (b < hitScores.size()) ? hitScores[b] : 0.0f;
+            [&adjustedScores](size_t a, size_t b) {
+              float rawA = (a < adjustedScores.size()) ? adjustedScores[a] : 0.0f;
+              float rawB = (b < adjustedScores.size()) ? adjustedScores[b] : 0.0f;
               float scoreA = sanitizeSortValue(rawA);
               float scoreB = sanitizeSortValue(rawB);
               if (scoreA == scoreB)
