@@ -1950,15 +1950,17 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         }
 
         size_t nodeBase = compactBVHNodes.size() / 2;
-        int32_t cachedRootIndex =
-            static_cast<int32_t>(nodeBase + obj.cachedBlasRootIndex);
 
-        bool encounteredEmptyLeaf = false;
-        std::vector<simd::float4> rebuiltNodes;
-        rebuiltNodes.reserve(obj.cachedBlasNodes.size() * 2);
+        std::vector<BVHNode> rebuiltNodeStructs;
+        rebuiltNodeStructs.reserve(obj.cachedBlasNodes.size());
 
-        for (const BVHNode &node : obj.cachedBlasNodes) {
-          BVHNode adjusted = node;
+        std::function<int(int)> rebuildNode;
+        rebuildNode = [&](int nodeIdx) -> int {
+          if (nodeIdx < 0 ||
+              static_cast<size_t>(nodeIdx) >= obj.cachedBlasNodes.size())
+            return -1;
+
+          BVHNode adjusted = obj.cachedBlasNodes[nodeIdx];
           if (adjusted.count > 0) {
             int newLeftFirst = -1;
             int newCount = 0;
@@ -1976,39 +1978,57 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                     static_cast<int>(record.primitiveIndexBase + remapped);
               ++newCount;
             }
-            if (newCount == 0) {
-              encounteredEmptyLeaf = true;
-              break;
-            }
+            if (newCount == 0)
+              return -1;
             if (newLeftFirst < 0)
               newLeftFirst = static_cast<int>(record.primitiveIndexBase);
-            assert(newCount > 0 &&
-                   "Cached BLAS leaf remapped to zero primitives");
             adjusted.leftFirst = newLeftFirst;
             adjusted.count = newCount;
           } else {
-            int leftChild = adjusted.leftFirst + static_cast<int>(nodeBase);
-            int rightChild = -adjusted.count + static_cast<int>(nodeBase);
+            int leftChild = rebuildNode(adjusted.leftFirst);
+            int rightChild = rebuildNode(-adjusted.count);
+            if (leftChild < 0 && rightChild < 0)
+              return -1;
+            if (leftChild < 0)
+              return rightChild;
+            if (rightChild < 0)
+              return leftChild;
             adjusted.leftFirst = leftChild;
             adjusted.count = -rightChild;
           }
-          float leftBits = 0.0f;
-          float rightBits = 0.0f;
-          std::memcpy(&leftBits, &adjusted.leftFirst, sizeof(int));
-          std::memcpy(&rightBits, &adjusted.count, sizeof(int));
-          rebuiltNodes.push_back(simd::make_float4(adjusted.boundsMin, leftBits));
-          rebuiltNodes.push_back(simd::make_float4(adjusted.boundsMax, rightBits));
-        }
 
-        if (!encounteredEmptyLeaf) {
-          record.blasRootIndex = cachedRootIndex;
-          compactBVHNodes.insert(compactBVHNodes.end(), rebuiltNodes.begin(),
-                                 rebuiltNodes.end());
+          int newIndex = static_cast<int>(rebuiltNodeStructs.size());
+          rebuiltNodeStructs.push_back(adjusted);
+          return newIndex;
+        };
+
+        int rebuiltRoot = rebuildNode(obj.cachedBlasRootIndex);
+        if (rebuiltRoot >= 0) {
+          record.blasRootIndex =
+              static_cast<int32_t>(nodeBase + rebuiltRoot);
+          for (const BVHNode &node : rebuiltNodeStructs) {
+            BVHNode adjusted = node;
+            if (adjusted.count > 0) {
+              // Leaf nodes already reference compact primitive indices.
+            } else {
+              int leftChild = adjusted.leftFirst + static_cast<int>(nodeBase);
+              int rightChild = -adjusted.count + static_cast<int>(nodeBase);
+              adjusted.leftFirst = leftChild;
+              adjusted.count = -rightChild;
+            }
+            float leftBits = 0.0f;
+            float rightBits = 0.0f;
+            std::memcpy(&leftBits, &adjusted.leftFirst, sizeof(int));
+            std::memcpy(&rightBits, &adjusted.count, sizeof(int));
+            compactBVHNodes.push_back(
+                simd::make_float4(adjusted.boundsMin, leftBits));
+            compactBVHNodes.push_back(
+                simd::make_float4(adjusted.boundsMax, rightBits));
+          }
+
           objectShouldBeResident[objectIndex] = true;
           _instanceRecords[objectIndex] = record;
           ++blasCacheReused;
-          assert(!encounteredEmptyLeaf &&
-                 "Cached BLAS leaf with zero primitives reached upload");
           continue;
         }
 
