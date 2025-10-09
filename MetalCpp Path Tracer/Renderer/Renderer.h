@@ -5,7 +5,10 @@
 #include <MetalKit/MetalKit.hpp>
 #include <chrono>
 #include <cstdint>
+#include <deque>
+#include <fstream>
 #include <simd/simd.h>
+#include <string>
 #include <vector>
 
 #include "GpuHeapResources.h"
@@ -75,6 +78,8 @@ public:
   void draw(MTK::View *pView);
   void drawableSizeWillChange(MTK::View *pView, CGSize size);
   void setDeltaTime(double deltaSeconds);
+  void setBenchmarkMode(bool enabled);
+  bool benchmarkModeEnabled() const { return _benchmarkEnabled; }
 
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);
@@ -99,6 +104,7 @@ public:
   };
 
 private:
+  struct BenchmarkSample;
   void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                             size_t &currentCapacity,
@@ -132,6 +138,11 @@ private:
       const std::vector<MTL::AccelerationStructure *> &structures);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
+  void initializeBenchmarking();
+  void ensureBenchmarkStream();
+  void writeBenchmarkHeader();
+  void writeBenchmarkRow(const BenchmarkSample &sample);
+  std::string residencyStrategyName(ResidencyStrategy strategy) const;
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -185,6 +196,40 @@ private:
   ManagedTextureSlot _accumulationSlots[2];
   ManagedTextureSlot _sampleCountSlot;
   ManagedTextureSlot _sampleImportanceSlot;
+
+  struct BenchmarkSample {
+    size_t frameIndex = 0;
+    size_t rayCount = 0;
+    size_t primitiveActivations = 0;
+    size_t primitiveDeactivations = 0;
+    size_t objectActivations = 0;
+    size_t objectDeactivations = 0;
+    size_t activePrimitiveCount = 0;
+    size_t residentPrimitiveCount = 0;
+    size_t totalPrimitiveCount = 0;
+    size_t activeTriangleCount = 0;
+    size_t residentTriangleCount = 0;
+    size_t totalTriangleCount = 0;
+    size_t activeNodeCount = 0;
+    size_t residentNodeCount = 0;
+    size_t totalNodeCount = 0;
+    size_t activeObjectCount = 0;
+    size_t residentObjectCount = 0;
+    double gpuMemoryMB = 0.0;
+    double textureMemoryCapMB = 0.0;
+    double deltaTimeSeconds = 0.0;
+    double wallSeconds = 0.0;
+    double cpuTimeSeconds = 0.0;
+    double gpuTimeSeconds = 0.0;
+    double raysPerSecond = 0.0;
+    ResidencyStrategy strategy = ResidencyStrategy::DistanceLOD;
+    std::string strategyName;
+    uint32_t minSamplesPerPixel = 1;
+    uint32_t maxSamplesPerPixel = 1;
+    bool accumulationReset = false;
+    bool residentCompacted = false;
+    bool overMemoryCap = false;
+  };
 
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
@@ -283,6 +328,19 @@ private:
   size_t _animationFrame = 0;
 
   ResidencyParameters _residencyConfig;
+
+  bool _benchmarkEnabled = false;
+  bool _benchmarkHeaderWritten = false;
+  std::ofstream _benchmarkStream;
+  std::string _benchmarkFilePath;
+  size_t _benchmarkFrameCounter = 0;
+  std::chrono::steady_clock::time_point _benchmarkStartTime;
+  size_t _framePrimitiveActivations = 0;
+  size_t _framePrimitiveDeactivations = 0;
+  size_t _frameObjectActivations = 0;
+  size_t _frameObjectDeactivations = 0;
+  ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
+  std::deque<BenchmarkSample> _pendingBenchmarkSamples;
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
