@@ -632,7 +632,7 @@ void Renderer::buildShaders() {
 void Renderer::updateVisibleScene() {
   if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
-        std::filesystem::path(__FILE__).parent_path() / "../scene_energy_core_intensity.xml";
+        std::filesystem::path(__FILE__).parent_path() / "../scene_screenspace_panorama.xml";
     SceneLoader::LoadSceneFromXML(alt.string(), _pScene);
   }
 
