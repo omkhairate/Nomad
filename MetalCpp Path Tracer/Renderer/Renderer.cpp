@@ -171,6 +171,14 @@ void parallelChunkedAsync(size_t start, size_t end, Func &&func) {
   const size_t total = end - start;
   const unsigned int threadCount =
       std::max(1u, std::thread::hardware_concurrency());
+  const size_t smallWorkThreshold =
+      static_cast<size_t>(threadCount) * static_cast<size_t>(64);
+
+  if (total <= smallWorkThreshold) {
+    work(start, end);
+    return;
+  }
+
   const size_t chunkSize = std::max<size_t>(
       1, (total + static_cast<size_t>(threadCount) - 1) /
              static_cast<size_t>(threadCount));
