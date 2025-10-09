@@ -2804,6 +2804,8 @@ void Renderer::releaseTextureSlot(ManagedTextureSlot &slot) {
     slot.stagingCapacity = 0;
   }
   slot.stagingValid = false;
+  if (slot.descriptorValid)
+    slot.needsClear = true;
 }
 
 const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
@@ -2839,6 +2841,8 @@ void Renderer::configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width
   slot.storageMode = MTL::StorageMode::StorageModePrivate;
   slot.descriptorValid = true;
   slot.stagingValid = false;
+  slot.needsClear = true;
+  _accumulationTargetsNeedClear = true;
 }
 
 size_t Renderer::textureByteSize(const ManagedTextureSlot &slot) const {
@@ -2879,9 +2883,11 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
                 label);
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
+    slot.needsClear = true;
     return nullptr;
   }
 
+  slot.needsClear = true;
   bool logged = false;
   if (slot.stagingBuffer && slot.stagingValid && cmd) {
     size_t totalBytes = textureByteSize(slot);
@@ -2900,11 +2906,13 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
         std::printf(
             "[TextureResidency] Restored slot %s from staging buffer (%zu bytes).\n",
             label, totalBytes);
+        slot.needsClear = false;
         logged = true;
       } else {
         slot.stagingValid = false;
         _needsAccumulationReset = true;
         _accumulationTargetsNeedClear = true;
+        slot.needsClear = true;
         std::printf(
             "[TextureResidency] Restored slot %s without staging data: failed to "
             "obtain blit encoder.\n",
@@ -2915,6 +2923,7 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
       slot.stagingValid = false;
       _needsAccumulationReset = true;
       _accumulationTargetsNeedClear = true;
+      slot.needsClear = true;
       std::printf(
           "[TextureResidency] Restored slot %s without staging data: staging "
           "buffer capacity (%zu) insufficient for %zu bytes.\n",
@@ -2926,6 +2935,8 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
   if (!logged) {
     std::printf(
         "[TextureResidency] Restored slot %s without staging data.\n", label);
+    slot.needsClear = true;
+    _accumulationTargetsNeedClear = true;
   }
 
   return slot.texture;
@@ -2954,6 +2965,7 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     slot.texture->release();
     slot.texture = nullptr;
     slot.stagingValid = false;
+    slot.needsClear = true;
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
     return true;
@@ -2969,6 +2981,7 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     slot.texture->release();
     slot.texture = nullptr;
     slot.stagingValid = false;
+    slot.needsClear = true;
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
     return true;
@@ -2984,6 +2997,7 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     slot.texture->release();
     slot.texture = nullptr;
     slot.stagingValid = false;
+    slot.needsClear = true;
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
     return true;
@@ -3059,6 +3073,7 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
 
   bool anyDescriptors = false;
   bool allResident = true;
+  bool anyNeedClear = false;
   size_t maxBytes = 0;
   for (ManagedTextureSlot *slot : slots) {
     if (!slot->descriptorValid)
@@ -3066,12 +3081,18 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
     anyDescriptors = true;
     if (!slot->texture)
       allResident = false;
+    if (!slot->needsClear)
+      continue;
+    anyNeedClear = true;
     size_t bytes = textureByteSize(*slot);
     maxBytes = std::max(maxBytes, bytes);
   }
 
   if (!anyDescriptors)
     return true;
+
+  if (!anyNeedClear)
+    return allResident;
 
   if (maxBytes == 0)
     return allResident;
@@ -3090,7 +3111,7 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
     return false;
 
   for (ManagedTextureSlot *slot : slots) {
-    if (!slot->texture)
+    if (!slot->needsClear || !slot->texture)
       continue;
     size_t pixelBytes = bytesPerPixel(slot->pixelFormat);
     if (pixelBytes == 0)
@@ -3105,6 +3126,7 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
     blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
                          size, slot->texture, 0, 0, origin);
     slot->stagingValid = false;
+    slot->needsClear = false;
   }
 
   blit->endEncoding();
@@ -3204,12 +3226,13 @@ void Renderer::updateUniforms() {
     _needsAccumulationReset = true;
 
   if (_needsAccumulationReset) {
-    if (!_accumulationTargetsNeedClear) {
-      _accumulationTargetsNeedClear = true;
+    if (!_accumulationResetSeeded) {
       u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
+      _accumulationResetSeeded = true;
     }
     u.frameCount = 0;
   } else {
+    _accumulationResetSeeded = false;
     u.frameCount++;
   }
 
@@ -3273,10 +3296,6 @@ void Renderer::draw(MTK::View *pView) {
   if (!pCmd) {
     if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty())
       _pendingBenchmarkSamples.pop_back();
-    if (_accumulationTargetsNeedClear) {
-      _accumulationTargetsNeedClear = false;
-      _needsAccumulationReset = false;
-    }
     pPool->release();
     return;
   }
@@ -3293,6 +3312,9 @@ void Renderer::draw(MTK::View *pView) {
       _needsAccumulationReset || (!belowBudget && !overCap);
 
   MTL::BlitCommandEncoder *restoreBlit = nullptr;
+  std::array<ManagedTextureSlot *, 4> managedSlots = {
+      &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
+      &_sampleImportanceSlot};
   MTL::Texture *accum0 = _accumulationSlots[0].texture;
   MTL::Texture *accum1 = _accumulationSlots[1].texture;
   MTL::Texture *sampleCount = _sampleCountSlot.texture;
@@ -3310,10 +3332,35 @@ void Renderer::draw(MTK::View *pView) {
   bool haveAllTextures =
       accum0 && accum1 && sampleCount && sampleImportance;
 
-  if (_accumulationTargetsNeedClear && haveAllTextures) {
+  bool pendingPhysicalClear = _accumulationTargetsNeedClear;
+  if (!pendingPhysicalClear) {
+    for (ManagedTextureSlot *slot : managedSlots) {
+      if (slot && slot->needsClear) {
+        pendingPhysicalClear = true;
+        _accumulationTargetsNeedClear = true;
+        _needsAccumulationReset = true;
+        break;
+      }
+    }
+  } else {
+    bool anyNeedsClear = false;
+    for (ManagedTextureSlot *slot : managedSlots) {
+      if (slot && slot->needsClear) {
+        anyNeedsClear = true;
+        break;
+      }
+    }
+    if (!anyNeedsClear) {
+      pendingPhysicalClear = false;
+      _accumulationTargetsNeedClear = false;
+    }
+  }
+
+  if (pendingPhysicalClear && haveAllTextures) {
     if (resetAccumulationTargets(pCmd)) {
       _accumulationTargetsNeedClear = false;
       _needsAccumulationReset = false;
+      pendingPhysicalClear = false;
     }
   }
 
@@ -3340,6 +3387,9 @@ void Renderer::draw(MTK::View *pView) {
       bool useAccelerationStructureLayout =
           _useAccelerationStructureBindings && _pTlasStructure &&
           _pGeometryHandleBuffer;
+
+      bool logicalResetPending =
+          _needsAccumulationReset && !_accumulationTargetsNeedClear;
 
       if (useAccelerationStructureLayout) {
         pCompute->setAccelerationStructure(_pTlasStructure, 0);
@@ -3389,6 +3439,9 @@ void Renderer::draw(MTK::View *pView) {
       }
 
       pCompute->endEncoding();
+
+      if (logicalResetPending)
+        _needsAccumulationReset = false;
     }
   }
 
