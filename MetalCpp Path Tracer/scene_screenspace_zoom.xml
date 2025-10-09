@@ -1,6 +1,6 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="screenSpaceFootprint"
        textureResidencyMemoryCapMB="16"
-       screenTargetFraction="0.18" screenMinActive="100" screenToggleBudget="750"
+       screenTargetFraction="0.90" screenMinActive="200" screenToggleBudget="100"
        screenMinPixelCoverage="18">
     <CameraPath>
         <!-- Rapid zoom exposes how screen coverage reduction frees GPU memory -->
