@@ -465,15 +465,11 @@ Renderer::~Renderer() {
     _pActiveBuffer->release();
   if (_pPrimitiveRemapBuffer)
     _pPrimitiveRemapBuffer->release();
+  flushRayHitCopy();
   if (_pPrimitiveHitBufferGPU)
     _pPrimitiveHitBufferGPU->release();
   if (_pPrimitiveHitReadback)
     _pPrimitiveHitReadback->release();
-  if (_lastRayHitCommandBuffer) {
-    _lastRayHitCommandBuffer->waitUntilCompleted();
-    _lastRayHitCommandBuffer->release();
-    _lastRayHitCommandBuffer = nullptr;
-  }
   if (_pLightIndexBuffer)
     _pLightIndexBuffer->release();
   if (_pLightCdfBuffer)
@@ -754,6 +750,7 @@ void Renderer::updateVisibleScene() {
 
   size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
   size_t hitBytes = hitCount * sizeof(uint32_t);
+  flushRayHitCopy();
   ensureBufferCapacity(_pPrimitiveHitBufferGPU, hitBytes,
                        _primitiveHitBufferCapacity, false,
                        MTL::ResourceStorageModePrivate);
@@ -4576,12 +4573,16 @@ double Renderer::currentGPUMemoryMB() const {
          (1024.0 * 1024.0);
 }
 
-void Renderer::processRayHitCounters() {
+void Renderer::flushRayHitCopy() {
   if (_lastRayHitCommandBuffer) {
     _lastRayHitCommandBuffer->waitUntilCompleted();
     _lastRayHitCommandBuffer->release();
     _lastRayHitCommandBuffer = nullptr;
   }
+}
+
+void Renderer::processRayHitCounters() {
+  flushRayHitCopy();
 
   if (!_pPrimitiveHitReadback)
     return;
