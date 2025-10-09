@@ -3525,7 +3525,9 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   // Use hysteresis so objects do not flicker when hovering near the activation
   // boundary. Inactive objects only become active once the camera is closer
   // than LOD_ENTER_DISTANCE, while active objects stay active until the camera
-  // has moved beyond LOD_EXIT_DISTANCE.
+  // has moved beyond LOD_EXIT_DISTANCE. Objects fully behind the camera are
+  // treated as infinitely far away and immediately culled regardless of
+  // distance thresholds.
 
   size_t toggles = 0;
   bool changed = false;
@@ -3533,13 +3535,29 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   const size_t objectCount = _allSceneObjects.size();
   std::vector<float> objectDistances(objectCount,
                                      std::numeric_limits<float>::max());
+  std::vector<bool> objectBehind(objectCount, false);
   std::vector<size_t> sortedIndices(objectCount);
+  simd::float3 forward = Camera::forward;
+  float forwardLenSq = simd::length_squared(forward);
+  bool forwardValid = forwardLenSq >= 1e-6f;
+  if (forwardValid)
+    forward /= std::sqrt(forwardLenSq);
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const BoundingSphere &sphere =
         (objectIndex < _objectBounds.size())
             ? _objectBounds[objectIndex]
             : BoundingSphere{simd::make_float3(0.0f, 0.0f, 0.0f), 0.0f};
-    float dist = simd::length(sphere.center - Camera::position) - sphere.radius;
+    simd::float3 toCenter = sphere.center - Camera::position;
+    float dist = simd::length(toCenter) - sphere.radius;
+    if (forwardValid) {
+      float forwardDepth = simd::dot(toCenter, forward);
+      if (forwardDepth + sphere.radius <= 0.0f) {
+        objectDistances[objectIndex] = std::numeric_limits<float>::max();
+        objectBehind[objectIndex] = true;
+        sortedIndices[objectIndex] = objectIndex;
+        continue;
+      }
+    }
     objectDistances[objectIndex] = std::max(dist, 0.0f);
     sortedIndices[objectIndex] = objectIndex;
   }
@@ -3557,9 +3575,10 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
 
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
+    bool behind = objectIndex < objectBehind.size() && objectBehind[objectIndex];
     bool shouldBeActive =
-        currentlyActive ? dist <= _residencyConfig.lodExitDistance
-                         : dist < _residencyConfig.lodEnterDistance;
+        currentlyActive ? (dist <= _residencyConfig.lodExitDistance && !behind)
+                         : (dist < _residencyConfig.lodEnterDistance && !behind);
     bool canToggle =
         forceAllToggles || objectIndex >= _objectCooldown.size() ||
         _objectCooldown[objectIndex] == 0;
