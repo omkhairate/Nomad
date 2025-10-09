@@ -4379,23 +4379,33 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
 
   const auto &adjustedScores = hitScores;
 
-  std::sort(_rayHitSortedIndices.begin(), _rayHitSortedIndices.end(),
-            [&adjustedScores](size_t a, size_t b) {
-              float rawA = (a < adjustedScores.size()) ? adjustedScores[a] : 0.0f;
-              float rawB = (b < adjustedScores.size()) ? adjustedScores[b] : 0.0f;
-              float scoreA = sanitizeSortValue(rawA);
-              float scoreB = sanitizeSortValue(rawB);
-              if (scoreA == scoreB)
-                return a < b;
-              return scoreA > scoreB;
-            });
-
   const size_t minActive =
       std::min(primCount, _residencyConfig.rayHitMinActivePrimitives);
   size_t targetActive = static_cast<size_t>(
       std::ceil(primCount * _residencyConfig.rayHitTargetFraction));
   targetActive = std::max(targetActive, minActive);
   targetActive = std::min(targetActive, primCount);
+
+  size_t sortCount = std::max(minActive, targetActive);
+  sortCount = std::max<size_t>(sortCount, 1);
+  sortCount = std::min(sortCount, primCount);
+
+  if (sortCount > 0) {
+    std::partial_sort(_rayHitSortedIndices.begin(),
+                      _rayHitSortedIndices.begin() + sortCount,
+                      _rayHitSortedIndices.end(),
+                      [&adjustedScores](size_t a, size_t b) {
+                        float rawA =
+                            (a < adjustedScores.size()) ? adjustedScores[a] : 0.0f;
+                        float rawB =
+                            (b < adjustedScores.size()) ? adjustedScores[b] : 0.0f;
+                        float scoreA = sanitizeSortValue(rawA);
+                        float scoreB = sanitizeSortValue(rawB);
+                        if (scoreA == scoreB)
+                          return a < b;
+                        return scoreA > scoreB;
+                      });
+  }
 
   std::vector<bool> desired(primCount, false);
   size_t enabled = 0;
