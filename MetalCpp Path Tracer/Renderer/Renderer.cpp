@@ -9,12 +9,14 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <future>
 #include <CoreFoundation/CoreFoundation.h>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <thread>
 #include <limits>
 #include <functional>
 #include <filesystem>
@@ -158,6 +160,33 @@ size_t bytesPerPixel(MTL::PixelFormat format) {
 
 float luminance(const simd::float3 &c) {
   return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+}
+
+template <typename Func>
+void parallelChunkedAsync(size_t start, size_t end, Func &&func) {
+  if (end <= start)
+    return;
+
+  const size_t total = end - start;
+  const unsigned int threadCount =
+      std::max(1u, std::thread::hardware_concurrency());
+  const size_t chunkSize = std::max<size_t>(
+      1, (total + static_cast<size_t>(threadCount) - 1) /
+             static_cast<size_t>(threadCount));
+
+  std::vector<std::future<void>> tasks;
+  tasks.reserve((total + chunkSize - 1) / chunkSize);
+
+  for (size_t chunkStart = start; chunkStart < end; chunkStart += chunkSize) {
+    size_t chunkEnd = std::min(chunkStart + chunkSize, end);
+    tasks.emplace_back(std::async(std::launch::async,
+                                  [chunkStart, chunkEnd, &func]() {
+                                    func(chunkStart, chunkEnd);
+                                  }));
+  }
+
+  for (auto &task : tasks)
+    task.get();
 }
 
 float primitiveArea(const Primitive &p) {
@@ -741,7 +770,7 @@ void Renderer::updateVisibleScene() {
   _energySortedIndices.clear();
   _primitiveHitScores.assign(primCount, 0.0f);
   _primitiveHitLastFrame.assign(primCount, 0);
-  _primitiveVisible.assign(primCount, false);
+  _primitiveVisible.assign(primCount, 0);
   _rayHitSortedIndices.resize(primCount);
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
@@ -4114,33 +4143,35 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
   }
 
   if (_primitiveVisible.size() < primCount)
-    _primitiveVisible.resize(primCount, false);
+    _primitiveVisible.resize(primCount, 0);
   if (_primitiveHitLastFrame.size() < primCount)
     _primitiveHitLastFrame.resize(primCount, 0);
 
   auto &hitScores = _primitiveHitScoresSnapshot;
-  for (size_t i = 0; i < primCount; ++i) {
-    bool visible = false;
-    if (i < _primitiveBounds.size())
-      visible = isInView(_primitiveBounds[i]);
-    _primitiveVisible[i] = visible;
+  parallelChunkedAsync(0, primCount, [&](size_t chunkBegin, size_t chunkEnd) {
+    for (size_t i = chunkBegin; i < chunkEnd; ++i) {
+      bool visible = false;
+      if (i < _primitiveBounds.size())
+        visible = isInView(_primitiveBounds[i]);
+      _primitiveVisible[i] = visible ? 1 : 0;
 
-    float score = (i < hitScores.size()) ? hitScores[i] : 0.0f;
-    uint32_t hitsLast =
-        (i < _primitiveHitLastFrame.size()) ? _primitiveHitLastFrame[i] : 0;
+      float score = (i < hitScores.size()) ? hitScores[i] : 0.0f;
+      uint32_t hitsLast =
+          (i < _primitiveHitLastFrame.size()) ? _primitiveHitLastFrame[i] : 0;
 
-    if (!visible) {
-      if (hitsLast == 0)
-        score = 0.0f;
-      else
-        score *= 0.5f;
-    } else if (score <= 0.0f) {
-      score = 1.0f;
+      if (!visible) {
+        if (hitsLast == 0)
+          score = 0.0f;
+        else
+          score *= 0.5f;
+      } else if (score <= 0.0f) {
+        score = 1.0f;
+      }
+
+      if (i < hitScores.size())
+        hitScores[i] = score;
     }
-
-    if (i < hitScores.size())
-      hitScores[i] = score;
-  }
+  });
 
   const auto &adjustedScores = hitScores;
 
