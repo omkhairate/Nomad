@@ -419,14 +419,54 @@ bool Renderer::isInView(const BoundingSphere &b) {
   float dist = simd::length(toCenter);
   if (dist < 1e-5f)
     return true;
+
+  simd::float3 forward = simd::normalize(Camera::forward);
+  float forwardLenSq = simd::length_squared(forward);
+  if (forwardLenSq < 1e-6f)
+    return true;
+
   simd::float3 dir = toCenter / dist;
-  float cosAngle = simd::dot(simd::normalize(Camera::forward), dir);
-  if (cosAngle <= 0.0f)
+  float forwardDot = simd::dot(dir, forward);
+  if (forwardDot <= 0.0f)
     return false;
-  float angle = acosf(cosAngle);
-  float halfFov = (Camera::verticalFov * M_PI / 180.0f) * 0.5f;
+
+  simd::float3 up = Camera::up;
+  float upLenSq = simd::length_squared(up);
+  if (upLenSq < 1e-6f) {
+    up = {0.0f, 1.0f, 0.0f};
+    upLenSq = 1.0f;
+  }
+  up /= std::sqrt(upLenSq);
+
+  simd::float3 right = simd::cross(forward, up);
+  float rightLenSq = simd::length_squared(right);
+  if (rightLenSq < 1e-6f) {
+    right = {1.0f, 0.0f, 0.0f};
+    rightLenSq = 1.0f;
+  }
+  right /= std::sqrt(rightLenSq);
+
+  up = simd::normalize(simd::cross(right, forward));
+
+  float verticalHalfFov =
+      Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
+  if (verticalHalfFov <= 0.0f)
+    verticalHalfFov = 1e-3f;
+
+  float aspect = Camera::screenSize.y > 0.0f
+                     ? Camera::screenSize.x / Camera::screenSize.y
+                     : 1.0f;
+  float horizontalHalfFov = std::atan(std::tan(verticalHalfFov) * aspect);
+
   float radiusAngle = asinf(std::min(b.radius / dist, 1.0f));
-  return angle <= halfFov + radiusAngle;
+
+  float horizontalAngle =
+      std::atan2(std::fabs(simd::dot(dir, right)), forwardDot);
+  float verticalAngle =
+      std::atan2(std::fabs(simd::dot(dir, up)), forwardDot);
+
+  return horizontalAngle <= horizontalHalfFov + radiusAngle &&
+         verticalAngle <= verticalHalfFov + radiusAngle;
 }
 
 Renderer::Renderer(MTL::Device *pDevice)
