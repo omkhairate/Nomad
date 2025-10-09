@@ -4181,18 +4181,70 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     ++objectPrimitiveContribution[objectIndex];
   }
 
-  std::vector<size_t> sortedObjects(objectCount);
-  std::iota(sortedObjects.begin(), sortedObjects.end(), size_t(0));
-  std::sort(sortedObjects.begin(), sortedObjects.end(),
-            [&objectCoverage](size_t a, size_t b) {
-              float ca = sanitizeSortValue(objectCoverage[a]);
-              float cb = sanitizeSortValue(objectCoverage[b]);
+  std::vector<size_t> objectPrimitiveTotals(objectCount, 0);
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    size_t declaredPrimitiveCount =
+        objectIndex < _allSceneObjects.size()
+            ? _allSceneObjects[objectIndex].primitiveCount
+            : size_t(0);
+    if (declaredPrimitiveCount == 0)
+      declaredPrimitiveCount = objectPrimitiveContribution[objectIndex];
+    objectPrimitiveTotals[objectIndex] = declaredPrimitiveCount;
+  }
+
+  struct MeshGroupCoverage {
+    int meshGroupId = -1;
+    std::vector<size_t> objectIndices;
+    float coverage = 0.0f;
+    size_t primitiveCount = 0;
+  };
+
+  std::vector<MeshGroupCoverage> meshGroups;
+  meshGroups.reserve(objectCount);
+  std::unordered_map<int, size_t> meshToGroup;
+  meshToGroup.reserve(objectCount);
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    size_t groupIndex = std::numeric_limits<size_t>::max();
+    if (obj.meshGroupId >= 0) {
+      auto it = meshToGroup.find(obj.meshGroupId);
+      if (it == meshToGroup.end()) {
+        meshGroups.emplace_back();
+        groupIndex = meshGroups.size() - 1;
+        meshGroups[groupIndex].meshGroupId = obj.meshGroupId;
+        meshToGroup.emplace(obj.meshGroupId, groupIndex);
+      } else {
+        groupIndex = it->second;
+      }
+    } else {
+      meshGroups.emplace_back();
+      groupIndex = meshGroups.size() - 1;
+      meshGroups[groupIndex].meshGroupId = obj.meshGroupId;
+    }
+
+    MeshGroupCoverage &group = meshGroups[groupIndex];
+    group.objectIndices.push_back(objectIndex);
+    group.coverage += objectCoverage[objectIndex];
+    group.primitiveCount += objectPrimitiveTotals[objectIndex];
+  }
+
+  std::vector<size_t> sortedGroups(meshGroups.size());
+  std::iota(sortedGroups.begin(), sortedGroups.end(), size_t(0));
+  std::sort(sortedGroups.begin(), sortedGroups.end(),
+            [&meshGroups](size_t a, size_t b) {
+              float ca = (a < meshGroups.size())
+                             ? sanitizeSortValue(meshGroups[a].coverage)
+                             : 0.0f;
+              float cb = (b < meshGroups.size())
+                             ? sanitizeSortValue(meshGroups[b].coverage)
+                             : 0.0f;
               if (ca == cb)
                 return a < b;
               return ca > cb;
             });
 
-  std::vector<bool> desiredObjectState(objectCount, false);
+  std::vector<bool> desiredGroupState(meshGroups.size(), false);
   const size_t minActivePrimitives = std::min(
       primCount, _residencyConfig.screenFootprintMinActivePrimitives);
   const float targetCoverage =
@@ -4200,17 +4252,15 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   size_t primitivesEnabled = 0;
   float accumulatedCoverage = 0.0f;
 
-  for (size_t objectIndex : sortedObjects) {
-    size_t declaredPrimitiveCount =
-        objectIndex < _allSceneObjects.size()
-            ? _allSceneObjects[objectIndex].primitiveCount
-            : size_t(0);
-    if (declaredPrimitiveCount == 0)
-      declaredPrimitiveCount = objectPrimitiveContribution[objectIndex];
+  for (size_t groupIndex : sortedGroups) {
+    if (groupIndex >= meshGroups.size())
+      continue;
+    const MeshGroupCoverage &group = meshGroups[groupIndex];
+    size_t declaredPrimitiveCount = group.primitiveCount;
     if (declaredPrimitiveCount == 0)
       continue;
 
-    float coverage = objectCoverage[objectIndex];
+    float coverage = group.coverage;
     bool minPrimitivesSatisfied = primitivesEnabled >= minActivePrimitives;
     bool coverageSatisfied = accumulatedCoverage >= targetCoverage;
     if (minPrimitivesSatisfied && coverageSatisfied)
@@ -4221,73 +4271,106 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     if (minPrimitivesSatisfied && coverage <= 0.0f)
       break;
 
-    desiredObjectState[objectIndex] = true;
+    desiredGroupState[groupIndex] = true;
     primitivesEnabled += declaredPrimitiveCount;
     accumulatedCoverage += coverage;
   }
 
-  for (size_t objectIndex : sortedObjects) {
+  for (size_t groupIndex : sortedGroups) {
     if (primitivesEnabled >= minActivePrimitives)
       break;
-    if (desiredObjectState[objectIndex])
+    if (groupIndex >= meshGroups.size())
       continue;
-    size_t declaredPrimitiveCount =
-        objectIndex < _allSceneObjects.size()
-            ? _allSceneObjects[objectIndex].primitiveCount
-            : size_t(0);
-    if (declaredPrimitiveCount == 0)
-      declaredPrimitiveCount = objectPrimitiveContribution[objectIndex];
+    if (desiredGroupState[groupIndex])
+      continue;
+    const MeshGroupCoverage &group = meshGroups[groupIndex];
+    size_t declaredPrimitiveCount = group.primitiveCount;
     if (declaredPrimitiveCount == 0)
       continue;
-    desiredObjectState[objectIndex] = true;
+    desiredGroupState[groupIndex] = true;
     primitivesEnabled += declaredPrimitiveCount;
-    accumulatedCoverage += objectCoverage[objectIndex];
+    accumulatedCoverage += group.coverage;
+  }
+
+  std::vector<bool> desiredObjectState(objectCount, false);
+  for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
+    bool groupDesired = desiredGroupState[groupIndex];
+    for (size_t objectIndex : meshGroups[groupIndex].objectIndices) {
+      if (objectIndex < desiredObjectState.size())
+        desiredObjectState[objectIndex] = groupDesired;
+    }
   }
 
   bool changed = false;
   size_t toggledPrimitiveCount = 0;
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-    bool shouldBeActive = desiredObjectState[objectIndex];
-    bool currentlyActive =
-        objectIndex < _objectActive.size() && _objectActive[objectIndex];
-    if (shouldBeActive == currentlyActive)
+  for (size_t groupIndex : sortedGroups) {
+    if (groupIndex >= meshGroups.size())
       continue;
+    if (!forceAllToggles &&
+        toggledPrimitiveCount >=
+            _residencyConfig.screenFootprintMaxTogglesPerFrame)
+      break;
 
-    if (!forceAllToggles) {
-      if (objectIndex < _objectCooldown.size() &&
-          _objectCooldown[objectIndex] > 0)
-        continue;
-      if (toggledPrimitiveCount >=
-          _residencyConfig.screenFootprintMaxTogglesPerFrame)
-        break;
-    }
+    bool groupDesired = desiredGroupState[groupIndex];
+    const MeshGroupCoverage &group = meshGroups[groupIndex];
+    std::vector<size_t> objectsToToggle;
+    objectsToToggle.reserve(group.objectIndices.size());
+    size_t groupTogglePrimitives = 0;
+    bool canToggleGroup = true;
 
-    const SceneObject &obj = _allSceneObjects[objectIndex];
-    size_t first = obj.firstPrimitive;
-    size_t last = first + obj.primitiveCount;
-    size_t togglesNeeded = 0;
-    bool canToggle = true;
-    for (size_t prim = first; prim < last && prim < _activePrimitive.size();
-         ++prim) {
-      if (_activePrimitive[prim] == shouldBeActive)
+    for (size_t objectIndex : group.objectIndices) {
+      if (objectIndex >= desiredObjectState.size())
         continue;
-      if (!forceAllToggles && prim < _primitiveCooldown.size() &&
-          _primitiveCooldown[prim] > 0) {
-        canToggle = false;
+      bool shouldBeActive = desiredObjectState[objectIndex];
+      bool currentlyActive =
+          objectIndex < _objectActive.size() && _objectActive[objectIndex];
+      if (shouldBeActive == currentlyActive)
+        continue;
+
+      if (!forceAllToggles && objectIndex < _objectCooldown.size() &&
+          _objectCooldown[objectIndex] > 0) {
+        canToggleGroup = false;
         break;
       }
-      ++togglesNeeded;
+
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      for (size_t prim = first; prim < last && prim < _activePrimitive.size();
+           ++prim) {
+        if (_activePrimitive[prim] == shouldBeActive)
+          continue;
+        if (!forceAllToggles && prim < _primitiveCooldown.size() &&
+            _primitiveCooldown[prim] > 0) {
+          canToggleGroup = false;
+          break;
+        }
+        ++groupTogglePrimitives;
+        if (!forceAllToggles &&
+            toggledPrimitiveCount + groupTogglePrimitives >
+                _residencyConfig.screenFootprintMaxTogglesPerFrame) {
+          canToggleGroup = false;
+          break;
+        }
+      }
+
+      if (!canToggleGroup)
+        break;
+
+      objectsToToggle.push_back(objectIndex);
     }
 
-    if (!canToggle || togglesNeeded == 0)
+    if (!canToggleGroup || objectsToToggle.empty())
       continue;
 
-    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
-    if (toggled > 0) {
-      toggledPrimitiveCount = std::min(
-          toggledPrimitiveCount + toggled,
-          _residencyConfig.screenFootprintMaxTogglesPerFrame);
-      changed = true;
+    for (size_t objectIndex : objectsToToggle) {
+      size_t toggled = setObjectActive(objectIndex, groupDesired);
+      if (toggled > 0) {
+        toggledPrimitiveCount = std::min(
+            toggledPrimitiveCount + toggled,
+            _residencyConfig.screenFootprintMaxTogglesPerFrame);
+        changed = true;
+      }
     }
   }
 
@@ -4300,17 +4383,30 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   }
 
   if (!anyActivePrimitive) {
-    for (size_t objectIndex : sortedObjects) {
-      if (objectIndex >= _allSceneObjects.size())
+    size_t fallbackPrimitives = 0;
+    for (size_t groupIndex : sortedGroups) {
+      if (groupIndex >= meshGroups.size())
         continue;
-      if (_allSceneObjects[objectIndex].primitiveCount == 0 &&
-          objectPrimitiveContribution[objectIndex] == 0)
+      const MeshGroupCoverage &group = meshGroups[groupIndex];
+      if (group.primitiveCount == 0)
         continue;
-      if (setObjectActive(objectIndex, true) > 0) {
-        changed = true;
+
+      bool groupActivated = false;
+      for (size_t objectIndex : group.objectIndices) {
+        if (objectIndex >= _allSceneObjects.size())
+          continue;
+        if (setObjectActive(objectIndex, true) > 0) {
+          changed = true;
+          groupActivated = true;
+        }
+      }
+
+      if (groupActivated) {
+        fallbackPrimitives += group.primitiveCount;
         anyActivePrimitive = true;
       }
-      if (anyActivePrimitive)
+
+      if (anyActivePrimitive && fallbackPrimitives >= minActivePrimitives)
         break;
     }
   }
