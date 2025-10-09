@@ -14,7 +14,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <cstdint>
+#include <ctime>
 #include <dispatch/dispatch.h>
 #include <thread>
 #include <limits>
@@ -22,8 +24,10 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <iomanip>
 #include <numeric>
 #include <simd/simd.h>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <unordered_map>
@@ -524,6 +528,7 @@ Renderer::Renderer(MTL::Device *pDevice)
   buildTextures();
 
   recalculateViewport();
+  initializeBenchmarking();
 }
 
 Renderer::~Renderer() {
@@ -596,7 +601,177 @@ Renderer::~Renderer() {
   if (_pDevice)
     _pDevice->release();
 
+  if (_benchmarkStream.is_open())
+    _benchmarkStream.close();
+
   delete _pScene;
+}
+
+void Renderer::setBenchmarkMode(bool enabled) {
+  if (enabled == _benchmarkEnabled)
+    return;
+
+  _benchmarkEnabled = enabled;
+  if (_benchmarkEnabled) {
+    _benchmarkFrameCounter = 0;
+    _benchmarkHeaderWritten = false;
+    _pendingBenchmarkSamples.clear();
+    _benchmarkStartTime = std::chrono::steady_clock::now();
+    ensureBenchmarkStream();
+    if (_benchmarkStream.is_open()) {
+      printf("Benchmark logging enabled: %s\n",
+             _benchmarkFilePath.empty() ? "<memory>"
+                                        : _benchmarkFilePath.c_str());
+    }
+  } else {
+    if (_benchmarkStream.is_open())
+      _benchmarkStream.close();
+    _pendingBenchmarkSamples.clear();
+  }
+}
+
+void Renderer::initializeBenchmarking() {
+  const char *primaryEnv = std::getenv("METALPT_BENCH");
+  const char *legacyEnv = std::getenv("METALAPT_BENCH");
+  const char *env = primaryEnv ? primaryEnv : legacyEnv;
+  if (!env)
+    return;
+
+  if (!primaryEnv && legacyEnv) {
+    printf("METALAPT_BENCH detected; please update to METALPT_BENCH for future runs.\n");
+  }
+
+  std::string value(env);
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+  bool enable = value == "1" || value == "true" || value == "yes" || value == "on";
+  setBenchmarkMode(enable);
+}
+
+void Renderer::ensureBenchmarkStream() {
+  if (!_benchmarkEnabled)
+    return;
+  if (_benchmarkStream.is_open())
+    return;
+
+  std::filesystem::path benchmarksDir = std::filesystem::current_path() / "Benchmarks";
+  std::error_code ec;
+  std::filesystem::create_directories(benchmarksDir, ec);
+
+  auto now = std::chrono::system_clock::now();
+  std::time_t nowTime = std::chrono::system_clock::to_time_t(now);
+  std::tm timeInfo{};
+#if defined(_WIN32)
+  localtime_s(&timeInfo, &nowTime);
+#else
+  localtime_r(&nowTime, &timeInfo);
+#endif
+  std::ostringstream nameBuilder;
+  nameBuilder << "metrics_" << std::put_time(&timeInfo, "%Y%m%d_%H%M%S") << ".csv";
+  _benchmarkFilePath = (benchmarksDir / nameBuilder.str()).string();
+
+  _benchmarkStream.open(_benchmarkFilePath, std::ios::out | std::ios::trunc);
+  if (_benchmarkStream.is_open()) {
+    writeBenchmarkHeader();
+  } else {
+    printf("Failed to open benchmark log '%s'\n", _benchmarkFilePath.c_str());
+  }
+}
+
+void Renderer::writeBenchmarkHeader() {
+  if (!_benchmarkStream.is_open())
+    return;
+  if (_benchmarkHeaderWritten)
+    return;
+
+  _benchmarkStream
+      << "frame,wall_seconds,cpu_ms,gpu_ms,rays_per_second,rays_cast,strategy,"
+         "strategy_id,delta_time_seconds,min_samples_per_pixel,max_samples_per_pixel,"
+         "primitive_activations,primitive_deactivations,object_activations,"
+         "object_deactivations,active_primitives,resident_primitives,total_primitives,"
+         "active_triangles,resident_triangles,total_triangles,active_nodes,"
+         "resident_nodes,total_nodes,active_objects,resident_objects,gpu_memory_mb,"
+         "texture_memory_cap_mb,over_memory_cap,residency_compacted,"
+         "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
+         "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
+         "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
+         "lod_enter_distance,lod_exit_distance,energy_target_fraction,"
+         "energy_min_active,energy_visibility_boost,screen_target_fraction,"
+         "screen_min_pixels,screen_min_active";
+  _benchmarkStream << '\n';
+  _benchmarkHeaderWritten = true;
+}
+
+static std::string formatFixed(double value, int precision) {
+  std::ostringstream ss;
+  ss << std::fixed << std::setprecision(precision) << value;
+  return ss.str();
+}
+
+void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
+  if (!_benchmarkStream.is_open())
+    return;
+
+  auto boolToInt = [](bool v) { return v ? 1 : 0; };
+
+  std::ostringstream row;
+  row << sample.frameIndex << ',' << formatFixed(sample.wallSeconds, 6) << ','
+      << formatFixed(sample.cpuTimeSeconds * 1000.0, 3) << ','
+      << formatFixed(sample.gpuTimeSeconds * 1000.0, 3) << ','
+      << formatFixed(sample.raysPerSecond, 2) << ',' << sample.rayCount << ','
+      << '"' << sample.strategyName << "\"," << static_cast<int>(sample.strategy)
+      << ',' << formatFixed(sample.deltaTimeSeconds, 6) << ','
+      << sample.minSamplesPerPixel << ',' << sample.maxSamplesPerPixel << ','
+      << sample.primitiveActivations << ',' << sample.primitiveDeactivations << ','
+      << sample.objectActivations << ',' << sample.objectDeactivations << ','
+      << sample.activePrimitiveCount << ',' << sample.residentPrimitiveCount << ','
+      << sample.totalPrimitiveCount << ',' << sample.activeTriangleCount << ','
+      << sample.residentTriangleCount << ',' << sample.totalTriangleCount << ','
+      << sample.activeNodeCount << ',' << sample.residentNodeCount << ','
+      << sample.totalNodeCount << ',' << sample.activeObjectCount << ','
+      << sample.residentObjectCount << ','
+      << formatFixed(sample.gpuMemoryMB, 3) << ','
+      << formatFixed(sample.textureMemoryCapMB, 3) << ','
+      << boolToInt(sample.overMemoryCap) << ','
+      << boolToInt(sample.residentCompacted) << ','
+      << boolToInt(sample.accumulationReset) << ','
+      << formatFixed(_residencyConfig.rayHitDecay, 3) << ','
+      << _residencyConfig.stateCooldownFrames << ','
+      << _residencyConfig.lodMaxTogglesPerFrame << ','
+      << _residencyConfig.energyMaxTogglesPerFrame << ','
+      << _residencyConfig.screenFootprintMaxTogglesPerFrame << ','
+      << _residencyConfig.rayHitMaxTogglesPerFrame << ','
+      << formatFixed(_residencyConfig.rayHitTargetFraction, 3) << ','
+      << _residencyConfig.rayHitMinActivePrimitives << ','
+      << _residencyConfig.rayHitRebuildCooldownFrames << ','
+      << formatFixed(_residencyConfig.lodEnterDistance, 3) << ','
+      << formatFixed(_residencyConfig.lodExitDistance, 3) << ','
+      << formatFixed(_residencyConfig.energyTargetFraction, 3) << ','
+      << _residencyConfig.energyMinActivePrimitives << ','
+      << formatFixed(_residencyConfig.energyVisibilityBoost, 3) << ','
+      << formatFixed(_residencyConfig.screenFootprintTargetFraction, 3) << ','
+      << formatFixed(_residencyConfig.screenFootprintMinPixelCoverage, 3) << ','
+      << _residencyConfig.screenFootprintMinActivePrimitives;
+
+  _benchmarkStream << row.str() << '\n';
+  _benchmarkStream.flush();
+}
+
+std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
+  switch (strategy) {
+  case ResidencyStrategy::EnergyImportance:
+    return "Energy importance";
+  case ResidencyStrategy::RayHitBudget:
+    return "Ray-hit budget";
+  case ResidencyStrategy::ScreenSpaceFootprint:
+    return "Screen-space footprint";
+  case ResidencyStrategy::AlwaysResident:
+    return "Always resident";
+  case ResidencyStrategy::DistanceLOD:
+  default:
+    return "Distance-based LOD";
+  }
 }
 
 void Renderer::setDeltaTime(double deltaSeconds) {
@@ -3096,6 +3271,8 @@ void Renderer::draw(MTK::View *pView) {
 
   MTL::CommandBuffer *pCmd = _pCommandQueue->commandBuffer();
   if (!pCmd) {
+    if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty())
+      _pendingBenchmarkSamples.pop_back();
     if (_accumulationTargetsNeedClear) {
       _accumulationTargetsNeedClear = false;
       _needsAccumulationReset = false;
@@ -3259,6 +3436,12 @@ void Renderer::draw(MTK::View *pView) {
 void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   if (!_pScene)
     return;
+
+  _framePrimitiveActivations = 0;
+  _framePrimitiveDeactivations = 0;
+  _frameObjectActivations = 0;
+  _frameObjectDeactivations = 0;
+  _frameStrategy = _pScene->getResidencyStrategy();
 
   for (uint32_t &cooldown : _primitiveCooldown)
     if (cooldown > 0)
@@ -3449,6 +3632,13 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
   bool fullyInactive = !anyActive;
   bool prevState = _objectActive[objectIndex];
   _objectActive[objectIndex] = newState;
+
+  if (prevState != newState) {
+    if (newState)
+      ++_frameObjectActivations;
+    else
+      ++_frameObjectDeactivations;
+  }
 
   if (toggled > 0 || prevState != newState || fullyInactive)
     _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
@@ -4595,6 +4785,10 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
   if (_activePrimitive[index] == active)
     return false;
   _activePrimitive[index] = active;
+  if (active)
+    ++_framePrimitiveActivations;
+  else
+    ++_framePrimitiveDeactivations;
   auto &cancelList = active ? _recentlyDeactivated : _recentlyActivated;
   cancelList.erase(
       std::remove(cancelList.begin(), cancelList.end(), index),
@@ -4806,6 +5000,50 @@ void Renderer::processRayHitCounters() {
 void Renderer::beginFrameMetrics() {
   _cpuStart = std::chrono::high_resolution_clock::now();
   _lastRayCount = static_cast<size_t>(Camera::screenSize.x * Camera::screenSize.y);
+
+  if (_benchmarkEnabled) {
+    ensureBenchmarkStream();
+    BenchmarkSample sample;
+    sample.frameIndex = _benchmarkFrameCounter++;
+    sample.rayCount = _lastRayCount;
+    sample.primitiveActivations = _framePrimitiveActivations;
+    sample.primitiveDeactivations = _framePrimitiveDeactivations;
+    sample.objectActivations = _frameObjectActivations;
+    sample.objectDeactivations = _frameObjectDeactivations;
+    sample.activePrimitiveCount = _activePrimitiveCount;
+    sample.residentPrimitiveCount = _residentPrimitiveCount;
+    sample.totalPrimitiveCount = _allPrimitives.size();
+    sample.activeTriangleCount = _activeTriangleCount;
+    sample.residentTriangleCount = _residentTriangleCount;
+    sample.totalTriangleCount = _pScene ? _pScene->getTriangleCount() : 0;
+    sample.activeNodeCount = _activeNodeCount;
+    sample.residentNodeCount = _residentNodeCount;
+    sample.totalNodeCount = _totalNodeCount;
+    size_t activeObjects = 0;
+    for (bool active : _objectActive)
+      if (active)
+        ++activeObjects;
+    sample.activeObjectCount = activeObjects;
+    size_t residentObjects = 0;
+    for (const auto &resident : _residentObjectGpuResources)
+      if (resident.isResident())
+        ++residentObjects;
+    sample.residentObjectCount = residentObjects;
+    sample.gpuMemoryMB = currentGPUMemoryMB();
+    sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
+    sample.deltaTimeSeconds = _deltaTimeSeconds;
+    sample.wallSeconds = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - _benchmarkStartTime)
+                            .count();
+    sample.strategy = _frameStrategy;
+    sample.strategyName = residencyStrategyName(_frameStrategy);
+    sample.minSamplesPerPixel = _minSamplesPerPixel;
+    sample.maxSamplesPerPixel = _maxSamplesPerPixel;
+    sample.accumulationReset = _needsAccumulationReset;
+    sample.residentCompacted = _residentCompacted;
+    sample.overMemoryCap = sample.gpuMemoryMB > _textureResidencyMemoryCapMB;
+    _pendingBenchmarkSamples.push_back(std::move(sample));
+  }
 }
 
 void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
@@ -4823,6 +5061,19 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
          _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
          _lastGPUTime * 1000.0, _lastRaysPerSecond);
+
+  if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty()) {
+    BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
+    _pendingBenchmarkSamples.pop_front();
+    sample.cpuTimeSeconds = _lastCPUTime;
+    sample.gpuTimeSeconds = _lastGPUTime;
+    sample.raysPerSecond = _lastRaysPerSecond;
+    sample.rayCount = _lastRayCount;
+    sample.wallSeconds = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - _benchmarkStartTime)
+                            .count();
+    writeBenchmarkRow(sample);
+  }
 }
 
 double Renderer::lastCPUTime() const { return _lastCPUTime; }
