@@ -4279,29 +4279,34 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
                      : 1.0f;
   float horizontalHalfFov = std::atan(tanHalfFov * aspect);
 
-  for (size_t i = 0; i < primCount; ++i) {
-    float coverage = 0.0f;
-    if (i < _primitiveBounds.size() && isInView(_primitiveBounds[i])) {
-      const BoundingSphere &b = _primitiveBounds[i];
-      simd::float3 toCenter = b.center - Camera::position;
-      float depth = simd::dot(toCenter, forward);
-      if (depth > 1e-3f) {
-        float dist = simd::length(toCenter);
-        float cosAngle = depth / std::max(dist, 1e-3f);
-        float horiz = simd::dot(toCenter, right);
-        float horizAngle = std::atan2(std::fabs(horiz), depth);
-        if (horizAngle <= horizontalHalfFov + 0.1f) {
-          float radiusPixels =
-              (b.radius / depth) / tanHalfFov * (Camera::screenSize.y * 0.5f);
-          radiusPixels = std::max(radiusPixels, 0.0f);
-          float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
-          float angleFactor = std::max(cosAngle, 0.0f);
-          coverage = std::min(area * angleFactor, screenArea);
+  parallelChunkedAsync(0, primCount, [this, screenArea, forward, right,
+                                      horizontalHalfFov,
+                                      tanHalfFov](size_t chunkBegin,
+                                                 size_t chunkEnd) {
+    for (size_t i = chunkBegin; i < chunkEnd; ++i) {
+      float coverage = 0.0f;
+      if (i < _primitiveBounds.size() && isInView(_primitiveBounds[i])) {
+        const BoundingSphere &b = _primitiveBounds[i];
+        simd::float3 toCenter = b.center - Camera::position;
+        float depth = simd::dot(toCenter, forward);
+        if (depth > 1e-3f) {
+          float dist = simd::length(toCenter);
+          float cosAngle = depth / std::max(dist, 1e-3f);
+          float horiz = simd::dot(toCenter, right);
+          float horizAngle = std::atan2(std::fabs(horiz), depth);
+          if (horizAngle <= horizontalHalfFov + 0.1f) {
+            float radiusPixels = (b.radius / depth) / tanHalfFov *
+                                 (Camera::screenSize.y * 0.5f);
+            radiusPixels = std::max(radiusPixels, 0.0f);
+            float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
+            float angleFactor = std::max(cosAngle, 0.0f);
+            coverage = std::min(area * angleFactor, screenArea);
+          }
         }
       }
+      _primitiveScreenCoverage[i] = coverage;
     }
-    _primitiveScreenCoverage[i] = coverage;
-  }
+  });
 
   const size_t objectCount = _allSceneObjects.size();
   if (objectCount == 0)
