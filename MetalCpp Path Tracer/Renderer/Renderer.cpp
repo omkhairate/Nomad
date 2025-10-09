@@ -3250,6 +3250,7 @@ void Renderer::draw(MTK::View *pView) {
       _lastRayHitCommandBuffer->release();
     _lastRayHitCommandBuffer = pCmd;
     _lastRayHitCommandBuffer->retain();
+    _rayHitCopyError = false;
   }
 
   pPool->release();
@@ -4712,16 +4713,44 @@ double Renderer::currentGPUMemoryMB() const {
          (1024.0 * 1024.0);
 }
 
-void Renderer::flushRayHitCopy() {
-  if (_lastRayHitCommandBuffer) {
-    _lastRayHitCommandBuffer->waitUntilCompleted();
-    _lastRayHitCommandBuffer->release();
-    _lastRayHitCommandBuffer = nullptr;
+bool Renderer::rayHitCopyReady() const {
+  if (!_lastRayHitCommandBuffer)
+    return true;
+
+  auto status = _lastRayHitCommandBuffer->status();
+  return status == MTL::CommandBufferStatus::CommandBufferStatusCompleted ||
+         status == MTL::CommandBufferStatus::CommandBufferStatusError;
+}
+
+bool Renderer::flushRayHitCopy() {
+  if (!_lastRayHitCommandBuffer)
+    return true;
+
+  auto status = _lastRayHitCommandBuffer->status();
+
+  switch (status) {
+  case MTL::CommandBufferStatus::CommandBufferStatusCompleted:
+    _rayHitCopyError = false;
+    break;
+  case MTL::CommandBufferStatus::CommandBufferStatusError:
+    _rayHitCopyError = true;
+    break;
+  case MTL::CommandBufferStatus::CommandBufferStatusCommitted:
+  case MTL::CommandBufferStatus::CommandBufferStatusScheduled:
+  case MTL::CommandBufferStatus::CommandBufferStatusEnqueued:
+  case MTL::CommandBufferStatus::CommandBufferStatusNotEnqueued:
+  default:
+    return false;
   }
+
+  _lastRayHitCommandBuffer->release();
+  _lastRayHitCommandBuffer = nullptr;
+  return true;
 }
 
 void Renderer::processRayHitCounters() {
-  flushRayHitCopy();
+  if (!flushRayHitCopy())
+    return;
 
   if (!_pPrimitiveHitReadback)
     return;
@@ -4731,6 +4760,14 @@ void Renderer::processRayHitCounters() {
       static_cast<uint32_t *>(_pPrimitiveHitReadback->contents());
   if (!hitPtr)
     return;
+
+  if (_rayHitCopyError) {
+    std::memset(hitPtr, 0, bufferLength);
+    _primitiveHitScores.clear();
+    _primitiveHitLastFrame.clear();
+    _rayHitCopyError = false;
+    return;
+  }
 
   if (!_pScene ||
       _pScene->getResidencyStrategy() != ResidencyStrategy::RayHitBudget) {
