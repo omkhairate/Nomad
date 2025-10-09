@@ -200,7 +200,7 @@ private:
   std::vector<float> _primitiveHitScores;
   std::vector<float> _primitiveHitScoresSnapshot;
   std::vector<uint32_t> _primitiveHitLastFrame;
-  std::vector<bool> _primitiveVisible;
+  std::vector<uint8_t> _primitiveVisible;
   std::vector<size_t> _rayHitSortedIndices;
   std::vector<float> _primitiveScreenCoverage;
   std::vector<size_t> _screenCoverageSortedIndices;
