@@ -120,6 +120,7 @@ private:
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
+  void flushRayHitCopy();
   void processRayHitCounters();
   bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
                        ResidentObjectGpuResources &residentResources);
