@@ -4315,7 +4315,6 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     const MeshGroupCoverage &group = meshGroups[groupIndex];
     std::vector<size_t> objectsToToggle;
     objectsToToggle.reserve(group.objectIndices.size());
-    size_t groupTogglePrimitives = 0;
     bool canToggleGroup = true;
 
     for (size_t objectIndex : group.objectIndices) {
@@ -4342,13 +4341,6 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
           continue;
         if (!forceAllToggles && prim < _primitiveCooldown.size() &&
             _primitiveCooldown[prim] > 0) {
-          canToggleGroup = false;
-          break;
-        }
-        ++groupTogglePrimitives;
-        if (!forceAllToggles &&
-            toggledPrimitiveCount + groupTogglePrimitives >
-                _residencyConfig.screenFootprintMaxTogglesPerFrame) {
           canToggleGroup = false;
           break;
         }
