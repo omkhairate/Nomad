@@ -25,8 +25,105 @@
 #include <string>
 #include <utility>
 #include <unordered_map>
+#include <execution>
+#include <iterator>
 
 namespace MetalCppPathTracer {
+
+namespace {
+
+class CountingIterator {
+public:
+  using iterator_category = std::random_access_iterator_tag;
+  using value_type = size_t;
+  using difference_type = std::ptrdiff_t;
+  using pointer = const size_t *;
+  using reference = size_t;
+
+  constexpr explicit CountingIterator(size_t value = 0) : _value(value) {}
+
+  constexpr reference operator*() const { return _value; }
+  constexpr CountingIterator &operator++() {
+    ++_value;
+    return *this;
+  }
+  constexpr CountingIterator operator++(int) {
+    CountingIterator tmp(*this);
+    ++(*this);
+    return tmp;
+  }
+  constexpr CountingIterator &operator--() {
+    --_value;
+    return *this;
+  }
+  constexpr CountingIterator operator--(int) {
+    CountingIterator tmp(*this);
+    --(*this);
+    return tmp;
+  }
+  constexpr CountingIterator &operator+=(difference_type n) {
+    _value = static_cast<size_t>(static_cast<difference_type>(_value) + n);
+    return *this;
+  }
+  constexpr CountingIterator &operator-=(difference_type n) {
+    _value = static_cast<size_t>(static_cast<difference_type>(_value) - n);
+    return *this;
+  }
+  constexpr reference operator[](difference_type n) const {
+    return static_cast<size_t>(static_cast<difference_type>(_value) + n);
+  }
+
+  friend constexpr CountingIterator operator+(CountingIterator it,
+                                               difference_type n) {
+    it += n;
+    return it;
+  }
+  friend constexpr CountingIterator operator+(difference_type n,
+                                               CountingIterator it) {
+    it += n;
+    return it;
+  }
+  friend constexpr CountingIterator operator-(CountingIterator it,
+                                               difference_type n) {
+    it -= n;
+    return it;
+  }
+  friend constexpr difference_type operator-(const CountingIterator &a,
+                                             const CountingIterator &b) {
+    return static_cast<difference_type>(a._value) -
+           static_cast<difference_type>(b._value);
+  }
+
+  friend constexpr bool operator==(const CountingIterator &a,
+                                   const CountingIterator &b) {
+    return a._value == b._value;
+  }
+  friend constexpr bool operator!=(const CountingIterator &a,
+                                   const CountingIterator &b) {
+    return !(a == b);
+  }
+  friend constexpr bool operator<(const CountingIterator &a,
+                                  const CountingIterator &b) {
+    return a._value < b._value;
+  }
+  friend constexpr bool operator>(const CountingIterator &a,
+                                  const CountingIterator &b) {
+    return b < a;
+  }
+  friend constexpr bool operator<=(const CountingIterator &a,
+                                   const CountingIterator &b) {
+    return !(b < a);
+  }
+  friend constexpr bool operator>=(const CountingIterator &a,
+                                   const CountingIterator &b) {
+    return !(a < b);
+  }
+
+private:
+  size_t _value;
+};
+
+} // namespace
 
 void ResidentObjectGpuResources::clearPendingCommand() {
   if (pendingCommand) {
@@ -4099,28 +4196,33 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
     _primitiveHitLastFrame.resize(primCount, 0);
 
   auto &hitScores = _primitiveHitScoresSnapshot;
-  for (size_t i = 0; i < primCount; ++i) {
-    bool visible = false;
-    if (i < _primitiveBounds.size())
-      visible = isInView(_primitiveBounds[i]);
-    _primitiveVisible[i] = visible;
+  const size_t boundsSize = _primitiveBounds.size();
+  const size_t hitScoreSize = hitScores.size();
+  const size_t hitsLastSize = _primitiveHitLastFrame.size();
 
-    float score = (i < hitScores.size()) ? hitScores[i] : 0.0f;
-    uint32_t hitsLast =
-        (i < _primitiveHitLastFrame.size()) ? _primitiveHitLastFrame[i] : 0;
+  std::for_each(std::execution::par, CountingIterator(0),
+                CountingIterator(primCount), [&](size_t i) {
+                  bool visible = false;
+                  if (i < boundsSize)
+                    visible = isInView(_primitiveBounds[i]);
+                  _primitiveVisible[i] = visible;
 
-    if (!visible) {
-      if (hitsLast == 0)
-        score = 0.0f;
-      else
-        score *= 0.5f;
-    } else if (score <= 0.0f) {
-      score = 1.0f;
-    }
+                  float score = (i < hitScoreSize) ? hitScores[i] : 0.0f;
+                  uint32_t hitsLast =
+                      (i < hitsLastSize) ? _primitiveHitLastFrame[i] : 0;
 
-    if (i < hitScores.size())
-      hitScores[i] = score;
-  }
+                  if (!visible) {
+                    if (hitsLast == 0)
+                      score = 0.0f;
+                    else
+                      score *= 0.5f;
+                  } else if (score <= 0.0f) {
+                    score = 1.0f;
+                  }
+
+                  if (i < hitScoreSize)
+                    hitScores[i] = score;
+                });
 
   const auto &adjustedScores = hitScores;
 
