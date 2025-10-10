@@ -3451,13 +3451,8 @@ simd::float2 Renderer::computeObserverScreenSize(
     desiredWidth = desiredHeight * aspect;
   }
 
-  const float minObserverWidth = 160.0f;
-  const float minObserverHeight = 120.0f;
-  const float maxWidthClamp = std::max(mainWidth - 64.0f, minObserverWidth);
-  const float maxHeightClamp = std::max(mainHeight - 64.0f, minObserverHeight);
-
-  desiredWidth = std::clamp(desiredWidth, minObserverWidth, maxWidthClamp);
-  desiredHeight = std::clamp(desiredHeight, minObserverHeight, maxHeightClamp);
+  desiredWidth = std::clamp(desiredWidth, 160.0f, mainWidth - 64.0f);
+  desiredHeight = std::clamp(desiredHeight, 120.0f, mainHeight - 64.0f);
 
   return {desiredWidth, desiredHeight};
 }
