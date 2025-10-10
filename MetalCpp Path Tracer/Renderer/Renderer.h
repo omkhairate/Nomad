@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "GpuHeapResources.h"
+#include "ObserverCamera.h"
 #include "Scene.h"
 
 namespace MetalCppPathTracer {
@@ -73,8 +74,12 @@ public:
 
   void recalculateViewport();
   bool updateCamera();
+  void recalculateObserverViewport();
+  bool updateObserverCamera();
 
   void updateUniforms();
+  void updateObserverUniforms();
+  void writeObserverFrameToPFM();
   void draw(MTK::View *pView);
   void drawableSizeWillChange(MTK::View *pView, CGSize size);
   void setDeltaTime(double deltaSeconds);
@@ -138,6 +143,11 @@ private:
       const std::vector<MTL::AccelerationStructure *> &structures);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
+  bool resetObserverTargets(MTL::CommandBuffer *cmd);
+  void buildObserverTextures();
+  void releaseObserverTextures();
+  bool ensureObserverTextures();
+  simd::float2 computeObserverScreenSize(const simd::float2 &mainScreen) const;
   void initializeBenchmarking();
   void ensureBenchmarkStream();
   void writeBenchmarkHeader();
@@ -159,6 +169,7 @@ private:
   MTL::Buffer *_pTriangleVertexBuffer = nullptr;
   MTL::Buffer *_pTriangleIndexBuffer = nullptr;
   MTL::Buffer *_pUniformsBuffer = nullptr;
+  MTL::Buffer *_pObserverUniformsBuffer = nullptr;
   MTL::Buffer *_pBVHBuffer = nullptr;
   MTL::Buffer *_pPrimitiveIndexBuffer = nullptr;
   MTL::Buffer *_pTLASBuffer = nullptr;
@@ -196,6 +207,9 @@ private:
   ManagedTextureSlot _accumulationSlots[2];
   ManagedTextureSlot _sampleCountSlot;
   ManagedTextureSlot _sampleImportanceSlot;
+  MTL::Texture *_pObserverAccumulation[2] = {nullptr, nullptr};
+  MTL::Texture *_pObserverSampleCount = nullptr;
+  MTL::Texture *_pObserverSampleImportance = nullptr;
 
   struct BenchmarkSample {
     size_t frameIndex = 0;
@@ -324,6 +338,29 @@ private:
   size_t _lastRayCount = 0;
 
   double _deltaTimeSeconds = 0.0;
+  simd::float2 _observerScreenSize = {320.0f, 180.0f};
+  simd::float3 _sceneBoundsCenter = {0.0f, 0.0f, 0.0f};
+  float _sceneBoundsRadius = 25.0f;
+  bool _observerNeedsReset = true;
+  bool _observerTargetsNeedClear = true;
+  uint64_t _observerFrameCount = 0;
+  simd::float3 _observerRandomSeed = {0.0f, 0.0f, 0.0f};
+  bool _observerEnabled = false;
+  uint32_t _observerFrameStride = 1;
+  std::string _observerOutputDirectory = "observer_capture";
+  bool _observerHasCustomPose = false;
+  bool _observerHasCustomFov = false;
+  simd::float3 _observerCustomPosition = {0.0f, 0.0f, 0.0f};
+  simd::float3 _observerCustomLookAt = {0.0f, 0.0f, -1.0f};
+  float _observerCustomVerticalFov = 45.0f;
+  MTL::Buffer *_pObserverReadbackBuffer = nullptr;
+  size_t _observerReadbackCapacity = 0;
+  size_t _observerReadbackRowBytes = 0;
+  size_t _observerReadbackAlignedRowBytes = 0;
+  NS::UInteger _observerReadbackWidth = 0;
+  NS::UInteger _observerReadbackHeight = 0;
+  bool _observerCapturePending = false;
+  uint64_t _observerCapturedFrames = 0;
 
   size_t _animationFrame = 0;
 
