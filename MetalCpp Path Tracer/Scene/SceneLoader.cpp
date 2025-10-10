@@ -344,6 +344,19 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         scene->setObserverOutputDirectory(observerDir);
     }
 
+    scene->clearObserverPose();
+    if (const char* observerPos = root->Attribute("observerPosition")) {
+        if (const char* observerLookAt = root->Attribute("observerLookAt")) {
+            scene->setObserverPose(parseVec3(observerPos), parseVec3(observerLookAt));
+        }
+    }
+
+    scene->clearObserverVerticalFov();
+    float observerFovDegrees = 0.0f;
+    if (root->QueryFloatAttribute("observerVerticalFov", &observerFovDegrees) == XML_SUCCESS) {
+        scene->setObserverVerticalFov(observerFovDegrees);
+    }
+
     int nextMeshGroupId = 0;
 
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {

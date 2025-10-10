@@ -348,6 +348,11 @@ private:
   bool _observerEnabled = false;
   uint32_t _observerFrameStride = 1;
   std::string _observerOutputDirectory = "observer_capture";
+  bool _observerHasCustomPose = false;
+  bool _observerHasCustomFov = false;
+  simd::float3 _observerCustomPosition = {0.0f, 0.0f, 0.0f};
+  simd::float3 _observerCustomLookAt = {0.0f, 0.0f, -1.0f};
+  float _observerCustomVerticalFov = 45.0f;
   MTL::Buffer *_pObserverReadbackBuffer = nullptr;
   size_t _observerReadbackCapacity = 0;
   size_t _observerReadbackRowBytes = 0;

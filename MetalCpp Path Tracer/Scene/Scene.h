@@ -107,6 +107,18 @@ public:
   const std::string &getObserverOutputDirectory() const;
   void setObserverOutputDirectory(const std::string &path);
 
+  bool hasObserverPose() const;
+  const simd::float3 &getObserverPosePosition() const;
+  const simd::float3 &getObserverPoseLookAt() const;
+  void setObserverPose(const simd::float3 &position,
+                       const simd::float3 &lookAt);
+  void clearObserverPose();
+
+  bool hasObserverVerticalFov() const;
+  float getObserverVerticalFov() const;
+  void setObserverVerticalFov(float degrees);
+  void clearObserverVerticalFov();
+
   void buildBVH();
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
@@ -148,6 +160,11 @@ private:
   bool observerEnabled;
   uint32_t observerFrameStride;
   std::string observerOutputDirectory;
+  bool observerHasPose;
+  simd::float3 observerPosePosition;
+  simd::float3 observerPoseLookAt;
+  bool observerHasVerticalFov;
+  float observerVerticalFov;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives, int meshGroupId);

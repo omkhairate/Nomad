@@ -934,9 +934,30 @@ void Renderer::updateVisibleScene() {
   if (_observerOutputDirectory.empty())
     _observerOutputDirectory = "observer_capture";
 
+  _observerHasCustomPose = _pScene->hasObserverPose();
+  if (_observerHasCustomPose) {
+    _observerCustomPosition = _pScene->getObserverPosePosition();
+    _observerCustomLookAt = _pScene->getObserverPoseLookAt();
+  } else {
+    _observerCustomPosition = {0.0f, 0.0f, 0.0f};
+    _observerCustomLookAt = {0.0f, 0.0f, -1.0f};
+  }
+  _observerHasCustomFov = _pScene->hasObserverVerticalFov();
+  if (_observerHasCustomFov) {
+    _observerCustomVerticalFov = _pScene->getObserverVerticalFov();
+  } else {
+    _observerCustomVerticalFov = 45.0f;
+  }
+
   if (_observerEnabled) {
     _observerScreenSize = computeObserverScreenSize(Camera::screenSize);
     ObserverCamera::screenSize = _observerScreenSize;
+    ObserverCamera::verticalFov =
+        _observerHasCustomFov ? _observerCustomVerticalFov : 45.0f;
+    if (_observerHasCustomPose) {
+      ObserverCamera::position = _observerCustomPosition;
+      ObserverCamera::lookAt(_observerCustomLookAt);
+    }
   } else {
     releaseObserverTextures();
     if (_pObserverUniformsBuffer) {
@@ -963,8 +984,14 @@ void Renderer::updateVisibleScene() {
     Camera::up = {0, 1, 0};
   }
 
-  if (_observerEnabled)
-    ObserverCamera::lookAt(Camera::position);
+  if (_observerEnabled) {
+    if (_observerHasCustomPose) {
+      ObserverCamera::position = _observerCustomPosition;
+      ObserverCamera::lookAt(_observerCustomLookAt);
+    } else {
+      ObserverCamera::lookAt(Camera::position);
+    }
+  }
 
   printf("Scene loaded: %zu total primitives (%zu spheres, %zu triangles, %zu "
          "rectangles)\n",
@@ -1174,8 +1201,14 @@ void Renderer::updateVisibleScene() {
   }
 
   if (_observerEnabled) {
-    ObserverCamera::configureForScene(_sceneBoundsCenter, _sceneBoundsRadius);
-    ObserverCamera::lookAt(Camera::position);
+    if (_observerHasCustomPose) {
+      ObserverCamera::position = _observerCustomPosition;
+      ObserverCamera::lookAt(_observerCustomLookAt);
+    } else {
+      ObserverCamera::configureForScene(_sceneBoundsCenter,
+                                        _sceneBoundsRadius);
+      ObserverCamera::lookAt(Camera::position);
+    }
   }
   _observerNeedsReset = true;
   _observerTargetsNeedClear = true;
@@ -3511,6 +3544,8 @@ bool Renderer::updateCamera() {
 
 bool Renderer::updateObserverCamera() {
   if (!_observerEnabled)
+    return false;
+  if (_observerHasCustomPose)
     return false;
   simd::float3 prevPosition = ObserverCamera::position;
   simd::float3 prevForward = ObserverCamera::forward;

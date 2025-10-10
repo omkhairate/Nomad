@@ -30,6 +30,11 @@ void Scene::clear() {
   observerEnabled = false;
   observerFrameStride = 1;
   observerOutputDirectory = "observer_capture";
+  observerHasPose = false;
+  observerPosePosition = {0.0f, 0.0f, 0.0f};
+  observerPoseLookAt = {0.0f, 0.0f, -1.0f};
+  observerHasVerticalFov = false;
+  observerVerticalFov = 45.0f;
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -164,6 +169,43 @@ void Scene::setObserverOutputDirectory(const std::string &path) {
   } else {
     observerOutputDirectory = path;
   }
+}
+
+bool Scene::hasObserverPose() const { return observerHasPose; }
+
+const simd::float3 &Scene::getObserverPosePosition() const {
+  return observerPosePosition;
+}
+
+const simd::float3 &Scene::getObserverPoseLookAt() const {
+  return observerPoseLookAt;
+}
+
+void Scene::setObserverPose(const simd::float3 &position,
+                            const simd::float3 &lookAt) {
+  observerHasPose = true;
+  observerPosePosition = position;
+  observerPoseLookAt = lookAt;
+}
+
+void Scene::clearObserverPose() {
+  observerHasPose = false;
+  observerPosePosition = {0.0f, 0.0f, 0.0f};
+  observerPoseLookAt = {0.0f, 0.0f, -1.0f};
+}
+
+bool Scene::hasObserverVerticalFov() const { return observerHasVerticalFov; }
+
+float Scene::getObserverVerticalFov() const { return observerVerticalFov; }
+
+void Scene::setObserverVerticalFov(float degrees) {
+  observerHasVerticalFov = true;
+  observerVerticalFov = std::max(degrees, 1.0f);
+}
+
+void Scene::clearObserverVerticalFov() {
+  observerHasVerticalFov = false;
+  observerVerticalFov = 45.0f;
 }
 
 void Scene::buildBVH() {
