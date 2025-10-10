@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "GpuHeapResources.h"
+#include "Camera.h"
 #include "Scene.h"
 
 namespace MetalCppPathTracer {
@@ -72,9 +73,9 @@ public:
   void buildTextures();
 
   void recalculateViewport();
-  bool updateCamera();
+  bool updateCameraStates();
 
-  void updateUniforms();
+  void updateUniforms(bool cameraChanged);
   void draw(MTK::View *pView);
   void drawableSizeWillChange(MTK::View *pView, CGSize size);
   void setDeltaTime(double deltaSeconds);
@@ -96,6 +97,10 @@ public:
   size_t totalNodeCount() const;
 
   std::vector<std::pair<simd::float3, float>> _allSpheres;
+
+  Camera::State _primaryCameraState{};
+  Camera::State _observerCameraState{};
+  bool _observerActive = false;
 
   struct Chunk {
     std::vector<std::pair<simd::float4, simd::float4>>

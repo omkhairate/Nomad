@@ -296,6 +296,39 @@ void markBufferModified(MTL::Buffer *buffer, NS::Range range) {
     buffer->didModifyRange(range);
 }
 
+static bool cameraStatesDiffer(const Camera::State &a, const Camera::State &b,
+                               float epsilon = 1e-3f) {
+  if (simd::length(a.position - b.position) > epsilon)
+    return true;
+  if (simd::length(a.forward - b.forward) > epsilon)
+    return true;
+  if (simd::length(a.up - b.up) > epsilon)
+    return true;
+  if (std::abs(a.verticalFov - b.verticalFov) > epsilon)
+    return true;
+  if (std::abs(a.focalLength - b.focalLength) > epsilon)
+    return true;
+  return false;
+}
+
+static Camera::State makeCameraState(const simd::float3 &position,
+                                     const simd::float3 &lookAt,
+                                     float verticalFov, float focalLength,
+                                     const simd::float3 &fallbackForward) {
+  Camera::State state{};
+  state.position = position;
+  simd::float3 direction = lookAt - position;
+  if (simd::length_squared(direction) > 1e-6f) {
+    state.forward = simd::normalize(direction);
+  } else {
+    state.forward = fallbackForward;
+  }
+  state.up = {0, 1, 0};
+  state.verticalFov = verticalFov;
+  state.focalLength = focalLength;
+  return state;
+}
+
 int buildBVHRecursive(const std::vector<Primitive> &primitives,
                       std::vector<int> &primitiveIndices,
                       std::vector<BVHNode> &nodes, size_t start, size_t end) {
@@ -522,6 +555,8 @@ Renderer::Renderer(MTL::Device *pDevice)
   _dummyBlasResources.initialize(_pDevice);
 
   Camera::reset();
+  _primaryCameraState = Camera::captureState();
+  _observerCameraState = _primaryCameraState;
 
   updateVisibleScene();
   buildShaders();
@@ -895,13 +930,32 @@ void Renderer::updateVisibleScene() {
   }
 
   Camera::screenSize = _pScene->screenSize;
+  _animationFrame = 0;
+  _observerActive = false;
 
   if (!_pScene->cameraPath.empty()) {
     const auto &k = _pScene->cameraPath.front();
-    Camera::position = k.position;
-    Camera::forward = simd::normalize(k.lookAt - k.position);
-    Camera::up = {0, 1, 0};
+    _primaryCameraState = makeCameraState(
+        k.position, k.lookAt, _primaryCameraState.verticalFov,
+        _primaryCameraState.focalLength, _primaryCameraState.forward);
   }
+
+  Camera::applyState(_primaryCameraState);
+  _primaryCameraState = Camera::captureState();
+
+  if (_pScene->hasObserverCamera()) {
+    const auto &observer = _pScene->getObserverCamera();
+    float fov = observer.verticalFov > 0.0f ? observer.verticalFov
+                                            : _primaryCameraState.verticalFov;
+    _observerCameraState =
+        makeCameraState(observer.position, observer.lookAt, fov,
+                        _primaryCameraState.focalLength,
+                        _primaryCameraState.forward);
+  } else {
+    _observerCameraState = _primaryCameraState;
+  }
+
+  Camera::applyState(_primaryCameraState);
 
   printf("Scene loaded: %zu total primitives (%zu spheres, %zu triangles, %zu "
          "rectangles)\n",
@@ -3145,19 +3199,35 @@ void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
   pCompute->endEncoding();
 }
 
-bool Renderer::updateCamera() {
+bool Renderer::updateCameraStates() {
   const auto &path = _pScene->cameraPath;
+  bool hadObserver = _observerActive;
+  Camera::State previousViewState =
+      hadObserver ? _observerCameraState : _primaryCameraState;
 
-  // If the scene defines a camera path, advance along it every render pass
+  bool toggled = false;
+  if (InputSystem::observerToggleRequest) {
+    _observerActive = !_observerActive;
+    InputSystem::observerToggleRequest = false;
+    toggled = true;
+  }
+
+  double originalDelta = _deltaTimeSeconds;
+
   if (!path.empty()) {
+    Camera::State newState = _primaryCameraState;
     if (_animationFrame <= path.front().frame) {
-      Camera::position = path.front().position;
-      simd::float3 look = path.front().lookAt;
-      Camera::forward = simd::normalize(look - Camera::position);
+      const auto &k = path.front();
+      newState = makeCameraState(k.position, k.lookAt,
+                                 _primaryCameraState.verticalFov,
+                                 _primaryCameraState.focalLength,
+                                 _primaryCameraState.forward);
     } else if (_animationFrame >= path.back().frame) {
-      Camera::position = path.back().position;
-      simd::float3 look = path.back().lookAt;
-      Camera::forward = simd::normalize(look - Camera::position);
+      const auto &k = path.back();
+      newState = makeCameraState(k.position, k.lookAt,
+                                 _primaryCameraState.verticalFov,
+                                 _primaryCameraState.focalLength,
+                                 _primaryCameraState.forward);
     } else {
       for (size_t i = 0; i + 1 < path.size(); ++i) {
         const auto &k0 = path[i];
@@ -3165,41 +3235,56 @@ bool Renderer::updateCamera() {
         if (_animationFrame >= k0.frame && _animationFrame <= k1.frame) {
           float t =
               float(_animationFrame - k0.frame) / float(k1.frame - k0.frame);
-          Camera::position = k0.position + t * (k1.position - k0.position);
+          simd::float3 position =
+              k0.position + t * (k1.position - k0.position);
           simd::float3 look = k0.lookAt + t * (k1.lookAt - k0.lookAt);
-          Camera::forward = simd::normalize(look - Camera::position);
+          newState = makeCameraState(position, look,
+                                     _primaryCameraState.verticalFov,
+                                     _primaryCameraState.focalLength,
+                                     _primaryCameraState.forward);
           break;
         }
       }
     }
 
-    Camera::up = {0, 1, 0};
-    // Reset the frame delta while scripted motion drives the camera so the
-    // timeline remains frame-locked.
+    if (cameraStatesDiffer(newState, _primaryCameraState))
+      _primaryCameraState = newState;
+
     _deltaTimeSeconds = 0.0;
     Camera::deltaTime = 0.0f;
-    InputSystem::clearInputs();
 
-    // Update view dependent data for the new camera transform
-    recalculateViewport();
+    Camera::applyState(_observerCameraState);
+    Camera::deltaTime = static_cast<float>(originalDelta);
+    if (Camera::transformWithInputs())
+      _observerCameraState = Camera::captureState();
 
-    // Move to the next keyframe for the following frame
     _animationFrame++;
-    return true;
+  } else {
+    Camera::State *target =
+        _observerActive ? &_observerCameraState : &_primaryCameraState;
+    Camera::applyState(*target);
+    Camera::deltaTime = static_cast<float>(_deltaTimeSeconds);
+    if (Camera::transformWithInputs())
+      *target = Camera::captureState();
   }
 
-  // Fall back to interactive controls when no keyframes are present
-  bool changed = Camera::transformWithInputs();
-  if (changed) {
+  const Camera::State &activeView =
+      _observerActive ? _observerCameraState : _primaryCameraState;
+  Camera::applyState(activeView);
+  Camera::deltaTime = _observerActive ? 0.0f
+                                      : static_cast<float>(_deltaTimeSeconds);
+
+  bool viewChanged = toggled || cameraStatesDiffer(activeView, previousViewState) ||
+                     hadObserver != _observerActive;
+  if (viewChanged)
     recalculateViewport();
-  }
-  return changed;
+
+  return viewChanged;
 }
 
-void Renderer::updateUniforms() {
+void Renderer::updateUniforms(bool cameraChanged) {
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
-  bool cameraChanged = updateCamera();
   if (cameraChanged)
     _needsAccumulationReset = true;
 
@@ -3262,8 +3347,17 @@ void Renderer::updateUniforms() {
 
 void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
+  bool cameraChanged = updateCameraStates();
+  Camera::State viewCamera =
+      _observerActive ? _observerCameraState : _primaryCameraState;
+
+  Camera::applyState(_primaryCameraState);
   updateResidency();
-  updateUniforms();
+
+  Camera::applyState(viewCamera);
+  Camera::deltaTime =
+      _observerActive ? 0.0f : static_cast<float>(_deltaTimeSeconds);
+  updateUniforms(cameraChanged);
   beginFrameMetrics();
   std::swap(_accumulationSlots[0], _accumulationSlots[1]);
 
