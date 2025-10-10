@@ -5,6 +5,7 @@
 #include "Primitive.h"
 #include <cstdint>
 #include <simd/simd.h>
+#include <string>
 #include <vector>
 
 namespace MetalCppPathTracer {
@@ -97,6 +98,15 @@ public:
   double getTextureResidencyMemoryCapMB() const;
   void setTextureResidencyMemoryCapMB(double capMB);
 
+  bool isObserverEnabled() const;
+  void setObserverEnabled(bool enabled);
+
+  uint32_t getObserverFrameStride() const;
+  void setObserverFrameStride(uint32_t stride);
+
+  const std::string &getObserverOutputDirectory() const;
+  void setObserverOutputDirectory(const std::string &path);
+
   void buildBVH();
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
@@ -134,6 +144,10 @@ private:
   ResidencyParameters residencyParams;
   bool startCompacted;
   double textureResidencyMemoryCapMB;
+
+  bool observerEnabled;
+  uint32_t observerFrameStride;
+  std::string observerOutputDirectory;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives, int meshGroupId);

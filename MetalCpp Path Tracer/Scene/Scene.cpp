@@ -27,6 +27,9 @@ void Scene::clear() {
   residencyParams = ResidencyParameters{};
   startCompacted = false;
   textureResidencyMemoryCapMB = 2048.0;
+  observerEnabled = false;
+  observerFrameStride = 1;
+  observerOutputDirectory = "observer_capture";
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -137,6 +140,30 @@ double Scene::getTextureResidencyMemoryCapMB() const {
 
 void Scene::setTextureResidencyMemoryCapMB(double capMB) {
   textureResidencyMemoryCapMB = capMB;
+}
+
+bool Scene::isObserverEnabled() const { return observerEnabled; }
+
+void Scene::setObserverEnabled(bool enabled) { observerEnabled = enabled; }
+
+uint32_t Scene::getObserverFrameStride() const { return observerFrameStride; }
+
+void Scene::setObserverFrameStride(uint32_t stride) {
+  if (stride == 0)
+    stride = 1;
+  observerFrameStride = stride;
+}
+
+const std::string &Scene::getObserverOutputDirectory() const {
+  return observerOutputDirectory;
+}
+
+void Scene::setObserverOutputDirectory(const std::string &path) {
+  if (path.empty()) {
+    observerOutputDirectory = "observer_capture";
+  } else {
+    observerOutputDirectory = path;
+  }
 }
 
 void Scene::buildBVH() {
