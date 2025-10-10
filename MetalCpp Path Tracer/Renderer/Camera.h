@@ -9,6 +9,15 @@ namespace MetalCppPathTracer {
 namespace Camera
 {
 
+struct State
+{
+    simd::float3 position {0, 0, 0};
+    simd::float3 forward {0, 0, -1};
+    simd::float3 up {0, 1, 0};
+    float verticalFov = 60.0f;
+    float focalLength = 1.0f;
+};
+
 inline simd::float3 position;
 inline simd::float3 forward;
 inline simd::float3 up;
@@ -31,6 +40,20 @@ inline static void reset()
     verticalFov = 60.0;
     focalLength = 1.0;
     deltaTime = 0.0f;
+}
+
+inline State captureState()
+{
+    return {position, forward, up, verticalFov, focalLength};
+}
+
+inline void applyState(const State& state)
+{
+    position = state.position;
+    forward = state.forward;
+    up = state.up;
+    verticalFov = state.verticalFov;
+    focalLength = state.focalLength;
 }
 
 

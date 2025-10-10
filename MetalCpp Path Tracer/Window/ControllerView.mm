@@ -92,6 +92,9 @@ MTK::View *MetalCppPathTracer::ControllerView::get(CGRect frame) {
     if(event.keyCode == 11) { // b - toggle BLAS debug
         MetalCppPathTracer::InputSystem::debugAS = (MetalCppPathTracer::InputSystem::debugAS == 2) ? 0 : 2;
     }
+    if(event.keyCode == 31) { // o - toggle observer camera
+        MetalCppPathTracer::InputSystem::observerToggleRequest = true;
+    }
 }
 
 - (void)keyUp:(NSEvent *)event {

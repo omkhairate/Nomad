@@ -65,6 +65,12 @@ struct CameraKeyframe {
   simd::float3 lookAt;
 };
 
+struct ObserverCamera {
+  simd::float3 position = simd::make_float3(0.0f, 0.0f, 0.0f);
+  simd::float3 lookAt = simd::make_float3(0.0f, 0.0f, -1.0f);
+  float verticalFov = 60.0f;
+};
+
 class Scene {
 public:
   Scene();
@@ -123,6 +129,10 @@ public:
 
   std::vector<CameraKeyframe> cameraPath;
 
+  void setObserverCamera(const ObserverCamera &camera);
+  bool hasObserverCamera() const;
+  const ObserverCamera &getObserverCamera() const;
+
 private:
   std::vector<Primitive> primitives;
   std::vector<size_t> primitiveIndices;
@@ -134,6 +144,8 @@ private:
   ResidencyParameters residencyParams;
   bool startCompacted;
   double textureResidencyMemoryCapMB;
+  bool observerCameraValid;
+  ObserverCamera observerCamera;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives, int meshGroupId);

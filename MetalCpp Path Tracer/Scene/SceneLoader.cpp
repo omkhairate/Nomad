@@ -420,6 +420,17 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 scene->cameraPath.push_back(key);
             }
         }
+        else if (tag == "ObserverCamera") {
+            ObserverCamera observer{};
+            if (const char* posAttr = e->Attribute("position")) {
+                observer.position = parseVec3(posAttr);
+            }
+            if (const char* lookAttr = e->Attribute("lookAt")) {
+                observer.lookAt = parseVec3(lookAttr);
+            }
+            observer.verticalFov = e->FloatAttribute("verticalFov", observer.verticalFov);
+            scene->setObserverCamera(observer);
+        }
     }
 
     return true;

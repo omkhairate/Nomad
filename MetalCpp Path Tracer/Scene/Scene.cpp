@@ -27,6 +27,8 @@ void Scene::clear() {
   residencyParams = ResidencyParameters{};
   startCompacted = false;
   textureResidencyMemoryCapMB = 2048.0;
+  observerCameraValid = false;
+  observerCamera = ObserverCamera{};
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -137,6 +139,17 @@ double Scene::getTextureResidencyMemoryCapMB() const {
 
 void Scene::setTextureResidencyMemoryCapMB(double capMB) {
   textureResidencyMemoryCapMB = capMB;
+}
+
+void Scene::setObserverCamera(const ObserverCamera &camera) {
+  observerCamera = camera;
+  observerCameraValid = true;
+}
+
+bool Scene::hasObserverCamera() const { return observerCameraValid; }
+
+const ObserverCamera &Scene::getObserverCamera() const {
+  return observerCamera;
 }
 
 void Scene::buildBVH() {
