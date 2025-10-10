@@ -146,6 +146,16 @@ size_t alignTo(size_t value, size_t alignment) {
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
 constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
+constexpr float kFrustumDebugNear = 0.1f;
+constexpr float kFrustumDebugFarMultiplier = 5.0f;
+
+struct OverlayUniforms {
+  simd::float4x4 viewProjection;
+};
+
+constexpr std::array<std::pair<uint32_t, uint32_t>, 12> kFrustumEdges = {
+    {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4},
+     {0, 4}, {1, 5}, {2, 6}, {3, 7}}};
 
 size_t bytesPerPixel(MTL::PixelFormat format) {
   switch (format) {
@@ -160,6 +170,50 @@ size_t bytesPerPixel(MTL::PixelFormat format) {
   default:
     return 0;
   }
+}
+
+simd::float4x4 makeViewMatrix(const Camera::State &state) {
+  simd::float3 forward = state.forward;
+  if (simd::length_squared(forward) < 1e-6f)
+    forward = {0.0f, 0.0f, -1.0f};
+  forward = simd::normalize(forward);
+
+  simd::float3 up = state.up;
+  if (simd::length_squared(up) < 1e-6f)
+    up = {0.0f, 1.0f, 0.0f};
+  up = simd::normalize(up);
+
+  simd::float3 right = simd::cross(forward, up);
+  if (simd::length_squared(right) < 1e-6f)
+    right = {1.0f, 0.0f, 0.0f};
+  right = simd::normalize(right);
+  up = simd::normalize(simd::cross(right, forward));
+
+  simd::float4x4 view;
+  view.columns[0] = {right.x, up.x, forward.x, 0.0f};
+  view.columns[1] = {right.y, up.y, forward.y, 0.0f};
+  view.columns[2] = {right.z, up.z, forward.z, 0.0f};
+  view.columns[3] = {-simd::dot(right, state.position),
+                     -simd::dot(up, state.position),
+                     -simd::dot(forward, state.position), 1.0f};
+  return view;
+}
+
+simd::float4x4 makePerspectiveMatrix(float verticalFovDegrees, float aspect,
+                                     float nearZ, float farZ) {
+  float fovRad = verticalFovDegrees * static_cast<float>(M_PI) / 180.0f;
+  float yScale = 1.0f / std::tan(fovRad * 0.5f);
+  float xScale = yScale / std::max(aspect, 1e-6f);
+  float zRange = std::max(farZ - nearZ, 1e-6f);
+  float zScale = farZ / zRange;
+  float wz = -nearZ * zScale;
+
+  simd::float4x4 proj;
+  proj.columns[0] = {xScale, 0.0f, 0.0f, 0.0f};
+  proj.columns[1] = {0.0f, yScale, 0.0f, 0.0f};
+  proj.columns[2] = {0.0f, 0.0f, zScale, 1.0f};
+  proj.columns[3] = {0.0f, 0.0f, wz, 0.0f};
+  return proj;
 }
 
 float luminance(const simd::float3 &c) {
@@ -600,6 +654,8 @@ Renderer::~Renderer() {
     _pInstanceBuffer->release();
   if (_pGeometryHandleBuffer)
     _pGeometryHandleBuffer->release();
+  if (_pFrustumVertexBuffer)
+    _pFrustumVertexBuffer->release();
 
   _cachedInstanceDescriptors.clear();
   _cachedInstancedAccelerationStructures.clear();
@@ -622,6 +678,8 @@ Renderer::~Renderer() {
     _pPathTracePSO->release();
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
+  if (_pOverlayPSO)
+    _pOverlayPSO->release();
 
   for (auto &resident : _residentObjectGpuResources) {
     resident.clearPendingCommand();
@@ -824,6 +882,10 @@ void Renderer::buildShaders() {
     _pPSO->release();
     _pPSO = nullptr;
   }
+  if (_pOverlayPSO) {
+    _pOverlayPSO->release();
+    _pOverlayPSO = nullptr;
+  }
   if (_pPathTracePSO) {
     _pPathTracePSO->release();
     _pPathTracePSO = nullptr;
@@ -858,6 +920,32 @@ void Renderer::buildShaders() {
     __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     assert(false);
   }
+
+  pError = nullptr;
+  MTL::Function *pOverlayVertexFn = pLibrary->newFunction(
+      NS::String::string("frustumDebugVertexMain", UTF8StringEncoding));
+  MTL::Function *pOverlayFragmentFn = pLibrary->newFunction(
+      NS::String::string("frustumDebugFragmentMain", UTF8StringEncoding));
+  if (pOverlayVertexFn && pOverlayFragmentFn) {
+    MTL::RenderPipelineDescriptor *pOverlayDesc =
+        MTL::RenderPipelineDescriptor::alloc()->init();
+    pOverlayDesc->setVertexFunction(pOverlayVertexFn);
+    pOverlayDesc->setFragmentFunction(pOverlayFragmentFn);
+    pOverlayDesc->colorAttachments()->object(0)->setPixelFormat(
+        MTL::PixelFormat::PixelFormatRGBA16Float);
+    pOverlayDesc->setInputPrimitiveTopology(
+        MTL::PrimitiveTopologyClass::PrimitiveTopologyClassLine);
+
+    _pOverlayPSO = _pDevice->newRenderPipelineState(pOverlayDesc, &pError);
+    if (!_pOverlayPSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    }
+    pOverlayDesc->release();
+  }
+  if (pOverlayVertexFn)
+    pOverlayVertexFn->release();
+  if (pOverlayFragmentFn)
+    pOverlayFragmentFn->release();
 
   pError = nullptr;
   _useAccelerationStructureBindings = false;
@@ -1143,7 +1231,60 @@ void Renderer::updateVisibleScene() {
   updateResidency(true, true);
 }
 
+
+std::array<simd::float3, 8>
+Renderer::buildFrustumCorners(const Camera::State &state, float nearDistance,
+                              float farDistance) const {
+  std::array<simd::float3, 8> corners{};
+  if (nearDistance <= 0.0f || farDistance <= nearDistance)
+    return corners;
+
+  float aspectRatio = Camera::screenSize.y > 0.0f
+                           ? Camera::screenSize.x / Camera::screenSize.y
+                           : 1.0f;
+  float fovRad = state.verticalFov * static_cast<float>(M_PI) / 180.0f;
+  float tanHalfFov = std::tan(fovRad * 0.5f);
+
+  simd::float3 forward = state.forward;
+  if (simd::length_squared(forward) < 1e-6f)
+    forward = {0.0f, 0.0f, -1.0f};
+  forward = simd::normalize(forward);
+
+  simd::float3 up = state.up;
+  if (simd::length_squared(up) < 1e-6f)
+    up = {0.0f, 1.0f, 0.0f};
+  up = simd::normalize(up);
+
+  simd::float3 right = simd::cross(forward, up);
+  if (simd::length_squared(right) < 1e-6f)
+    right = {1.0f, 0.0f, 0.0f};
+  right = simd::normalize(right);
+  up = simd::normalize(simd::cross(right, forward));
+
+  auto buildPlane = [&](float distance, float halfWidth, float halfHeight,
+                        size_t indexBase) {
+    simd::float3 center = state.position + forward * distance;
+    simd::float3 offsetRight = right * halfWidth;
+    simd::float3 offsetUp = up * halfHeight;
+    corners[indexBase + 0] = center + offsetUp - offsetRight;
+    corners[indexBase + 1] = center + offsetUp + offsetRight;
+    corners[indexBase + 2] = center - offsetUp + offsetRight;
+    corners[indexBase + 3] = center - offsetUp - offsetRight;
+  };
+
+  float nearHalfHeight = tanHalfFov * nearDistance;
+  float nearHalfWidth = nearHalfHeight * aspectRatio;
+  float farHalfHeight = tanHalfFov * farDistance;
+  float farHalfWidth = farHalfHeight * aspectRatio;
+
+  buildPlane(nearDistance, nearHalfWidth, nearHalfHeight, 0);
+  buildPlane(farDistance, farHalfWidth, farHalfHeight, 4);
+
+  return corners;
+}
+
 void Renderer::recalculateViewport() {
+
   float aspectRatio = Camera::screenSize.x / Camera::screenSize.y;
   float fovRad = Camera::verticalFov * (M_PI / 180.0f);
   float halfHeight = tanf(fovRad * 0.5f);
@@ -3494,6 +3635,59 @@ void Renderer::draw(MTK::View *pView) {
 
   pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
                        NS::UInteger(0), NS::UInteger(6));
+
+  if (_pOverlayPSO && _observerActive) {
+    float nearDistance = kFrustumDebugNear;
+    float baseDistance = std::max(_primaryCameraState.focalLength, 1.0f);
+    float farDistance =
+        std::max(baseDistance * kFrustumDebugFarMultiplier, nearDistance * 2.0f);
+
+    auto corners = buildFrustumCorners(_primaryCameraState, nearDistance, farDistance);
+    std::array<simd::float3, kFrustumEdges.size() * 2> frustumVertices{};
+    size_t vertexCount = 0;
+    for (const auto &edge : kFrustumEdges) {
+      size_t firstIndex = static_cast<size_t>(edge.first);
+      size_t secondIndex = static_cast<size_t>(edge.second);
+      if (firstIndex >= corners.size() || secondIndex >= corners.size())
+        continue;
+      frustumVertices[vertexCount++] = corners[firstIndex];
+      frustumVertices[vertexCount++] = corners[secondIndex];
+    }
+
+    size_t requiredBytes = vertexCount * sizeof(simd::float3);
+    ensureBufferCapacity(_pFrustumVertexBuffer, requiredBytes,
+                         _frustumVertexCapacity, false,
+                         MTL::ResourceStorageModeShared);
+
+    if (_pFrustumVertexBuffer && requiredBytes > 0) {
+      void *dst = _pFrustumVertexBuffer->contents();
+      if (dst)
+        std::memcpy(dst, frustumVertices.data(), requiredBytes);
+      if (_pFrustumVertexBuffer->storageMode() == MTL::StorageModeManaged)
+        markBufferModified(_pFrustumVertexBuffer,
+                           NS::Range::Make(0, requiredBytes));
+
+      float aspect = Camera::screenSize.y > 0.0f
+                         ? Camera::screenSize.x / Camera::screenSize.y
+                         : 1.0f;
+      constexpr float kViewNear = 0.1f;
+      constexpr float kViewFar = 1000.0f;
+      OverlayUniforms uniforms{};
+      uniforms.viewProjection =
+          simd_mul(makePerspectiveMatrix(viewCamera.verticalFov, aspect,
+                                         kViewNear, kViewFar),
+                   makeViewMatrix(viewCamera));
+
+      pEnc->setRenderPipelineState(_pOverlayPSO);
+      pEnc->setVertexBuffer(_pFrustumVertexBuffer, 0, 0);
+      pEnc->setVertexBytes(&uniforms, sizeof(uniforms), 1);
+      pEnc->drawPrimitives(MTL::PrimitiveTypeLine, NS::UInteger(0),
+                           NS::UInteger(vertexCount));
+
+      pEnc->setRenderPipelineState(_pPSO);
+      pEnc->setFragmentTexture(accum1, 0);
+    }
+  }
 
   pEnc->endEncoding();
 

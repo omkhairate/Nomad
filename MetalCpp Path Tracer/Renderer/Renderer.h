@@ -3,6 +3,7 @@
 
 #include <Metal/Metal.hpp>
 #include <MetalKit/MetalKit.hpp>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -148,10 +149,14 @@ private:
   void writeBenchmarkHeader();
   void writeBenchmarkRow(const BenchmarkSample &sample);
   std::string residencyStrategyName(ResidencyStrategy strategy) const;
+  std::array<simd::float3, 8>
+  buildFrustumCorners(const Camera::State &state, float nearDistance,
+                      float farDistance) const;
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
+  MTL::RenderPipelineState *_pOverlayPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
 
@@ -178,6 +183,7 @@ private:
   MTL::Buffer *_pInstanceBuffer = nullptr;
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
+  MTL::Buffer *_pFrustumVertexBuffer = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -321,6 +327,7 @@ private:
   size_t _instanceBufferCapacity = 0;
   size_t _geometryHandleBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
+  size_t _frustumVertexCapacity = 0;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
