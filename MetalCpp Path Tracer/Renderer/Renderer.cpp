@@ -28,7 +28,6 @@
 #include <numeric>
 #include <simd/simd.h>
 #include <sstream>
-#include <system_error>
 #include <string>
 #include <utility>
 #include <unordered_map>
@@ -143,29 +142,6 @@ size_t alignTo(size_t value, size_t alignment) {
   if (alignment == 0)
     return value;
   return (value + alignment - 1) & ~(alignment - 1);
-}
-
-float halfToFloat(uint16_t h) {
-  int sign = (h >> 15) & 0x1;
-  int exp = (h >> 10) & 0x1F;
-  int mant = h & 0x3FF;
-
-  float value;
-  if (exp == 0) {
-    if (mant == 0) {
-      value = 0.0f;
-    } else {
-      value = std::ldexp(static_cast<float>(mant), -24);
-    }
-  } else if (exp == 0x1F) {
-    value = mant ? std::numeric_limits<float>::quiet_NaN()
-                 : std::numeric_limits<float>::infinity();
-  } else {
-    value =
-        std::ldexp(1.0f + static_cast<float>(mant) / 1024.0f, exp - 15);
-  }
-
-  return sign ? -value : value;
 }
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
@@ -546,15 +522,12 @@ Renderer::Renderer(MTL::Device *pDevice)
   _dummyBlasResources.initialize(_pDevice);
 
   Camera::reset();
-  ObserverCamera::reset();
 
   updateVisibleScene();
   buildShaders();
   buildTextures();
 
   recalculateViewport();
-  if (_observerEnabled)
-    recalculateObserverViewport();
   initializeBenchmarking();
 }
 
@@ -569,8 +542,6 @@ Renderer::~Renderer() {
     _pTriangleIndexBuffer->release();
   if (_pUniformsBuffer)
     _pUniformsBuffer->release();
-  if (_pObserverUniformsBuffer)
-    _pObserverUniformsBuffer->release();
   if (_pBVHBuffer)
     _pBVHBuffer->release();
   if (_pPrimitiveIndexBuffer)
@@ -594,8 +565,6 @@ Renderer::~Renderer() {
     _pInstanceBuffer->release();
   if (_pGeometryHandleBuffer)
     _pGeometryHandleBuffer->release();
-  if (_pObserverReadbackBuffer)
-    _pObserverReadbackBuffer->release();
 
   _cachedInstanceDescriptors.clear();
   _cachedInstancedAccelerationStructures.clear();
@@ -610,7 +579,6 @@ Renderer::~Renderer() {
     releaseTextureSlot(slot);
   releaseTextureSlot(_sampleCountSlot);
   releaseTextureSlot(_sampleImportanceSlot);
-  releaseObserverTextures();
 
   if (_pTextureClearBuffer)
     _pTextureClearBuffer->release();
@@ -928,69 +896,11 @@ void Renderer::updateVisibleScene() {
 
   Camera::screenSize = _pScene->screenSize;
 
-  _observerEnabled = _pScene->isObserverEnabled();
-  _observerFrameStride = std::max(_pScene->getObserverFrameStride(), 1u);
-  _observerOutputDirectory = _pScene->getObserverOutputDirectory();
-  if (_observerOutputDirectory.empty())
-    _observerOutputDirectory = "observer_capture";
-
-  _observerHasCustomPose = _pScene->hasObserverPose();
-  if (_observerHasCustomPose) {
-    _observerCustomPosition = _pScene->getObserverPosePosition();
-    _observerCustomLookAt = _pScene->getObserverPoseLookAt();
-  } else {
-    _observerCustomPosition = {0.0f, 0.0f, 0.0f};
-    _observerCustomLookAt = {0.0f, 0.0f, -1.0f};
-  }
-  _observerHasCustomFov = _pScene->hasObserverVerticalFov();
-  if (_observerHasCustomFov) {
-    _observerCustomVerticalFov = _pScene->getObserverVerticalFov();
-  } else {
-    _observerCustomVerticalFov = 45.0f;
-  }
-
-  if (_observerEnabled) {
-    _observerScreenSize = computeObserverScreenSize(Camera::screenSize);
-    ObserverCamera::screenSize = _observerScreenSize;
-    ObserverCamera::verticalFov =
-        _observerHasCustomFov ? _observerCustomVerticalFov : 45.0f;
-    if (_observerHasCustomPose) {
-      ObserverCamera::position = _observerCustomPosition;
-      ObserverCamera::lookAt(_observerCustomLookAt);
-    }
-  } else {
-    releaseObserverTextures();
-    if (_pObserverUniformsBuffer) {
-      _pObserverUniformsBuffer->release();
-      _pObserverUniformsBuffer = nullptr;
-    }
-    if (_pObserverReadbackBuffer) {
-      _pObserverReadbackBuffer->release();
-      _pObserverReadbackBuffer = nullptr;
-      _observerReadbackCapacity = 0;
-    }
-  }
-  _observerCapturePending = false;
-  _observerCapturedFrames = 0;
-  _observerReadbackRowBytes = 0;
-  _observerReadbackAlignedRowBytes = 0;
-  _observerReadbackWidth = 0;
-  _observerReadbackHeight = 0;
-
   if (!_pScene->cameraPath.empty()) {
     const auto &k = _pScene->cameraPath.front();
     Camera::position = k.position;
     Camera::forward = simd::normalize(k.lookAt - k.position);
     Camera::up = {0, 1, 0};
-  }
-
-  if (_observerEnabled) {
-    if (_observerHasCustomPose) {
-      ObserverCamera::position = _observerCustomPosition;
-      ObserverCamera::lookAt(_observerCustomLookAt);
-    } else {
-      ObserverCamera::lookAt(Camera::position);
-    }
   }
 
   printf("Scene loaded: %zu total primitives (%zu spheres, %zu triangles, %zu "
@@ -1152,14 +1062,6 @@ void Renderer::updateVisibleScene() {
   std::iota(_energySortedIndices.begin(), _energySortedIndices.end(), size_t(0));
   _residentObjectGpuResources.resize(objectCount);
 
-  simd::float3 sceneMin = {std::numeric_limits<float>::max(),
-                           std::numeric_limits<float>::max(),
-                           std::numeric_limits<float>::max()};
-  simd::float3 sceneMax = {std::numeric_limits<float>::lowest(),
-                           std::numeric_limits<float>::lowest(),
-                           std::numeric_limits<float>::lowest()};
-  bool haveSceneBounds = false;
-
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     auto &resident = _residentObjectGpuResources[objectIndex];
     resident.clearPendingCommand();
@@ -1177,42 +1079,12 @@ void Renderer::updateVisibleScene() {
     float radius = simd::length(boundsMax - center);
     _objectBounds[objectIndex] = {center, radius};
 
-    sceneMin = {std::min(sceneMin.x, boundsMin.x),
-                std::min(sceneMin.y, boundsMin.y),
-                std::min(sceneMin.z, boundsMin.z)};
-    sceneMax = {std::max(sceneMax.x, boundsMax.x),
-                std::max(sceneMax.y, boundsMax.y),
-                std::max(sceneMax.z, boundsMax.z)};
-    haveSceneBounds = true;
-
     size_t first = obj.firstPrimitive;
     size_t last = first + obj.primitiveCount;
     for (size_t prim = first; prim < last && prim < _primitiveToObject.size();
          ++prim)
       _primitiveToObject[prim] = objectIndex;
   }
-
-  if (haveSceneBounds) {
-    _sceneBoundsCenter = (sceneMin + sceneMax) * 0.5f;
-    _sceneBoundsRadius = simd::length(sceneMax - _sceneBoundsCenter);
-  } else {
-    _sceneBoundsCenter = {0.0f, 5.0f, 0.0f};
-    _sceneBoundsRadius = 25.0f;
-  }
-
-  if (_observerEnabled) {
-    if (_observerHasCustomPose) {
-      ObserverCamera::position = _observerCustomPosition;
-      ObserverCamera::lookAt(_observerCustomLookAt);
-    } else {
-      ObserverCamera::configureForScene(_sceneBoundsCenter,
-                                        _sceneBoundsRadius);
-      ObserverCamera::lookAt(Camera::position);
-    }
-  }
-  _observerNeedsReset = true;
-  _observerTargetsNeedClear = true;
-  _observerFrameCount = 0;
 
   updateResidency(true, true);
 }
@@ -1247,55 +1119,6 @@ void Renderer::recalculateViewport() {
 
   markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
 
-}
-
-void Renderer::recalculateObserverViewport() {
-  if (!_observerEnabled)
-    return;
-  if (!_pObserverUniformsBuffer)
-    return;
-
-  float aspectRatio = (ObserverCamera::screenSize.y > 0.0f)
-                          ? (ObserverCamera::screenSize.x /
-                             ObserverCamera::screenSize.y)
-                          : 1.0f;
-  float fovRad = ObserverCamera::verticalFov * (M_PI / 180.0f);
-  float halfHeight = tanf(fovRad * 0.5f);
-  float halfWidth = aspectRatio * halfHeight;
-
-  simd::float3 w = simd::normalize(-ObserverCamera::forward);
-  if (simd::length_squared(w) < 1e-6f)
-    w = {0.0f, 0.0f, 1.0f};
-  simd::float3 u = simd::cross(ObserverCamera::up, w);
-  if (simd::length_squared(u) < 1e-6f)
-    u = simd::cross(simd::float3{0.0f, 1.0f, 0.0f}, w);
-  u = simd::normalize(u);
-  simd::float3 v = simd::cross(w, u);
-
-  simd::float3 viewportU = u * (2.0f * halfWidth);
-  simd::float3 viewportV = -v * (2.0f * halfHeight);
-  simd::float3 firstPixelPosition =
-      ObserverCamera::position - w - (viewportU * 0.5f) - (viewportV * 0.5f);
-
-  float width = std::max(ObserverCamera::screenSize.x, 1.0f);
-  float height = std::max(ObserverCamera::screenSize.y, 1.0f);
-  simd::float3 rayDx = viewportU / width;
-  simd::float3 rayDy = viewportV / height;
-
-  UniformsData *uData =
-      reinterpret_cast<UniformsData *>(_pObserverUniformsBuffer->contents());
-  if (!uData)
-    return;
-  uData->cameraPosition = ObserverCamera::position;
-  uData->viewportU = viewportU;
-  uData->viewportV = viewportV;
-  uData->firstPixelPosition = firstPixelPosition;
-  uData->rayDx = rayDx;
-  uData->rayDy = rayDy;
-  uData->screenSize = ObserverCamera::screenSize;
-
-  markBufferModified(_pObserverUniformsBuffer,
-                     NS::Range::Make(0, sizeof(UniformsData)));
 }
 
 bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
@@ -1979,18 +1802,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     if (_pUniformsBuffer)
       markBufferModified(_pUniformsBuffer,
                          NS::Range::Make(0, uniformsDataSize));
-  }
-  if (_observerEnabled) {
-    if (!_pObserverUniformsBuffer) {
-      _pObserverUniformsBuffer = _pDevice->newBuffer(
-          uniformsDataSize, MTL::ResourceStorageModeManaged);
-      if (_pObserverUniformsBuffer)
-        markBufferModified(_pObserverUniformsBuffer,
-                           NS::Range::Make(0, uniformsDataSize));
-    }
-  } else if (_pObserverUniformsBuffer) {
-    _pObserverUniformsBuffer->release();
-    _pObserverUniformsBuffer = nullptr;
   }
 
   if (_primitiveToResidentIndex.size() < totalPrimitiveCount)
@@ -3236,11 +3047,6 @@ void Renderer::buildTextures() {
 
   _needsAccumulationReset = true;
   _accumulationTargetsNeedClear = true;
-
-  if (_observerEnabled)
-    buildObserverTextures();
-  else
-    releaseObserverTextures();
 }
 
 bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
@@ -3303,158 +3109,6 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
 
   blit->endEncoding();
   return allResident;
-}
-
-void Renderer::releaseObserverTextures() {
-  for (MTL::Texture *&tex : _pObserverAccumulation) {
-    if (tex) {
-      tex->release();
-      tex = nullptr;
-    }
-  }
-  if (_pObserverSampleCount) {
-    _pObserverSampleCount->release();
-    _pObserverSampleCount = nullptr;
-  }
-  if (_pObserverSampleImportance) {
-    _pObserverSampleImportance->release();
-    _pObserverSampleImportance = nullptr;
-  }
-}
-
-void Renderer::buildObserverTextures() {
-  if (!_observerEnabled) {
-    releaseObserverTextures();
-    return;
-  }
-  if (!_pDevice)
-    return;
-
-  releaseObserverTextures();
-
-  NS::UInteger width = std::max<NS::UInteger>(
-      1, static_cast<NS::UInteger>(std::round(std::max(_observerScreenSize.x, 1.0f))));
-  NS::UInteger height = std::max<NS::UInteger>(
-      1, static_cast<NS::UInteger>(std::round(std::max(_observerScreenSize.y, 1.0f))));
-
-  auto createTexture = [&](MTL::PixelFormat format) -> MTL::Texture * {
-    MTL::TextureDescriptor *descriptor =
-        MTL::TextureDescriptor::texture2DDescriptor(format, width, height, false);
-    descriptor->setUsage(static_cast<MTL::TextureUsage>(
-        MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite));
-    descriptor->setStorageMode(MTL::StorageMode::StorageModePrivate);
-    MTL::Texture *tex = _pDevice->newTexture(descriptor);
-    descriptor->release();
-    return tex;
-  };
-
-  _pObserverAccumulation[0] =
-      createTexture(MTL::PixelFormat::PixelFormatRGBA16Float);
-  _pObserverAccumulation[1] =
-      createTexture(MTL::PixelFormat::PixelFormatRGBA16Float);
-  _pObserverSampleCount =
-      createTexture(MTL::PixelFormat::PixelFormatR16Float);
-  _pObserverSampleImportance =
-      createTexture(MTL::PixelFormat::PixelFormatR16Float);
-
-  _observerNeedsReset = true;
-  _observerTargetsNeedClear = true;
-  _observerFrameCount = 0;
-}
-
-bool Renderer::ensureObserverTextures() {
-  if (!_observerEnabled)
-    return false;
-  if (_pObserverAccumulation[0] && _pObserverAccumulation[1] &&
-      _pObserverSampleCount && _pObserverSampleImportance)
-    return true;
-
-  buildObserverTextures();
-  return _pObserverAccumulation[0] && _pObserverAccumulation[1] &&
-         _pObserverSampleCount && _pObserverSampleImportance;
-}
-
-bool Renderer::resetObserverTargets(MTL::CommandBuffer *cmd) {
-  if (!_observerEnabled)
-    return false;
-  if (!cmd)
-    return false;
-
-  std::array<MTL::Texture *, 4> textures = {
-      _pObserverAccumulation[0], _pObserverAccumulation[1],
-      _pObserverSampleCount, _pObserverSampleImportance};
-
-  size_t maxBytes = 0;
-  for (MTL::Texture *tex : textures) {
-    if (!tex)
-      continue;
-    size_t pixelBytes = bytesPerPixel(tex->pixelFormat());
-    if (pixelBytes == 0)
-      continue;
-    size_t rowBytes = static_cast<size_t>(tex->width()) * pixelBytes;
-    size_t alignedRowBytes = alignTo(rowBytes, 256);
-    maxBytes = std::max(maxBytes,
-                        alignedRowBytes * static_cast<size_t>(tex->height()));
-  }
-
-  if (maxBytes == 0)
-    return true;
-
-  ensureBufferCapacity(_pTextureClearBuffer, maxBytes,
-                       _textureClearBufferCapacity, false,
-                       MTL::ResourceStorageModeShared);
-  if (!_pTextureClearBuffer)
-    return false;
-
-  if (void *ptr = _pTextureClearBuffer->contents())
-    std::memset(ptr, 0, maxBytes);
-
-  MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
-  if (!blit)
-    return false;
-
-  for (MTL::Texture *tex : textures) {
-    if (!tex)
-      continue;
-    size_t pixelBytes = bytesPerPixel(tex->pixelFormat());
-    if (pixelBytes == 0)
-      continue;
-    size_t rowBytes = static_cast<size_t>(tex->width()) * pixelBytes;
-    size_t alignedRowBytes = alignTo(rowBytes, 256);
-    NS::UInteger bytesPerImage =
-        static_cast<NS::UInteger>(alignedRowBytes * tex->height());
-    MTL::Size size =
-        MTL::Size::Make(tex->width(), tex->height(), static_cast<NS::UInteger>(1));
-    MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-    blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, bytesPerImage,
-                         size, tex, 0, 0, origin);
-  }
-
-  blit->endEncoding();
-  return true;
-}
-
-simd::float2 Renderer::computeObserverScreenSize(
-    const simd::float2 &mainScreen) const {
-  float mainWidth = std::max(mainScreen.x, 1.0f);
-  float mainHeight = std::max(mainScreen.y, 1.0f);
-  float aspect = (mainHeight > 0.0f) ? (mainWidth / mainHeight) : (16.0f / 9.0f);
-
-  float desiredWidth = std::max(mainWidth * 0.33f, 256.0f);
-  float maxWidth = std::max(mainWidth - 96.0f, 160.0f);
-  desiredWidth = std::min(desiredWidth, maxWidth);
-  float desiredHeight = desiredWidth / aspect;
-
-  float maxHeight = std::max(mainHeight * 0.5f, 144.0f);
-  if (desiredHeight > maxHeight) {
-    desiredHeight = maxHeight;
-    desiredWidth = desiredHeight * aspect;
-  }
-
-  desiredWidth = std::clamp(desiredWidth, 160.0f, mainWidth - 64.0f);
-  desiredHeight = std::clamp(desiredHeight, 120.0f, mainHeight - 64.0f);
-
-  return {desiredWidth, desiredHeight};
 }
 
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
@@ -3542,34 +3196,6 @@ bool Renderer::updateCamera() {
   return changed;
 }
 
-bool Renderer::updateObserverCamera() {
-  if (!_observerEnabled)
-    return false;
-  if (_observerHasCustomPose)
-    return false;
-  simd::float3 prevPosition = ObserverCamera::position;
-  simd::float3 prevForward = ObserverCamera::forward;
-  simd::float3 prevUp = ObserverCamera::up;
-
-  float radius = std::max(_sceneBoundsRadius, 1.0f);
-  float cameraDistance = simd::length(Camera::position - _sceneBoundsCenter);
-  if (cameraDistance > radius * 1.2f) {
-    float expanded = std::max(cameraDistance, radius);
-    ObserverCamera::configureForScene(_sceneBoundsCenter, expanded);
-  }
-
-  ObserverCamera::lookAt(Camera::position);
-
-  bool changed = simd::length_squared(ObserverCamera::position - prevPosition) >
-                 1e-6f;
-  changed = changed ||
-            simd::length_squared(ObserverCamera::forward - prevForward) > 1e-6f;
-  changed = changed ||
-            simd::length_squared(ObserverCamera::up - prevUp) > 1e-6f;
-
-  return changed;
-}
-
 void Renderer::updateUniforms() {
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
@@ -3634,125 +3260,12 @@ void Renderer::updateUniforms() {
   markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
 }
 
-void Renderer::updateObserverUniforms() {
-  if (!_observerEnabled)
-    return;
-  if (!_pObserverUniformsBuffer || !_pUniformsBuffer)
-    return;
-
-  bool cameraChanged = updateObserverCamera();
-  if (cameraChanged)
-    _observerNeedsReset = true;
-
-  recalculateObserverViewport();
-
-  UniformsData &observer =
-      *reinterpret_cast<UniformsData *>(_pObserverUniformsBuffer->contents());
-  const UniformsData &mainUniform =
-      *reinterpret_cast<UniformsData *>(_pUniformsBuffer->contents());
-
-  observer.primitiveIndex = -1;
-
-  if (_observerNeedsReset) {
-    _observerRandomSeed = {randomFloat(), randomFloat(), randomFloat()};
-    _observerFrameCount = 0;
-  } else {
-    _observerFrameCount++;
-  }
-
-  observer.randomSeed = _observerRandomSeed;
-  observer.frameCount = _observerFrameCount;
-  observer.primitiveCount = mainUniform.primitiveCount;
-  observer.triangleCount = mainUniform.triangleCount;
-  observer.totalPrimitiveCount = mainUniform.totalPrimitiveCount;
-  observer.tlasNodeCount = mainUniform.tlasNodeCount;
-  observer.blasNodeCount = mainUniform.blasNodeCount;
-  observer.maxRayDepth = mainUniform.maxRayDepth;
-  observer.debugAS = mainUniform.debugAS;
-  observer.lightCount = mainUniform.lightCount;
-  observer.lightTotalWeight = mainUniform.lightTotalWeight;
-  observer.sampleCountTextureIndex = 2;
-  observer.sampleImportanceTextureIndex = 3;
-  observer.minSamplesPerPixel = 1;
-  observer.maxSamplesPerPixel = 1;
-
-  markBufferModified(_pObserverUniformsBuffer,
-                     NS::Range::Make(0, sizeof(UniformsData)));
-}
-
-void Renderer::writeObserverFrameToPFM() {
-  if (!_observerCapturePending || !_pObserverReadbackBuffer)
-    return;
-
-  void *contents = _pObserverReadbackBuffer->contents();
-  if (!contents)
-    return;
-
-  std::filesystem::path directory =
-      _observerOutputDirectory.empty()
-          ? std::filesystem::path("observer_capture")
-          : std::filesystem::path(_observerOutputDirectory);
-
-  if (!directory.empty()) {
-    std::error_code ec;
-    std::filesystem::create_directories(directory, ec);
-  }
-
-  std::ostringstream name;
-  name << "observer_" << std::setw(6) << std::setfill('0')
-       << _observerCapturedFrames;
-  std::filesystem::path filePath = directory.empty()
-                                       ? std::filesystem::path(name.str() + ".pfm")
-                                       : directory / (name.str() + ".pfm");
-
-  std::ofstream stream(filePath, std::ios::binary);
-  if (!stream.is_open()) {
-    std::printf("[Observer] Failed to open %s for writing.\n",
-               filePath.string().c_str());
-    _observerCapturePending = false;
-    return;
-  }
-
-  stream << "PF\n" << _observerReadbackWidth << " " << _observerReadbackHeight
-         << "\n-1.0\n";
-
-  const uint8_t *src = static_cast<const uint8_t *>(contents);
-  const size_t pixelStride = sizeof(uint16_t) * 4;
-  for (int y = static_cast<int>(_observerReadbackHeight) - 1; y >= 0; --y) {
-    const uint8_t *row =
-        src + static_cast<size_t>(y) * _observerReadbackAlignedRowBytes;
-    for (NS::UInteger x = 0; x < _observerReadbackWidth; ++x) {
-      const uint16_t *pixel =
-          reinterpret_cast<const uint16_t *>(row + x * pixelStride);
-      float rgb[3] = {halfToFloat(pixel[0]), halfToFloat(pixel[1]),
-                      halfToFloat(pixel[2])};
-      stream.write(reinterpret_cast<const char *>(rgb), sizeof(rgb));
-    }
-  }
-
-  if (!stream.good()) {
-    std::printf("[Observer] Failed while writing %s.\n",
-               filePath.string().c_str());
-    _observerCapturePending = false;
-    return;
-  }
-
-  stream.close();
-  std::printf("[Observer] Wrote %s\n", filePath.string().c_str());
-  _observerCapturedFrames++;
-  _observerCapturePending = false;
-}
-
 void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
   updateResidency();
   updateUniforms();
-  if (_observerEnabled)
-    updateObserverUniforms();
   beginFrameMetrics();
   std::swap(_accumulationSlots[0], _accumulationSlots[1]);
-  if (_observerEnabled && _pObserverAccumulation[0] && _pObserverAccumulation[1])
-    std::swap(_pObserverAccumulation[0], _pObserverAccumulation[1]);
 
   NS::AutoreleasePool *pPool = NS::AutoreleasePool::alloc()->init();
 
@@ -3767,8 +3280,6 @@ void Renderer::draw(MTK::View *pView) {
     pPool->release();
     return;
   }
-
-  bool haveObserverTextures = _observerEnabled && ensureObserverTextures();
 
   bool belowBudget =
       _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
@@ -3798,21 +3309,6 @@ void Renderer::draw(MTK::View *pView) {
 
   bool haveAllTextures =
       accum0 && accum1 && sampleCount && sampleImportance;
-
-  if (haveObserverTextures && _observerTargetsNeedClear) {
-    if (resetObserverTargets(pCmd)) {
-      _observerTargetsNeedClear = false;
-      _observerNeedsReset = false;
-    }
-  }
-
-  haveObserverTextures = haveObserverTextures && _pObserverAccumulation[0] &&
-                         _pObserverAccumulation[1] && _pObserverSampleCount &&
-                         _pObserverSampleImportance;
-
-  bool captureObserverFrame = _observerEnabled && haveObserverTextures &&
-                              _observerFrameStride > 0 &&
-                              (_observerFrameCount % _observerFrameStride == 0);
 
   if (_accumulationTargetsNeedClear && haveAllTextures) {
     if (resetAccumulationTargets(pCmd)) {
@@ -3896,104 +3392,16 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
-  if (_pPathTracePSO && haveObserverTextures) {
-    MTL::ComputeCommandEncoder *pObserverCompute =
-        pCmd->computeCommandEncoder();
-    if (pObserverCompute) {
-      pObserverCompute->setComputePipelineState(_pPathTracePSO);
-
-      bool useAccelerationStructureLayout =
-          _useAccelerationStructureBindings && _pTlasStructure &&
-          _pGeometryHandleBuffer;
-
-      if (useAccelerationStructureLayout) {
-        pObserverCompute->setAccelerationStructure(_pTlasStructure, 0);
-        pObserverCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
-        pObserverCompute->setBuffer(_pSphereBuffer, 0, 2);
-        pObserverCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
-        pObserverCompute->setBuffer(_pObserverUniformsBuffer, 0, 4);
-        pObserverCompute->setBuffer(_pActiveBuffer, 0, 5);
-        pObserverCompute->setBuffer(_pLightIndexBuffer, 0, 6);
-        pObserverCompute->setBuffer(_pLightCdfBuffer, 0, 7);
-        pObserverCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
-        pObserverCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
-        pObserverCompute->setBuffer(_pInstanceBuffer, 0, 10);
-      } else {
-        pObserverCompute->setBuffer(_pBVHBuffer, 0, 0);
-        pObserverCompute->setBuffer(_pSphereBuffer, 0, 1);
-        pObserverCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
-        pObserverCompute->setBuffer(_pObserverUniformsBuffer, 0, 3);
-        pObserverCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
-        pObserverCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
-        pObserverCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
-        pObserverCompute->setBuffer(_pTLASBuffer, 0, 7);
-        pObserverCompute->setBuffer(_pActiveBuffer, 0, 8);
-        pObserverCompute->setBuffer(_pLightIndexBuffer, 0, 9);
-        pObserverCompute->setBuffer(_pLightCdfBuffer, 0, 10);
-        pObserverCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
-        pObserverCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
-        pObserverCompute->setBuffer(_pInstanceBuffer, 0, 13);
-      }
-
-      pObserverCompute->setTexture(_pObserverAccumulation[0], 0);
-      pObserverCompute->setTexture(_pObserverAccumulation[1], 1);
-      pObserverCompute->setTexture(_pObserverSampleCount, 2);
-      pObserverCompute->setTexture(_pObserverSampleImportance, 3);
-
-      NS::UInteger width = _pObserverAccumulation[1]
-                               ? _pObserverAccumulation[1]->width()
-                               : 0;
-      NS::UInteger height = _pObserverAccumulation[1]
-                                ? _pObserverAccumulation[1]->height()
-                                : 0;
-      if (width > 0 && height > 0) {
-        NS::UInteger tgWidth = std::max<NS::UInteger>(
-            1, _pPathTracePSO->threadExecutionWidth());
-        NS::UInteger maxThreads = std::max<NS::UInteger>(
-            tgWidth, _pPathTracePSO->maxTotalThreadsPerThreadgroup());
-        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
-        MTL::Size threadsPerThreadgroup =
-            MTL::Size::Make(tgWidth, tgHeight, 1);
-        MTL::Size threadgroups = MTL::Size::Make(
-            (width + threadsPerThreadgroup.width - 1) /
-                threadsPerThreadgroup.width,
-            (height + threadsPerThreadgroup.height - 1) /
-                threadsPerThreadgroup.height,
-            1);
-        pObserverCompute->dispatchThreadgroups(threadgroups,
-                                               threadsPerThreadgroup);
-      }
-
-      pObserverCompute->endEncoding();
-    }
-  }
-
   MTL::RenderPassDescriptor *pRpd = pView->currentRenderPassDescriptor();
   MTL::RenderCommandEncoder *pEnc = pCmd->renderCommandEncoder(pRpd);
 
-  if (pEnc) {
-    pEnc->setRenderPipelineState(_pPSO);
+  pEnc->setRenderPipelineState(_pPSO);
+  pEnc->setFragmentTexture(accum1, 0);
 
-    CGSize drawableSize = pView->drawableSize();
-    double fullWidth =
-        std::max<double>(static_cast<double>(drawableSize.width), 1.0);
-    double fullHeight =
-        std::max<double>(static_cast<double>(drawableSize.height), 1.0);
-    MTL::Viewport fullViewport{0.0, 0.0, fullWidth, fullHeight, 0.0, 1.0};
-    MTL::ScissorRect fullScissor{0, 0, static_cast<NS::UInteger>(fullWidth),
-                                 static_cast<NS::UInteger>(fullHeight)};
-    pEnc->setViewport(fullViewport);
-    pEnc->setScissorRect(fullScissor);
-    pEnc->setFragmentTexture(accum1, 0);
+  pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
+                       NS::UInteger(0), NS::UInteger(6));
 
-    pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
-                         NS::UInteger(0), NS::UInteger(6));
-
-    pEnc->endEncoding();
-  }
-
-  bool capturedObserverThisFrame = false;
-  _observerCapturePending = false;
+  pEnc->endEncoding();
 
   MTL::BlitCommandEncoder *pBlit = pCmd->blitCommandEncoder();
   bool performedRayHitReadback = false;
@@ -4008,50 +3416,11 @@ void Renderer::draw(MTK::View *pView) {
       performedRayHitReadback = true;
     }
   }
-
-  if (captureObserverFrame && haveObserverTextures && pBlit &&
-      _pObserverAccumulation[1]) {
-    size_t pixelBytes = bytesPerPixel(_pObserverAccumulation[1]->pixelFormat());
-    NS::UInteger width = _pObserverAccumulation[1]->width();
-    NS::UInteger height = _pObserverAccumulation[1]->height();
-    size_t rowBytes = static_cast<size_t>(width) * pixelBytes;
-    size_t alignedRowBytes = alignTo(rowBytes, 256);
-    size_t totalBytes = alignedRowBytes * static_cast<size_t>(height);
-    if (pixelBytes > 0 && width > 0 && height > 0 && totalBytes > 0) {
-      ensureBufferCapacity(_pObserverReadbackBuffer, totalBytes,
-                           _observerReadbackCapacity, false,
-                           MTL::ResourceStorageModeShared);
-      if (_pObserverReadbackBuffer) {
-        MTL::Size size = MTL::Size::Make(width, height, 1);
-        MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-        NS::UInteger bytesPerImage =
-            static_cast<NS::UInteger>(alignedRowBytes * height);
-        pBlit->copyFromTexture(_pObserverAccumulation[1], 0, 0, origin, size,
-                               _pObserverReadbackBuffer, 0, alignedRowBytes,
-                               bytesPerImage);
-        _observerReadbackRowBytes = rowBytes;
-        _observerReadbackAlignedRowBytes = alignedRowBytes;
-        _observerReadbackWidth = width;
-        _observerReadbackHeight = height;
-        _observerCapturePending = true;
-        capturedObserverThisFrame = true;
-      }
-    }
-  }
-
   if (pBlit)
     pBlit->endEncoding();
 
   pCmd->presentDrawable(pView->currentDrawable());
   pCmd->commit();
-
-  if (capturedObserverThisFrame) {
-    pCmd->waitUntilCompleted();
-    if (pCmd->status() == MTL::CommandBufferStatusCompleted)
-      writeObserverFrameToPFM();
-    else
-      _observerCapturePending = false;
-  }
 
   if (performedRayHitReadback) {
     if (_lastRayHitCommandBuffer)
@@ -5432,18 +4801,9 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
   Camera::screenSize = {(float)size.width, (float)size.height};
-  if (_observerEnabled) {
-    _observerScreenSize = computeObserverScreenSize(Camera::screenSize);
-    ObserverCamera::screenSize = _observerScreenSize;
-    _observerNeedsReset = true;
-    _observerTargetsNeedClear = true;
-    _observerFrameCount = 0;
-  }
 
   buildTextures();
   recalculateViewport();
-  if (_observerEnabled)
-    recalculateObserverViewport();
 }
 
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }

@@ -334,29 +334,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "textureResidencyMemoryCapMB", scene->getTextureResidencyMemoryCapMB());
     scene->setTextureResidencyMemoryCapMB(textureCap);
 
-    bool observerEnabled = root->BoolAttribute("observerEnabled", scene->isObserverEnabled());
-    scene->setObserverEnabled(observerEnabled);
-
-    uint32_t observerStride = root->UnsignedAttribute("observerFrameStride", scene->getObserverFrameStride());
-    scene->setObserverFrameStride(observerStride);
-
-    if (const char* observerDir = root->Attribute("observerOutputDir")) {
-        scene->setObserverOutputDirectory(observerDir);
-    }
-
-    scene->clearObserverPose();
-    if (const char* observerPos = root->Attribute("observerPosition")) {
-        if (const char* observerLookAt = root->Attribute("observerLookAt")) {
-            scene->setObserverPose(parseVec3(observerPos), parseVec3(observerLookAt));
-        }
-    }
-
-    scene->clearObserverVerticalFov();
-    float observerFovDegrees = 0.0f;
-    if (root->QueryFloatAttribute("observerVerticalFov", &observerFovDegrees) == XML_SUCCESS) {
-        scene->setObserverVerticalFov(observerFovDegrees);
-    }
-
     int nextMeshGroupId = 0;
 
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
