@@ -2,6 +2,7 @@
 #include "ControllerView.hpp"
 #include <AppKit/AppKit.hpp>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -33,6 +34,28 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
     if (_gpuMemLog.is_open())
       _gpuMemLog << "frame,gpu_memory_mb\n";
   }
+
+  auto parseBoolEnv = [](const char *value) {
+    if (!value || !value[0])
+      return false;
+    if (std::isdigit(static_cast<unsigned char>(value[0])))
+      return std::strtoul(value, nullptr, 10) != 0;
+    char first = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(value[0])));
+    return first == 't' || first == 'y';
+  };
+
+  bool captureEnabled = parseBoolEnv(std::getenv("MPT_CAPTURE_EXR"));
+
+  size_t captureInterval = 1;
+  if (const char *intervalEnv = std::getenv("MPT_CAPTURE_INTERVAL")) {
+    unsigned long parsed = std::strtoul(intervalEnv, nullptr, 10);
+    if (parsed > 0)
+      captureInterval = parsed;
+  }
+
+  _pRenderer->setFrameCaptureEnabled(captureEnabled);
+  _pRenderer->setFrameCaptureInterval(captureInterval);
 }
 
 ViewDelegate::~ViewDelegate() {
