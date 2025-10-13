@@ -1,0 +1,28 @@
+<Scene width="640" height="360" maxRayDepth="4" startCompacted="true"
+       residencyStrategy="rayHitBudget" textureResidencyMemoryCapMB="256"
+       residencyCooldown="2" rayHitDecay="0.9" rayHitTargetFraction="0.55"
+       rayHitMinActive="24" rayHitToggleBudget="20" rayHitCooldown="4">
+    <ObserverCamera position="2.5,-4.0,3.0" lookAt="0.0,0.0,2.0" verticalFov="45" />
+
+    <CameraPath>
+        <!-- Identical climb to expose ray hit fluctuations as the viewer turns corners -->
+        <Keyframe frame="0" position="2.4,-4.2,3.1" lookAt="0.2,-1.0,2.2" />
+        <Keyframe frame="45" position="1.6,-2.4,3.2" lookAt="0.1,0.5,2.3" />
+        <Keyframe frame="90" position="0.8,-1.0,3.3" lookAt="-0.1,1.8,2.2" />
+        <Keyframe frame="135" position="0.1,0.4,3.4" lookAt="-0.3,3.2,2.0" />
+        <Keyframe frame="180" position="-0.6,1.6,3.6" lookAt="-0.4,4.6,1.8" />
+    </CameraPath>
+
+    <Rectangle position="0.0,-4.5,3.6" u="4.5,0.0,0.0" v="0.0,0.0,4.5"
+               albedo="0.45,0.45,0.5" emission="0,0,0" materialType="0"
+               emissionPower="0" />
+
+    <Rectangle position="0.0,3.0,5.5" u="3.0,0.0,0.0" v="0.0,3.0,0.0"
+               albedo="1.0,1.0,1.0" emission="1.0,0.95,0.9" materialType="-1"
+               emissionPower="30" />
+
+    <Mesh file="assets/The Wooden Staircase BS.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="4096" clusterMaxExtent="18"
+          albedo="0.7,0.62,0.5" emission="0,0,0" materialType="0"
+          emissionPower="0" />
+</Scene>
