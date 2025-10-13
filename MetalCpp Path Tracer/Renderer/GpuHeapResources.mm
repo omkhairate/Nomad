@@ -39,8 +39,6 @@ void GpuHeapResources::initialize(MTL::Device *device, NS::UInteger heapSize,
 
   if (_heap)
     return;
-
-  recreateHeap(_defaultHeapSize);
 }
 
 void GpuHeapResources::destroy() {
@@ -118,7 +116,13 @@ MTL::Buffer *GpuHeapResources::ensureOnHeapBuffer(BufferKind kind,
     return nullptr;
 
   if (!_heap) {
-    recreateHeap(std::max(_defaultHeapSize, alignForHeap(requiredBytes)));
+    NS::UInteger initialSize = alignForHeap(requiredBytes);
+    if (initialSize == 0) {
+      NS::UInteger fallback = (_defaultHeapSize == 0) ? kDefaultHeapSizeBytes
+                                                      : _defaultHeapSize;
+      initialSize = alignUp(fallback, kHeapAlignment);
+    }
+    recreateHeap(initialSize);
   }
 
   BufferInfo &info = bufferInfo(kind);
@@ -129,6 +133,11 @@ MTL::Buffer *GpuHeapResources::ensureOnHeapBuffer(BufferKind kind,
   }
 
   NS::UInteger requiredCapacity = alignForHeap(requiredBytes);
+  if (requiredCapacity == 0) {
+    NS::UInteger fallback = (_defaultHeapSize == 0) ? kDefaultHeapSizeBytes
+                                                    : _defaultHeapSize;
+    requiredCapacity = alignUp(fallback, kHeapAlignment);
+  }
   ensureHeapCapacity(requiredCapacity);
 
   releaseBuffer(info);
@@ -240,8 +249,7 @@ GpuHeapResources::BufferInfo &GpuHeapResources::bufferInfo(BufferKind kind) {
 
 NS::UInteger GpuHeapResources::alignForHeap(NS::UInteger size) const {
   if (size == 0)
-    return alignUp(_defaultHeapSize == 0 ? kDefaultHeapSizeBytes : _defaultHeapSize,
-                   kHeapAlignment);
+    return 0;
   return alignUp(size, kHeapAlignment);
 }
 
