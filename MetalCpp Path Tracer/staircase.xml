@@ -3353,6 +3353,8 @@
     <Mesh file="assets/Cylinder.005.obj" position="-0.4754,1.4055,0.025686" basisX="0.002642,-0.007692,-0.000177" basisY="0.007682,0.002627,0.000517" basisZ="-0.000432,-0.000335,0.008117" albedo="1,0.43931,0.41306" emission="0,0,0" materialType="0.000" emissionPower="0.000"/>
     <Mesh file="assets/Cylinder.007.obj" position="-0.71211,1.1985,0.025686" basisX="0.001969,-0.001693,-0.000194" basisY="0.00167,0.001976,-0.000298" basisZ="0.000342,0.000101,0.00258" albedo="1,0.43931,0.41306" emission="0,0,0" materialType="0.000" emissionPower="0.000"/>
     <Sphere position="0.62391,-4.2612,3.4401" radius="0.100000" albedo="0,0,0" emission="12.665,12.665,12.665" materialType="0.000" emissionPower="1.000"/>
+    <Sphere position="0.18500,-4.6500,1.2500" radius="0.060000" albedo="0,0,0" emission="18.000,18.000,16.000" materialType="0.000" emissionPower="1.000"/>
+    <Sphere position="-0.18500,-4.7200,1.1500" radius="0.060000" albedo="0,0,0" emission="18.000,18.000,16.000" materialType="0.000" emissionPower="1.000"/>
     <Sphere position="-0.72807,3.9218,1.3452" radius="0.100000" albedo="0,0,0" emission="30.396,30.396,30.396" materialType="0.000" emissionPower="1.000"/>
     <Sphere position="0,0,0" radius="1000" albedo="0,0,0" emission="0.050876,0.050876,0.050876" materialType="0.000" emissionPower="1.000"/>
 </Scene>
