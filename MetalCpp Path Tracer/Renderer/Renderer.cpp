@@ -1026,7 +1026,7 @@ void Renderer::finalizeFrameCapture(
       float *dst = rgba.data() + y * capture->width * 4;
       for (size_t x = 0; x < capture->width; ++x) {
         for (size_t c = 0; c < 4; ++c) {
-          FP16 value{};
+            tinyexr::FP16 value{};
           value.u = row[x * 4 + c];
           dst[x * 4 + c] = half_to_float(value).f;
         }
@@ -1221,7 +1221,7 @@ void Renderer::buildShaders() {
 void Renderer::updateVisibleScene() {
   if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
-        std::filesystem::path(__FILE__).parent_path() / "../scene_rayhit_budget_crossfire.xml";
+        std::filesystem::path(__FILE__).parent_path() / "../scene_staircase_alwaysresident.xml";
     SceneLoader::LoadSceneFromXML(alt.string(), _pScene);
   }
 
