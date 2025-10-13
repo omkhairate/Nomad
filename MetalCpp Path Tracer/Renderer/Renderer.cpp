@@ -25,12 +25,16 @@
 #include <fstream>
 #include <chrono>
 #include <iomanip>
+#include <exception>
 #include <numeric>
 #include <simd/simd.h>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <unordered_map>
+
+#define TINYEXR_IMPLEMENTATION
+#include "../tinyexr.h"
 
 namespace MetalCppPathTracer {
 
@@ -723,6 +727,21 @@ void Renderer::setBenchmarkMode(bool enabled) {
   }
 }
 
+void Renderer::setFrameCaptureEnabled(bool enabled) {
+  if (_frameCaptureEnabled == enabled)
+    return;
+
+  _frameCaptureEnabled = enabled;
+  if (_frameCaptureEnabled)
+    ensureFrameCaptureDirectory();
+}
+
+void Renderer::setFrameCaptureInterval(size_t interval) {
+  if (interval == 0)
+    interval = 1;
+  _frameCaptureInterval = interval;
+}
+
 void Renderer::initializeBenchmarking() {
   const char *primaryEnv = std::getenv("METALPT_BENCH");
   const char *legacyEnv = std::getenv("METALAPT_BENCH");
@@ -865,6 +884,193 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
   default:
     return "Distance-based LOD";
   }
+}
+
+void Renderer::ensureFrameCaptureDirectory() {
+  if (_frameCaptureDirectoryInitialized)
+    return;
+
+  std::filesystem::path benchmarksDir =
+      std::filesystem::current_path() / "Benchmarks";
+  std::filesystem::path framesDir = benchmarksDir / "frames";
+
+  std::error_code ec;
+  std::filesystem::create_directories(framesDir, ec);
+  if (ec) {
+    std::error_code fallbackError;
+    std::filesystem::create_directories(benchmarksDir, fallbackError);
+    if (fallbackError) {
+      std::printf(
+          "Failed to initialize frame capture directory '%s': %s\n",
+          framesDir.string().c_str(), ec.message().c_str());
+      _frameCaptureDirectory.clear();
+      _frameCaptureDirectoryInitialized = true;
+      return;
+    }
+    _frameCaptureDirectory = benchmarksDir.string();
+  } else {
+    _frameCaptureDirectory = framesDir.string();
+  }
+
+  _frameCaptureDirectoryInitialized = true;
+}
+
+std::shared_ptr<Renderer::FrameCaptureRequest>
+Renderer::encodeFrameCapture(MTL::Texture *texture, uint64_t frameIndex,
+                             MTL::CommandBuffer *cmd,
+                             MTL::BlitCommandEncoder *&blit) {
+  if (!texture || !cmd)
+    return nullptr;
+
+  ensureFrameCaptureDirectory();
+  if (_frameCaptureDirectory.empty())
+    return nullptr;
+
+  NS::UInteger width = texture->width();
+  NS::UInteger height = texture->height();
+  if (width == 0 || height == 0)
+    return nullptr;
+
+  size_t pixelBytes = bytesPerPixel(texture->pixelFormat());
+  if (pixelBytes == 0)
+    return nullptr;
+
+  size_t alignedRowBytes =
+      alignTo(static_cast<size_t>(width) * pixelBytes, size_t(256));
+  size_t totalBytes = alignedRowBytes * static_cast<size_t>(height);
+  if (totalBytes == 0)
+    return nullptr;
+
+  MTL::Buffer *readback =
+      _pDevice->newBuffer(static_cast<NS::UInteger>(totalBytes),
+                          MTL::ResourceStorageModeShared);
+  if (!readback)
+    return nullptr;
+
+  if (!blit)
+    blit = cmd->blitCommandEncoder();
+  if (!blit) {
+    readback->release();
+    return nullptr;
+  }
+
+  NS::UInteger bytesPerImage =
+      static_cast<NS::UInteger>(alignedRowBytes * static_cast<size_t>(height));
+  MTL::Size size = MTL::Size::Make(width, height, 1);
+  MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+  blit->copyFromTexture(texture, 0, 0, origin, size, readback, 0,
+                        static_cast<NS::UInteger>(alignedRowBytes),
+                        bytesPerImage);
+
+  std::ostringstream nameBuilder;
+  nameBuilder << "frame_" << std::setfill('0') << std::setw(6) << frameIndex
+              << ".exr";
+
+  std::filesystem::path outputPath;
+  try {
+    outputPath = std::filesystem::path(_frameCaptureDirectory) / nameBuilder.str();
+  } catch (const std::exception &e) {
+    std::printf("Failed to build frame capture path: %s\n", e.what());
+    readback->release();
+    return nullptr;
+  }
+
+  auto capture = std::make_shared<FrameCaptureRequest>();
+  capture->frameIndex = frameIndex;
+  capture->filePath = outputPath.string();
+  capture->buffer = readback;
+  capture->width = static_cast<size_t>(width);
+  capture->height = static_cast<size_t>(height);
+  capture->alignedRowBytes = alignedRowBytes;
+  capture->format = texture->pixelFormat();
+
+  std::printf("Queued frame %llu for EXR capture: %s\n",
+              static_cast<unsigned long long>(frameIndex),
+              capture->filePath.c_str());
+
+  return capture;
+}
+
+void Renderer::finalizeFrameCapture(
+    const std::shared_ptr<FrameCaptureRequest> &capture) {
+  if (!capture)
+    return;
+  if (!capture->buffer) {
+    std::printf("Frame capture buffer missing for frame %llu\n",
+               static_cast<unsigned long long>(capture->frameIndex));
+    return;
+  }
+
+  void *contents = capture->buffer->contents();
+  if (!contents) {
+    std::printf("Failed to map frame capture buffer for frame %llu\n",
+               static_cast<unsigned long long>(capture->frameIndex));
+    capture->buffer->release();
+    return;
+  }
+
+  size_t pixelCount = capture->width * capture->height;
+  if (pixelCount == 0) {
+    capture->buffer->release();
+    return;
+  }
+
+  std::vector<float> rgba(pixelCount * 4, 0.0f);
+  bool supportedFormat = true;
+
+  if (capture->format == MTL::PixelFormat::PixelFormatRGBA16Float) {
+    for (size_t y = 0; y < capture->height; ++y) {
+      const uint8_t *rowBase =
+          static_cast<const uint8_t *>(contents) + y * capture->alignedRowBytes;
+      const uint16_t *row = reinterpret_cast<const uint16_t *>(rowBase);
+      float *dst = rgba.data() + y * capture->width * 4;
+      for (size_t x = 0; x < capture->width; ++x) {
+        for (size_t c = 0; c < 4; ++c) {
+          FP16 value{};
+          value.u = row[x * 4 + c];
+          dst[x * 4 + c] = half_to_float(value).f;
+        }
+      }
+    }
+  } else if (capture->format == MTL::PixelFormat::PixelFormatRGBA32Float) {
+    for (size_t y = 0; y < capture->height; ++y) {
+      const uint8_t *rowBase =
+          static_cast<const uint8_t *>(contents) + y * capture->alignedRowBytes;
+      const float *row = reinterpret_cast<const float *>(rowBase);
+      float *dst = rgba.data() + y * capture->width * 4;
+      std::memcpy(dst, row, sizeof(float) * capture->width * 4);
+    }
+  } else {
+    supportedFormat = false;
+  }
+
+  if (!supportedFormat) {
+    std::printf("Unsupported pixel format %u for frame capture.\n",
+               static_cast<unsigned>(capture->format));
+    capture->buffer->release();
+    return;
+  }
+
+  const char *err = nullptr;
+  int ret = SaveEXR(rgba.data(), static_cast<int>(capture->width),
+                    static_cast<int>(capture->height), 4,
+                    capture->filePath.c_str(), &err);
+  if (ret != TINYEXR_SUCCESS) {
+    if (err) {
+      std::printf("Failed to save EXR frame %llu: %s\n",
+                 static_cast<unsigned long long>(capture->frameIndex), err);
+      FreeEXRErrorMessage(err);
+    } else {
+      std::printf("Failed to save EXR frame %llu (error code %d)\n",
+                 static_cast<unsigned long long>(capture->frameIndex), ret);
+    }
+  } else {
+    std::printf("Saved EXR frame %llu to %s\n",
+               static_cast<unsigned long long>(capture->frameIndex),
+               capture->filePath.c_str());
+  }
+
+  capture->buffer->release();
 }
 
 void Renderer::setDeltaTime(double deltaSeconds) {
@@ -3502,6 +3708,10 @@ void Renderer::draw(MTK::View *pView) {
   beginFrameMetrics();
   std::swap(_accumulationSlots[0], _accumulationSlots[1]);
 
+  uint64_t frameIndex = _renderedFrameCount;
+  bool captureThisFrame = _frameCaptureEnabled && _frameCaptureInterval > 0 &&
+                          (frameIndex % _frameCaptureInterval == 0);
+
   NS::AutoreleasePool *pPool = NS::AutoreleasePool::alloc()->init();
 
   MTL::CommandBuffer *pCmd = _pCommandQueue->commandBuffer();
@@ -3515,6 +3725,14 @@ void Renderer::draw(MTK::View *pView) {
     pPool->release();
     return;
   }
+
+  auto captureList =
+      std::make_shared<std::vector<std::shared_ptr<FrameCaptureRequest>>>();
+  pCmd->addCompletedHandler([this, captureList](MTL::CommandBuffer *cmd) {
+    this->completeFrameMetrics(cmd);
+    for (const auto &capture : *captureList)
+      this->finalizeFrameCapture(capture);
+  });
 
   bool belowBudget =
       _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
@@ -3552,15 +3770,12 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
-  pCmd->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
-    this->completeFrameMetrics(cmd);
-  });
-
   if (!haveAllTextures) {
     MTL::Drawable *drawable = pView->currentDrawable();
     if (drawable)
       pCmd->presentDrawable(drawable);
     pCmd->commit();
+    ++_renderedFrameCount;
     pPool->release();
     return;
   }
@@ -3691,23 +3906,36 @@ void Renderer::draw(MTK::View *pView) {
 
   pEnc->endEncoding();
 
-  MTL::BlitCommandEncoder *pBlit = pCmd->blitCommandEncoder();
+  MTL::BlitCommandEncoder *pBlit = nullptr;
   bool performedRayHitReadback = false;
-  if (pBlit && _pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
-    size_t bytes =
-        std::min(_pPrimitiveHitBufferGPU->length(),
-                 _pPrimitiveHitReadback->length());
-    if (bytes > 0) {
-      pBlit->copyFromBuffer(_pPrimitiveHitBufferGPU, 0, _pPrimitiveHitReadback, 0,
-                            bytes);
-      pBlit->fillBuffer(_pPrimitiveHitBufferGPU, NS::Range::Make(0, bytes), 0);
-      performedRayHitReadback = true;
+
+  if (captureThisFrame && accum1) {
+    if (auto capture = encodeFrameCapture(accum1, frameIndex, pCmd, pBlit))
+      captureList->push_back(capture);
+  }
+
+  if (_pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
+    if (!pBlit)
+      pBlit = pCmd->blitCommandEncoder();
+    if (pBlit) {
+      size_t bytes =
+          std::min(_pPrimitiveHitBufferGPU->length(),
+                   _pPrimitiveHitReadback->length());
+      if (bytes > 0) {
+        pBlit->copyFromBuffer(_pPrimitiveHitBufferGPU, 0,
+                              _pPrimitiveHitReadback, 0, bytes);
+        pBlit->fillBuffer(_pPrimitiveHitBufferGPU,
+                          NS::Range::Make(0, bytes), 0);
+        performedRayHitReadback = true;
+      }
     }
   }
   if (pBlit)
     pBlit->endEncoding();
 
-  pCmd->presentDrawable(pView->currentDrawable());
+  MTL::Drawable *drawable = pView->currentDrawable();
+  if (drawable)
+    pCmd->presentDrawable(drawable);
   pCmd->commit();
 
   if (performedRayHitReadback) {
@@ -3718,6 +3946,7 @@ void Renderer::draw(MTK::View *pView) {
     _rayHitCopyError = false;
   }
 
+  ++_renderedFrameCount;
   pPool->release();
 }
 
