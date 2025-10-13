@@ -385,6 +385,20 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             simd::float3 pos = parseVec3(e->Attribute("position"));
             float scale = e->FloatAttribute("scale", 1.0f);
 
+            simd::float3 basisX = simd::make_float3(scale, 0.0f, 0.0f);
+            simd::float3 basisY = simd::make_float3(0.0f, scale, 0.0f);
+            simd::float3 basisZ = simd::make_float3(0.0f, 0.0f, scale);
+
+            if (const char* bxAttr = e->Attribute("basisX")) {
+                basisX = parseVec3(bxAttr);
+            }
+            if (const char* byAttr = e->Attribute("basisY")) {
+                basisY = parseVec3(byAttr);
+            }
+            if (const char* bzAttr = e->Attribute("basisZ")) {
+                basisZ = parseVec3(bzAttr);
+            }
+
             Material m;
             m.albedo = parseVec3(e->Attribute("albedo"));
             m.emissionColor = parseVec3(e->Attribute("emission"));
@@ -398,12 +412,15 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
 
             std::vector<Primitive> meshPrimitives;
             meshPrimitives.reserve(meshData.indices.size());
+            auto transformVertex = [&](const simd::float3& v) {
+                return pos + basisX * v.x + basisY * v.y + basisZ * v.z;
+            };
             for (const auto& tri : meshData.indices) {
                 Primitive p{};
                 p.type = PrimitiveType::Triangle;
-                p.triangle.v0 = pos + scale * meshData.vertices[tri.x];
-                p.triangle.v1 = pos + scale * meshData.vertices[tri.y];
-                p.triangle.v2 = pos + scale * meshData.vertices[tri.z];
+                p.triangle.v0 = transformVertex(meshData.vertices[tri.x]);
+                p.triangle.v1 = transformVertex(meshData.vertices[tri.y]);
+                p.triangle.v2 = transformVertex(meshData.vertices[tri.z]);
                 p.material = m;
                 meshPrimitives.push_back(p);
             }
