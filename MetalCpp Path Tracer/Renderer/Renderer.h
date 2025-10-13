@@ -11,6 +11,7 @@
 #include <simd/simd.h>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "GpuHeapResources.h"
 #include "Camera.h"
@@ -82,6 +83,8 @@ public:
   void setDeltaTime(double deltaSeconds);
   void setBenchmarkMode(bool enabled);
   bool benchmarkModeEnabled() const { return _benchmarkEnabled; }
+  void setFrameCaptureEnabled(bool enabled);
+  void setFrameCaptureInterval(size_t interval);
 
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);
@@ -111,6 +114,7 @@ public:
 
 private:
   struct BenchmarkSample;
+  struct FrameCaptureRequest;
   void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                             size_t &currentCapacity,
@@ -149,6 +153,11 @@ private:
   void writeBenchmarkHeader();
   void writeBenchmarkRow(const BenchmarkSample &sample);
   std::string residencyStrategyName(ResidencyStrategy strategy) const;
+  void ensureFrameCaptureDirectory();
+  std::shared_ptr<FrameCaptureRequest>
+  encodeFrameCapture(MTL::Texture *texture, uint64_t frameIndex,
+                     MTL::CommandBuffer *cmd, MTL::BlitCommandEncoder *&blit);
+  void finalizeFrameCapture(const std::shared_ptr<FrameCaptureRequest> &capture);
   std::array<simd::float3, 8>
   buildFrustumCorners(const Camera::State &state, float nearDistance,
                       float farDistance) const;
@@ -240,6 +249,16 @@ private:
     bool accumulationReset = false;
     bool residentCompacted = false;
     bool overMemoryCap = false;
+  };
+
+  struct FrameCaptureRequest {
+    uint64_t frameIndex = 0;
+    std::string filePath;
+    MTL::Buffer *buffer = nullptr;
+    size_t width = 0;
+    size_t height = 0;
+    size_t alignedRowBytes = 0;
+    MTL::PixelFormat format = MTL::PixelFormat::PixelFormatInvalid;
   };
 
   std::vector<Primitive> _allPrimitives;
@@ -352,6 +371,11 @@ private:
   size_t _frameObjectActivations = 0;
   size_t _frameObjectDeactivations = 0;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
+  bool _frameCaptureEnabled = false;
+  size_t _frameCaptureInterval = 4;
+  uint64_t _renderedFrameCount = 0;
+  bool _frameCaptureDirectoryInitialized = false;
+  std::string _frameCaptureDirectory;
   std::deque<BenchmarkSample> _pendingBenchmarkSamples;
 
   uint32_t _minSamplesPerPixel = 1;
