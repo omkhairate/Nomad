@@ -1051,10 +1051,12 @@ void Renderer::finalizeFrameCapture(
     return;
   }
 
-  const char *err = nullptr;
-  int ret = SaveEXR(rgba.data(), static_cast<int>(capture->width),
-                    static_cast<int>(capture->height), 4,
-                    capture->filePath.c_str(), &err);
+    const char *err = nullptr;
+    int saveAsFp16 =
+        capture->format == MTL::PixelFormat::PixelFormatRGBA16Float ? 1 : 0;
+    int ret = SaveEXR(rgba.data(), static_cast<int>(capture->width),
+                      static_cast<int>(capture->height), 4, saveAsFp16,
+                      capture->filePath.c_str(), &err);
   if (ret != TINYEXR_SUCCESS) {
     if (err) {
       std::printf("Failed to save EXR frame %llu: %s\n",
