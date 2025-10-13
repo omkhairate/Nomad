@@ -1,6 +1,6 @@
-<Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="rayHitBudget"
+<Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="none"
        textureResidencyMemoryCapMB="16"
-       rayHitTargetFraction="0.28" rayHitMinActive="140" rayHitToggleBudget="900"
+       rayHitTargetFraction="0.64" rayHitMinActive="140" rayHitToggleBudget="20000"
        rayHitCooldown="12" rayHitDecay="0.82">
     <CameraPath>
         <!-- March through a tunnel; occlusion spikes cause hit count drops that should free residency -->

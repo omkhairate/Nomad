@@ -1,6 +1,6 @@
-<Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="energy"
-       textureResidencyMemoryCapMB="16"
-       energyTargetFraction="0.36" energyMinActive="160" energyToggleBudget="1300">
+<Scene width="960" height="540" maxRayDepth="4" startCompacted="true" residencyStrategy="none"
+       textureResidencyMemoryCapMB="512"
+       energyTargetFraction="0.92" energyMinActive="60" energyToggleBudget="50000">
     <CameraPath>
         <!-- Glide from the dim outskirts toward the bright ramp so distant dark assets unload -->
         <Keyframe frame="0" position="60,14,70" lookAt="0,8,0" />
