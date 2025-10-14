@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Scene width="960" height="540" maxRayDepth="8" startCompacted="true"
+       residencyStrategy="alwaysresident" textureResidencyMemoryCapMB="64">
+    <CameraPath>
+        <Keyframe frame="0" position="0,4,14" lookAt="0,2,0" />
+        <Keyframe frame="60" position="-6,5,10" lookAt="0,2,-4" />
+        <Keyframe frame="120" position="6,5,10" lookAt="0,2,-4" />
+    </CameraPath>
+
+    <Sphere position="0,-1000,0" radius="1000" albedo="0.75,0.75,0.78"
+            emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Rectangle position="0,12,-4" u="6,0,0" v="0,0,6" albedo="1,1,1"
+               emission="0.9,0.92,0.95" materialType="-1" emissionPower="18" />
+
+    <Mesh file="assets/Plane.obj" position="0,0,0" scale="6.0"
+          clusterMaxTriangles="256" clusterMaxExtent="12"
+          albedo="0.58,0.6,0.64" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/Cube.010.obj" position="-3,1.5,-2" scale="1.5"
+          clusterMaxTriangles="256" clusterMaxExtent="8"
+          albedo="0.8,0.66,0.5" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Cube.015.obj" position="0,0.75,-4.5" scale="2.0"
+          clusterMaxTriangles="256" clusterMaxExtent="8"
+          albedo="0.65,0.7,0.74" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Cylinder.004.obj" position="3,1.0,-3" scale="1.2"
+          clusterMaxTriangles="256" clusterMaxExtent="8"
+          albedo="0.75,0.55,0.4" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Torus.obj" position="0,1.2,1.5" scale="1.4"
+          clusterMaxTriangles="256" clusterMaxExtent="8"
+          albedo="0.7,0.72,0.78" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Sphere.001.obj" position="2,1.4,2.5" scale="1.1"
+          clusterMaxTriangles="256" clusterMaxExtent="8"
+          albedo="0.78,0.6,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
