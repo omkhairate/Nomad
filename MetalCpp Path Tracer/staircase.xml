@@ -4,23 +4,23 @@
     <CameraPath>
         <Keyframe frame="0" position="0,-5.2,0.9" lookAt="0,-6.1,0.7" />
     </CameraPath>
-    <Mesh file="assets/_m_2_Cube.024.obj" position="2.4728,1.1086,2.9702" basisX="0,-0.21115,0" basisY="0.22812,0,0" basisZ="0,0,0.23826" albedo="0" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
+    <Mesh file="assets/_m_2_Cube.024.obj" position="2.4728,1.1086,2.9702" basisX="0,-0.21115,0" basisY="0.22812,0,0" basisZ="0,0,0.23826" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_3_Cube.024.obj" position="2.4728,1.1086,2.9702" basisX="0,-0.21115,0" basisY="0.22812,0,0" basisZ="0,0,0.23826" albedo="0.95,0.97,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_4_Cube.024.obj" position="2.4728,1.1086,2.9702" basisX="0,-0.21115,0" basisY="0.22812,0,0" basisZ="0,0,0.23826" albedo="1,1,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_5_Cube.024.obj" position="2.4728,1.1086,2.9702" basisX="0,-0.21115,0" basisY="0.22812,0,0" basisZ="0,0,0.23826" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
-    <Mesh file="assets/_m_0_Cube.023.obj" position="2.4828,2.5432,3.8128" basisX="0,-0.2119,0" basisY="0.22892,0,0" basisZ="0,0,0.2391" albedo="0" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
+    <Mesh file="assets/_m_0_Cube.023.obj" position="2.4828,2.5432,3.8128" basisX="0,-0.2119,0" basisY="0.22892,0,0" basisZ="0,0,0.2391" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_2_Cube.023.obj" position="2.4828,2.5432,3.8128" basisX="0,-0.2119,0" basisY="0.22892,0,0" basisZ="0,0,0.2391" albedo="0.95,0.97,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_3_Cube.023.obj" position="2.4828,2.5432,3.8128" basisX="0,-0.2119,0" basisY="0.22892,0,0" basisZ="0,0,0.2391" albedo="1,1,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_4_Cube.023.obj" position="2.4828,2.5432,3.8128" basisX="0,-0.2119,0" basisY="0.22892,0,0" basisZ="0,0,0.2391" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
-    <Mesh file="assets/_m_2_Cube.022.obj" position="2.4842,4.3024,4.468" basisX="0,-0.21182,0" basisY="0.22883,0,0" basisZ="0,0,0.23901" albedo="0" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
+    <Mesh file="assets/_m_2_Cube.022.obj" position="2.4842,4.3024,4.468" basisX="0,-0.21182,0" basisY="0.22883,0,0" basisZ="0,0,0.23901" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_3_Cube.022.obj" position="2.4842,4.3024,4.468" basisX="0,-0.21182,0" basisY="0.22883,0,0" basisZ="0,0,0.23901" albedo="0.95,0.97,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_4_Cube.022.obj" position="2.4842,4.3024,4.468" basisX="0,-0.21182,0" basisY="0.22883,0,0" basisZ="0,0,0.23901" albedo="1,1,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_5_Cube.022.obj" position="2.4842,4.3024,4.468" basisX="0,-0.21182,0" basisY="0.22883,0,0" basisZ="0,0,0.23901" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
-    <Mesh file="assets/_m_2_Cube.016.obj" position="0.14108,5.1386,5.3458" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="0" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
+    <Mesh file="assets/_m_2_Cube.016.obj" position="0.14108,5.1386,5.3458" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_3_Cube.016.obj" position="0.14108,5.1386,5.3458" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="0.95,0.97,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_4_Cube.016.obj" position="0.14108,5.1386,5.3458" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="1,1,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_5_Cube.016.obj" position="0.14108,5.1386,5.3458" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
-    <Mesh file="assets/_m_2_Cube.014.obj" position="-1.3455,5.1386,6.2444" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="0" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
+    <Mesh file="assets/_m_2_Cube.014.obj" position="-1.3455,5.1386,6.2444" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_3_Cube.014.obj" position="-1.3455,5.1386,6.2444" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="0.95,0.97,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_4_Cube.014.obj" position="-1.3455,5.1386,6.2444" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="1,1,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_5_Cube.014.obj" position="-1.3455,5.1386,6.2444" basisX="0.19726,0,0" basisY="0,0.21311,0" basisZ="0,0,0.22258" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
@@ -35,10 +35,10 @@
     <Mesh file="assets/Cube.018.obj" position="0.50887,2.5121,1.0609" basisX="0,-1,0" basisY="1,0,0" basisZ="0,0,1" albedo="0.55,0.38,0.23" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/Cube.015.obj" position="-0.52021,3.192,2.5335" basisX="1,0,0" basisY="0,1,0" basisZ="0,0,1" albedo="0.55,0.38,0.23" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_0_Circle.obj" position="-0.43062,-1.1674,3.0296" basisX="2.1189,0,0" basisY="0,0,2.1189" basisZ="0,-2.1189,0" albedo="1,1,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
-    <Mesh file="assets/_m_1_Circle.obj" position="-0.43062,-1.1674,3.0296" basisX="2.1189,0,0" basisY="0,0,2.1189" basisZ="0,-2.1189,0" albedo="0" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
+    <Mesh file="assets/_m_1_Circle.obj" position="-0.43062,-1.1674,3.0296" basisX="2.1189,0,0" basisY="0,0,2.1189" basisZ="0,-2.1189,0" albedo="1,1,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_0_Cube.obj" position="0,0,1" basisX="1,0,0" basisY="0,1,0" basisZ="0,0,1" albedo="0.95,0.95,0.95" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_1_Cube.obj" position="0,0,1" basisX="1,0,0" basisY="0,1,0" basisZ="0,0,1" albedo="0.45,0.32,0.18" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
-    <Mesh file="assets/_m_2_Cube.obj" position="0,0,1" basisX="1,0,0" basisY="0,1,0" basisZ="0,0,1" albedo="0" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
+    <Mesh file="assets/_m_2_Cube.obj" position="0,0,1" basisX="1,0,0" basisY="0,1,0" basisZ="0,0,1" albedo="0.45,0.32,0.18" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/Cylinder.002.obj" position="-0.26647,3.0281,4.2094" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683" albedo="0.95,0.97,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/Mesh.008.obj" position="0,0,0" basisX="1,0,0" basisY="0,1,0" basisZ="0,0,1" albedo="0.55,0.38,0.23" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_0_Mesh.006.obj" position="-0.53552,2.0293,4.1849" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683" albedo="0.95,0.97,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
