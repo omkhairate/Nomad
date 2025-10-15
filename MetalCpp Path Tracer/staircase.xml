@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <Scene width="960" height="540" maxRayDepth="4" startCompacted="true" residencyStrategy="none" textureResidencyMemoryCapMB="256" lodEnterDistance="75" lodExitDistance="200" residencyCooldown="0" lodToggleBudget="12000">
-    <ObserverCamera position="0,-5.2,0.9" lookAt="0,-6.1,0.7" verticalFov="49.134" />
+    <ObserverCamera position="1.5,-3.5,4.5" lookAt="0,-5.2,3.0" verticalFov="49.134" />
     <CameraPath>
         <Keyframe frame="0" position="0,-5.2,3.0" lookAt="0,-6.1,0.7" />
     </CameraPath>
