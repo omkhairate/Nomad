@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Scene width="1920" height="1080" maxRayDepth="10" startCompacted="false"
+       residencyStrategy="alwaysresident" textureResidencyMemoryCapMB="512">
+    <ObserverCamera position="2.5,6.2,13.5" lookAt="0.0,5.0,2.0" verticalFov="52" />
+
+    <!-- Large skylight to flood the atrium with diffuse daylight -->
+    <Rectangle position="0,15,2" u="12,0,0" v="0,0,12" albedo="1,1,1"
+               emission="0.82,0.85,0.9" materialType="-1" emissionPower="32" />
+
+    <!-- Exterior window emitters to suggest sunlit courtyards outside the room -->
+    <Rectangle position="-4,8.5,9.4" u="4,0,0" v="0,-4,0" albedo="1,1,1"
+               emission="0.9,0.95,1.0" materialType="-1" emissionPower="20" />
+    <Rectangle position="4,8.5,9.4" u="4,0,0" v="0,-4,0" albedo="1,1,1"
+               emission="0.88,0.93,1.0" materialType="-1" emissionPower="20" />
+
+    <!-- Architectural envelope and hero set dressing -->
+    <Mesh file="assets/Mesh012.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="1800" clusterMaxExtent="28"
+          albedo="0.62,0.60,0.56" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh006.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="1800" clusterMaxExtent="28"
+          albedo="0.58,0.56,0.53" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh008.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="4096" clusterMaxExtent="32"
+          albedo="0.74,0.71,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh013.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="4096" clusterMaxExtent="32"
+          albedo="0.67,0.64,0.60" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh014.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="2048" clusterMaxExtent="24"
+          albedo="0.70,0.66,0.61" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh015.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="16"
+          albedo="0.76,0.72,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh007.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="18"
+          albedo="0.63,0.59,0.55" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh004.obj" position="-4.256505499999999, -1.3302790000000002, -0.6367444999999998" scale="1.0"
+          clusterMaxTriangles="768" clusterMaxExtent="12"
+          albedo="0.58,0.52,0.44" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh004.obj" position="7.743494500000001, -1.3302790000000002, -0.6367444999999998" scale="1.0"
+          clusterMaxTriangles="768" clusterMaxExtent="12"
+          albedo="0.58,0.52,0.44" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh005.obj" position="-3.547335, 0.026118500000000044, -1.5799075" scale="1.0"
+          clusterMaxTriangles="512" clusterMaxExtent="10"
+          albedo="0.72,0.66,0.58" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh005.obj" position="3.452665, 0.026118500000000044, -1.5799075" scale="1.0"
+          clusterMaxTriangles="512" clusterMaxExtent="10"
+          albedo="0.72,0.66,0.58" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh000.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="256" clusterMaxExtent="6"
+          albedo="0.80,0.75,0.70" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh001.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="256" clusterMaxExtent="6"
+          albedo="0.80,0.75,0.70" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh002.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="256" clusterMaxExtent="6"
+          albedo="0.80,0.75,0.70" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh003.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="256" clusterMaxExtent="6"
+          albedo="0.83,0.80,0.76" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh009.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="512" clusterMaxExtent="8"
+          albedo="0.60,0.55,0.50" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh010.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="14"
+          albedo="0.55,0.50,0.46" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh011.obj" position="0,0,0" scale="1.0"
+          clusterMaxTriangles="256" clusterMaxExtent="6"
+          albedo="0.78,0.72,0.66" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Window frames and glass panes lining the north wall -->
+    <Mesh file="assets/Mesh.003.obj" position="-9.301151860000001, 7.515748365, 8.59093584" scale="1.0"
+          clusterMaxTriangles="640" clusterMaxExtent="10"
+          albedo="0.36,0.33,0.30" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh.003.obj" position="-5.30115186, 7.515748365, 8.59093584" scale="1.0"
+          clusterMaxTriangles="640" clusterMaxExtent="10"
+          albedo="0.36,0.33,0.30" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh.003.obj" position="-1.30115186, 7.515748365, 8.59093584" scale="1.0"
+          clusterMaxTriangles="640" clusterMaxExtent="10"
+          albedo="0.36,0.33,0.30" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh.003.obj" position="2.69884814, 7.515748365, 8.59093584" scale="1.0"
+          clusterMaxTriangles="640" clusterMaxExtent="10"
+          albedo="0.36,0.33,0.30" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/Plane.obj" position="-6.0, 4.394735035, 8.49085748" scale="1.0"
+          clusterMaxTriangles="1384" clusterMaxExtent="8"
+          albedo="0.20,0.30,0.35" emission="0,0,0" materialType="1" emissionPower="0" />
+    <Mesh file="assets/Plane.obj" position="-2.0, 4.394735035, 8.49085748" scale="1.0"
+          clusterMaxTriangles="1384" clusterMaxExtent="8"
+          albedo="0.20,0.30,0.35" emission="0,0,0" materialType="1" emissionPower="0" />
+    <Mesh file="assets/Plane.obj" position="2.0, 4.394735035, 8.49085748" scale="1.0"
+          clusterMaxTriangles="1384" clusterMaxExtent="8"
+          albedo="0.20,0.30,0.35" emission="0,0,0" materialType="1" emissionPower="0" />
+    <Mesh file="assets/Plane.obj" position="6.0, 4.394735035, 8.49085748" scale="1.0"
+          clusterMaxTriangles="1384" clusterMaxExtent="8"
+          albedo="0.20,0.30,0.35" emission="0,0,0" materialType="1" emissionPower="0" />
+
+    <!-- Decorative bench tops to pull focus toward the center sculpture -->
+    <Mesh file="assets/Cube.015.obj" position="-2.2, 0.6, 3.0" scale="1.2"
+          clusterMaxTriangles="785" clusterMaxExtent="6"
+          albedo="0.48,0.44,0.40" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Cube.015.obj" position="2.2, 0.6, 3.0" scale="1.2"
+          clusterMaxTriangles="785" clusterMaxExtent="6"
+          albedo="0.48,0.44,0.40" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Wall sconces assembled from the high fidelity lamp parts -->
+    <Mesh file="assets/_m_0_Mesh.006.obj" position="-7.81434, 6.6085, 4.971" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683"
+          clusterMaxTriangles="256" clusterMaxExtent="4"
+          albedo="0.95,0.97,1.0" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_1_Mesh.006.obj" position="-7.81434, 6.6085, 4.971" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683"
+          clusterMaxTriangles="256" clusterMaxExtent="4"
+          albedo="0.80,0.80,0.80" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_2_Mesh.006.obj" position="-7.81434, 6.6085, 4.971" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683"
+          clusterMaxTriangles="256" clusterMaxExtent="4"
+          albedo="0.78,0.60,0.20" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_3_Mesh.006.obj" position="-7.81434, 6.6085, 4.971" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683"
+          clusterMaxTriangles="256" clusterMaxExtent="4"
+          albedo="0,0,0" emission="185.25,200.0,171.15" materialType="0" emissionPower="1" />
+    <Mesh file="assets/_m_0_Cylinder.001.obj" position="-8.0, 8.5, 2.3" basisX="0.24969,0,0" basisY="0,0.24969,0" basisZ="0,0,0.24969"
+          clusterMaxTriangles="128" clusterMaxExtent="3"
+          albedo="0,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_1_Cylinder.001.obj" position="-8.0, 8.5, 2.3" basisX="0.24969,0,0" basisY="0,0.24969,0" basisZ="0,0,0.24969"
+          clusterMaxTriangles="128" clusterMaxExtent="3"
+          albedo="0.78,0.60,0.20" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_0_Lampholder.001.obj" position="-8.00449, 8.5, 2.0407" basisX="0.51793,-1.3601,0" basisY="1.3601,0.51793,0" basisZ="0,0,1.4554"
+          clusterMaxTriangles="128" clusterMaxExtent="3"
+          albedo="0,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_1_Lampholder.001.obj" position="-8.00449, 8.5, 2.0407" basisX="0.51793,-1.3601,0" basisY="1.3601,0.51793,0" basisZ="0,0,1.4554"
+          clusterMaxTriangles="128" clusterMaxExtent="3"
+          albedo="0,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/_m_0_Mesh.006.obj" position="6.7433, 6.6085, 4.971" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683"
+          clusterMaxTriangles="256" clusterMaxExtent="4"
+          albedo="0.95,0.97,1.0" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_1_Mesh.006.obj" position="6.7433, 6.6085, 4.971" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683"
+          clusterMaxTriangles="256" clusterMaxExtent="4"
+          albedo="0.80,0.80,0.80" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_2_Mesh.006.obj" position="6.7433, 6.6085, 4.971" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683"
+          clusterMaxTriangles="256" clusterMaxExtent="4"
+          albedo="0.78,0.60,0.20" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_3_Mesh.006.obj" position="6.7433, 6.6085, 4.971" basisX="0.15683,0,0" basisY="0,0.15683,0" basisZ="0,0,0.15683"
+          clusterMaxTriangles="256" clusterMaxExtent="4"
+          albedo="0,0,0" emission="185.25,200.0,171.15" materialType="0" emissionPower="1" />
+    <Mesh file="assets/_m_0_Cylinder.001.obj" position="6.557639999999999, 8.5, 2.3" basisX="0.24969,0,0" basisY="0,0.24969,0" basisZ="0,0,0.24969"
+          clusterMaxTriangles="128" clusterMaxExtent="3"
+          albedo="0,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_1_Cylinder.001.obj" position="6.557639999999999, 8.5, 2.3" basisX="0.24969,0,0" basisY="0,0.24969,0" basisZ="0,0,0.24969"
+          clusterMaxTriangles="128" clusterMaxExtent="3"
+          albedo="0.78,0.60,0.20" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_0_Lampholder.001.obj" position="6.55315, 8.5, 2.0407" basisX="0.51793,-1.3601,0" basisY="1.3601,0.51793,0" basisZ="0,0,1.4554"
+          clusterMaxTriangles="128" clusterMaxExtent="3"
+          albedo="0,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_1_Lampholder.001.obj" position="6.55315, 8.5, 2.0407" basisX="0.51793,-1.3601,0" basisY="1.3601,0.51793,0" basisZ="0,0,1.4554"
+          clusterMaxTriangles="128" clusterMaxExtent="3"
+          albedo="0,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Decorative medallions behind each sconce -->
+    <Mesh file="assets/_m_0_Circle.004.obj" position="-8.63972, 9.642, 1.7099" basisX="-5.6896,0,0" basisY="0,-5.6896,0" basisZ="0,0,5.6896"
+          clusterMaxTriangles="128" clusterMaxExtent="6"
+          albedo="0,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_1_Circle.004.obj" position="-8.63972, 9.642, 1.7099" basisX="-5.6896,0,0" basisY="0,-5.6896,0" basisZ="0,0,5.6896"
+          clusterMaxTriangles="128" clusterMaxExtent="6"
+          albedo="1,1,1" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_2_Circle.004.obj" position="-8.63972, 9.642, 1.7099" basisX="-5.6896,0,0" basisY="0,-5.6896,0" basisZ="0,0,5.6896"
+          clusterMaxTriangles="128" clusterMaxExtent="6"
+          albedo="0.44,0.29,0.07" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_0_Circle.004.obj" position="5.91792, 9.642, 1.7099" basisX="-5.6896,0,0" basisY="0,-5.6896,0" basisZ="0,0,5.6896"
+          clusterMaxTriangles="128" clusterMaxExtent="6"
+          albedo="0,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_1_Circle.004.obj" position="5.91792, 9.642, 1.7099" basisX="-5.6896,0,0" basisY="0,-5.6896,0" basisZ="0,0,5.6896"
+          clusterMaxTriangles="128" clusterMaxExtent="6"
+          albedo="1,1,1" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/_m_2_Circle.004.obj" position="5.91792, 9.642, 1.7099" basisX="-5.6896,0,0" basisY="0,-5.6896,0" basisZ="0,0,5.6896"
+          clusterMaxTriangles="128" clusterMaxExtent="6"
+          albedo="0.44,0.29,0.07" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
