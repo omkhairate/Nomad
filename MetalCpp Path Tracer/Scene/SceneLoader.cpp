@@ -2,6 +2,7 @@
 #include "Material.h"
 #include <tinyxml2.h>
 #include <simd/simd.h>
+#include <simd/quaternion.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -19,10 +20,33 @@ using namespace tinyxml2;
 
 namespace MetalCppPathTracer {
 
+constexpr float kDegToRad = 0.0174532925199432957692f;
+
 static simd::float3 parseVec3(const char* str) {
-    float x=0,y=0,z=0;
-    sscanf(str, "%f,%f,%f", &x,&y,&z);
-    return simd::make_float3(x,y,z);
+    float x = 0, y = 0, z = 0;
+    sscanf(str, "%f,%f,%f", &x, &y, &z);
+    return simd::make_float3(x, y, z);
+}
+
+// Rotates a vector by Euler angles applied in X->Y->Z order.
+static simd::float3 rotateVectorEulerXYZ(const simd::float3& v,
+                                         const simd::float3& radians) {
+    simd::float3 result = v;
+
+    if (radians.x != 0.0f) {
+        simd::quatf qx(radians.x, simd::make_float3(1.0f, 0.0f, 0.0f));
+        result = simd_act(qx, result);
+    }
+    if (radians.y != 0.0f) {
+        simd::quatf qy(radians.y, simd::make_float3(0.0f, 1.0f, 0.0f));
+        result = simd_act(qy, result);
+    }
+    if (radians.z != 0.0f) {
+        simd::quatf qz(radians.z, simd::make_float3(0.0f, 0.0f, 1.0f));
+        result = simd_act(qz, result);
+    }
+
+    return result;
 }
 
 namespace {
@@ -358,6 +382,12 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             p.rectangle.u = parseVec3(e->Attribute("u"));
             p.rectangle.v = parseVec3(e->Attribute("v"));
 
+            if (const char* rotationAttr = e->Attribute("rotation")) {
+                simd::float3 rotationRadians = parseVec3(rotationAttr) * kDegToRad;
+                p.rectangle.u = rotateVectorEulerXYZ(p.rectangle.u, rotationRadians);
+                p.rectangle.v = rotateVectorEulerXYZ(p.rectangle.v, rotationRadians);
+            }
+
             p.material.albedo = parseVec3(e->Attribute("albedo"));
             p.material.emissionColor = parseVec3(e->Attribute("emission"));
             p.material.materialType = e->FloatAttribute("materialType", 0);
@@ -389,6 +419,11 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             simd::float3 basisY = simd::make_float3(0.0f, scale, 0.0f);
             simd::float3 basisZ = simd::make_float3(0.0f, 0.0f, scale);
 
+            simd::float3 rotationDegrees = simd::make_float3(0.0f, 0.0f, 0.0f);
+            if (const char* rotationAttr = e->Attribute("rotation")) {
+                rotationDegrees = parseVec3(rotationAttr);
+            }
+
             if (const char* bxAttr = e->Attribute("basisX")) {
                 basisX = parseVec3(bxAttr);
             }
@@ -397,6 +432,14 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             }
             if (const char* bzAttr = e->Attribute("basisZ")) {
                 basisZ = parseVec3(bzAttr);
+            }
+
+            if (rotationDegrees.x != 0.0f || rotationDegrees.y != 0.0f ||
+                rotationDegrees.z != 0.0f) {
+                simd::float3 rotationRadians = rotationDegrees * kDegToRad;
+                basisX = rotateVectorEulerXYZ(basisX, rotationRadians);
+                basisY = rotateVectorEulerXYZ(basisY, rotationRadians);
+                basisZ = rotateVectorEulerXYZ(basisZ, rotationRadians);
             }
 
             Material m;
