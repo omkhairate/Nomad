@@ -30,8 +30,8 @@
                albedo="1,1,1" emission="1,0.95,0.9" materialType="-1" emissionPower="35" />
 
     <!-- Doorway mesh aligned with front wall -->
-    <Mesh file="assets/Door.obj" position="0,-0.24,0" scale="1.0"
-          basisX="0.7,0,0" basisY="0,0.8,0" basisZ="0,0,0.05" rotation="0,0,0"
+    <Mesh file="assets/Door.obj" position="0,-0.1,0" scale="1"
+          basisX="0.2,0,0" basisY="0,0.2,0" basisZ="0,0,0.1" rotation="0,0,0"
           albedo="0.85,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
 
     <!-- Bunny displays -->
