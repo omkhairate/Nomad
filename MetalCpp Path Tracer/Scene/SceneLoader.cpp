@@ -16,6 +16,7 @@
 #include <vector>
 #include <limits>
 #include <cmath>
+#include <cstdint>
 #include "tiny_obj_loader.h"
 #include "TextureLoader.h"
 
@@ -534,6 +535,12 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     scene->screenSize.x = root->FloatAttribute("width", scene->screenSize.x);
     scene->screenSize.y = root->FloatAttribute("height", scene->screenSize.y);
     scene->maxRayDepth = root->UnsignedAttribute("maxRayDepth", scene->maxRayDepth);
+
+    uint32_t minSamples = root->UnsignedAttribute("minSamplesPerPixel",
+                                                 scene->getMinSamplesPerPixel());
+    uint32_t maxSamples = root->UnsignedAttribute("maxSamplesPerPixel",
+                                                 scene->getMaxSamplesPerPixel());
+    scene->setSamplesPerPixelRange(minSamples, maxSamples);
 
     if (const char* residencyAttr = root->Attribute("residencyStrategy")) {
         std::string value = residencyAttr;
