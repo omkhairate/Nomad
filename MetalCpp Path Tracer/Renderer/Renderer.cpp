@@ -127,6 +127,7 @@ struct UniformsData {
   uint32_t sampleImportanceTextureIndex = 0;
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
+  uint32_t textureCount = 0;
 };
 
 inline uint32_t bitm_random() {
@@ -662,6 +663,10 @@ Renderer::~Renderer() {
     _pGeometryHandleBuffer->release();
   if (_pFrustumVertexBuffer)
     _pFrustumVertexBuffer->release();
+  if (_pTextureInfoBuffer)
+    _pTextureInfoBuffer->release();
+  if (_pTextureDataBuffer)
+    _pTextureDataBuffer->release();
 
   _cachedInstanceDescriptors.clear();
   _cachedInstancedAccelerationStructures.clear();
@@ -2219,14 +2224,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       forceFullRebuild || !_residentBuffersInitialized || sizeChanged;
 
   if (needFullUpload) {
-    _cachedPrimitiveData.assign(totalPrimitiveCount * 3,
+    _cachedPrimitiveData.assign(totalPrimitiveCount * kPrimitiveFloat4Count,
                                 simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
     _cachedMaterialData.assign(totalPrimitiveCount * kMaterialFloat4Count,
                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
 
     for (size_t i = 0; i < totalPrimitiveCount; ++i) {
       const Primitive &p = _allPrimitives[i];
-      simd::float4 *primBase = &_cachedPrimitiveData[3 * i];
+      simd::float4 *primBase =
+          &_cachedPrimitiveData[kPrimitiveFloat4Count * i];
       simd::float4 *matBase =
           &_cachedMaterialData[kMaterialFloat4Count * i];
 
@@ -2237,6 +2243,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         primBase[1] = simd::make_float4(
             simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
         primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
         break;
       }
       case PrimitiveType::Rectangle: {
@@ -2244,13 +2251,16 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
         primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
         primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
+        primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
         break;
       }
       case PrimitiveType::Triangle: {
         primBase[0] =
             simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(p.triangle.v1, 0.0f);
-        primBase[2] = simd::make_float4(p.triangle.v2, 0.0f);
+        primBase[1] = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
+        primBase[2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
+        primBase[3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
+                                        p.triangle.uv2.x, p.triangle.uv2.y);
         break;
       }
       }
@@ -2259,6 +2269,31 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       auto packed = encodeMaterial(m);
       for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
         matBase[j] = packed[j];
+      }
+    }
+
+    _cachedTextureInfos.clear();
+    _cachedTextureData.clear();
+    size_t texelOffset = 0;
+    if (_pScene) {
+      const auto &sceneTextures = _pScene->getTextures();
+      for (const auto &tex : sceneTextures) {
+        TextureInfo info{};
+        info.offset = static_cast<uint32_t>(texelOffset);
+        info.width = tex.width;
+        info.height = tex.height;
+        _cachedTextureInfos.push_back(info);
+
+        size_t texelCount = static_cast<size_t>(tex.width) * tex.height;
+        for (size_t t = 0; t < texelCount; ++t) {
+          size_t idx = t * 4;
+          float r = (idx < tex.pixels.size()) ? tex.pixels[idx + 0] : 0.0f;
+          float g = (idx + 1 < tex.pixels.size()) ? tex.pixels[idx + 1] : 0.0f;
+          float b = (idx + 2 < tex.pixels.size()) ? tex.pixels[idx + 2] : 0.0f;
+          float a = (idx + 3 < tex.pixels.size()) ? tex.pixels[idx + 3] : 1.0f;
+          _cachedTextureData.push_back(simd::make_float4(r, g, b, a));
+        }
+        texelOffset += texelCount;
       }
     }
 
@@ -2407,6 +2442,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       &_cachedTriangleVertices;
   const std::vector<simd::uint3> *triangleIndexSource =
       &_cachedTriangleIndices;
+  const std::vector<TextureInfo> *textureInfoSource = &_cachedTextureInfos;
+  const std::vector<simd::float4> *textureDataSource = &_cachedTextureData;
 
   if (!useCompaction) {
     remapUpload.resize(totalPrimitiveCount);
@@ -2451,7 +2488,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     compactTriangleIndices.clear();
     compactActiveMask.clear();
 
-    compactPrimitiveData.reserve(_activePrimitiveCount * 3);
+    compactPrimitiveData.reserve(_activePrimitiveCount *
+                                 kPrimitiveFloat4Count);
     compactMaterialData.reserve(_activePrimitiveCount * kMaterialFloat4Count);
     compactPrimitiveIndices.reserve(_activePrimitiveCount);
     compactActiveMask.reserve(_activePrimitiveCount);
@@ -2514,6 +2552,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           simd::float4 prim0;
           simd::float4 prim1;
           simd::float4 prim2;
+          simd::float4 prim3 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
           switch (p.type) {
           case PrimitiveType::Sphere: {
             prim0 =
@@ -2533,8 +2572,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           case PrimitiveType::Triangle: {
             prim0 =
                 simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-            prim1 = simd::make_float4(p.triangle.v1, 0.0f);
-            prim2 = simd::make_float4(p.triangle.v2, 0.0f);
+            prim1 = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
+            prim2 = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
+            prim3 = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
+                                      p.triangle.uv2.x, p.triangle.uv2.y);
             size_t baseVertex = compactTriangleVertices.size();
             compactTriangleVertices.push_back(p.triangle.v0);
             compactTriangleVertices.push_back(p.triangle.v1);
@@ -2550,6 +2591,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           compactPrimitiveData.push_back(prim0);
           compactPrimitiveData.push_back(prim1);
           compactPrimitiveData.push_back(prim2);
+          compactPrimitiveData.push_back(prim3);
 
           const Material &m = p.material;
           auto packedMaterial = encodeMaterial(m);
@@ -2727,6 +2769,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         simd::float4 prim0;
         simd::float4 prim1;
         simd::float4 prim2;
+        simd::float4 prim3 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
         switch (p.type) {
         case PrimitiveType::Sphere: {
           prim0 = simd::make_float4(p.sphere.center, static_cast<float>(p.type));
@@ -2743,8 +2786,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         }
         case PrimitiveType::Triangle: {
           prim0 = simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-          prim1 = simd::make_float4(p.triangle.v1, 0.0f);
-          prim2 = simd::make_float4(p.triangle.v2, 0.0f);
+          prim1 = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
+          prim2 = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
+          prim3 = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
+                                    p.triangle.uv2.x, p.triangle.uv2.y);
           size_t baseVertex = compactTriangleVertices.size();
           compactTriangleVertices.push_back(p.triangle.v0);
           compactTriangleVertices.push_back(p.triangle.v1);
@@ -2760,6 +2805,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         compactPrimitiveData.push_back(prim0);
         compactPrimitiveData.push_back(prim1);
         compactPrimitiveData.push_back(prim2);
+        compactPrimitiveData.push_back(prim3);
 
         const Material &m = p.material;
         auto packedMaterial = encodeMaterial(m);
@@ -3063,6 +3109,44 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         dst[0] = simd::make_uint3(0, 0, 0);
       markBufferModified(_pTriangleIndexBuffer,
                          NS::Range::Make(0, indexBytes));
+    }
+
+    size_t textureInfoCount = std::max<size_t>(textureInfoSource->size(),
+                                               size_t(1));
+    size_t textureInfoBytes = textureInfoCount * sizeof(TextureInfo);
+    ensureBufferCapacity(_pTextureInfoBuffer, textureInfoBytes,
+                         _textureInfoBufferCapacity, allowShrink);
+    if (_pTextureInfoBuffer) {
+      auto *dst = static_cast<TextureInfo *>(_pTextureInfoBuffer->contents());
+      if (textureInfoSource->empty()) {
+        dst[0] = TextureInfo{};
+      } else {
+        std::memcpy(dst, textureInfoSource->data(),
+                    textureInfoSource->size() * sizeof(TextureInfo));
+        if (textureInfoSource->size() < textureInfoCount)
+          dst[textureInfoSource->size()] = TextureInfo{};
+      }
+      markBufferModified(_pTextureInfoBuffer,
+                         NS::Range::Make(0, textureInfoBytes));
+    }
+
+    size_t textureDataCount = std::max<size_t>(textureDataSource->size(),
+                                               size_t(1));
+    size_t textureDataBytes = textureDataCount * sizeof(simd::float4);
+    ensureBufferCapacity(_pTextureDataBuffer, textureDataBytes,
+                         _textureDataBufferCapacity, allowShrink);
+    if (_pTextureDataBuffer) {
+      auto *dst = static_cast<simd::float4 *>(_pTextureDataBuffer->contents());
+      if (textureDataSource->empty()) {
+        dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 1.0f};
+      } else {
+        std::memcpy(dst, textureDataSource->data(),
+                    textureDataSource->size() * sizeof(simd::float4));
+        if (textureDataSource->size() < textureDataCount)
+          dst[textureDataSource->size()] = simd::float4{0.0f, 0.0f, 0.0f, 1.0f};
+      }
+      markBufferModified(_pTextureDataBuffer,
+                         NS::Range::Make(0, textureDataBytes));
     }
 
     _residentBuffersInitialized = true;
@@ -3662,6 +3746,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.sampleImportanceTextureIndex = 3;
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
+  u.textureCount = static_cast<uint32_t>(_cachedTextureInfos.size());
 
   uint64_t residentPrimitiveCount = _residentPrimitiveCount;
   uint64_t residentTriangleCount = _residentTriangleCount;
@@ -3811,6 +3896,8 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
+        pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
+        pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -3826,6 +3913,8 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+        pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
+        pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
       }
       pCompute->setTexture(accum0, 0);
       pCompute->setTexture(accum1, 1);

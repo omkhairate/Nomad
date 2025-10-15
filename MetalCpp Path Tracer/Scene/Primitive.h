@@ -8,6 +8,8 @@
 
 namespace MetalCppPathTracer {
 
+inline constexpr size_t kPrimitiveFloat4Count = 4;
+
 enum class PrimitiveType {
     Sphere = 0,
     Triangle = 1,

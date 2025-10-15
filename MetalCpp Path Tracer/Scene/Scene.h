@@ -5,6 +5,8 @@
 #include "Primitive.h"
 #include <cstdint>
 #include <simd/simd.h>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace MetalCppPathTracer {
@@ -71,6 +73,12 @@ struct ObserverCamera {
   float verticalFov = 60.0f;
 };
 
+struct Texture {
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<float> pixels; // RGBA
+};
+
 class Scene {
 public:
   Scene();
@@ -90,6 +98,10 @@ public:
   const std::vector<Primitive> &getPrimitives() const;
   const std::vector<size_t> &getPrimitiveIndices() const;
   const std::vector<SceneObject> &getObjects() const;
+
+  const std::vector<Texture> &getTextures() const;
+  const std::vector<std::string> &getTexturePaths() const;
+  int registerTexture(const std::string &path, Texture texture);
 
   ResidencyStrategy getResidencyStrategy() const;
   void setResidencyStrategy(ResidencyStrategy strategy);
@@ -140,6 +152,9 @@ private:
   std::vector<SceneObject> objects;
   std::vector<size_t> objectIndices;
   std::vector<TLASNode> tlasNodes;
+  std::vector<Texture> textures;
+  std::vector<std::string> texturePaths;
+  std::unordered_map<std::string, int> textureLookup;
   ResidencyStrategy residencyStrategy;
   ResidencyParameters residencyParams;
   bool startCompacted;
