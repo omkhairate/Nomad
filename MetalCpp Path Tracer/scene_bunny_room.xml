@@ -1,0 +1,47 @@
+<Scene width="1280" height="720" maxRayDepth="8" startCompacted="true"
+       textureResidencyMemoryCapMB="16"
+       lodEnterDistance="50" lodExitDistance="75" residencyCooldown="1" lodToggleBudget="10000">
+    <CameraPath>
+        <Keyframe frame="0" position="0,4,10" lookAt="0,4,-4" />
+        <Keyframe frame="45" position="0,4,4" lookAt="0,3.8,-10" />
+        <Keyframe frame="90" position="0,3.8,-4" lookAt="0,3.5,-16" />
+        <Keyframe frame="135" position="0,3.5,-11" lookAt="0,3.2,-20" />
+    </CameraPath>
+
+    <!-- Floor and ceiling -->
+    <Rectangle position="0,0,-10" u="6,0,0" v="0,0,-10" albedo="0.75,0.75,0.78"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="0,8,-10" u="6,0,0" v="0,0,-10" albedo="0.78,0.78,0.8"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Walls -->
+    <Rectangle position="0,4,0" u="6,0,0" v="0,4,0" rotation="0,0,0"
+               albedo="0.82,0.82,0.84" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="0,4,-20" u="6,0,0" v="0,4,0" rotation="0,180,0"
+               albedo="0.8,0.8,0.83" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="-6,4,-10" u="10,0,0" v="0,4,0" rotation="0,90,0"
+               albedo="0.76,0.78,0.82" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="6,4,-10" u="10,0,0" v="0,4,0" rotation="0,-90,0"
+               albedo="0.76,0.78,0.82" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Ceiling light -->
+    <Rectangle position="0,7.5,-12" u="1.5,0,0" v="0,0,-1.5" rotation="180,0,0"
+               albedo="1,1,1" emission="1,0.95,0.9" materialType="-1" emissionPower="35" />
+
+    <!-- Doorway mesh -->
+    <Mesh file="assets/Door.obj" position="0,-0.24,-0.2" scale="1.0"
+          basisX="0.09,0,0" basisY="0,0.604,0" basisZ="0,0,0.04" rotation="0,0,0"
+          albedo="0.85,0.85,0.86" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Bunny displays -->
+    <Mesh file="assets/bunny.obj" position="-2.5,0,-14" scale="7.5"
+          albedo="0.8,0.7,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="2.8,0,-15" scale="6.5"
+          albedo="0.7,0.75,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="0.5,0,-18" scale="8.5"
+          albedo="0.68,0.7,0.74" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-4.5,0,-18" scale="5.5"
+          albedo="0.74,0.68,0.7" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="3.5,0,-12" scale="5.8"
+          albedo="0.72,0.66,0.69" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
