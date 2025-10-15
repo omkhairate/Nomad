@@ -245,11 +245,14 @@ simd::float4 *Scene::createTransformsBuffer() const {
 }
 
 simd::float4 *Scene::createMaterialsBuffer() const {
-  simd::float4 *buffer = new simd::float4[2 * primitives.size()];
+  simd::float4 *buffer = new simd::float4[3 * primitives.size()];
   for (size_t i = 0; i < primitives.size(); ++i) {
     const auto &m = primitives[i].material;
-    buffer[2 * i + 0] = simd::make_float4(m.albedo, m.materialType);
-    buffer[2 * i + 1] = simd::make_float4(m.emissionColor, m.emissionPower);
+    buffer[3 * i + 0] = simd::make_float4(m.albedo, m.materialType);
+    buffer[3 * i + 1] = simd::make_float4(m.emissionColor, m.emissionPower);
+    buffer[3 * i + 2] =
+        simd::make_float4(static_cast<float>(m.diffuseTextureIndex), 0.0f, 0.0f,
+                          0.0f);
   }
   return buffer;
 }
@@ -270,15 +273,18 @@ simd::float4 *Scene::createSphereBuffer() {
 
 simd::float4 *Scene::createSphereMaterialsBuffer() {
   size_t sphereCount = getSphereCount();
-  simd::float4 *buffer = new simd::float4[2 * sphereCount];
+  simd::float4 *buffer = new simd::float4[3 * sphereCount];
 
   size_t index = 0;
   for (const auto &p : primitives) {
     if (p.type == PrimitiveType::Sphere) {
       const auto &m = p.material;
-      buffer[2 * index + 0] = simd::make_float4(m.albedo, m.materialType);
-      buffer[2 * index + 1] =
+      buffer[3 * index + 0] = simd::make_float4(m.albedo, m.materialType);
+      buffer[3 * index + 1] =
           simd::make_float4(m.emissionColor, m.emissionPower);
+      buffer[3 * index + 2] =
+          simd::make_float4(static_cast<float>(m.diffuseTextureIndex), 0.0f,
+                            0.0f, 0.0f);
       index++;
     }
   }
