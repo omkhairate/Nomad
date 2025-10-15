@@ -335,8 +335,18 @@ static void LoadOBJ(const std::string& path, CachedMesh& mesh) {
     std::vector<tinyobj::material_t> objMaterials;
     std::string warn, err;
 
+    std::filesystem::path objPath(path);
+    std::string mtlSearchPath;
+    if (objPath.has_parent_path()) {
+        mtlSearchPath = objPath.parent_path().string();
+        if (!mtlSearchPath.empty() &&
+            mtlSearchPath.back() != std::filesystem::path::preferred_separator) {
+            mtlSearchPath.push_back(std::filesystem::path::preferred_separator);
+        }
+    }
+
     bool ret = tinyobj::LoadObj(&attrib, &shapes, &objMaterials, &warn, &err,
-                                path.c_str());
+                                path.c_str(), mtlSearchPath.c_str());
 
     if (!warn.empty()) {
         printf("tinyobjloader warning: %s\n", warn.c_str());
