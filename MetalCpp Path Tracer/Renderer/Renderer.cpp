@@ -1228,7 +1228,7 @@ void Renderer::buildShaders() {
 void Renderer::updateVisibleScene() {
   if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
-        std::filesystem::path(__FILE__).parent_path() / "../scene_bunny_room.xml";
+        std::filesystem::path(__FILE__).parent_path() / "../scene_glass_bunny.xml";
     SceneLoader::LoadSceneFromXML(alt.string(), _pScene);
   }
 
