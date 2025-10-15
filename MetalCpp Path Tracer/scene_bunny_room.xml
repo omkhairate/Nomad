@@ -35,15 +35,8 @@
           basisX="0.2,0,0" basisY="0,0.2,0" basisZ="0,0,0.1" rotation="0,0,0"
           albedo="0.85,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
 
-    <!-- Bunny displays -->
-    <Mesh file="assets/bunny.obj" position="-3.5,0,-18" scale="1.0"
-          albedo="0.8,0.7,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="3.5,0,-20" scale="1.0"
-          albedo="0.7,0.75,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="0.5,0,-24" scale="1.0"
-          albedo="0.68,0.7,0.74" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="-5.5,0,-22" scale="1.0"
-          albedo="0.74,0.68,0.7" emission="0,0,0" materialType="0" emissionPower="0" />
-    <Mesh file="assets/bunny.obj" position="4.5,0,-16" scale="1.0"
-          albedo="0.72,0.66,0.69" emission="0,0,0" materialType="0" emissionPower="0" />
+    <!-- Furniture display -->
+    <Mesh file="assets/Mebel_Edvard.obj" position="0,0,-22" scale="0.0015"
+          rotation="0,0,0" albedo="0.78,0.74,0.7" emission="0,0,0"
+          materialType="0" emissionPower="0" />
 </Scene>
