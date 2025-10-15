@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Scene width="1920" height="1080" maxRayDepth="8" startCompacted="true"
+       residencyStrategy="distance" textureResidencyMemoryCapMB="512"
+       lodEnterDistance="35" lodExitDistance="55" residencyCooldown="1" lodToggleBudget="12000">
+    <ObserverCamera position="0,22,22" lookAt="0,6,0" verticalFov="38" />
+
+    <CameraPath>
+        <!-- Slow walkthrough weaving through the Sponza atrium -->
+        <Keyframe frame="0" position="0,4.0,12.0" lookAt="0,5.5,2.0" />
+        <Keyframe frame="40" position="-3.0,4.5,4.0" lookAt="0,5.0,-4.0" />
+        <Keyframe frame="80" position="3.5,5.0,-4.5" lookAt="0,5.0,-10.0" />
+        <Keyframe frame="120" position="0.0,5.5,-12.0" lookAt="0,5.0,-18.0" />
+        <Keyframe frame="160" position="-2.0,5.5,-16.0" lookAt="-6.0,6.0,-22.0" />
+    </CameraPath>
+
+    <!-- Overhead fill light to keep the atrium softly illuminated -->
+    <Rectangle position="0,18,0" u="12,0,0" v="0,0,12" albedo="1.0,1.0,1.0"
+               emission="0.9,0.92,0.95" materialType="-1" emissionPower="28" />
+
+    <!-- Warm directional bounce from the open courtyard -->
+    <Rectangle position="0,8,14" u="12,0,0" v="0,6,0" albedo="1.0,1.0,1.0"
+               emission="0.95,0.9,0.85" materialType="-1" emissionPower="18" />
+
+    <!-- Textured Sponza atrium with textures and clustering suited for streaming -->
+    <Mesh file="assets/sponza.obj" position="0.605,1.264,0.387" scale="0.01"
+          clusterMaxTriangles="4096" clusterMaxExtent="30"
+          albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
