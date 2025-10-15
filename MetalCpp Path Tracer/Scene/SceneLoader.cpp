@@ -1,6 +1,5 @@
 #include "SceneLoader.h"
 #include "Material.h"
-#include "ImageLoader.h"
 #include <tinyxml2.h>
 #include <simd/simd.h>
 #include <algorithm>
@@ -14,7 +13,6 @@
 #include <utility>
 #include <vector>
 #include <limits>
-#include <functional>
 #include "tiny_obj_loader.h"
 
 using namespace tinyxml2;
@@ -28,26 +26,6 @@ static simd::float3 parseVec3(const char* str) {
 }
 
 namespace {
-
-static Material DefaultMaterial() {
-    Material m;
-    m.albedo = simd::make_float3(0.8f, 0.8f, 0.8f);
-    m.materialType = 0.0f;
-    m.emissionColor = simd::make_float3(0.0f, 0.0f, 0.0f);
-    m.emissionPower = 0.0f;
-    m.diffuseTextureIndex = -1;
-    return m;
-}
-
-static Material ConvertMaterial(const tinyobj::material_t &src,
-                                int textureIndex) {
-    Material m = DefaultMaterial();
-    m.albedo = simd::make_float3(src.diffuse[0], src.diffuse[1], src.diffuse[2]);
-    m.emissionColor =
-        simd::make_float3(src.emission[0], src.emission[1], src.emission[2]);
-    m.diffuseTextureIndex = textureIndex;
-    return m;
-}
 
 static float AxisValue(const simd::float3& v, int axis) {
     switch (axis) {
@@ -183,9 +161,7 @@ static void EmitMeshPartitions(Scene* scene, std::vector<Primitive>& prims,
 // single scene load.
 struct CachedMesh {
     std::vector<simd::float3> vertices;
-    std::vector<simd::float2> uvs;
     std::vector<simd::uint3> indices;
-    std::vector<int32_t> triangleTextureIndices;
 };
 
 using MeshCache = std::unordered_map<std::string, CachedMesh>;
@@ -195,20 +171,13 @@ MeshCache& GetMeshCache() {
     return cache;
 }
 
-static void LoadOBJ(const std::filesystem::path &path, CachedMesh &outMesh) {
-    outMesh.vertices.clear();
-    outMesh.uvs.clear();
-    outMesh.indices.clear();
-    outMesh.triangleTextureIndices.clear();
-
+static void LoadOBJ(const std::string& path, std::vector<simd::float3>& verts, std::vector<simd::uint3>& tris) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
 
-    std::string pathStr = path.string();
-    bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
-                                pathStr.c_str());
+    bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str());
 
     if (!warn.empty()) {
         printf("tinyobjloader warning: %s\n", warn.c_str());
@@ -217,127 +186,50 @@ static void LoadOBJ(const std::filesystem::path &path, CachedMesh &outMesh) {
         printf("tinyobjloader error: %s\n", err.c_str());
     }
     if (!ret) {
-        printf("Failed to load OBJ: %s\n", pathStr.c_str());
+        printf("Failed to load OBJ: %s\n", path.c_str());
         return;
     }
 
-    std::filesystem::path baseDir = path.parent_path();
-    ImageLoader &imageLoader = GetGlobalImageLoader();
-    std::vector<int> materialTextureIndices(materials.size(), -1);
-    for (size_t i = 0; i < materials.size(); ++i) {
-        int textureIndex = -1;
-        if (!materials[i].diffuse_texname.empty()) {
-            textureIndex = imageLoader.loadImage(baseDir, materials[i].diffuse_texname);
-        }
-        Material converted = ConvertMaterial(materials[i], textureIndex);
-        materialTextureIndices[i] = converted.diffuseTextureIndex;
+    verts.reserve(attrib.vertices.size() / 3);
+    for (size_t v = 0; v < attrib.vertices.size(); v += 3) {
+        verts.push_back(simd::make_float3(
+            attrib.vertices[v],
+            attrib.vertices[v + 1],
+            attrib.vertices[v + 2]
+        ));
     }
 
-    struct VertexKey {
-        int positionIndex;
-        int texcoordIndex;
-
-        bool operator==(const VertexKey &other) const {
-            return positionIndex == other.positionIndex &&
-                   texcoordIndex == other.texcoordIndex;
-        }
-    };
-
-    struct VertexKeyHash {
-        size_t operator()(const VertexKey &key) const {
-            size_t h1 = std::hash<int>{}(key.positionIndex);
-            size_t h2 = std::hash<int>{}(key.texcoordIndex);
-            return h1 ^ (h2 << 1);
-        }
-    };
-
-    std::unordered_map<VertexKey, uint32_t, VertexKeyHash> remap;
-    remap.reserve(attrib.vertices.size());
-
-    auto getPosition = [&](int index) -> simd::float3 {
-        size_t base = static_cast<size_t>(index) * 3;
-        if (base + 2 >= attrib.vertices.size())
-            return simd::make_float3(0.0f, 0.0f, 0.0f);
-        return simd::make_float3(attrib.vertices[base + 0],
-                                 attrib.vertices[base + 1],
-                                 attrib.vertices[base + 2]);
-    };
-
-    auto getUV = [&](int index) -> simd::float2 {
-        if (index < 0)
-            return simd::make_float2(0.0f, 0.0f);
-        size_t base = static_cast<size_t>(index) * 2;
-        if (base + 1 >= attrib.texcoords.size())
-            return simd::make_float2(0.0f, 0.0f);
-        return simd::make_float2(attrib.texcoords[base + 0],
-                                 attrib.texcoords[base + 1]);
-    };
-
-    for (const auto &shape : shapes) {
+    for (const auto& shape : shapes) {
         size_t indexOffset = 0;
-        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); ++f) {
-            size_t fv = static_cast<size_t>(shape.mesh.num_face_vertices[f]);
+        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
+            size_t fv = size_t(shape.mesh.num_face_vertices[f]);
             if (fv != 3) {
                 indexOffset += fv;
                 continue;
             }
 
-            simd::uint3 tri = {0, 0, 0};
-            bool valid = true;
-            for (size_t v = 0; v < 3; ++v) {
-                const tinyobj::index_t &idx = shape.mesh.indices[indexOffset + v];
-                if (idx.vertex_index < 0) {
-                    valid = false;
-                    break;
-                }
+            uint32_t idx0 = shape.mesh.indices[indexOffset + 0].vertex_index;
+            uint32_t idx1 = shape.mesh.indices[indexOffset + 1].vertex_index;
+            uint32_t idx2 = shape.mesh.indices[indexOffset + 2].vertex_index;
 
-                size_t vertexBase = static_cast<size_t>(idx.vertex_index) * 3;
-                if (vertexBase + 2 >= attrib.vertices.size()) {
-                    valid = false;
-                    break;
-                }
-
-                VertexKey key{idx.vertex_index, idx.texcoord_index};
-                auto it = remap.find(key);
-                if (it == remap.end()) {
-                    simd::float3 position = getPosition(idx.vertex_index);
-                    remap[key] = static_cast<uint32_t>(outMesh.vertices.size());
-                    outMesh.vertices.push_back(position);
-                    outMesh.uvs.push_back(getUV(idx.texcoord_index));
-                    tri[v] = static_cast<uint32_t>(outMesh.vertices.size() - 1);
-                } else {
-                    tri[v] = it->second;
-                }
-            }
-
-            if (!valid) {
+            if (idx0 >= verts.size() || idx1 >= verts.size() || idx2 >= verts.size()) {
+                printf("Invalid triangle indices\n");
                 indexOffset += fv;
                 continue;
             }
 
-            outMesh.indices.push_back(tri);
-            int materialId = -1;
-            if (f < shape.mesh.material_ids.size())
-                materialId = shape.mesh.material_ids[f];
-            int textureIndex = -1;
-            if (materialId >= 0 &&
-                materialId < static_cast<int>(materialTextureIndices.size()))
-                textureIndex = materialTextureIndices[static_cast<size_t>(materialId)];
-            outMesh.triangleTextureIndices.push_back(textureIndex);
-
+            tris.push_back(simd::make_uint3(idx0, idx1, idx2));
             indexOffset += fv;
         }
     }
 
-    printf("Loaded OBJ: %zu vertices, %zu triangles\n", outMesh.vertices.size(),
-           outMesh.indices.size());
+    printf("Loaded OBJ: %zu vertices, %zu triangles\n", verts.size(), tris.size());
 }
 
 } // namespace
 
 void SceneLoader::ClearCache() {
     GetMeshCache().clear();
-    GetGlobalImageLoader().clear();
 }
 
 bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
@@ -452,7 +344,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             p.sphere.center = parseVec3(e->Attribute("position"));
             p.sphere.radius = e->FloatAttribute("radius", 1.0f);
 
-            p.material = DefaultMaterial();
             p.material.albedo = parseVec3(e->Attribute("albedo"));
             p.material.emissionColor = parseVec3(e->Attribute("emission"));
             p.material.materialType = e->FloatAttribute("materialType", 0);
@@ -467,7 +358,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             p.rectangle.u = parseVec3(e->Attribute("u"));
             p.rectangle.v = parseVec3(e->Attribute("v"));
 
-            p.material = DefaultMaterial();
             p.material.albedo = parseVec3(e->Attribute("albedo"));
             p.material.emissionColor = parseVec3(e->Attribute("emission"));
             p.material.materialType = e->FloatAttribute("materialType", 0);
@@ -479,16 +369,15 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             // Build full path to mesh file relative to the scene's directory
             const char* fileAttr = e->Attribute("file");
             std::filesystem::path meshPath = baseDir / (fileAttr ? fileAttr : "");
-            std::filesystem::path normalizedMeshPath = meshPath.lexically_normal();
-            std::string cacheKey = normalizedMeshPath.string();
+            std::string normalizedPath = meshPath.lexically_normal().string();
 
             auto& cache = GetMeshCache();
-            auto it = cache.find(cacheKey);
+            auto it = cache.find(normalizedPath);
             if (it == cache.end()) {
                 // First time encountering this mesh path in the current load.
                 CachedMesh entry;
-                LoadOBJ(normalizedMeshPath, entry);
-                it = cache.emplace(cacheKey, std::move(entry)).first;
+                LoadOBJ(normalizedPath, entry.vertices, entry.indices);
+                it = cache.emplace(normalizedPath, std::move(entry)).first;
             }
 
             const CachedMesh& meshData = it->second;
@@ -510,7 +399,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 basisZ = parseVec3(bzAttr);
             }
 
-            Material m = DefaultMaterial();
+            Material m;
             m.albedo = parseVec3(e->Attribute("albedo"));
             m.emissionColor = parseVec3(e->Attribute("emission"));
             m.materialType = e->FloatAttribute("materialType", 0);
@@ -526,28 +415,14 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             auto transformVertex = [&](const simd::float3& v) {
                 return pos + basisX * v.x + basisY * v.y + basisZ * v.z;
             };
-            auto fetchUV = [&](uint32_t index) {
-                if (index < meshData.uvs.size())
-                    return meshData.uvs[index];
-                return simd::make_float2(0.0f, 0.0f);
-            };
-
-            size_t triangleIndex = 0;
             for (const auto& tri : meshData.indices) {
                 Primitive p{};
                 p.type = PrimitiveType::Triangle;
                 p.triangle.v0 = transformVertex(meshData.vertices[tri.x]);
                 p.triangle.v1 = transformVertex(meshData.vertices[tri.y]);
                 p.triangle.v2 = transformVertex(meshData.vertices[tri.z]);
-                p.triangle.uv0 = fetchUV(tri.x);
-                p.triangle.uv1 = fetchUV(tri.y);
-                p.triangle.uv2 = fetchUV(tri.z);
                 p.material = m;
-                if (triangleIndex < meshData.triangleTextureIndices.size())
-                    p.material.diffuseTextureIndex =
-                        meshData.triangleTextureIndices[triangleIndex];
                 meshPrimitives.push_back(p);
-                ++triangleIndex;
             }
             int meshGroupId = nextMeshGroupId++;
             EmitMeshPartitions(scene, meshPrimitives, clusterMaxTriangles,
