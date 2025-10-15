@@ -26,5 +26,6 @@
 
     <!-- Glass bunny centered on the floor -->
     <Mesh file="assets/bunny.obj" position="0,0,-1" scale="1.0"
-          albedo="0.95,0.97,1.0" emission="0,0,0" materialType="1" emissionPower="0" />
+          albedo="0.95,0.97,1.0" emission="0,0,0" materialType="1.5"
+          transmission="1,1,1" roughness="0.02" emissionPower="0" />
 </Scene>
