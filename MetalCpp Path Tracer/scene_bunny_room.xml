@@ -1,10 +1,11 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="alwaysresident" textureResidencyMemoryCapMB="512"
        lodEnterDistance="50" lodExitDistance="75" residencyCooldown="1" lodToggleBudget="10000">
     <CameraPath>
-        <Keyframe frame="0" position="0,5,14" lookAt="0,4,-4" />
-        <Keyframe frame="45" position="0,5,6" lookAt="0,4,-14" />
-        <Keyframe frame="90" position="0,4.5,-2" lookAt="0,4,-22" />
-        <Keyframe frame="135" position="0,4,-12" lookAt="0,3.5,-28" />
+        <Keyframe frame="0" position="0,5,16" lookAt="0,4,2" />
+        <Keyframe frame="36" position="0,5,6" lookAt="0,4,0" />
+        <Keyframe frame="72" position="0,4.8,1" lookAt="0,4,-8" />
+        <Keyframe frame="108" position="0,4.5,-6" lookAt="0,3.5,-20" />
+        <Keyframe frame="144" position="0,4,-14" lookAt="0,3.5,-30" />
     </CameraPath>
 
     <!-- Floor, mezzanine, and ceiling -->
