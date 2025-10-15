@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <utility>
 #include <vector>
 
 namespace MetalCppPathTracer {
@@ -20,6 +21,9 @@ void Scene::clear() {
   objects.clear();
   objectIndices.clear();
   tlasNodes.clear();
+  textures.clear();
+  texturePaths.clear();
+  textureLookup.clear();
   cameraPath.clear();
   screenSize = {1280.f, 720.f};
   maxRayDepth = 32;
@@ -112,6 +116,24 @@ const std::vector<size_t> &Scene::getPrimitiveIndices() const {
 }
 
 const std::vector<SceneObject> &Scene::getObjects() const { return objects; }
+
+const std::vector<Texture> &Scene::getTextures() const { return textures; }
+
+const std::vector<std::string> &Scene::getTexturePaths() const {
+  return texturePaths;
+}
+
+int Scene::registerTexture(const std::string &path, Texture texture) {
+  auto it = textureLookup.find(path);
+  if (it != textureLookup.end())
+    return it->second;
+
+  int index = static_cast<int>(textures.size());
+  textures.push_back(std::move(texture));
+  texturePaths.push_back(path);
+  textureLookup.emplace(path, index);
+  return index;
+}
 
 ResidencyStrategy Scene::getResidencyStrategy() const {
   return residencyStrategy;
@@ -220,25 +242,31 @@ size_t Scene::getBVHNodeCount() const { return bvhNodes.size(); }
 const std::vector<BVHNode> &Scene::getBVHNodes() const { return bvhNodes; }
 
 simd::float4 *Scene::createTransformsBuffer() const {
-  simd::float4 *buffer = new simd::float4[primitives.size() * 3];
+  simd::float4 *buffer =
+      new simd::float4[kPrimitiveFloat4Count * primitives.size()];
   for (size_t i = 0; i < primitives.size(); ++i) {
     const auto &p = primitives[i];
+    size_t base = kPrimitiveFloat4Count * i;
     if (p.type == PrimitiveType::Sphere) {
-      buffer[3 * i + 0] =
+      buffer[base + 0] =
           simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-      buffer[3 * i + 1] =
+      buffer[base + 1] =
           simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
-      buffer[3 * i + 2] = simd::make_float4(simd::float3(0), 0);
+      buffer[base + 2] = simd::make_float4(simd::float3(0), 0);
+      buffer[base + 3] = simd::make_float4(simd::float3(0), 0);
     } else if (p.type == PrimitiveType::Rectangle) {
-      buffer[3 * i + 0] =
+      buffer[base + 0] =
           simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-      buffer[3 * i + 1] = simd::make_float4(p.rectangle.u, 0);
-      buffer[3 * i + 2] = simd::make_float4(p.rectangle.v, 0);
+      buffer[base + 1] = simd::make_float4(p.rectangle.u, 0);
+      buffer[base + 2] = simd::make_float4(p.rectangle.v, 0);
+      buffer[base + 3] = simd::make_float4(simd::float3(0), 0);
     } else {
-      buffer[3 * i + 0] =
+      buffer[base + 0] =
           simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-      buffer[3 * i + 1] = simd::make_float4(p.triangle.v1, 0);
-      buffer[3 * i + 2] = simd::make_float4(p.triangle.v2, 0);
+      buffer[base + 1] = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
+      buffer[base + 2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
+      buffer[base + 3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
+                                           p.triangle.uv2.x, p.triangle.uv2.y);
     }
   }
   return buffer;

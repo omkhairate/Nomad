@@ -20,6 +20,8 @@ struct intersection
     int primitiveId = -1;
     int isTriangle = 0;
     int nodeIndex = -1; // BLAS leaf node index
+    float2 uv = float2(0.0f);
+    float2 barycentric = float2(0.0f);
 };
 
 struct InstanceRecord
@@ -71,6 +73,15 @@ struct UniformsData
     uint sampleImportanceTextureIndex;
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
+    uint textureCount;
+};
+
+struct PackedTexture
+{
+    uint offset;
+    uint width;
+    uint height;
+    uint flags;
 };
 
 

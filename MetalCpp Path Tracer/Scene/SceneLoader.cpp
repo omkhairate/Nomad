@@ -4,6 +4,7 @@
 #include <simd/simd.h>
 #include <simd/quaternion.h>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <fstream>
@@ -16,6 +17,7 @@
 #include <limits>
 #include <cmath>
 #include "tiny_obj_loader.h"
+#include "TextureLoader.h"
 
 using namespace tinyxml2;
 
@@ -77,7 +79,53 @@ static float computeRoughness(float shininess, float explicitRoughness) {
     return clamp01(converted);
 }
 
-static Material ConvertTinyMaterial(const tinyobj::material_t& src) {
+using TextureCache = std::unordered_map<std::string, int>;
+
+TextureCache& GetTextureCache() {
+    static TextureCache cache;
+    return cache;
+}
+
+static int ResolveTextureIndex(const std::string& texName,
+                               const std::string& baseDir,
+                               Scene* scene,
+                               TextureCache& cache) {
+    if (!scene || texName.empty()) {
+        return -1;
+    }
+
+    std::filesystem::path resolved(texName);
+    if (resolved.is_relative()) {
+        resolved = std::filesystem::path(baseDir) / resolved;
+    }
+    resolved = resolved.lexically_normal();
+
+    std::string key = resolved.string();
+    auto it = cache.find(key);
+    if (it != cache.end()) {
+        return it->second;
+    }
+
+    LoadedTextureImage image;
+    if (!LoadTextureImage(key, image)) {
+        cache.emplace(key, -1);
+        return -1;
+    }
+
+    Texture texture;
+    texture.width = static_cast<uint32_t>(image.width);
+    texture.height = static_cast<uint32_t>(image.height);
+    texture.pixels = std::move(image.pixels);
+
+    int index = scene->registerTexture(key, std::move(texture));
+    cache.emplace(key, index);
+    return index;
+}
+
+static Material ConvertTinyMaterial(const tinyobj::material_t& src,
+                                    Scene* scene,
+                                    TextureCache& textureCache,
+                                    const std::string& baseDir) {
     Material material{};
     material.diffuseColor = toFloat3(src.diffuse);
     material.specularColor = toFloat3(src.specular);
@@ -98,6 +146,18 @@ static Material ConvertTinyMaterial(const tinyobj::material_t& src) {
         float trans = 1.0f - material.opacity;
         material.transmissionColor = simd::make_float3(trans, trans, trans);
     }
+
+    material.diffuseTextureIndex = ResolveTextureIndex(src.diffuse_texname,
+                                                       baseDir, scene,
+                                                       textureCache);
+    material.specularTextureIndex = ResolveTextureIndex(src.specular_texname,
+                                                        baseDir, scene,
+                                                        textureCache);
+    std::string normalTex = src.normal_texname.empty() ? src.bump_texname
+                                                       : src.normal_texname;
+    material.normalTextureIndex = ResolveTextureIndex(normalTex,
+                                                      baseDir, scene,
+                                                      textureCache);
 
     return material;
 }
@@ -320,6 +380,7 @@ struct CachedMesh {
     std::vector<simd::uint3> indices;
     std::vector<int> faceMaterialIndices;
     std::vector<Material> materials;
+    std::vector<std::array<simd::float2, 3>> triangleUVs;
 };
 
 using MeshCache = std::unordered_map<std::string, CachedMesh>;
@@ -329,7 +390,7 @@ MeshCache& GetMeshCache() {
     return cache;
 }
 
-static void LoadOBJ(const std::string& path, CachedMesh& mesh) {
+static void LoadOBJ(const std::string& path, CachedMesh& mesh, Scene* scene) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> objMaterials;
@@ -363,6 +424,7 @@ static void LoadOBJ(const std::string& path, CachedMesh& mesh) {
     mesh.indices.clear();
     mesh.faceMaterialIndices.clear();
     mesh.materials.clear();
+    mesh.triangleUVs.clear();
 
     mesh.vertices.reserve(attrib.vertices.size() / 3);
     for (size_t v = 0; v < attrib.vertices.size(); v += 3) {
@@ -374,8 +436,10 @@ static void LoadOBJ(const std::string& path, CachedMesh& mesh) {
     }
 
     mesh.materials.reserve(objMaterials.size());
+    TextureCache& textureCache = GetTextureCache();
     for (const auto& srcMat : objMaterials) {
-        mesh.materials.push_back(ConvertTinyMaterial(srcMat));
+        mesh.materials.push_back(
+            ConvertTinyMaterial(srcMat, scene, textureCache, mtlSearchPath));
     }
 
     for (const auto& shape : shapes) {
@@ -400,6 +464,27 @@ static void LoadOBJ(const std::string& path, CachedMesh& mesh) {
 
             mesh.indices.push_back(simd::make_uint3(idx0, idx1, idx2));
 
+            auto getTexcoord = [&](int texIndex) {
+                if (texIndex >= 0 &&
+                    static_cast<size_t>(texIndex * 2 + 1) < attrib.texcoords.size()) {
+                    return simd::make_float2(
+                        static_cast<float>(attrib.texcoords[texIndex * 2 + 0]),
+                        static_cast<float>(attrib.texcoords[texIndex * 2 + 1]));
+                }
+                return simd::make_float2(0.0f, 0.0f);
+            };
+
+            int t0 = shape.mesh.indices[indexOffset + 0].texcoord_index;
+            int t1 = shape.mesh.indices[indexOffset + 1].texcoord_index;
+            int t2 = shape.mesh.indices[indexOffset + 2].texcoord_index;
+
+            std::array<simd::float2, 3> uvs = {
+                getTexcoord(t0),
+                getTexcoord(t1),
+                getTexcoord(t2)
+            };
+            mesh.triangleUVs.push_back(uvs);
+
             int materialId = -1;
             if (f < shape.mesh.material_ids.size()) {
                 materialId = shape.mesh.material_ids[f];
@@ -422,6 +507,7 @@ static void LoadOBJ(const std::string& path, CachedMesh& mesh) {
 
 void SceneLoader::ClearCache() {
     GetMeshCache().clear();
+    GetTextureCache().clear();
 }
 
 bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
@@ -568,7 +654,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             if (it == cache.end()) {
                 // First time encountering this mesh path in the current load.
                 CachedMesh entry;
-                LoadOBJ(normalizedPath, entry);
+                LoadOBJ(normalizedPath, entry, scene);
                 it = cache.emplace(normalizedPath, std::move(entry)).first;
             }
 
@@ -623,6 +709,13 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 p.triangle.v0 = transformVertex(meshData.vertices[tri.x]);
                 p.triangle.v1 = transformVertex(meshData.vertices[tri.y]);
                 p.triangle.v2 = transformVertex(meshData.vertices[tri.z]);
+
+                if (triIndex < meshData.triangleUVs.size()) {
+                    const auto& triUVs = meshData.triangleUVs[triIndex];
+                    p.triangle.uv0 = triUVs[0];
+                    p.triangle.uv1 = triUVs[1];
+                    p.triangle.uv2 = triUVs[2];
+                }
 
                 const Material* chosenMaterial = &overrideMaterial;
                 if (triIndex < meshData.faceMaterialIndices.size()) {

@@ -37,6 +37,13 @@ struct GeometryHandle {
   uint32_t padding = 0;
 };
 
+struct TextureInfo {
+  uint32_t offset = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t flags = 0;
+};
+
 class Renderer;
 
 struct ResidentObjectGpuResources {
@@ -193,6 +200,8 @@ private:
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
   MTL::Buffer *_pFrustumVertexBuffer = nullptr;
+  MTL::Buffer *_pTextureInfoBuffer = nullptr;
+  MTL::Buffer *_pTextureDataBuffer = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -322,6 +331,8 @@ private:
   std::vector<simd::float4> _cachedTLASNodes;
   std::vector<simd::float3> _cachedTriangleVertices;
   std::vector<simd::uint3> _cachedTriangleIndices;
+  std::vector<TextureInfo> _cachedTextureInfos;
+  std::vector<simd::float4> _cachedTextureData;
   std::vector<uint32_t> _cachedLightIndices;
   std::vector<float> _cachedLightCdf;
 
@@ -335,6 +346,8 @@ private:
   size_t _sphereMaterialBufferCapacity = 0;
   size_t _triangleVertexBufferCapacity = 0;
   size_t _triangleIndexBufferCapacity = 0;
+  size_t _textureInfoBufferCapacity = 0;
+  size_t _textureDataBufferCapacity = 0;
   size_t _bvhBufferCapacity = 0;
   size_t _tlasBufferCapacity = 0;
   size_t _primitiveIndexBufferCapacity = 0;
