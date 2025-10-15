@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 #include <limits>
+#include <cmath>
 #include "tiny_obj_loader.h"
 
 using namespace tinyxml2;
@@ -50,6 +51,137 @@ static simd::float3 rotateVectorEulerXYZ(const simd::float3& v,
 }
 
 namespace {
+
+static float clamp01(float value) {
+    return std::clamp(value, 0.0f, 1.0f);
+}
+
+static simd::float3 toFloat3(const tinyobj::real_t values[3]) {
+    return simd::make_float3(static_cast<float>(values[0]),
+                             static_cast<float>(values[1]),
+                             static_cast<float>(values[2]));
+}
+
+static float luminance(const simd::float3& c) {
+    return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+}
+
+static float computeRoughness(float shininess, float explicitRoughness) {
+    if (explicitRoughness > 0.0f) {
+        return clamp01(explicitRoughness);
+    }
+    if (shininess <= 0.0f) {
+        return 1.0f;
+    }
+    float converted = std::sqrt(2.0f / (shininess + 2.0f));
+    return clamp01(converted);
+}
+
+static Material ConvertTinyMaterial(const tinyobj::material_t& src) {
+    Material material{};
+    material.diffuseColor = toFloat3(src.diffuse);
+    material.specularColor = toFloat3(src.specular);
+    material.transmissionColor = toFloat3(src.transmittance);
+    material.emissionColor = toFloat3(src.emission);
+
+    float emissionLum = luminance(material.emissionColor);
+    material.emissionPower = (emissionLum > 0.0f) ? 1.0f : 0.0f;
+
+    material.shininess = static_cast<float>(src.shininess);
+    material.indexOfRefraction = (src.ior != 0.0f) ? static_cast<float>(src.ior)
+                                                   : 1.0f;
+    material.opacity = clamp01(static_cast<float>(src.dissolve));
+    material.roughness = computeRoughness(material.shininess,
+                                          static_cast<float>(src.roughness));
+
+    if (luminance(material.transmissionColor) <= 0.0f && material.opacity < 1.0f) {
+        float trans = 1.0f - material.opacity;
+        material.transmissionColor = simd::make_float3(trans, trans, trans);
+    }
+
+    return material;
+}
+
+static Material ParseMaterialAttributes(const XMLElement* element) {
+    Material material{};
+
+    bool hasDiffuseAttr = false;
+    if (const char* diffuseAttr = element->Attribute("diffuse")) {
+        material.diffuseColor = parseVec3(diffuseAttr);
+        hasDiffuseAttr = true;
+    }
+    if (const char* albedoAttr = element->Attribute("albedo")) {
+        material.diffuseColor = parseVec3(albedoAttr);
+        hasDiffuseAttr = true;
+    }
+
+    if (const char* emissionAttr = element->Attribute("emission")) {
+        material.emissionColor = parseVec3(emissionAttr);
+    }
+    material.emissionPower = element->FloatAttribute("emissionPower",
+                                                     material.emissionPower);
+
+    bool hasSpecularAttr = false;
+    if (const char* specAttr = element->Attribute("specular")) {
+        material.specularColor = parseVec3(specAttr);
+        hasSpecularAttr = true;
+    }
+
+    bool hasTransmissionAttr = false;
+    if (const char* transAttr = element->Attribute("transmission")) {
+        material.transmissionColor = parseVec3(transAttr);
+        hasTransmissionAttr = true;
+    }
+
+    bool hasOpacityAttr = element->FindAttribute("opacity") != nullptr;
+    material.opacity = element->FloatAttribute("opacity", material.opacity);
+    material.shininess = element->FloatAttribute("shininess", material.shininess);
+    material.roughness = element->FloatAttribute("roughness", material.roughness);
+    material.indexOfRefraction = element->FloatAttribute("ior",
+                                                         material.indexOfRefraction);
+
+    if (!hasTransmissionAttr && material.opacity < 1.0f) {
+        float trans = 1.0f - material.opacity;
+        material.transmissionColor = simd::make_float3(trans, trans, trans);
+    }
+
+    if (const XMLAttribute* typeAttr = element->FindAttribute("materialType")) {
+        float materialType = typeAttr->FloatValue();
+        if (materialType < 0.0f) {
+            if (!hasSpecularAttr) {
+                material.specularColor = simd::make_float3(1.0f, 1.0f, 1.0f);
+            }
+            material.opacity = 1.0f;
+            material.transmissionColor = simd::make_float3(0.0f, 0.0f, 0.0f);
+            material.shininess = std::max(material.shininess, 256.0f);
+            material.roughness = std::min(material.roughness, 0.02f);
+        } else if (materialType > 0.0f) {
+            if (!hasSpecularAttr) {
+                material.specularColor = simd::make_float3(1.0f, 1.0f, 1.0f);
+            }
+            if (!hasTransmissionAttr) {
+                material.transmissionColor = simd::make_float3(1.0f, 1.0f, 1.0f);
+            }
+            material.indexOfRefraction = materialType;
+            if (!hasOpacityAttr) {
+                material.opacity = 0.0f;
+            }
+            material.shininess = std::max(material.shininess, 96.0f);
+            material.roughness = std::min(material.roughness, 0.1f);
+        }
+    }
+
+    material.opacity = clamp01(material.opacity);
+    material.roughness = clamp01(material.roughness);
+    material.shininess = std::max(material.shininess, 1.0f);
+
+    if (!hasDiffuseAttr && material.opacity < 1.0f && luminance(material.diffuseColor) <= 0.0f) {
+        float base = 1.0f - material.opacity;
+        material.diffuseColor = simd::make_float3(base, base, base);
+    }
+
+    return material;
+}
 
 static float AxisValue(const simd::float3& v, int axis) {
     switch (axis) {
@@ -186,6 +318,8 @@ static void EmitMeshPartitions(Scene* scene, std::vector<Primitive>& prims,
 struct CachedMesh {
     std::vector<simd::float3> vertices;
     std::vector<simd::uint3> indices;
+    std::vector<int> faceMaterialIndices;
+    std::vector<Material> materials;
 };
 
 using MeshCache = std::unordered_map<std::string, CachedMesh>;
@@ -195,13 +329,14 @@ MeshCache& GetMeshCache() {
     return cache;
 }
 
-static void LoadOBJ(const std::string& path, std::vector<simd::float3>& verts, std::vector<simd::uint3>& tris) {
+static void LoadOBJ(const std::string& path, CachedMesh& mesh) {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
-    std::vector<tinyobj::material_t> materials;
+    std::vector<tinyobj::material_t> objMaterials;
     std::string warn, err;
 
-    bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str());
+    bool ret = tinyobj::LoadObj(&attrib, &shapes, &objMaterials, &warn, &err,
+                                path.c_str());
 
     if (!warn.empty()) {
         printf("tinyobjloader warning: %s\n", warn.c_str());
@@ -214,13 +349,23 @@ static void LoadOBJ(const std::string& path, std::vector<simd::float3>& verts, s
         return;
     }
 
-    verts.reserve(attrib.vertices.size() / 3);
+    mesh.vertices.clear();
+    mesh.indices.clear();
+    mesh.faceMaterialIndices.clear();
+    mesh.materials.clear();
+
+    mesh.vertices.reserve(attrib.vertices.size() / 3);
     for (size_t v = 0; v < attrib.vertices.size(); v += 3) {
-        verts.push_back(simd::make_float3(
+        mesh.vertices.push_back(simd::make_float3(
             attrib.vertices[v],
             attrib.vertices[v + 1],
             attrib.vertices[v + 2]
         ));
+    }
+
+    mesh.materials.reserve(objMaterials.size());
+    for (const auto& srcMat : objMaterials) {
+        mesh.materials.push_back(ConvertTinyMaterial(srcMat));
     }
 
     for (const auto& shape : shapes) {
@@ -236,18 +381,31 @@ static void LoadOBJ(const std::string& path, std::vector<simd::float3>& verts, s
             uint32_t idx1 = shape.mesh.indices[indexOffset + 1].vertex_index;
             uint32_t idx2 = shape.mesh.indices[indexOffset + 2].vertex_index;
 
-            if (idx0 >= verts.size() || idx1 >= verts.size() || idx2 >= verts.size()) {
+            if (idx0 >= mesh.vertices.size() || idx1 >= mesh.vertices.size() ||
+                idx2 >= mesh.vertices.size()) {
                 printf("Invalid triangle indices\n");
                 indexOffset += fv;
                 continue;
             }
 
-            tris.push_back(simd::make_uint3(idx0, idx1, idx2));
+            mesh.indices.push_back(simd::make_uint3(idx0, idx1, idx2));
+
+            int materialId = -1;
+            if (f < shape.mesh.material_ids.size()) {
+                materialId = shape.mesh.material_ids[f];
+            }
+            if (materialId >= 0 &&
+                static_cast<size_t>(materialId) < mesh.materials.size()) {
+                mesh.faceMaterialIndices.push_back(materialId);
+            } else {
+                mesh.faceMaterialIndices.push_back(-1);
+            }
             indexOffset += fv;
         }
     }
 
-    printf("Loaded OBJ: %zu vertices, %zu triangles\n", verts.size(), tris.size());
+    printf("Loaded OBJ: %zu vertices, %zu triangles, %zu materials\n",
+           mesh.vertices.size(), mesh.indices.size(), mesh.materials.size());
 }
 
 } // namespace
@@ -368,10 +526,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             p.sphere.center = parseVec3(e->Attribute("position"));
             p.sphere.radius = e->FloatAttribute("radius", 1.0f);
 
-            p.material.albedo = parseVec3(e->Attribute("albedo"));
-            p.material.emissionColor = parseVec3(e->Attribute("emission"));
-            p.material.materialType = e->FloatAttribute("materialType", 0);
-            p.material.emissionPower = e->FloatAttribute("emissionPower", 0);
+            p.material = ParseMaterialAttributes(e);
 
             scene->addPrimitive(p);
         }
@@ -388,10 +543,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 p.rectangle.v = rotateVectorEulerXYZ(p.rectangle.v, rotationRadians);
             }
 
-            p.material.albedo = parseVec3(e->Attribute("albedo"));
-            p.material.emissionColor = parseVec3(e->Attribute("emission"));
-            p.material.materialType = e->FloatAttribute("materialType", 0);
-            p.material.emissionPower = e->FloatAttribute("emissionPower", 0);
+            p.material = ParseMaterialAttributes(e);
 
             scene->addPrimitive(p);
         }
@@ -406,7 +558,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             if (it == cache.end()) {
                 // First time encountering this mesh path in the current load.
                 CachedMesh entry;
-                LoadOBJ(normalizedPath, entry.vertices, entry.indices);
+                LoadOBJ(normalizedPath, entry);
                 it = cache.emplace(normalizedPath, std::move(entry)).first;
             }
 
@@ -442,11 +594,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 basisZ = rotateVectorEulerXYZ(basisZ, rotationRadians);
             }
 
-            Material m;
-            m.albedo = parseVec3(e->Attribute("albedo"));
-            m.emissionColor = parseVec3(e->Attribute("emission"));
-            m.materialType = e->FloatAttribute("materialType", 0);
-            m.emissionPower = e->FloatAttribute("emissionPower", 0);
+            Material overrideMaterial = ParseMaterialAttributes(e);
 
             size_t clusterMaxTriangles = static_cast<size_t>(
                 e->Unsigned64Attribute("clusterMaxTriangles", 0));
@@ -458,13 +606,24 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             auto transformVertex = [&](const simd::float3& v) {
                 return pos + basisX * v.x + basisY * v.y + basisZ * v.z;
             };
-            for (const auto& tri : meshData.indices) {
+            for (size_t triIndex = 0; triIndex < meshData.indices.size(); ++triIndex) {
+                const auto& tri = meshData.indices[triIndex];
                 Primitive p{};
                 p.type = PrimitiveType::Triangle;
                 p.triangle.v0 = transformVertex(meshData.vertices[tri.x]);
                 p.triangle.v1 = transformVertex(meshData.vertices[tri.y]);
                 p.triangle.v2 = transformVertex(meshData.vertices[tri.z]);
-                p.material = m;
+
+                const Material* chosenMaterial = &overrideMaterial;
+                if (triIndex < meshData.faceMaterialIndices.size()) {
+                    int materialId = meshData.faceMaterialIndices[triIndex];
+                    if (materialId >= 0 &&
+                        static_cast<size_t>(materialId) < meshData.materials.size()) {
+                        chosenMaterial = &meshData.materials[materialId];
+                    }
+                }
+
+                p.material = *chosenMaterial;
                 meshPrimitives.push_back(p);
             }
             int meshGroupId = nextMeshGroupId++;
