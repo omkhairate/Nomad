@@ -26,15 +26,6 @@ template <typename T> inline void swap(thread T &a, thread T &b) {
   b = tmp;
 }
 
-constexpr uint kMaxMaterialTextures = 256;
-
-struct MaterialTextureArguments {
-  array<texture2d<float, access::sample>, kMaxMaterialTextures> textures;
-};
-
-constexpr sampler kMaterialSampler(filter::linear, mip_filter::linear,
-                                   address::repeat, coord::normalized);
-
 inline float3 randomUnitVector(thread uint32_t &seed) {
   float z = 2.0 * randomFloat(seed) - 1.0;
   float t = 2.0 * M_PI * randomFloat(seed);
@@ -52,24 +43,6 @@ inline float3 randomInUnitSphere(thread uint32_t &seed) {
     if (length_squared(p) < 1.0)
       return p;
   }
-}
-
-inline float3 barycentricFromPoint(float3 p, float3 v0, float3 v1, float3 v2) {
-  float3 v0v1 = v1 - v0;
-  float3 v0v2 = v2 - v0;
-  float3 v0p = p - v0;
-  float d00 = dot(v0v1, v0v1);
-  float d01 = dot(v0v1, v0v2);
-  float d11 = dot(v0v2, v0v2);
-  float d20 = dot(v0p, v0v1);
-  float d21 = dot(v0p, v0v2);
-  float denom = d00 * d11 - d01 * d01;
-  if (fabs(denom) < 1e-8f)
-    return float3(1.0, 0.0, 0.0);
-  float v = (d11 * d20 - d01 * d21) / denom;
-  float w = (d00 * d21 - d01 * d20) / denom;
-  float u = 1.0 - v - w;
-  return float3(u, v, w);
 }
 
 inline uint selectLightOffset(float xi, device const float *lightCdf,
@@ -217,7 +190,6 @@ inline intersection firstHitBVH(thread const Ray &r,
         float tHit = INFINITY;
         float3 n = float3(0);
         float3 hit = float3(0);
-        float3 bary = float3(1.0, 0.0, 0.0);
         bool hitThis = false;
 
         if (primitiveType == 0) {
@@ -261,7 +233,6 @@ inline intersection firstHitBVH(thread const Ray &r,
                   tHit = tt;
                   hit = r.origin + tHit * r.direction;
                   n = normalize(cross(edge1, edge2));
-                  bary = float3(1.0 - u - v, u, v);
                   hitThis = true;
                   in.isTriangle = 1;
                 }
@@ -296,7 +267,6 @@ inline intersection firstHitBVH(thread const Ray &r,
           in.primitiveId = primIdx;
           in.normal = n;
           in.point = hit;
-          in.barycentric = bary;
           in.isTriangle = primitiveType;
           in.nodeIndex = nodeIdx;
         }
@@ -335,7 +305,6 @@ inline intersection firstHitTLAS(
   bestHit.primitiveId = -1;
   bestHit.nodeIndex = -1;
   bestHit.isTriangle = 0;
-  bestHit.barycentric = float3(0.0);
 
   if (tlasNodeCount == 0)
     return bestHit;
@@ -424,11 +393,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                        device const float *lightCdf,
                        device const uint *primitiveRemap,
                        device atomic_uint *primitiveHitCounts,
-                       device const float2 *triangleUVs,
-                       device const int *materialTextureIndices,
-                       constant MaterialTextureArguments &materialTextures,
-                       uint materialTextureCount, thread uint32_t &seed,
-                       uint maxRayDepth,
+                       thread uint32_t &seed, uint maxRayDepth,
                        uint debugAS, uint blasNodeCount, uint lightCount,
                        float lightTotalWeight, uint totalPrimitiveCount) {
   float footprint = length(cross(rayDx, rayDy));
@@ -487,84 +452,12 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
     float4 m1 = materials[matIndex + 1];
     float4 m2 = materials[matIndex + 2];
 
-    float3 baseAlbedo = m0.xyz;
+    float3 albedo = m0.xyz * lodAtten;
     float materialType = m0.w;
     float3 emissionColor = m1.xyz;
     float emissionPower = m1.w;
-    float3 albedo = baseAlbedo;
-
-    int textureIndex = -1;
-    if (materialTextureIndices && bestHit.primitiveId >= 0)
-      textureIndex = materialTextureIndices[bestHit.primitiveId];
-    else
-      textureIndex = int(m2.x);
-    if (textureIndex >= 0 &&
-        textureIndex < int(materialTextureCount) && triangleUVs &&
-        bestHit.primitiveId >= 0 && textureIndex < int(kMaxMaterialTextures)) {
-      int uvBase = bestHit.primitiveId * 3;
-      float2 uv0 = triangleUVs[uvBase + 0];
-      float2 uv1 = triangleUVs[uvBase + 1];
-      float2 uv2 = triangleUVs[uvBase + 2];
-      float3 bary = bestHit.barycentric;
-      float2 hitUV = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
-
-      float2 dUVdx = float2(0.0);
-      float2 dUVdy = float2(0.0);
-      bool haveGradients = false;
-      if (bestHit.isTriangle == 1) {
-        int primBase = bestHit.primitiveId * 3;
-        float3 v0 = primitives[primBase + 0].xyz;
-        float3 v1 = primitives[primBase + 1].xyz;
-        float3 v2 = primitives[primBase + 2].xyz;
-        float3 normal = normalize(cross(v1 - v0, v2 - v0));
-
-        float3 dirX = r.direction + rayDx;
-        float denomX = dot(normal, dirX);
-        bool validDx = false;
-        if (fabs(denomX) > 1e-6f) {
-          float tX = dot(normal, v0 - r.origin) / denomX;
-          if (tX > 0.0f) {
-            float3 hitX = r.origin + dirX * tX;
-            float3 baryX = barycentricFromPoint(hitX, v0, v1, v2);
-            float2 uvX = uv0 * baryX.x + uv1 * baryX.y + uv2 * baryX.z;
-            dUVdx = uvX - hitUV;
-            validDx = isfinite(dUVdx.x) && isfinite(dUVdx.y);
-          }
-        }
-
-        float3 dirY = r.direction + rayDy;
-        float denomY = dot(normal, dirY);
-        bool validDy = false;
-        if (fabs(denomY) > 1e-6f) {
-          float tY = dot(normal, v0 - r.origin) / denomY;
-          if (tY > 0.0f) {
-            float3 hitY = r.origin + dirY * tY;
-            float3 baryY = barycentricFromPoint(hitY, v0, v1, v2);
-            float2 uvY = uv0 * baryY.x + uv1 * baryY.y + uv2 * baryY.z;
-            dUVdy = uvY - hitUV;
-            validDy = isfinite(dUVdy.x) && isfinite(dUVdy.y);
-          }
-        }
-
-        haveGradients = validDx && validDy;
-      }
-
-      texture2d<float, access::sample> diffuseTexture =
-          materialTextures.textures[textureIndex];
-      if (diffuseTexture.get_width() > 0 && diffuseTexture.get_height() > 0) {
-        float4 texColor;
-        if (haveGradients) {
-          texColor = diffuseTexture.sample(
-              kMaterialSampler, hitUV, gradient2d<float>(dUVdx, dUVdy));
-        } else {
-          texColor = diffuseTexture.sample(kMaterialSampler, hitUV,
-                                           level(0.0f));
-        }
-        albedo = texColor.xyz * baseAlbedo;
-      }
-    }
-
-    albedo *= lodAtten;
+    float diffuseTextureIndex = m2.x;
+    (void)diffuseTextureIndex;
 
     if (emissionPower > 0.0 || materialType == 2) {
       light += absorption * float4(emissionColor, 1.0) * emissionPower;
