@@ -4,9 +4,7 @@
 #include "InputSystem.h"
 #include "Scene.h"
 #include "SceneLoader.h"
-#include "../Scene/ImageLoader.h"
 #include <Metal/MTLArgument.hpp>
-#include <Metal/MTLArgumentEncoder.hpp>
 #include <Metal/MTLComputePipeline.hpp>
 #include <algorithm>
 #include <array>
@@ -129,10 +127,6 @@ struct UniformsData {
   uint32_t sampleImportanceTextureIndex = 0;
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
-  uint32_t materialTextureCount = 0;
-  uint32_t materialTexturePadding0 = 0;
-  uint32_t materialTexturePadding1 = 0;
-  uint32_t materialTexturePadding2 = 0;
 };
 
 inline uint32_t bitm_random() {
@@ -156,8 +150,6 @@ size_t alignTo(size_t value, size_t alignment) {
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
 constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
-constexpr size_t kMaxMaterialTextures = 256;
-constexpr NS::UInteger kMaterialTextureArgumentBufferIndex = 16;
 constexpr float kFrustumDebugNear = 0.1f;
 constexpr float kFrustumDebugFarMultiplier = 5.0f;
 
@@ -360,84 +352,6 @@ void markBufferModified(MTL::Buffer *buffer, NS::Range range) {
 
   if (buffer->storageMode() == MTL::StorageModeManaged)
     buffer->didModifyRange(range);
-}
-
-void Renderer::releaseMaterialTextures() {
-  for (MTL::Texture *texture : _materialTextures) {
-    if (texture)
-      texture->release();
-  }
-  _materialTextures.clear();
-}
-
-void Renderer::updateMaterialTextureBindings() {
-  if (!_pMaterialTextureArgumentEncoder || !_pMaterialTextureArgumentBuffer)
-    return;
-
-  _pMaterialTextureArgumentEncoder->setArgumentBuffer(
-      _pMaterialTextureArgumentBuffer, 0);
-
-  size_t slotCount = kMaxMaterialTextures;
-  size_t available = std::min(_materialTextures.size(), slotCount);
-  for (size_t i = 0; i < slotCount; ++i) {
-    MTL::Texture *texture = (i < available) ? _materialTextures[i] : nullptr;
-    _pMaterialTextureArgumentEncoder->setTexture(texture, i);
-  }
-
-  if (_pMaterialTextureArgumentBuffer->storageMode() ==
-      MTL::StorageModeManaged) {
-    NS::UInteger length = _pMaterialTextureArgumentBuffer->length();
-    markBufferModified(_pMaterialTextureArgumentBuffer,
-                       NS::Range::Make(0, length));
-  }
-}
-
-void Renderer::rebuildMaterialTextures() {
-  releaseMaterialTextures();
-
-  updateMaterialTextureBindings();
-
-  if (!_pDevice)
-    return;
-
-  const auto &images = GetGlobalImageLoader().images();
-  size_t totalImages = images.size();
-  if (totalImages > kMaxMaterialTextures) {
-    printf("Truncating diffuse texture set to %zu entries (have %zu).\n",
-           kMaxMaterialTextures, totalImages);
-  }
-
-  size_t textureCount = std::min(totalImages, kMaxMaterialTextures);
-  _materialTextures.resize(textureCount, nullptr);
-
-  for (size_t i = 0; i < textureCount; ++i) {
-    const LoadedImage &image = images[i];
-    if (image.width <= 0 || image.height <= 0 || image.pixels.empty() ||
-        image.channels <= 0)
-      continue;
-
-    MTL::TextureDescriptor *descriptor =
-        MTL::TextureDescriptor::texture2DDescriptor(
-            MTL::PixelFormatRGBA8Unorm, image.width, image.height, false);
-    descriptor->setStorageMode(MTL::StorageModeManaged);
-    descriptor->setUsage(MTL::TextureUsageShaderRead);
-
-    MTL::Texture *texture = _pDevice->newTexture(descriptor);
-    descriptor->release();
-
-    if (texture) {
-      MTL::Region region = MTL::Region::Make2D(0, 0, image.width, image.height);
-      size_t rowBytes = static_cast<size_t>(image.width) *
-                        static_cast<size_t>(image.channels);
-      texture->replaceRegion(region, 0, image.pixels.data(), rowBytes);
-    } else {
-      printf("Failed to create texture for diffuse map %zu.\n", i);
-    }
-
-    _materialTextures[i] = texture;
-  }
-
-  updateMaterialTextureBindings();
 }
 
 static bool cameraStatesDiffer(const Camera::State &a, const Camera::State &b,
@@ -719,10 +633,6 @@ Renderer::~Renderer() {
     _pTriangleVertexBuffer->release();
   if (_pTriangleIndexBuffer)
     _pTriangleIndexBuffer->release();
-  if (_pTriangleUVBuffer)
-    _pTriangleUVBuffer->release();
-  if (_pMaterialTextureIndexBuffer)
-    _pMaterialTextureIndexBuffer->release();
   if (_pUniformsBuffer)
     _pUniformsBuffer->release();
   if (_pBVHBuffer)
@@ -750,10 +660,6 @@ Renderer::~Renderer() {
     _pGeometryHandleBuffer->release();
   if (_pFrustumVertexBuffer)
     _pFrustumVertexBuffer->release();
-  if (_pMaterialTextureArgumentBuffer)
-    _pMaterialTextureArgumentBuffer->release();
-  if (_pMaterialTextureArgumentEncoder)
-    _pMaterialTextureArgumentEncoder->release();
 
   _cachedInstanceDescriptors.clear();
   _cachedInstancedAccelerationStructures.clear();
@@ -768,8 +674,6 @@ Renderer::~Renderer() {
     releaseTextureSlot(slot);
   releaseTextureSlot(_sampleCountSlot);
   releaseTextureSlot(_sampleImportanceSlot);
-
-  releaseMaterialTextures();
 
   if (_pTextureClearBuffer)
     _pTextureClearBuffer->release();
@@ -1198,15 +1102,6 @@ void Renderer::buildShaders() {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
   }
-  if (_pMaterialTextureArgumentBuffer) {
-    _pMaterialTextureArgumentBuffer->release();
-    _pMaterialTextureArgumentBuffer = nullptr;
-    _materialTextureArgumentBufferCapacity = 0;
-  }
-  if (_pMaterialTextureArgumentEncoder) {
-    _pMaterialTextureArgumentEncoder->release();
-    _pMaterialTextureArgumentEncoder = nullptr;
-  }
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
@@ -1302,28 +1197,6 @@ void Renderer::buildShaders() {
         }
       }
     }
-    if (_pPathTracePSO) {
-      MTL::ArgumentEncoder *encoder =
-          pPathTraceFn->newArgumentEncoder(
-              kMaterialTextureArgumentBufferIndex);
-      if (encoder) {
-        size_t encodedLength =
-            alignTo(static_cast<size_t>(encoder->encodedLength()), 256);
-        if (encodedLength == 0)
-          encodedLength = 256;
-        MTL::Buffer *argumentBuffer =
-            _pDevice->newBuffer(encodedLength, MTL::ResourceStorageModeManaged);
-        if (argumentBuffer) {
-          _pMaterialTextureArgumentEncoder = encoder;
-          _pMaterialTextureArgumentBuffer = argumentBuffer;
-          _materialTextureArgumentBufferCapacity = encodedLength;
-          _pMaterialTextureArgumentEncoder->setArgumentBuffer(
-              _pMaterialTextureArgumentBuffer, 0);
-        } else {
-          encoder->release();
-        }
-      }
-    }
     pPathTraceFn->release();
   }
 
@@ -1343,8 +1216,6 @@ void Renderer::buildShaders() {
   pFragFn->release();
   pDesc->release();
   pLibrary->release();
-
-  updateMaterialTextureBindings();
 }
 
 void Renderer::updateVisibleScene() {
@@ -2344,21 +2215,12 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   bool sizeChanged = cachedTotalPrimitiveCount != totalPrimitiveCount;
   bool needFullUpload =
       forceFullRebuild || !_residentBuffersInitialized || sizeChanged;
-  size_t maxTextureSlots =
-      std::min(_materialTextures.size(), kMaxMaterialTextures);
 
   if (needFullUpload) {
-    rebuildMaterialTextures();
-    maxTextureSlots =
-        std::min(_materialTextures.size(), kMaxMaterialTextures);
-
     _cachedPrimitiveData.assign(totalPrimitiveCount * 3,
                                 simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
     _cachedMaterialData.assign(totalPrimitiveCount * 3,
                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-    _cachedTriangleUVs.assign(totalPrimitiveCount * 3,
-                              simd::make_float2(0.0f, 0.0f));
-    _cachedMaterialTextureIndices.assign(totalPrimitiveCount, -1);
 
     for (size_t i = 0; i < totalPrimitiveCount; ++i) {
       const Primitive &p = _allPrimitives[i];
@@ -2386,24 +2248,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
         primBase[1] = simd::make_float4(p.triangle.v1, 0.0f);
         primBase[2] = simd::make_float4(p.triangle.v2, 0.0f);
-        simd::float2 *uvBase = &_cachedTriangleUVs[3 * i];
-        uvBase[0] = p.triangle.uv0;
-        uvBase[1] = p.triangle.uv1;
-        uvBase[2] = p.triangle.uv2;
         break;
       }
       }
 
       const Material &m = p.material;
-      int32_t textureIndex = m.diffuseTextureIndex;
-      if (textureIndex < 0 ||
-          static_cast<size_t>(textureIndex) >= maxTextureSlots)
-        textureIndex = -1;
       matBase[0] = simd::make_float4(m.albedo, m.materialType);
       matBase[1] = simd::make_float4(m.emissionColor, m.emissionPower);
-      matBase[2] =
-          simd::make_float4(static_cast<float>(textureIndex), 0.0f, 0.0f, 0.0f);
-      _cachedMaterialTextureIndices[i] = textureIndex;
+      matBase[2] = simd::make_float4(static_cast<float>(m.diffuseTextureIndex),
+                                     0.0f, 0.0f, 0.0f);
     }
 
     _pScene->createTriangleBuffers(_cachedTriangleVertices,
@@ -2541,8 +2394,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   std::vector<simd::float4> compactBVHNodes;
   std::vector<simd::float3> compactTriangleVertices;
   std::vector<simd::uint3> compactTriangleIndices;
-  std::vector<simd::float2> compactTriangleUVs;
-  std::vector<int32_t> compactMaterialTextureIndices;
 
   const std::vector<simd::float4> *primitiveSource = &_cachedPrimitiveData;
   const std::vector<simd::float4> *materialSource = &_cachedMaterialData;
@@ -2553,9 +2404,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       &_cachedTriangleVertices;
   const std::vector<simd::uint3> *triangleIndexSource =
       &_cachedTriangleIndices;
-  const std::vector<simd::float2> *triangleUVSource = &_cachedTriangleUVs;
-  const std::vector<int32_t> *materialTextureIndexSource =
-      &_cachedMaterialTextureIndices;
 
   if (!useCompaction) {
     remapUpload.resize(totalPrimitiveCount);
@@ -2598,15 +2446,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     compactBVHNodes.clear();
     compactTriangleVertices.clear();
     compactTriangleIndices.clear();
-    compactTriangleUVs.clear();
-    compactMaterialTextureIndices.clear();
     compactActiveMask.clear();
 
     compactPrimitiveData.reserve(_activePrimitiveCount * 3);
     compactMaterialData.reserve(_activePrimitiveCount * 3);
     compactPrimitiveIndices.reserve(_activePrimitiveCount);
-    compactTriangleUVs.reserve(_activePrimitiveCount * 3);
-    compactMaterialTextureIndices.reserve(_activePrimitiveCount);
     compactActiveMask.reserve(_activePrimitiveCount);
 
     std::vector<int32_t> cachedRemap;
@@ -2641,9 +2485,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         size_t compactBVHNodesStart = compactBVHNodes.size();
         size_t compactTriangleVerticesStart = compactTriangleVertices.size();
         size_t compactTriangleIndicesStart = compactTriangleIndices.size();
-        size_t compactTriangleUVsStart = compactTriangleUVs.size();
-        size_t compactMaterialTextureIndicesStart =
-            compactMaterialTextureIndices.size();
 
         std::vector<std::pair<size_t, int32_t>> residentIndexEdits;
         residentIndexEdits.reserve(obj.cachedPrimitiveIndices.size());
@@ -2707,29 +2548,13 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           compactPrimitiveData.push_back(prim1);
           compactPrimitiveData.push_back(prim2);
 
-          if (p.type == PrimitiveType::Triangle) {
-            compactTriangleUVs.push_back(p.triangle.uv0);
-            compactTriangleUVs.push_back(p.triangle.uv1);
-            compactTriangleUVs.push_back(p.triangle.uv2);
-          } else {
-            compactTriangleUVs.push_back(simd::make_float2(0.0f, 0.0f));
-            compactTriangleUVs.push_back(simd::make_float2(0.0f, 0.0f));
-            compactTriangleUVs.push_back(simd::make_float2(0.0f, 0.0f));
-          }
-
           const Material &m = p.material;
-          int32_t textureIndex = m.diffuseTextureIndex;
-          if (textureIndex < 0 ||
-              static_cast<size_t>(textureIndex) >= maxTextureSlots)
-            textureIndex = -1;
           compactMaterialData.push_back(
               simd::make_float4(m.albedo, m.materialType));
           compactMaterialData.push_back(
               simd::make_float4(m.emissionColor, m.emissionPower));
-          compactMaterialData.push_back(
-              simd::make_float4(static_cast<float>(textureIndex), 0.0f, 0.0f,
-                                 0.0f));
-          compactMaterialTextureIndices.push_back(textureIndex);
+          compactMaterialData.push_back(simd::make_float4(
+              static_cast<float>(m.diffuseTextureIndex), 0.0f, 0.0f, 0.0f));
           compactActiveMask.push_back(1);
           compactPrimitiveIndices.push_back(
               static_cast<int>(record.primitiveBase + activeCount));
@@ -2739,17 +2564,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
         record.primitiveCount = static_cast<uint32_t>(activeCount);
         if (activeCount == 0) {
-          remapUpload.resize(remapStart);
-          compactPrimitiveData.resize(compactPrimitiveDataStart);
-          compactMaterialData.resize(compactMaterialDataStart);
-          compactPrimitiveIndices.resize(compactPrimitiveIndicesStart);
-          compactActiveMask.resize(compactActiveMaskStart);
-          compactBVHNodes.resize(compactBVHNodesStart);
-          compactTriangleVertices.resize(compactTriangleVerticesStart);
-          compactTriangleIndices.resize(compactTriangleIndicesStart);
-          compactTriangleUVs.resize(compactTriangleUVsStart);
-          compactMaterialTextureIndices.resize(
-              compactMaterialTextureIndicesStart);
           for (const auto &edit : residentIndexEdits)
             if (edit.first < _primitiveToResidentIndex.size())
               _primitiveToResidentIndex[edit.first] = edit.second;
@@ -2852,9 +2666,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         compactBVHNodes.resize(compactBVHNodesStart);
         compactTriangleVertices.resize(compactTriangleVerticesStart);
         compactTriangleIndices.resize(compactTriangleIndicesStart);
-        compactTriangleUVs.resize(compactTriangleUVsStart);
-        compactMaterialTextureIndices.resize(
-            compactMaterialTextureIndicesStart);
 
         for (const auto &edit : residentIndexEdits)
           if (edit.first < _primitiveToResidentIndex.size())
@@ -2949,28 +2760,12 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         compactPrimitiveData.push_back(prim1);
         compactPrimitiveData.push_back(prim2);
 
-        if (p.type == PrimitiveType::Triangle) {
-          compactTriangleUVs.push_back(p.triangle.uv0);
-          compactTriangleUVs.push_back(p.triangle.uv1);
-          compactTriangleUVs.push_back(p.triangle.uv2);
-        } else {
-          compactTriangleUVs.push_back(simd::make_float2(0.0f, 0.0f));
-          compactTriangleUVs.push_back(simd::make_float2(0.0f, 0.0f));
-          compactTriangleUVs.push_back(simd::make_float2(0.0f, 0.0f));
-        }
-
         const Material &m = p.material;
-        int32_t textureIndex = m.diffuseTextureIndex;
-        if (textureIndex < 0 ||
-            static_cast<size_t>(textureIndex) >= maxTextureSlots)
-          textureIndex = -1;
         compactMaterialData.push_back(simd::make_float4(m.albedo, m.materialType));
         compactMaterialData.push_back(
             simd::make_float4(m.emissionColor, m.emissionPower));
-        compactMaterialData.push_back(
-            simd::make_float4(static_cast<float>(textureIndex), 0.0f, 0.0f,
-                               0.0f));
-        compactMaterialTextureIndices.push_back(textureIndex);
+        compactMaterialData.push_back(simd::make_float4(
+            static_cast<float>(m.diffuseTextureIndex), 0.0f, 0.0f, 0.0f));
         compactActiveMask.push_back(1);
       }
 
@@ -3016,8 +2811,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     tlasSource = &_cachedTLASNodes;
     triangleVertexSource = &compactTriangleVertices;
     triangleIndexSource = &compactTriangleIndices;
-    triangleUVSource = &compactTriangleUVs;
-    materialTextureIndexSource = &compactMaterialTextureIndices;
 
     _residentPrimitiveCount = remapUpload.size();
     _residentTriangleCount = compactTriangleIndices.size();
@@ -3270,42 +3063,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         dst[0] = simd::make_uint3(0, 0, 0);
       markBufferModified(_pTriangleIndexBuffer,
                          NS::Range::Make(0, indexBytes));
-    }
-
-    size_t triangleUVCount = triangleUVSource->size();
-    size_t triangleUVBytes =
-        std::max<size_t>(triangleUVCount, size_t(1)) * sizeof(simd::float2);
-    ensureBufferCapacity(_pTriangleUVBuffer, triangleUVBytes,
-                         _triangleUVBufferCapacity, allowShrink);
-    if (_pTriangleUVBuffer) {
-      simd::float2 *dst =
-          static_cast<simd::float2 *>(_pTriangleUVBuffer->contents());
-      if (triangleUVCount > 0)
-        std::memcpy(dst, triangleUVSource->data(),
-                    triangleUVCount * sizeof(simd::float2));
-      else
-        dst[0] = simd::make_float2(0.0f, 0.0f);
-      markBufferModified(_pTriangleUVBuffer,
-                         NS::Range::Make(0, triangleUVBytes));
-    }
-
-    size_t materialTextureIndexCount = materialTextureIndexSource->size();
-    size_t materialTextureIndexBytes =
-        std::max<size_t>(materialTextureIndexCount, size_t(1)) *
-        sizeof(int32_t);
-    ensureBufferCapacity(_pMaterialTextureIndexBuffer,
-                         materialTextureIndexBytes,
-                         _materialTextureIndexBufferCapacity, allowShrink);
-    if (_pMaterialTextureIndexBuffer) {
-      auto *dst = static_cast<int32_t *>(
-          _pMaterialTextureIndexBuffer->contents());
-      if (materialTextureIndexCount > 0)
-        std::memcpy(dst, materialTextureIndexSource->data(),
-                    materialTextureIndexCount * sizeof(int32_t));
-      else
-        dst[0] = -1;
-      markBufferModified(_pMaterialTextureIndexBuffer,
-                         NS::Range::Make(0, materialTextureIndexBytes));
     }
 
     _residentBuffersInitialized = true;
@@ -3905,9 +3662,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.sampleImportanceTextureIndex = 3;
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
-  u.materialTextureCount =
-      static_cast<uint32_t>(std::min(_materialTextures.size(),
-                                     static_cast<size_t>(kMaxMaterialTextures)));
 
   uint64_t residentPrimitiveCount = _residentPrimitiveCount;
   uint64_t residentTriangleCount = _residentTriangleCount;
@@ -4057,9 +3811,6 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
-        pCompute->setBuffer(_pTriangleUVBuffer, 0, 14);
-        pCompute->setBuffer(_pMaterialTextureIndexBuffer, 0, 15);
-        pCompute->setBuffer(_pMaterialTextureArgumentBuffer, 0, 16);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -4075,9 +3826,6 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(_pTriangleUVBuffer, 0, 14);
-        pCompute->setBuffer(_pMaterialTextureIndexBuffer, 0, 15);
-        pCompute->setBuffer(_pMaterialTextureArgumentBuffer, 0, 16);
       }
       pCompute->setTexture(accum0, 0);
       pCompute->setTexture(accum1, 1);
