@@ -19,6 +19,9 @@ kernel void pathTraceKernel(
     device const uint *primitiveRemap [[buffer(11)]],
     device atomic_uint *primitiveHitCounts [[buffer(12)]],
     device const InstanceRecord *instanceRecords [[buffer(13)]],
+    device const float2 *triangleUVs [[buffer(14)]],
+    device const int *materialTextureIndices [[buffer(15)]],
+    constant MaterialTextureArguments &materialTextures [[buffer(16)]],
     texture2d<half, access::read> lastFrame [[texture(0)]],
     texture2d<half, access::write> currentFrame [[texture(1)]],
     texture2d<half, access::read_write> sampleCount [[texture(2)]],
@@ -80,7 +83,9 @@ kernel void pathTraceKernel(
     accumulatedColor += rayColor(r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes,
                                  primitives, materials, u.primitiveCount, primitiveIndices,
                                  activeMask, instanceRecords, lightIndices, lightCdf,
-                                 primitiveRemap, primitiveHitCounts, seed, u.maxRayDepth,
+                                 primitiveRemap, primitiveHitCounts, triangleUVs,
+                                 materialTextureIndices, materialTextures,
+                                 u.materialTextureCount, seed, u.maxRayDepth,
                                  u.debugAS, u.blasNodeCount, u.lightCount,
                                  u.lightTotalWeight, static_cast<uint>(u.totalPrimitiveCount));
   }

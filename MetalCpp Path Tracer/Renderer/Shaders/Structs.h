@@ -16,6 +16,7 @@ struct intersection
     float t = INFINITY;
     float3 point;
     float3 normal;
+    float3 barycentric = float3(0.0);
     bool frontFace;
     int primitiveId = -1;
     int isTriangle = 0;
@@ -71,6 +72,10 @@ struct UniformsData
     uint sampleImportanceTextureIndex;
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
+    uint materialTextureCount;
+    uint materialTexturePadding0;
+    uint materialTexturePadding1;
+    uint materialTexturePadding2;
 };
 
 
