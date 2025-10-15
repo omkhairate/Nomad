@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Scene width="1920" height="1080" maxRayDepth="8" startCompacted="true"
-       residencyStrategy="distance" textureResidencyMemoryCapMB="512"
+<Scene width="960" height="540" maxRayDepth="4" startCompacted="true"
+       residencyStrategy="none" textureResidencyMemoryCapMB="2048"
        lodEnterDistance="35" lodExitDistance="55" residencyCooldown="1" lodToggleBudget="12000">
     <ObserverCamera position="0,22,22" lookAt="0,6,0" verticalFov="38" />
 
