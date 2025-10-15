@@ -1,9 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <Scene width="960" height="540" maxRayDepth="4" startCompacted="true" residencyStrategy="none" textureResidencyMemoryCapMB="256" lodEnterDistance="75" lodExitDistance="200" residencyCooldown="0" lodToggleBudget="12000">
     <ObserverCamera position="0,-5.2,0.9" lookAt="0.6,3.6,4.3" verticalFov="49.134" />
-    <CameraPath>
-        <Keyframe frame="0" position="0,-5.2,0.9" lookAt="0.6,3.6,4.3" />
-    </CameraPath>
+
     <Mesh file="assets/_m_2_Cube.024.obj" position="2.4728,1.1086,2.9702" basisX="0,-0.21115,0" basisY="0.22812,0,0" basisZ="0,0,0.23826" albedo="0.8,0.69334,0.45984" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_3_Cube.024.obj" position="2.4728,1.1086,2.9702" basisX="0,-0.21115,0" basisY="0.22812,0,0" basisZ="0,0,0.23826" albedo="0.95,0.97,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
     <Mesh file="assets/_m_4_Cube.024.obj" position="2.4728,1.1086,2.9702" basisX="0,-0.21115,0" basisY="0.22812,0,0" basisZ="0,0,0.23826" albedo="1,1,1" emission="0,0,0" materialType="0.000" emissionPower="0.000" />
