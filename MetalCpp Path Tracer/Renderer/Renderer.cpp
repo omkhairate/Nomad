@@ -2219,13 +2219,13 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   if (needFullUpload) {
     _cachedPrimitiveData.assign(totalPrimitiveCount * 3,
                                 simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-    _cachedMaterialData.assign(totalPrimitiveCount * 3,
+    _cachedMaterialData.assign(totalPrimitiveCount * 2,
                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
 
     for (size_t i = 0; i < totalPrimitiveCount; ++i) {
       const Primitive &p = _allPrimitives[i];
       simd::float4 *primBase = &_cachedPrimitiveData[3 * i];
-      simd::float4 *matBase = &_cachedMaterialData[3 * i];
+      simd::float4 *matBase = &_cachedMaterialData[2 * i];
 
       switch (p.type) {
       case PrimitiveType::Sphere: {
@@ -2255,8 +2255,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       const Material &m = p.material;
       matBase[0] = simd::make_float4(m.albedo, m.materialType);
       matBase[1] = simd::make_float4(m.emissionColor, m.emissionPower);
-      matBase[2] = simd::make_float4(static_cast<float>(m.diffuseTextureIndex),
-                                     0.0f, 0.0f, 0.0f);
     }
 
     _pScene->createTriangleBuffers(_cachedTriangleVertices,
@@ -2449,7 +2447,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     compactActiveMask.clear();
 
     compactPrimitiveData.reserve(_activePrimitiveCount * 3);
-    compactMaterialData.reserve(_activePrimitiveCount * 3);
+    compactMaterialData.reserve(_activePrimitiveCount * 2);
     compactPrimitiveIndices.reserve(_activePrimitiveCount);
     compactActiveMask.reserve(_activePrimitiveCount);
 
@@ -2553,8 +2551,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
               simd::make_float4(m.albedo, m.materialType));
           compactMaterialData.push_back(
               simd::make_float4(m.emissionColor, m.emissionPower));
-          compactMaterialData.push_back(simd::make_float4(
-              static_cast<float>(m.diffuseTextureIndex), 0.0f, 0.0f, 0.0f));
           compactActiveMask.push_back(1);
           compactPrimitiveIndices.push_back(
               static_cast<int>(record.primitiveBase + activeCount));
@@ -2764,8 +2760,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         compactMaterialData.push_back(simd::make_float4(m.albedo, m.materialType));
         compactMaterialData.push_back(
             simd::make_float4(m.emissionColor, m.emissionPower));
-        compactMaterialData.push_back(simd::make_float4(
-            static_cast<float>(m.diffuseTextureIndex), 0.0f, 0.0f, 0.0f));
         compactActiveMask.push_back(1);
       }
 

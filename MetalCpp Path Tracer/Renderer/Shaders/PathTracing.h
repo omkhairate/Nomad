@@ -445,19 +445,16 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                                     memory_order_relaxed);
       }
     }
-    int matIndex = bestHit.primitiveId * 3;
-    if (matIndex + 2 >= int(primitiveCount) * 3)
+    int matIndex = bestHit.primitiveId * 2;
+    if (matIndex + 1 >= int(primitiveCount) * 2)
       break;
     float4 m0 = materials[matIndex + 0];
     float4 m1 = materials[matIndex + 1];
-    float4 m2 = materials[matIndex + 2];
 
     float3 albedo = m0.xyz * lodAtten;
     float materialType = m0.w;
     float3 emissionColor = m1.xyz;
     float emissionPower = m1.w;
-    float diffuseTextureIndex = m2.x;
-    (void)diffuseTextureIndex;
 
     if (emissionPower > 0.0 || materialType == 2) {
       light += absorption * float4(emissionColor, 1.0) * emissionPower;
@@ -521,8 +518,8 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                       visible = true;
                     }
                     if (visible) {
-                      int lightMatIndex = int(lightPrimIndex) * 3;
-                      if (lightMatIndex + 2 < int(primitiveCount) * 3) {
+                      int lightMatIndex = int(lightPrimIndex) * 2;
+                      if (lightMatIndex + 1 < int(primitiveCount) * 2) {
                         float4 lightM1 = materials[lightMatIndex + 1];
                         float3 lightRadiance = lightM1.xyz * lightM1.w;
                         float3 throughput = absorption.xyz * (albedo / M_PI);
