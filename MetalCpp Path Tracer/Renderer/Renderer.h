@@ -161,6 +161,9 @@ private:
   std::array<simd::float3, 8>
   buildFrustumCorners(const Camera::State &state, float nearDistance,
                       float farDistance) const;
+  void rebuildMaterialTextures();
+  void releaseMaterialTextures();
+  void updateMaterialTextureBindings();
 
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -177,6 +180,8 @@ private:
   MTL::Buffer *_pSphereMaterialBuffer = nullptr;
   MTL::Buffer *_pTriangleVertexBuffer = nullptr;
   MTL::Buffer *_pTriangleIndexBuffer = nullptr;
+  MTL::Buffer *_pTriangleUVBuffer = nullptr;
+  MTL::Buffer *_pMaterialTextureIndexBuffer = nullptr;
   MTL::Buffer *_pUniformsBuffer = nullptr;
   MTL::Buffer *_pBVHBuffer = nullptr;
   MTL::Buffer *_pPrimitiveIndexBuffer = nullptr;
@@ -193,6 +198,8 @@ private:
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
   MTL::Buffer *_pFrustumVertexBuffer = nullptr;
+  MTL::Buffer *_pMaterialTextureArgumentBuffer = nullptr;
+  MTL::ArgumentEncoder *_pMaterialTextureArgumentEncoder = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -322,8 +329,11 @@ private:
   std::vector<simd::float4> _cachedTLASNodes;
   std::vector<simd::float3> _cachedTriangleVertices;
   std::vector<simd::uint3> _cachedTriangleIndices;
+  std::vector<simd::float2> _cachedTriangleUVs;
+  std::vector<int32_t> _cachedMaterialTextureIndices;
   std::vector<uint32_t> _cachedLightIndices;
   std::vector<float> _cachedLightCdf;
+  std::vector<MTL::Texture *> _materialTextures;
 
   size_t _maxPrimitiveCount = 0;
   size_t _maxTriangleVertexCount = 0;
@@ -335,6 +345,7 @@ private:
   size_t _sphereMaterialBufferCapacity = 0;
   size_t _triangleVertexBufferCapacity = 0;
   size_t _triangleIndexBufferCapacity = 0;
+  size_t _triangleUVBufferCapacity = 0;
   size_t _bvhBufferCapacity = 0;
   size_t _tlasBufferCapacity = 0;
   size_t _primitiveIndexBufferCapacity = 0;
@@ -347,6 +358,8 @@ private:
   size_t _geometryHandleBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
   size_t _frustumVertexCapacity = 0;
+  size_t _materialTextureIndexBufferCapacity = 0;
+  size_t _materialTextureArgumentBufferCapacity = 0;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
