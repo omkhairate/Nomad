@@ -288,8 +288,10 @@ float primitiveImportance(const Primitive &p) {
   float area = std::max(primitiveArea(p), 1e-4f);
   const Material &m = p.material;
   float emissive = m.emissionPower * luminance(m.emissionColor);
-  float reflective = luminance(m.albedo);
-  return area * (emissive + reflective);
+  float diffuse = luminance(m.diffuseColor) * m.opacity;
+  float specular = luminance(m.specularColor) * m.opacity;
+  float transmission = (1.0f - m.opacity) * luminance(m.transmissionColor);
+  return area * (emissive + diffuse + specular + transmission);
 }
 
 float sanitizeSortValue(float value) {
@@ -2219,13 +2221,14 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   if (needFullUpload) {
     _cachedPrimitiveData.assign(totalPrimitiveCount * 3,
                                 simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-    _cachedMaterialData.assign(totalPrimitiveCount * 2,
+    _cachedMaterialData.assign(totalPrimitiveCount * kMaterialFloat4Count,
                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
 
     for (size_t i = 0; i < totalPrimitiveCount; ++i) {
       const Primitive &p = _allPrimitives[i];
       simd::float4 *primBase = &_cachedPrimitiveData[3 * i];
-      simd::float4 *matBase = &_cachedMaterialData[2 * i];
+      simd::float4 *matBase =
+          &_cachedMaterialData[kMaterialFloat4Count * i];
 
       switch (p.type) {
       case PrimitiveType::Sphere: {
@@ -2253,8 +2256,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       }
 
       const Material &m = p.material;
-      matBase[0] = simd::make_float4(m.albedo, m.materialType);
-      matBase[1] = simd::make_float4(m.emissionColor, m.emissionPower);
+      auto packed = encodeMaterial(m);
+      for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
+        matBase[j] = packed[j];
+      }
     }
 
     _pScene->createTriangleBuffers(_cachedTriangleVertices,
@@ -2447,7 +2452,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     compactActiveMask.clear();
 
     compactPrimitiveData.reserve(_activePrimitiveCount * 3);
-    compactMaterialData.reserve(_activePrimitiveCount * 2);
+    compactMaterialData.reserve(_activePrimitiveCount * kMaterialFloat4Count);
     compactPrimitiveIndices.reserve(_activePrimitiveCount);
     compactActiveMask.reserve(_activePrimitiveCount);
 
@@ -2547,10 +2552,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           compactPrimitiveData.push_back(prim2);
 
           const Material &m = p.material;
-          compactMaterialData.push_back(
-              simd::make_float4(m.albedo, m.materialType));
-          compactMaterialData.push_back(
-              simd::make_float4(m.emissionColor, m.emissionPower));
+          auto packedMaterial = encodeMaterial(m);
+          for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
+            compactMaterialData.push_back(packedMaterial[j]);
+          }
           compactActiveMask.push_back(1);
           compactPrimitiveIndices.push_back(
               static_cast<int>(record.primitiveBase + activeCount));
@@ -2757,9 +2762,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         compactPrimitiveData.push_back(prim2);
 
         const Material &m = p.material;
-        compactMaterialData.push_back(simd::make_float4(m.albedo, m.materialType));
-        compactMaterialData.push_back(
-            simd::make_float4(m.emissionColor, m.emissionPower));
+        auto packedMaterial = encodeMaterial(m);
+        for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
+          compactMaterialData.push_back(packedMaterial[j]);
+        }
         compactActiveMask.push_back(1);
       }
 

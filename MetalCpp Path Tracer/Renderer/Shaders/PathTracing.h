@@ -8,6 +8,8 @@
 
 using namespace metal;
 
+constant uint kMaterialFloat4Count = 5;
+
 struct Ray {
   float3 origin;
   float3 direction;
@@ -43,6 +45,43 @@ inline float3 randomInUnitSphere(thread uint32_t &seed) {
     if (length_squared(p) < 1.0)
       return p;
   }
+}
+
+inline int decodeTextureIndex(float value) {
+  return (value >= -0.5f) ? int(floor(value + 0.5f)) : -1;
+}
+
+inline MaterialPayload decodeMaterial(int baseIndex,
+                                      device const float4 *materials,
+                                      float lodAttenuation) {
+  MaterialPayload payload;
+  float4 m0 = materials[baseIndex + 0];
+  float4 m1 = materials[baseIndex + 1];
+  float4 m2 = materials[baseIndex + 2];
+  float4 m3 = materials[baseIndex + 3];
+  float4 m4 = materials[baseIndex + 4];
+
+  payload.diffuseColor = max(m0.xyz * lodAttenuation, float3(0.0f));
+  payload.opacity = clamp(m0.w, 0.0f, 1.0f);
+  payload.specularColor = max(m1.xyz, float3(0.0f));
+  payload.shininess = max(m1.w, 1.0f);
+  payload.emissionColor = max(m2.xyz, float3(0.0f));
+  payload.emissionPower = max(m2.w, 0.0f);
+  payload.transmissionColor = max(m3.xyz, float3(0.0f));
+  payload.indexOfRefraction = max(m3.w, 1e-3f);
+  payload.roughness = clamp(m4.w, 0.0f, 1.0f);
+  payload.diffuseTextureIndex = decodeTextureIndex(m4.x);
+  payload.specularTextureIndex = decodeTextureIndex(m4.y);
+  payload.normalTextureIndex = decodeTextureIndex(m4.z);
+  payload.pad0 = 0.0f;
+  payload.pad1 = 0;
+
+  if (payload.opacity < 1.0f && luminance(payload.transmissionColor) <= 0.0f) {
+    float trans = 1.0f - payload.opacity;
+    payload.transmissionColor = float3(trans);
+  }
+
+  return payload;
 }
 
 inline uint selectLightOffset(float xi, device const float *lightCdf,
@@ -445,24 +484,25 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                                     memory_order_relaxed);
       }
     }
-    int matIndex = bestHit.primitiveId * 2;
-    if (matIndex + 1 >= int(primitiveCount) * 2)
+    int matBase = bestHit.primitiveId * int(kMaterialFloat4Count);
+    int totalEntries = int(primitiveCount) * int(kMaterialFloat4Count);
+    if (matBase + int(kMaterialFloat4Count) > totalEntries)
       break;
-    float4 m0 = materials[matIndex + 0];
-    float4 m1 = materials[matIndex + 1];
 
-    float3 albedo = m0.xyz * lodAtten;
-    float materialType = m0.w;
-    float3 emissionColor = m1.xyz;
-    float emissionPower = m1.w;
+    MaterialPayload material = decodeMaterial(matBase, materials, lodAtten);
 
-    if (emissionPower > 0.0 || materialType == 2) {
-      light += absorption * float4(emissionColor, 1.0) * emissionPower;
+    float emissionStrength = material.emissionPower *
+                             luminance(material.emissionColor);
+    if (emissionStrength > 0.0f) {
+      light += absorption * float4(material.emissionColor, 1.0) *
+               material.emissionPower;
     }
 
     float3 offsetNormal = bestHit.frontFace ? bestHit.normal : -bestHit.normal;
 
-    if (materialType == 0.0 && lightCount > 0 && lightTotalWeight > 0.0f) {
+    float3 diffuseColor = material.diffuseColor * material.opacity;
+    float diffuseLum = luminance(diffuseColor);
+    if (diffuseLum > 0.0f && lightCount > 0 && lightTotalWeight > 0.0f) {
       float lightXi = randomFloat(seed);
       seed = random(seed);
       uint selectedOffset =
@@ -494,7 +534,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                 float lightPdf =
                     (lightTotalWeight > 0.0f && weight > 0.0f)
                         ? weight / lightTotalWeight
-                        : 0.0f;
+                    : 0.0f;
                 if (lightPdf > 0.0f) {
                   float pdfArea = 1.0f / area;
                   float pdfSolid = pdfArea * dist2 / cosLight;
@@ -518,11 +558,16 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                       visible = true;
                     }
                     if (visible) {
-                      int lightMatIndex = int(lightPrimIndex) * 2;
-                      if (lightMatIndex + 1 < int(primitiveCount) * 2) {
-                        float4 lightM1 = materials[lightMatIndex + 1];
-                        float3 lightRadiance = lightM1.xyz * lightM1.w;
-                        float3 throughput = absorption.xyz * (albedo / M_PI);
+                      int lightMatIndex = int(lightPrimIndex) *
+                                          int(kMaterialFloat4Count);
+                      if (lightMatIndex + int(kMaterialFloat4Count) <=
+                          int(primitiveCount) * int(kMaterialFloat4Count)) {
+                        MaterialPayload lightMaterial =
+                            decodeMaterial(lightMatIndex, materials, 1.0f);
+                        float3 lightRadiance = lightMaterial.emissionColor *
+                                              lightMaterial.emissionPower;
+                        float3 throughput =
+                            absorption.xyz * (diffuseColor / M_PI);
                         float3 contribution =
                             throughput * lightRadiance * (cosTheta / totalPdf);
                         light.xyz += contribution;
@@ -540,9 +585,10 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
     r.origin = bestHit.point + 0.0001 * offsetNormal;
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
-    scatter(r, bestHit, materialType, seed);
+    float3 scatterWeight = scatter(r, bestHit, material, seed);
     seed = random(seed);
-    absorption *= float4(albedo, 1.0);
+    absorption.xyz *= scatterWeight;
+    absorption.w = 1.0f;
 
     if (depth >= 5) {
       float p = max(absorption.x, max(absorption.y, absorption.z));
