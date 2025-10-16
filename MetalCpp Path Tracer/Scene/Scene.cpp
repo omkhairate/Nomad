@@ -361,6 +361,24 @@ simd::float4 *Scene::createSphereMaterialsBuffer() {
 
 namespace {
 
+struct SubsetBVHScratchBuffers {
+  std::vector<simd::float3> primitiveMins;
+  std::vector<simd::float3> primitiveMaxs;
+  std::vector<simd::float3> primitiveCentroids;
+
+  void ensureSize(size_t size) {
+    if (primitiveMins.capacity() < size) {
+      primitiveMins.reserve(size);
+      primitiveMaxs.reserve(size);
+      primitiveCentroids.reserve(size);
+    }
+
+    primitiveMins.resize(size);
+    primitiveMaxs.resize(size);
+    primitiveCentroids.resize(size);
+  }
+};
+
 void subsetPrimitiveBounds(const Primitive &p, simd::float3 &pMin,
                            simd::float3 &pMax) {
   if (p.type == PrimitiveType::Sphere) {
@@ -398,15 +416,23 @@ float subsetPrimitiveAxisValue(const Primitive &p, int axis) {
   return 0.0f;
 }
 
+simd::float3 subsetPrimitiveCentroid(const Primitive &p) {
+  return simd::make_float3(subsetPrimitiveAxisValue(p, 0),
+                           subsetPrimitiveAxisValue(p, 1),
+                           subsetPrimitiveAxisValue(p, 2));
+}
+
 float subsetSurfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) {
   simd::float3 d = bmax - bmin;
   return 2.0f * (d.x * d.y + d.y * d.z + d.z * d.x);
 }
 
-int buildSubsetBVHRecursive(const std::vector<Primitive> &primitives,
+int buildSubsetBVHRecursive(const Scene &scene,
+                            const std::vector<Primitive> &primitives,
                             std::vector<int> &primitiveIndices,
                             std::vector<BVHNode> &nodes, size_t start,
-                            size_t end) {
+                            size_t end,
+                            SubsetBVHScratchBuffers *scratch = nullptr) {
   BVHNode node;
   simd::float3 bMin(std::numeric_limits<float>::max());
   simd::float3 bMax(-std::numeric_limits<float>::max());
@@ -435,77 +461,60 @@ int buildSubsetBVHRecursive(const std::vector<Primitive> &primitives,
   if (parentArea <= 0.0f)
     return nodeIndex;
 
-  float bestCost = std::numeric_limits<float>::max();
-  int bestAxis = -1;
-  size_t bestSplit = start + range / 2;
+  std::vector<simd::float3> localMins;
+  std::vector<simd::float3> localMaxs;
+  std::vector<simd::float3> localCentroids;
+  simd::float3 *primitiveMins = nullptr;
+  simd::float3 *primitiveMaxs = nullptr;
+  simd::float3 *primitiveCentroids = nullptr;
 
-  std::vector<simd::float3> leftMin(range);
-  std::vector<simd::float3> leftMax(range);
-  std::vector<simd::float3> rightMin(range);
-  std::vector<simd::float3> rightMax(range);
-
-  for (int axis = 0; axis < 3; ++axis) {
-    std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
-              [&](int a, int b) {
-                return subsetPrimitiveAxisValue(primitives[a], axis) <
-                       subsetPrimitiveAxisValue(primitives[b], axis);
-              });
-
-    simd::float3 currMin(std::numeric_limits<float>::max());
-    simd::float3 currMax(-std::numeric_limits<float>::max());
-    for (size_t i = start; i < end; ++i) {
-      const Primitive &p = primitives[primitiveIndices[i]];
-      simd::float3 pMin, pMax;
-      subsetPrimitiveBounds(p, pMin, pMax);
-      currMin = simd::min(currMin, pMin);
-      currMax = simd::max(currMax, pMax);
-      leftMin[i - start] = currMin;
-      leftMax[i - start] = currMax;
-    }
-
-    currMin = simd::float3(std::numeric_limits<float>::max());
-    currMax = simd::float3(-std::numeric_limits<float>::max());
-    for (size_t i = end; i-- > start;) {
-      const Primitive &p = primitives[primitiveIndices[i]];
-      simd::float3 pMin, pMax;
-      subsetPrimitiveBounds(p, pMin, pMax);
-      currMin = simd::min(currMin, pMin);
-      currMax = simd::max(currMax, pMax);
-      rightMin[i - start] = currMin;
-      rightMax[i - start] = currMax;
-    }
-
-    for (size_t i = 1; i < range; ++i) {
-      float saLeft = subsetSurfaceArea(leftMin[i - 1], leftMax[i - 1]);
-      float saRight = subsetSurfaceArea(rightMin[i], rightMax[i]);
-
-      size_t leftCount = i;
-      size_t rightCount = range - i;
-
-      float cost = 0.125f + (saLeft / parentArea) * leftCount +
-                   (saRight / parentArea) * rightCount;
-
-      if (cost < bestCost) {
-        bestCost = cost;
-        bestAxis = axis;
-        bestSplit = start + i;
-      }
-    }
+  if (scratch) {
+    scratch->ensureSize(range);
+    primitiveMins = scratch->primitiveMins.data();
+    primitiveMaxs = scratch->primitiveMaxs.data();
+    primitiveCentroids = scratch->primitiveCentroids.data();
+  } else {
+    localMins.resize(range);
+    localMaxs.resize(range);
+    localCentroids.resize(range);
+    primitiveMins = localMins.data();
+    primitiveMaxs = localMaxs.data();
+    primitiveCentroids = localCentroids.data();
   }
 
-  if (bestAxis == -1)
+  for (size_t i = start; i < end; ++i) {
+    const Primitive &p = primitives[primitiveIndices[i]];
+    simd::float3 pMin, pMax;
+    subsetPrimitiveBounds(p, pMin, pMax);
+    primitiveMins[i - start] = pMin;
+    primitiveMaxs[i - start] = pMax;
+    primitiveCentroids[i - start] = subsetPrimitiveCentroid(p);
+  }
+
+  auto sahResult =
+      scene.evaluateSAHSplit(primitiveMins, primitiveMaxs, primitiveCentroids,
+                             range, parentArea);
+
+  int bestAxis = sahResult.axis;
+  size_t bestLeftCount =
+      bestAxis == -1 ? range / 2 : std::min(sahResult.leftCount, range - 1);
+
+  if (bestAxis == -1 || bestLeftCount == 0 || bestLeftCount >= range)
     return nodeIndex;
 
-  std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
-            [&](int a, int b) {
-              return subsetPrimitiveAxisValue(primitives[a], bestAxis) <
-                     subsetPrimitiveAxisValue(primitives[b], bestAxis);
-            });
+  size_t bestSplit = start + bestLeftCount;
 
-  int leftChild = buildSubsetBVHRecursive(primitives, primitiveIndices, nodes,
-                                          start, bestSplit);
-  int rightChild = buildSubsetBVHRecursive(primitives, primitiveIndices, nodes,
-                                           bestSplit, end);
+  std::stable_sort(primitiveIndices.begin() + start,
+                   primitiveIndices.begin() + end, [&](int a, int b) {
+                     return subsetPrimitiveAxisValue(primitives[a], bestAxis) <
+                            subsetPrimitiveAxisValue(primitives[b], bestAxis);
+                   });
+
+  int leftChild =
+      buildSubsetBVHRecursive(scene, primitives, primitiveIndices, nodes, start,
+                              bestSplit, scratch);
+  int rightChild = buildSubsetBVHRecursive(scene, primitives, primitiveIndices,
+                                           nodes, bestSplit, end, scratch);
 
   nodes[nodeIndex].leftFirst = leftChild;
   nodes[nodeIndex].count = -rightChild;
@@ -539,8 +548,9 @@ simd::float4 *Scene::createBVHBuffer(const std::vector<Primitive> &subset,
   }
 
   outNodes.reserve(subset.size() * 2);
-  buildSubsetBVHRecursive(subset, primitiveIndices, outNodes, 0,
-                          primitiveIndices.size());
+  SubsetBVHScratchBuffers scratch;
+  buildSubsetBVHRecursive(*this, subset, primitiveIndices, outNodes, 0,
+                          primitiveIndices.size(), &scratch);
   outCount = outNodes.size();
 
   if (outCount == 0)
