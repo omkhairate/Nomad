@@ -146,6 +146,18 @@ public:
   const ObserverCamera &getObserverCamera() const;
 
 private:
+  struct BVHScratchBuffers {
+    std::vector<simd::float3> leftMin;
+    std::vector<simd::float3> leftMax;
+    std::vector<simd::float3> rightMin;
+    std::vector<simd::float3> rightMax;
+    size_t allocationEvents = 0;
+    size_t maxScratchSize = 0;
+
+    void resetStatistics();
+    void ensureSize(size_t size);
+  };
+
   std::vector<Primitive> primitives;
   std::vector<size_t> primitiveIndices;
   std::vector<BVHNode> bvhNodes;
@@ -164,7 +176,7 @@ private:
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives, int meshGroupId);
-  int buildBVHRecursive(size_t start, size_t end);
+  int buildBVHRecursive(size_t start, size_t end, BVHScratchBuffers &scratch);
   int buildTLASRecursive(size_t start, size_t end);
   float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax);
   float primitiveAxisValue(const Primitive &p, int axis) const;

@@ -12,6 +12,33 @@ namespace MetalCppPathTracer {
 
 Scene::Scene() { clear(); }
 
+void Scene::BVHScratchBuffers::resetStatistics() {
+  allocationEvents = 0;
+  maxScratchSize = 0;
+  leftMin.clear();
+  leftMax.clear();
+  rightMin.clear();
+  rightMax.clear();
+}
+
+void Scene::BVHScratchBuffers::ensureSize(size_t size) {
+  if (size > maxScratchSize)
+    maxScratchSize = size;
+
+  if (leftMin.capacity() < size) {
+    leftMin.reserve(size);
+    leftMax.reserve(size);
+    rightMin.reserve(size);
+    rightMax.reserve(size);
+    ++allocationEvents;
+  }
+
+  leftMin.resize(size);
+  leftMax.resize(size);
+  rightMin.resize(size);
+  rightMax.resize(size);
+}
+
 void Scene::clear() {
   // Reset any cached mesh data owned by the loader when the scene is cleared.
   SceneLoader::ClearCache();
@@ -187,6 +214,11 @@ void Scene::buildBVH() {
 
   bvhNodes.reserve(primitives.size() * 2);
 
+#ifdef METALCPPPATHTRACER_LOG_BVH_ALLOCATIONS
+  size_t totalScratchAllocations = 0;
+  size_t peakScratchSize = 0;
+#endif
+
   for (size_t i = 0; i < objects.size(); ++i) {
     auto &obj = objects[i];
     if (obj.primitiveCount == 0)
@@ -197,8 +229,15 @@ void Scene::buildBVH() {
     obj.cachedBlasRootIndex = -1;
 
     size_t nodeStart = bvhNodes.size();
+    BVHScratchBuffers scratch;
+    scratch.resetStatistics();
     int root = buildBVHRecursive(obj.firstPrimitive,
-                                 obj.firstPrimitive + obj.primitiveCount);
+                                 obj.firstPrimitive + obj.primitiveCount,
+                                 scratch);
+#ifdef METALCPPPATHTRACER_LOG_BVH_ALLOCATIONS
+    totalScratchAllocations += scratch.allocationEvents;
+    peakScratchSize = std::max(peakScratchSize, scratch.maxScratchSize);
+#endif
     size_t nodeEnd = bvhNodes.size();
     obj.blasRootIndex = root;
     if (root >= 0) {
@@ -232,6 +271,11 @@ void Scene::buildBVH() {
       }
     }
   }
+
+#ifdef METALCPPPATHTRACER_LOG_BVH_ALLOCATIONS
+  printf("BVH build scratch allocations: %zu events (peak %zu primitives)\n",
+         totalScratchAllocations, peakScratchSize);
+#endif
 
   if (!objectIndices.empty())
     buildTLASRecursive(0, objectIndices.size());
@@ -591,7 +635,8 @@ void Scene::createTriangleBuffers(std::vector<simd::float3> &outVertices,
   }
 }
 
-int Scene::buildBVHRecursive(size_t start, size_t end) {
+int Scene::buildBVHRecursive(size_t start, size_t end,
+                             BVHScratchBuffers &scratch) {
   BVHNode node;
   simd::float3 bMin(std::numeric_limits<float>::max());
   simd::float3 bMax(-std::numeric_limits<float>::max());
@@ -607,7 +652,8 @@ int Scene::buildBVHRecursive(size_t start, size_t end) {
   node.boundsMin = bMin;
   node.boundsMax = bMax;
   node.leftFirst = static_cast<int>(start);
-  node.count = static_cast<int>(end - start);
+  size_t range = end - start;
+  node.count = static_cast<int>(range);
 
   int nodeIndex = static_cast<int>(bvhNodes.size());
   bvhNodes.push_back(node);
@@ -624,17 +670,18 @@ int Scene::buildBVHRecursive(size_t start, size_t end) {
   if (parentArea <= 0.0f)
     return nodeIndex;
 
+  scratch.ensureSize(range);
+  auto &leftMin = scratch.leftMin;
+  auto &leftMax = scratch.leftMax;
+  auto &rightMin = scratch.rightMin;
+  auto &rightMax = scratch.rightMax;
+
   for (int axis = 0; axis < axisCount; ++axis) {
     std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
               [&](size_t a, size_t b) {
                 return primitiveAxisValue(primitives[a], axis) <
                        primitiveAxisValue(primitives[b], axis);
               });
-
-    std::vector<simd::float3> leftMin(end - start);
-    std::vector<simd::float3> leftMax(end - start);
-    std::vector<simd::float3> rightMin(end - start);
-    std::vector<simd::float3> rightMax(end - start);
 
     simd::float3 currMin(std::numeric_limits<float>::max());
     simd::float3 currMax(-std::numeric_limits<float>::max());
@@ -660,12 +707,12 @@ int Scene::buildBVHRecursive(size_t start, size_t end) {
       rightMax[i - start] = currMax;
     }
 
-    for (size_t i = 1; i < (end - start); ++i) {
+    for (size_t i = 1; i < range; ++i) {
       float saLeft = surfaceArea(leftMin[i - 1], leftMax[i - 1]);
       float saRight = surfaceArea(rightMin[i], rightMax[i]);
 
       size_t leftCount = i;
-      size_t rightCount = (end - start) - i;
+      size_t rightCount = range - i;
 
       float cost = 0.125f + (saLeft / parentArea) * leftCount +
                    (saRight / parentArea) * rightCount;
@@ -687,8 +734,8 @@ int Scene::buildBVHRecursive(size_t start, size_t end) {
                      primitiveAxisValue(primitives[b], bestAxis);
             });
 
-  int leftChild = buildBVHRecursive(start, bestSplit);
-  int rightChild = buildBVHRecursive(bestSplit, end);
+  int leftChild = buildBVHRecursive(start, bestSplit, scratch);
+  int rightChild = buildBVHRecursive(bestSplit, end, scratch);
 
   bvhNodes[nodeIndex].leftFirst = leftChild;
   bvhNodes[nodeIndex].count = -rightChild;
