@@ -900,7 +900,7 @@ Scene::SAHSplitResult Scene::evaluateSAHSplit(
   return result;
 }
 
-float Scene::surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) {
+float Scene::surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) const {
   simd::float3 d = bmax - bmin;
   return 2.0f * (d.x * d.y + d.y * d.z + d.z * d.x);
 }

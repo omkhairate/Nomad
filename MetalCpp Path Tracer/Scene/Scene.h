@@ -188,7 +188,7 @@ private:
                                   const simd::float3 *boundsMax,
                                   const simd::float3 *centroids,
                                   size_t count, float parentArea) const;
-  float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax);
+  float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) const;
   float primitiveAxisValue(const Primitive &p, int axis) const;
   simd::float3 primitiveCentroid(const Primitive &p) const;
   float objectAxisValue(size_t objectIndex, int axis) const;
