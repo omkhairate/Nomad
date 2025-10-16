@@ -130,6 +130,16 @@ struct UniformsData {
   uint32_t textureCount = 0;
 };
 
+struct TileDispatchRegion {
+  uint32_t originX;
+  uint32_t originY;
+  uint32_t width;
+  uint32_t height;
+};
+
+constexpr uint32_t kPathTraceTileWidth = 128;
+constexpr uint32_t kPathTraceTileHeight = 128;
+
 inline uint32_t bitm_random() {
   static uint32_t current_seed = 92407235;
   const uint32_t state = current_seed * 747796405u + 2891336453u;
@@ -3813,25 +3823,21 @@ void Renderer::draw(MTK::View *pView) {
 
   NS::AutoreleasePool *pPool = NS::AutoreleasePool::alloc()->init();
 
-  MTL::CommandBuffer *pCmd = _pCommandQueue->commandBuffer();
-  if (!pCmd) {
+  auto captureList =
+      std::make_shared<std::vector<std::shared_ptr<FrameCaptureRequest>>>();
+
+  MTL::CommandBuffer *prepCmd = _pCommandQueue->commandBuffer();
+  if (!prepCmd) {
     if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty())
       _pendingBenchmarkSamples.pop_back();
     if (_accumulationTargetsNeedClear) {
       _accumulationTargetsNeedClear = false;
       _needsAccumulationReset = false;
     }
+    completeFrameMetrics(nullptr);
     pPool->release();
     return;
   }
-
-  auto captureList =
-      std::make_shared<std::vector<std::shared_ptr<FrameCaptureRequest>>>();
-  pCmd->addCompletedHandler([this, captureList](MTL::CommandBuffer *cmd) {
-    this->completeFrameMetrics(cmd);
-    for (const auto &capture : *captureList)
-      this->finalizeFrameCapture(capture);
-  });
 
   bool belowBudget =
       _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
@@ -3839,7 +3845,7 @@ void Renderer::draw(MTK::View *pView) {
   bool overCap = currentMemory > _textureResidencyMemoryCapMB;
 
   if (!_needsAccumulationReset && (belowBudget || overCap))
-    updateTextureResidency(pCmd);
+    updateTextureResidency(prepCmd);
 
   bool allowResidency =
       _needsAccumulationReset || (!belowBudget && !overCap);
@@ -3850,11 +3856,11 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *sampleCount = _sampleCountSlot.texture;
   MTL::Texture *sampleImportance = _sampleImportanceSlot.texture;
   if (allowResidency) {
-    accum0 = requestResidentTexture(_accumulationSlots[0], pCmd, restoreBlit);
-    accum1 = requestResidentTexture(_accumulationSlots[1], pCmd, restoreBlit);
-    sampleCount = requestResidentTexture(_sampleCountSlot, pCmd, restoreBlit);
+    accum0 = requestResidentTexture(_accumulationSlots[0], prepCmd, restoreBlit);
+    accum1 = requestResidentTexture(_accumulationSlots[1], prepCmd, restoreBlit);
+    sampleCount = requestResidentTexture(_sampleCountSlot, prepCmd, restoreBlit);
     sampleImportance =
-        requestResidentTexture(_sampleImportanceSlot, pCmd, restoreBlit);
+        requestResidentTexture(_sampleImportanceSlot, prepCmd, restoreBlit);
   }
   if (restoreBlit)
     restoreBlit->endEncoding();
@@ -3863,27 +3869,82 @@ void Renderer::draw(MTK::View *pView) {
       accum0 && accum1 && sampleCount && sampleImportance;
 
   if (_accumulationTargetsNeedClear && haveAllTextures) {
-    if (resetAccumulationTargets(pCmd)) {
+    if (resetAccumulationTargets(prepCmd)) {
       _accumulationTargetsNeedClear = false;
       _needsAccumulationReset = false;
     }
   }
 
+  updateAdaptiveSamplingMaps(prepCmd);
+
+  prepCmd->commit();
+
   if (!haveAllTextures) {
-    MTL::Drawable *drawable = pView->currentDrawable();
-    if (drawable)
-      pCmd->presentDrawable(drawable);
-    pCmd->commit();
+    MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
+    if (presentCmd) {
+      presentCmd->addCompletedHandler(
+          [this, captureList](MTL::CommandBuffer *cmd) {
+            this->completeFrameMetrics(cmd);
+            for (const auto &capture : *captureList)
+              this->finalizeFrameCapture(capture);
+          });
+      MTL::Drawable *drawable = pView->currentDrawable();
+      if (drawable)
+        presentCmd->presentDrawable(drawable);
+      presentCmd->commit();
+    } else {
+      completeFrameMetrics(nullptr);
+    }
     ++_renderedFrameCount;
     pPool->release();
     return;
   }
 
-  updateAdaptiveSamplingMaps(pCmd);
+  std::vector<TileDispatchRegion> tiles;
+  if (_pPathTracePSO && accum1) {
+    NS::UInteger width = accum1->width();
+    NS::UInteger height = accum1->height();
+    if (width > 0 && height > 0) {
+      NS::UInteger tileWidth =
+          std::max<NS::UInteger>(kPathTraceTileWidth, 1);
+      NS::UInteger tileHeight =
+          std::max<NS::UInteger>(kPathTraceTileHeight, 1);
+      for (NS::UInteger y = 0; y < height; y += tileHeight) {
+        NS::UInteger actualHeight = std::min(tileHeight, height - y);
+        for (NS::UInteger x = 0; x < width; x += tileWidth) {
+          NS::UInteger actualWidth = std::min(tileWidth, width - x);
+          TileDispatchRegion region{};
+          region.originX = static_cast<uint32_t>(x);
+          region.originY = static_cast<uint32_t>(y);
+          region.width = static_cast<uint32_t>(actualWidth);
+          region.height = static_cast<uint32_t>(actualHeight);
+          tiles.push_back(region);
+        }
+      }
+    }
+  }
 
-  if (_pPathTracePSO && haveAllTextures) {
-    MTL::ComputeCommandEncoder *pCompute = pCmd->computeCommandEncoder();
-    if (pCompute) {
+  if (_pPathTracePSO && !tiles.empty()) {
+    NS::UInteger tgWidth =
+        std::max<NS::UInteger>(1, _pPathTracePSO->threadExecutionWidth());
+    NS::UInteger maxThreads = std::max<NS::UInteger>(
+        tgWidth, _pPathTracePSO->maxTotalThreadsPerThreadgroup());
+    NS::UInteger tgHeight =
+        std::max<NS::UInteger>(1, maxThreads / tgWidth);
+    MTL::Size threadsPerThreadgroup =
+        MTL::Size::Make(tgWidth, tgHeight, 1);
+
+    for (const TileDispatchRegion &tile : tiles) {
+      MTL::CommandBuffer *tileCmd = _pCommandQueue->commandBuffer();
+      if (!tileCmd)
+        continue;
+
+      MTL::ComputeCommandEncoder *pCompute = tileCmd->computeCommandEncoder();
+      if (!pCompute) {
+        tileCmd->commit();
+        continue;
+      }
+
       pCompute->setComputePipelineState(_pPathTracePSO);
 
       bool useAccelerationStructureLayout =
@@ -3922,31 +3983,46 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
         pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
       }
+
       pCompute->setTexture(accum0, 0);
       pCompute->setTexture(accum1, 1);
       pCompute->setTexture(sampleCount, 2);
       pCompute->setTexture(sampleImportance, 3);
 
-      NS::UInteger width = accum1 ? accum1->width() : 0;
-      NS::UInteger height = accum1 ? accum1->height() : 0;
-      if (width > 0 && height > 0) {
-        NS::UInteger tgWidth = std::max<NS::UInteger>(1, _pPathTracePSO->threadExecutionWidth());
-        NS::UInteger maxThreads = std::max<NS::UInteger>(tgWidth,
-            _pPathTracePSO->maxTotalThreadsPerThreadgroup());
-        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
-        MTL::Size threadsPerThreadgroup = MTL::Size::Make(tgWidth, tgHeight, 1);
-        MTL::Size threadgroups = MTL::Size::Make(
-            (width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-            (height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height, 1);
-        pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-      }
+      TileDispatchRegion tileParams = tile;
+      pCompute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);
 
+      NS::UInteger localWidth = static_cast<NS::UInteger>(tile.width);
+      NS::UInteger localHeight = static_cast<NS::UInteger>(tile.height);
+      MTL::Size threadgroups = MTL::Size::Make(
+          (localWidth + threadsPerThreadgroup.width - 1) /
+              threadsPerThreadgroup.width,
+          (localHeight + threadsPerThreadgroup.height - 1) /
+              threadsPerThreadgroup.height,
+          1);
+
+      pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
       pCompute->endEncoding();
+      tileCmd->commit();
     }
   }
 
+  MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
+  if (!presentCmd) {
+    completeFrameMetrics(nullptr);
+    ++_renderedFrameCount;
+    pPool->release();
+    return;
+  }
+
+  presentCmd->addCompletedHandler([this, captureList](MTL::CommandBuffer *cmd) {
+    this->completeFrameMetrics(cmd);
+    for (const auto &capture : *captureList)
+      this->finalizeFrameCapture(capture);
+  });
+
   MTL::RenderPassDescriptor *pRpd = pView->currentRenderPassDescriptor();
-  MTL::RenderCommandEncoder *pEnc = pCmd->renderCommandEncoder(pRpd);
+  MTL::RenderCommandEncoder *pEnc = presentCmd->renderCommandEncoder(pRpd);
 
   pEnc->setRenderPipelineState(_pPSO);
   pEnc->setFragmentTexture(accum1, 0);
@@ -3960,7 +4036,8 @@ void Renderer::draw(MTK::View *pView) {
     float farDistance =
         std::max(baseDistance * kFrustumDebugFarMultiplier, nearDistance * 2.0f);
 
-    auto corners = buildFrustumCorners(_primaryCameraState, nearDistance, farDistance);
+    auto corners =
+        buildFrustumCorners(_primaryCameraState, nearDistance, farDistance);
     std::array<simd::float3, kFrustumEdges.size() * 2> frustumVertices{};
     size_t vertexCount = 0;
     for (const auto &edge : kFrustumEdges) {
@@ -4013,13 +4090,14 @@ void Renderer::draw(MTK::View *pView) {
   bool performedRayHitReadback = false;
 
   if (captureThisFrame && accum1) {
-    if (auto capture = encodeFrameCapture(accum1, frameIndex, pCmd, pBlit))
+    if (auto capture =
+            encodeFrameCapture(accum1, frameIndex, presentCmd, pBlit))
       captureList->push_back(capture);
   }
 
   if (_pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
     if (!pBlit)
-      pBlit = pCmd->blitCommandEncoder();
+      pBlit = presentCmd->blitCommandEncoder();
     if (pBlit) {
       size_t bytes =
           std::min(_pPrimitiveHitBufferGPU->length(),
@@ -4038,13 +4116,13 @@ void Renderer::draw(MTK::View *pView) {
 
   MTL::Drawable *drawable = pView->currentDrawable();
   if (drawable)
-    pCmd->presentDrawable(drawable);
-  pCmd->commit();
+    presentCmd->presentDrawable(drawable);
+  presentCmd->commit();
 
   if (performedRayHitReadback) {
     if (_lastRayHitCommandBuffer)
       _lastRayHitCommandBuffer->release();
-    _lastRayHitCommandBuffer = pCmd;
+    _lastRayHitCommandBuffer = presentCmd;
     _lastRayHitCommandBuffer->retain();
     _rayHitCopyError = false;
   }
@@ -5698,7 +5776,11 @@ void Renderer::beginFrameMetrics() {
 void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   auto cpuEnd = std::chrono::high_resolution_clock::now();
   _lastCPUTime = std::chrono::duration<double>(cpuEnd - _cpuStart).count();
-  _lastGPUTime = pCmd->GPUEndTime() - pCmd->GPUStartTime();
+  if (pCmd) {
+    _lastGPUTime = pCmd->GPUEndTime() - pCmd->GPUStartTime();
+  } else {
+    _lastGPUTime = 0.0;
+  }
   if (_lastGPUTime > 0.0) {
     _lastRaysPerSecond = static_cast<double>(_lastRayCount) / _lastGPUTime;
   } else {

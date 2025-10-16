@@ -25,6 +25,7 @@ kernel void pathTraceKernel(
     texture2d<half, access::write> currentFrame [[texture(1)]],
     texture2d<half, access::read_write> sampleCount [[texture(2)]],
     texture2d<half, access::read> sampleImportance [[texture(3)]],
+    constant TileRegion &tile [[buffer(16)]],
     uint2 gid [[thread_position_in_grid]]) {
   if (!uniforms)
     return;
@@ -36,7 +37,11 @@ kernel void pathTraceKernel(
 
   uint width = currentFrame.get_width();
   uint height = currentFrame.get_height();
-  if (gid.x >= width || gid.y >= height)
+  if (gid.x >= tile.size.x || gid.y >= tile.size.y)
+    return;
+
+  uint2 pixel = gid + tile.origin;
+  if (pixel.x >= width || pixel.y >= height)
     return;
 
   const device UniformsData &u = *uniforms;
@@ -44,10 +49,10 @@ kernel void pathTraceKernel(
   if (screenSize.x <= 0.0f || screenSize.y <= 0.0f)
     return;
 
-  float2 uv = (float2(gid) + 0.5f) / screenSize;
+  float2 uv = (float2(pixel) + 0.5f) / screenSize;
   uint32_t seed = random(uv, u.randomSeed.xyz) * ((uint32_t)-1);
 
-  float desiredSamples = float(sampleImportance.read(gid).x);
+  float desiredSamples = float(sampleImportance.read(pixel).x);
   if (!isfinite(desiredSamples))
     desiredSamples = float(u.minSamplesPerPixel);
 
@@ -55,8 +60,8 @@ kernel void pathTraceKernel(
   samplesThisFrame = clamp(samplesThisFrame, u.minSamplesPerPixel, u.maxSamplesPerPixel);
   samplesThisFrame = max(samplesThisFrame, 1u);
 
-  float previousSampleCount = float(sampleCount.read(gid).x);
-  float4 previousColor = float4(lastFrame.read(gid));
+  float previousSampleCount = float(sampleCount.read(pixel).x);
+  float4 previousColor = float4(lastFrame.read(pixel));
 
   float4 accumulatedColor = float4(0.0);
 
@@ -95,6 +100,6 @@ kernel void pathTraceKernel(
   averaged = clamp(averaged, 0.0f, 1.0f);
 
   float4 result = float4(averaged, 1.0f);
-  currentFrame.write(half4(result), gid);
-  sampleCount.write(half4(totalSamples, half(0.0f), half(0.0f), half(0.0f)), gid);
+  currentFrame.write(half4(result), pixel);
+  sampleCount.write(half4(totalSamples, half(0.0f), half(0.0f), half(0.0f)), pixel);
 }
