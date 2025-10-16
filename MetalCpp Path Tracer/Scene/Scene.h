@@ -115,10 +115,6 @@ public:
   double getTextureResidencyMemoryCapMB() const;
   void setTextureResidencyMemoryCapMB(double capMB);
 
-  uint32_t getMinSamplesPerPixel() const;
-  uint32_t getMaxSamplesPerPixel() const;
-  void setSamplesPerPixelRange(uint32_t minSamples, uint32_t maxSamples);
-
   void buildBVH();
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
@@ -165,8 +161,6 @@ private:
   double textureResidencyMemoryCapMB;
   bool observerCameraValid;
   ObserverCamera observerCamera;
-  uint32_t minSamplesPerPixel;
-  uint32_t maxSamplesPerPixel;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives, int meshGroupId);
