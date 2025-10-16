@@ -80,8 +80,6 @@ struct Texture {
   std::vector<float> pixels; // RGBA
 };
 
-struct SubsetBVHScratchBuffers;
-
 class Scene {
 public:
   Scene();
@@ -149,13 +147,6 @@ public:
   const ObserverCamera &getObserverCamera() const;
 
 private:
-  friend int buildSubsetBVHRecursive(const Scene &scene,
-                                     const std::vector<Primitive> &primitives,
-                                     std::vector<int> &primitiveIndices,
-                                     std::vector<BVHNode> &nodes, size_t start,
-                                     size_t end,
-                                     SubsetBVHScratchBuffers *scratch);
-
   struct SAHSplitResult {
     int axis = -1;
     size_t leftCount = 0;
