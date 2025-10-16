@@ -13,6 +13,8 @@ namespace MetalCppPathTracer {
 
 Scene::Scene() { clear(); }
 
+void Scene::markTriangleCacheDirty() { triangleCacheDirty = true; }
+
 void Scene::BVHScratchBuffers::resetStatistics() {
   allocationEvents = 0;
   maxScratchSize = 0;
@@ -58,6 +60,9 @@ void Scene::clear() {
   textureResidencyMemoryCapMB = 2048.0;
   observerCameraValid = false;
   observerCamera = ObserverCamera{};
+  triangleVerticesCache.clear();
+  triangleIndicesCache.clear();
+  markTriangleCacheDirty();
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -83,6 +88,14 @@ size_t Scene::addObjectInternal(const Primitive *prims, size_t count,
   if (count == 0)
     return primitives.size();
 
+  bool hasTriangles = false;
+  for (size_t i = 0; i < count; ++i) {
+    if (prims[i].type == PrimitiveType::Triangle) {
+      hasTriangles = true;
+      break;
+    }
+  }
+
   size_t start = primitives.size();
   primitives.insert(primitives.end(), prims, prims + count);
 
@@ -102,6 +115,9 @@ size_t Scene::addObjectInternal(const Primitive *prims, size_t count,
       }
     }
   }
+
+  if (hasTriangles)
+    markTriangleCacheDirty();
 
   return primitives.size() - 1;
 }
@@ -625,22 +641,29 @@ int *Scene::createPrimitiveIndexBuffer() const {
 
 void Scene::createTriangleBuffers(std::vector<simd::float3> &outVertices,
                                   std::vector<simd::uint3> &outIndices) const {
-  outVertices.clear();
-  outIndices.clear();
-  uint32_t baseVertex = 0;
+  if (triangleCacheDirty) {
+    triangleVerticesCache.clear();
+    triangleIndicesCache.clear();
+    uint32_t baseVertex = 0;
 
-  for (const auto &p : primitives) {
-    if (p.type != PrimitiveType::Triangle)
-      continue;
+    for (const auto &p : primitives) {
+      if (p.type != PrimitiveType::Triangle)
+        continue;
 
-    outVertices.push_back(p.triangle.v0);
-    outVertices.push_back(p.triangle.v1);
-    outVertices.push_back(p.triangle.v2);
+      triangleVerticesCache.push_back(p.triangle.v0);
+      triangleVerticesCache.push_back(p.triangle.v1);
+      triangleVerticesCache.push_back(p.triangle.v2);
 
-    outIndices.push_back(
-        simd::make_uint3(baseVertex, baseVertex + 1, baseVertex + 2));
-    baseVertex += 3;
+      triangleIndicesCache.push_back(
+          simd::make_uint3(baseVertex, baseVertex + 1, baseVertex + 2));
+      baseVertex += 3;
+    }
+
+    triangleCacheDirty = false;
   }
+
+  outVertices = triangleVerticesCache;
+  outIndices = triangleIndicesCache;
 }
 
 int Scene::buildBVHRecursive(size_t start, size_t end,

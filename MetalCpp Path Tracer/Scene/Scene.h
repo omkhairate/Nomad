@@ -189,6 +189,9 @@ private:
   double textureResidencyMemoryCapMB;
   bool observerCameraValid;
   ObserverCamera observerCamera;
+  mutable std::vector<simd::float3> triangleVerticesCache;
+  mutable std::vector<simd::uint3> triangleIndicesCache;
+  mutable bool triangleCacheDirty = true;
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives, int meshGroupId);
@@ -200,6 +203,7 @@ private:
   float objectAxisValue(size_t objectIndex, int axis) const;
   void primitiveBounds(const Primitive &p, simd::float3 &pMin,
                        simd::float3 &pMax) const;
+  void markTriangleCacheDirty();
 };
 
 } // namespace MetalCppPathTracer
