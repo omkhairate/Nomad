@@ -53,6 +53,11 @@ struct ResidencyParameters {
   float screenFootprintMinPixelCoverage = 32.0f;
   size_t screenFootprintMinActivePrimitives = 16;
   size_t screenFootprintMaxTogglesPerFrame = 10;
+
+  // Controls whether per-object BLAS caches should be precomputed during BVH
+  // construction. Disabling this reduces build time at the cost of on-demand
+  // rebuilds when residency streaming requires the data.
+  bool buildCachedBlas = true;
 };
 
 struct TLASNode {
