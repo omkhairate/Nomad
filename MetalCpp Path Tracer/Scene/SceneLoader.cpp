@@ -602,6 +602,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.screenFootprintMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "screenToggleBudget",
         static_cast<uint64_t>(params.screenFootprintMaxTogglesPerFrame)));
+    params.buildCachedBlas = root->BoolAttribute(
+        "buildCachedBlas", params.buildCachedBlas);
 
     scene->setResidencyParameters(params);
 

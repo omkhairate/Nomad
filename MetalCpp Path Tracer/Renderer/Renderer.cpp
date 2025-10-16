@@ -1352,6 +1352,12 @@ void Renderer::updateVisibleScene() {
          _pScene->getTriangleCount(), _pScene->getRectangleCount());
 
   _residencyConfig = _pScene->getResidencyParameters();
+  bool requiresCachedBlas =
+      _pScene->getResidencyStrategy() != ResidencyStrategy::AlwaysResident;
+  if (_residencyConfig.buildCachedBlas != requiresCachedBlas) {
+    _residencyConfig.buildCachedBlas = requiresCachedBlas;
+    _pScene->setResidencyParameters(_residencyConfig);
+  }
   _textureResidencyMemoryCapMB =
       std::max(_pScene->getTextureResidencyMemoryCapMB(), 0.0);
   if (_textureResidencyMemoryCapMB <= 0.0)

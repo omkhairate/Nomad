@@ -244,7 +244,7 @@ void Scene::buildBVH() {
       obj.boundsMax = rootNode.boundsMax;
       objectIndices.push_back(i);
 
-      if (nodeEnd > nodeStart) {
+      if (residencyParams.buildCachedBlas && nodeEnd > nodeStart) {
         obj.cachedBlasNodes.reserve(nodeEnd - nodeStart);
         for (size_t nodeIdx = nodeStart; nodeIdx < nodeEnd; ++nodeIdx) {
           BVHNode node = bvhNodes[nodeIdx];
