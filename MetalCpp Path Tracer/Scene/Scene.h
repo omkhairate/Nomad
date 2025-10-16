@@ -81,6 +81,12 @@ struct Texture {
 };
 
 class Scene {
+  struct SAHSplitResult {
+    int axis = -1;
+    size_t leftCount = 0;
+    float cost = std::numeric_limits<float>::max();
+  };
+
 public:
   Scene();
 
@@ -120,6 +126,11 @@ public:
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
 
+  SAHSplitResult evaluateSAHSplit(const simd::float3 *boundsMin,
+                                  const simd::float3 *boundsMax,
+                                  const simd::float3 *centroids,
+                                  size_t count, float parentArea) const;
+
   simd::float2 screenSize;
   uint32_t maxRayDepth;
 
@@ -147,12 +158,6 @@ public:
   const ObserverCamera &getObserverCamera() const;
 
 private:
-  struct SAHSplitResult {
-    int axis = -1;
-    size_t leftCount = 0;
-    float cost = std::numeric_limits<float>::max();
-  };
-
   struct BVHScratchBuffers {
     std::vector<simd::float3> primitiveMins;
     std::vector<simd::float3> primitiveMaxs;
@@ -184,10 +189,6 @@ private:
                           bool logPrimitives, int meshGroupId);
   int buildBVHRecursive(size_t start, size_t end, BVHScratchBuffers &scratch);
   int buildTLASRecursive(size_t start, size_t end);
-  SAHSplitResult evaluateSAHSplit(const simd::float3 *boundsMin,
-                                  const simd::float3 *boundsMax,
-                                  const simd::float3 *centroids,
-                                  size_t count, float parentArea) const;
   float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) const;
   float primitiveAxisValue(const Primitive &p, int axis) const;
   simd::float3 primitiveCentroid(const Primitive &p) const;
