@@ -336,6 +336,18 @@ float primitiveAxisValueLocal(const Primitive &p, int axis) {
   return 0.0f;
 }
 
+simd::float3 primitiveCentroidLocal(const Primitive &p) {
+  switch (p.type) {
+  case PrimitiveType::Sphere:
+    return p.sphere.center;
+  case PrimitiveType::Rectangle:
+    return p.rectangle.center;
+  case PrimitiveType::Triangle:
+    return (p.triangle.v0 + p.triangle.v1 + p.triangle.v2) / 3.0f;
+  }
+  return simd::float3(0.0f);
+}
+
 void primitiveBoundsLocal(const Primitive &p, simd::float3 &pMin,
                           simd::float3 &pMax) {
   if (p.type == PrimitiveType::Sphere) {
@@ -431,72 +443,136 @@ int buildBVHRecursive(const std::vector<Primitive> &primitives,
   if (parentArea <= 0.0f)
     return nodeIndex;
 
+  std::vector<simd::float3> primitiveMins(range);
+  std::vector<simd::float3> primitiveMaxs(range);
+  std::vector<simd::float3> primitiveCentroids(range);
+  std::array<float, 3> centroidMin = {
+      std::numeric_limits<float>::max(),
+      std::numeric_limits<float>::max(),
+      std::numeric_limits<float>::max()};
+  std::array<float, 3> centroidMax = {
+      -std::numeric_limits<float>::max(),
+      -std::numeric_limits<float>::max(),
+      -std::numeric_limits<float>::max()};
+
+  for (size_t i = start; i < end; ++i) {
+    const Primitive &p = primitives[primitiveIndices[i]];
+    simd::float3 pMin, pMax;
+    primitiveBoundsLocal(p, pMin, pMax);
+    primitiveMins[i - start] = pMin;
+    primitiveMaxs[i - start] = pMax;
+
+    simd::float3 centroid = primitiveCentroidLocal(p);
+    primitiveCentroids[i - start] = centroid;
+    centroidMin[0] = std::min(centroidMin[0], centroid.x);
+    centroidMin[1] = std::min(centroidMin[1], centroid.y);
+    centroidMin[2] = std::min(centroidMin[2], centroid.z);
+    centroidMax[0] = std::max(centroidMax[0], centroid.x);
+    centroidMax[1] = std::max(centroidMax[1], centroid.y);
+    centroidMax[2] = std::max(centroidMax[2], centroid.z);
+  }
+
   float bestCost = std::numeric_limits<float>::max();
   int bestAxis = -1;
-  size_t bestSplit = start + range / 2;
+  size_t bestLeftCount = range / 2;
 
-  std::vector<simd::float3> leftMin(range);
-  std::vector<simd::float3> leftMax(range);
-  std::vector<simd::float3> rightMin(range);
-  std::vector<simd::float3> rightMax(range);
+  constexpr int kBinCount = 12;
+  std::array<int, kBinCount> binCount{};
+  std::array<simd::float3, kBinCount> binMin;
+  std::array<simd::float3, kBinCount> binMax;
+  std::array<simd::float3, kBinCount> prefixMin;
+  std::array<simd::float3, kBinCount> prefixMax;
+  std::array<int, kBinCount> prefixCount{};
+  std::array<simd::float3, kBinCount> suffixMin;
+  std::array<simd::float3, kBinCount> suffixMax;
+  std::array<int, kBinCount> suffixCount{};
 
   for (int axis = 0; axis < 3; ++axis) {
-    std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
-              [&](int a, int b) {
-                return primitiveAxisValueLocal(primitives[a], axis) <
-                       primitiveAxisValueLocal(primitives[b], axis);
-              });
+    float axisMin = centroidMin[axis];
+    float axisMax = centroidMax[axis];
+    float axisRange = axisMax - axisMin;
+    if (axisRange <= 1e-6f)
+      continue;
 
-    simd::float3 currMin(std::numeric_limits<float>::max());
-    simd::float3 currMax(-std::numeric_limits<float>::max());
-    for (size_t i = start; i < end; ++i) {
-      const Primitive &p = primitives[primitiveIndices[i]];
-      simd::float3 pMin, pMax;
-      primitiveBoundsLocal(p, pMin, pMax);
-      currMin = simd::min(currMin, pMin);
-      currMax = simd::max(currMax, pMax);
-      leftMin[i - start] = currMin;
-      leftMax[i - start] = currMax;
+    for (int i = 0; i < kBinCount; ++i) {
+      binCount[i] = 0;
+      binMin[i] = simd::float3(std::numeric_limits<float>::max());
+      binMax[i] = simd::float3(-std::numeric_limits<float>::max());
     }
 
-    currMin = simd::float3(std::numeric_limits<float>::max());
-    currMax = simd::float3(-std::numeric_limits<float>::max());
-    for (size_t i = end; i-- > start;) {
-      const Primitive &p = primitives[primitiveIndices[i]];
-      simd::float3 pMin, pMax;
-      primitiveBoundsLocal(p, pMin, pMax);
-      currMin = simd::min(currMin, pMin);
-      currMax = simd::max(currMax, pMax);
-      rightMin[i - start] = currMin;
-      rightMax[i - start] = currMax;
+    float invRange = 1.0f / axisRange;
+    for (size_t i = 0; i < range; ++i) {
+      const simd::float3 &pMin = primitiveMins[i];
+      const simd::float3 &pMax = primitiveMaxs[i];
+      float centroid = primitiveCentroids[i][axis];
+      int bin = static_cast<int>((centroid - axisMin) * invRange * kBinCount);
+      bin = std::max(0, std::min(kBinCount - 1, bin));
+      ++binCount[bin];
+      binMin[bin] = simd::min(binMin[bin], pMin);
+      binMax[bin] = simd::max(binMax[bin], pMax);
     }
 
-    for (size_t i = 1; i < range; ++i) {
-      float saLeft = boundingSurfaceArea(leftMin[i - 1], leftMax[i - 1]);
-      float saRight = boundingSurfaceArea(rightMin[i], rightMax[i]);
-      size_t leftCount = i;
-      size_t rightCount = range - i;
+    simd::float3 runningMin(std::numeric_limits<float>::max());
+    simd::float3 runningMax(-std::numeric_limits<float>::max());
+    int runningCount = 0;
+    for (int i = 0; i < kBinCount; ++i) {
+      if (binCount[i] > 0) {
+        runningMin = simd::min(runningMin, binMin[i]);
+        runningMax = simd::max(runningMax, binMax[i]);
+      }
+      runningCount += binCount[i];
+      prefixMin[i] = runningMin;
+      prefixMax[i] = runningMax;
+      prefixCount[i] = runningCount;
+    }
+
+    runningMin = simd::float3(std::numeric_limits<float>::max());
+    runningMax = simd::float3(-std::numeric_limits<float>::max());
+    runningCount = 0;
+    for (int i = kBinCount - 1; i >= 0; --i) {
+      if (binCount[i] > 0) {
+        runningMin = simd::min(runningMin, binMin[i]);
+        runningMax = simd::max(runningMax, binMax[i]);
+      }
+      runningCount += binCount[i];
+      suffixMin[i] = runningMin;
+      suffixMax[i] = runningMax;
+      suffixCount[i] = runningCount;
+    }
+
+    for (int i = 0; i < kBinCount - 1; ++i) {
+      int leftCount = prefixCount[i];
+      int rightCount = suffixCount[i + 1];
+      if (leftCount == 0 || rightCount == 0)
+        continue;
+
+      float saLeft = boundingSurfaceArea(prefixMin[i], prefixMax[i]);
+      float saRight = boundingSurfaceArea(suffixMin[i + 1], suffixMax[i + 1]);
       float cost = 0.125f + (saLeft / parentArea) * leftCount +
                    (saRight / parentArea) * rightCount;
+
       if (cost < bestCost) {
         bestCost = cost;
         bestAxis = axis;
-        bestSplit = start + i;
+        bestLeftCount = static_cast<size_t>(leftCount);
       }
     }
   }
 
-  if (bestAxis == -1)
+  if (bestAxis == -1 || bestLeftCount == 0 || bestLeftCount >= range)
     return nodeIndex;
 
-  std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
-            [&](int a, int b) {
-              return primitiveAxisValueLocal(primitives[a], bestAxis) <
-                     primitiveAxisValueLocal(primitives[b], bestAxis);
-            });
+  auto begin = primitiveIndices.begin() + start;
+  auto endIt = primitiveIndices.begin() + end;
+  std::stable_sort(begin, endIt, [&](int a, int b) {
+    return primitiveAxisValueLocal(primitives[a], bestAxis) <
+           primitiveAxisValueLocal(primitives[b], bestAxis);
+  });
 
-  int leftChild =
-      buildBVHRecursive(primitives, primitiveIndices, nodes, start, bestSplit);
+  size_t bestSplit = start + bestLeftCount;
+
+  int leftChild = buildBVHRecursive(primitives, primitiveIndices, nodes, start,
+                                    bestSplit);
   int rightChild =
       buildBVHRecursive(primitives, primitiveIndices, nodes, bestSplit, end);
 

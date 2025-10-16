@@ -1,6 +1,7 @@
 #include "Scene.h"
 #include "SceneLoader.h"
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -15,28 +16,25 @@ Scene::Scene() { clear(); }
 void Scene::BVHScratchBuffers::resetStatistics() {
   allocationEvents = 0;
   maxScratchSize = 0;
-  leftMin.clear();
-  leftMax.clear();
-  rightMin.clear();
-  rightMax.clear();
+  primitiveMins.clear();
+  primitiveMaxs.clear();
+  primitiveCentroids.clear();
 }
 
 void Scene::BVHScratchBuffers::ensureSize(size_t size) {
   if (size > maxScratchSize)
     maxScratchSize = size;
 
-  if (leftMin.capacity() < size) {
-    leftMin.reserve(size);
-    leftMax.reserve(size);
-    rightMin.reserve(size);
-    rightMax.reserve(size);
+  if (primitiveMins.capacity() < size) {
+    primitiveMins.reserve(size);
+    primitiveMaxs.reserve(size);
+    primitiveCentroids.reserve(size);
     ++allocationEvents;
   }
 
-  leftMin.resize(size);
-  leftMax.resize(size);
-  rightMin.resize(size);
-  rightMax.resize(size);
+  primitiveMins.resize(size);
+  primitiveMaxs.resize(size);
+  primitiveCentroids.resize(size);
 }
 
 void Scene::clear() {
@@ -671,48 +669,109 @@ int Scene::buildBVHRecursive(size_t start, size_t end,
     return nodeIndex;
 
   scratch.ensureSize(range);
-  auto &leftMin = scratch.leftMin;
-  auto &leftMax = scratch.leftMax;
-  auto &rightMin = scratch.rightMin;
-  auto &rightMax = scratch.rightMax;
+  auto &primitiveMins = scratch.primitiveMins;
+  auto &primitiveMaxs = scratch.primitiveMaxs;
+  auto &primitiveCentroids = scratch.primitiveCentroids;
+
+  std::array<float, axisCount> centroidMin = {
+      std::numeric_limits<float>::max(),
+      std::numeric_limits<float>::max(),
+      std::numeric_limits<float>::max()};
+  std::array<float, axisCount> centroidMax = {
+      -std::numeric_limits<float>::max(),
+      -std::numeric_limits<float>::max(),
+      -std::numeric_limits<float>::max()};
+
+  for (size_t i = start; i < end; ++i) {
+    const auto &p = primitives[primitiveIndices[i]];
+    simd::float3 pMin, pMax;
+    primitiveBounds(p, pMin, pMax);
+    primitiveMins[i - start] = pMin;
+    primitiveMaxs[i - start] = pMax;
+
+    simd::float3 centroid = primitiveCentroid(p);
+    primitiveCentroids[i - start] = centroid;
+    centroidMin[0] = std::min(centroidMin[0], centroid.x);
+    centroidMin[1] = std::min(centroidMin[1], centroid.y);
+    centroidMin[2] = std::min(centroidMin[2], centroid.z);
+    centroidMax[0] = std::max(centroidMax[0], centroid.x);
+    centroidMax[1] = std::max(centroidMax[1], centroid.y);
+    centroidMax[2] = std::max(centroidMax[2], centroid.z);
+  }
+
+  size_t bestLeftCount = range / 2;
+  constexpr int kBinCount = 12;
+  std::array<int, kBinCount> binCount{};
+  std::array<simd::float3, kBinCount> binMin;
+  std::array<simd::float3, kBinCount> binMax;
+  std::array<simd::float3, kBinCount> prefixMin;
+  std::array<simd::float3, kBinCount> prefixMax;
+  std::array<int, kBinCount> prefixCount{};
+  std::array<simd::float3, kBinCount> suffixMin;
+  std::array<simd::float3, kBinCount> suffixMax;
+  std::array<int, kBinCount> suffixCount{};
 
   for (int axis = 0; axis < axisCount; ++axis) {
-    std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
-              [&](size_t a, size_t b) {
-                return primitiveAxisValue(primitives[a], axis) <
-                       primitiveAxisValue(primitives[b], axis);
-              });
+    float axisMin = centroidMin[axis];
+    float axisMax = centroidMax[axis];
+    float axisRange = axisMax - axisMin;
+    if (axisRange <= 1e-6f)
+      continue;
 
-    simd::float3 currMin(std::numeric_limits<float>::max());
-    simd::float3 currMax(-std::numeric_limits<float>::max());
-    for (size_t i = start; i < end; ++i) {
-      const auto &p = primitives[primitiveIndices[i]];
-      simd::float3 pMin, pMax;
-      primitiveBounds(p, pMin, pMax);
-      currMin = simd::min(currMin, pMin);
-      currMax = simd::max(currMax, pMax);
-      leftMin[i - start] = currMin;
-      leftMax[i - start] = currMax;
+    for (int i = 0; i < kBinCount; ++i) {
+      binCount[i] = 0;
+      binMin[i] = simd::float3(std::numeric_limits<float>::max());
+      binMax[i] = simd::float3(-std::numeric_limits<float>::max());
     }
 
-    currMin = simd::float3(std::numeric_limits<float>::max());
-    currMax = simd::float3(-std::numeric_limits<float>::max());
-    for (size_t i = end; i-- > start;) {
-      const auto &p = primitives[primitiveIndices[i]];
-      simd::float3 pMin, pMax;
-      primitiveBounds(p, pMin, pMax);
-      currMin = simd::min(currMin, pMin);
-      currMax = simd::max(currMax, pMax);
-      rightMin[i - start] = currMin;
-      rightMax[i - start] = currMax;
+    float invRange = 1.0f / axisRange;
+    for (size_t i = 0; i < range; ++i) {
+      const simd::float3 &pMin = primitiveMins[i];
+      const simd::float3 &pMax = primitiveMaxs[i];
+      float centroid = primitiveCentroids[i][axis];
+      int bin = static_cast<int>((centroid - axisMin) * invRange * kBinCount);
+      bin = std::max(0, std::min(kBinCount - 1, bin));
+      ++binCount[bin];
+      binMin[bin] = simd::min(binMin[bin], pMin);
+      binMax[bin] = simd::max(binMax[bin], pMax);
     }
 
-    for (size_t i = 1; i < range; ++i) {
-      float saLeft = surfaceArea(leftMin[i - 1], leftMax[i - 1]);
-      float saRight = surfaceArea(rightMin[i], rightMax[i]);
+    simd::float3 runningMin(std::numeric_limits<float>::max());
+    simd::float3 runningMax(-std::numeric_limits<float>::max());
+    int runningCount = 0;
+    for (int i = 0; i < kBinCount; ++i) {
+      if (binCount[i] > 0) {
+        runningMin = simd::min(runningMin, binMin[i]);
+        runningMax = simd::max(runningMax, binMax[i]);
+      }
+      runningCount += binCount[i];
+      prefixMin[i] = runningMin;
+      prefixMax[i] = runningMax;
+      prefixCount[i] = runningCount;
+    }
 
-      size_t leftCount = i;
-      size_t rightCount = range - i;
+    runningMin = simd::float3(std::numeric_limits<float>::max());
+    runningMax = simd::float3(-std::numeric_limits<float>::max());
+    runningCount = 0;
+    for (int i = kBinCount - 1; i >= 0; --i) {
+      if (binCount[i] > 0) {
+        runningMin = simd::min(runningMin, binMin[i]);
+        runningMax = simd::max(runningMax, binMax[i]);
+      }
+      runningCount += binCount[i];
+      suffixMin[i] = runningMin;
+      suffixMax[i] = runningMax;
+      suffixCount[i] = runningCount;
+    }
+
+    for (int i = 0; i < kBinCount - 1; ++i) {
+      int leftCount = prefixCount[i];
+      int rightCount = suffixCount[i + 1];
+      if (leftCount == 0 || rightCount == 0)
+        continue;
+
+      float saLeft = surfaceArea(prefixMin[i], prefixMax[i]);
+      float saRight = surfaceArea(suffixMin[i + 1], suffixMax[i + 1]);
 
       float cost = 0.125f + (saLeft / parentArea) * leftCount +
                    (saRight / parentArea) * rightCount;
@@ -720,19 +779,21 @@ int Scene::buildBVHRecursive(size_t start, size_t end,
       if (cost < bestCost) {
         bestCost = cost;
         bestAxis = axis;
-        bestSplit = start + i;
+        bestLeftCount = static_cast<size_t>(leftCount);
       }
     }
   }
 
-  if (bestAxis == -1)
+  if (bestAxis == -1 || bestLeftCount == 0 || bestLeftCount >= range)
     return nodeIndex;
 
-  std::sort(primitiveIndices.begin() + start, primitiveIndices.begin() + end,
-            [&](size_t a, size_t b) {
-              return primitiveAxisValue(primitives[a], bestAxis) <
-                     primitiveAxisValue(primitives[b], bestAxis);
-            });
+  std::stable_sort(primitiveIndices.begin() + start,
+                   primitiveIndices.begin() + end, [&](size_t a, size_t b) {
+                     return primitiveAxisValue(primitives[a], bestAxis) <
+                            primitiveAxisValue(primitives[b], bestAxis);
+                   });
+
+  bestSplit = start + bestLeftCount;
 
   int leftChild = buildBVHRecursive(start, bestSplit, scratch);
   int rightChild = buildBVHRecursive(bestSplit, end, scratch);
@@ -872,6 +933,12 @@ float Scene::primitiveAxisValue(const Primitive &p, int axis) const {
   else
     return (p.triangle.v0[axis] + p.triangle.v1[axis] + p.triangle.v2[axis]) /
            3.0f;
+}
+
+simd::float3 Scene::primitiveCentroid(const Primitive &p) const {
+  return simd::make_float3(primitiveAxisValue(p, 0),
+                           primitiveAxisValue(p, 1),
+                           primitiveAxisValue(p, 2));
 }
 
 float Scene::objectAxisValue(size_t objectIndex, int axis) const {
