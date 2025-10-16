@@ -33,8 +33,6 @@ void Scene::clear() {
   textureResidencyMemoryCapMB = 2048.0;
   observerCameraValid = false;
   observerCamera = ObserverCamera{};
-  minSamplesPerPixel = 1;
-  maxSamplesPerPixel = 4;
 }
 
 size_t Scene::addPrimitive(const Primitive &p) {
@@ -163,17 +161,6 @@ double Scene::getTextureResidencyMemoryCapMB() const {
 
 void Scene::setTextureResidencyMemoryCapMB(double capMB) {
   textureResidencyMemoryCapMB = capMB;
-}
-
-uint32_t Scene::getMinSamplesPerPixel() const { return minSamplesPerPixel; }
-
-uint32_t Scene::getMaxSamplesPerPixel() const { return maxSamplesPerPixel; }
-
-void Scene::setSamplesPerPixelRange(uint32_t minSamples, uint32_t maxSamples) {
-  uint32_t clampedMin = std::max<uint32_t>(minSamples, 1u);
-  uint32_t clampedMax = std::max<uint32_t>(maxSamples, clampedMin);
-  minSamplesPerPixel = clampedMin;
-  maxSamplesPerPixel = clampedMax;
 }
 
 void Scene::setObserverCamera(const ObserverCamera &camera) {

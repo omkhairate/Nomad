@@ -1275,12 +1275,6 @@ void Renderer::updateVisibleScene() {
          _pScene->getPrimitiveCount(), _pScene->getSphereCount(),
          _pScene->getTriangleCount(), _pScene->getRectangleCount());
 
-  _minSamplesPerPixel = _pScene->getMinSamplesPerPixel();
-  _maxSamplesPerPixel = _pScene->getMaxSamplesPerPixel();
-
-  printf("Sampling range: %u-%u samples per pixel\n", _minSamplesPerPixel,
-         _maxSamplesPerPixel);
-
   _residencyConfig = _pScene->getResidencyParameters();
   _textureResidencyMemoryCapMB =
       std::max(_pScene->getTextureResidencyMemoryCapMB(), 0.0);
