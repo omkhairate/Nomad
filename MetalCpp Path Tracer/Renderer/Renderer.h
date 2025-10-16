@@ -336,6 +336,16 @@ private:
   std::vector<uint32_t> _cachedLightIndices;
   std::vector<float> _cachedLightCdf;
 
+  struct MeshGroupInfo {
+    int meshGroupId = -1;
+    std::vector<size_t> objectIndices;
+    size_t primitiveCount = 0;
+  };
+
+  std::vector<MeshGroupInfo> _meshGroups;
+  std::vector<size_t> _objectPrimitiveCounts;
+  bool _anyMeshGroups = false;
+
   size_t _maxPrimitiveCount = 0;
   size_t _maxTriangleVertexCount = 0;
   size_t _maxTriangleIndexCount = 0;
