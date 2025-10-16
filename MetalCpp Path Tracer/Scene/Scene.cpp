@@ -379,125 +379,6 @@ struct SubsetBVHScratchBuffers {
   }
 };
 
-struct SubsetSAHSplitResult {
-  int axis = -1;
-  size_t leftCount = 0;
-  float cost = std::numeric_limits<float>::max();
-};
-
-SubsetSAHSplitResult evaluateSubsetSAHSplit(
-    const simd::float3 *boundsMin, const simd::float3 *boundsMax,
-    const simd::float3 *centroids, size_t count, float parentArea) {
-  SubsetSAHSplitResult result;
-  if (count <= 1 || parentArea <= 0.0f)
-    return result;
-
-  constexpr int axisCount = 3;
-  constexpr int kBinCount = 12;
-
-  std::array<float, axisCount> centroidMin = {
-      std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
-      std::numeric_limits<float>::max()};
-  std::array<float, axisCount> centroidMax = {
-      -std::numeric_limits<float>::max(), -std::numeric_limits<float>::max(),
-      -std::numeric_limits<float>::max()};
-
-  for (size_t i = 0; i < count; ++i) {
-    const simd::float3 &centroid = centroids[i];
-    centroidMin[0] = std::min(centroidMin[0], centroid.x);
-    centroidMin[1] = std::min(centroidMin[1], centroid.y);
-    centroidMin[2] = std::min(centroidMin[2], centroid.z);
-    centroidMax[0] = std::max(centroidMax[0], centroid.x);
-    centroidMax[1] = std::max(centroidMax[1], centroid.y);
-    centroidMax[2] = std::max(centroidMax[2], centroid.z);
-  }
-
-  std::array<int, kBinCount> binCount{};
-  std::array<simd::float3, kBinCount> binMin;
-  std::array<simd::float3, kBinCount> binMax;
-  std::array<simd::float3, kBinCount> prefixMin;
-  std::array<simd::float3, kBinCount> prefixMax;
-  std::array<int, kBinCount> prefixCount{};
-  std::array<simd::float3, kBinCount> suffixMin;
-  std::array<simd::float3, kBinCount> suffixMax;
-  std::array<int, kBinCount> suffixCount{};
-
-  for (int axis = 0; axis < axisCount; ++axis) {
-    float axisMin = centroidMin[axis];
-    float axisMax = centroidMax[axis];
-    float axisRange = axisMax - axisMin;
-    if (axisRange <= 1e-6f)
-      continue;
-
-    for (int i = 0; i < kBinCount; ++i) {
-      binCount[i] = 0;
-      binMin[i] =
-          simd::float3(std::numeric_limits<float>::max());
-      binMax[i] =
-          simd::float3(-std::numeric_limits<float>::max());
-    }
-
-    float invRange = 1.0f / axisRange;
-    for (size_t i = 0; i < count; ++i) {
-      float centroid = centroids[i][axis];
-      int bin = static_cast<int>((centroid - axisMin) * invRange * kBinCount);
-      bin = std::max(0, std::min(kBinCount - 1, bin));
-      ++binCount[bin];
-      binMin[bin] = simd::min(binMin[bin], boundsMin[i]);
-      binMax[bin] = simd::max(binMax[bin], boundsMax[i]);
-    }
-
-    simd::float3 runningMin(std::numeric_limits<float>::max());
-    simd::float3 runningMax(-std::numeric_limits<float>::max());
-    int runningCount = 0;
-    for (int i = 0; i < kBinCount; ++i) {
-      if (binCount[i] > 0) {
-        runningMin = simd::min(runningMin, binMin[i]);
-        runningMax = simd::max(runningMax, binMax[i]);
-      }
-      runningCount += binCount[i];
-      prefixMin[i] = runningMin;
-      prefixMax[i] = runningMax;
-      prefixCount[i] = runningCount;
-    }
-
-    runningMin = simd::float3(std::numeric_limits<float>::max());
-    runningMax = simd::float3(-std::numeric_limits<float>::max());
-    runningCount = 0;
-    for (int i = kBinCount - 1; i >= 0; --i) {
-      if (binCount[i] > 0) {
-        runningMin = simd::min(runningMin, binMin[i]);
-        runningMax = simd::max(runningMax, binMax[i]);
-      }
-      runningCount += binCount[i];
-      suffixMin[i] = runningMin;
-      suffixMax[i] = runningMax;
-      suffixCount[i] = runningCount;
-    }
-
-    for (int i = 0; i < kBinCount - 1; ++i) {
-      int leftCount = prefixCount[i];
-      int rightCount = suffixCount[i + 1];
-      if (leftCount == 0 || rightCount == 0)
-        continue;
-
-      float saLeft = subsetSurfaceArea(prefixMin[i], prefixMax[i]);
-      float saRight = subsetSurfaceArea(suffixMin[i + 1], suffixMax[i + 1]);
-
-      float cost = 0.125f + (saLeft / parentArea) * leftCount +
-                   (saRight / parentArea) * rightCount;
-
-      if (cost < result.cost) {
-        result.cost = cost;
-        result.axis = axis;
-        result.leftCount = static_cast<size_t>(leftCount);
-      }
-    }
-  }
-
-  return result;
-}
-
 void subsetPrimitiveBounds(const Primitive &p, simd::float3 &pMin,
                            simd::float3 &pMax) {
   if (p.type == PrimitiveType::Sphere) {
@@ -610,9 +491,9 @@ int buildSubsetBVHRecursive(const Scene &scene,
     primitiveCentroids[i - start] = subsetPrimitiveCentroid(p);
   }
 
-  auto sahResult = evaluateSubsetSAHSplit(primitiveMins, primitiveMaxs,
-                                          primitiveCentroids, range,
-                                          parentArea);
+  auto sahResult =
+      scene.evaluateSAHSplit(primitiveMins, primitiveMaxs, primitiveCentroids,
+                             range, parentArea);
 
   int bestAxis = sahResult.axis;
   size_t bestLeftCount =
