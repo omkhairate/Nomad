@@ -147,10 +147,9 @@ public:
 
 private:
   struct BVHScratchBuffers {
-    std::vector<simd::float3> leftMin;
-    std::vector<simd::float3> leftMax;
-    std::vector<simd::float3> rightMin;
-    std::vector<simd::float3> rightMax;
+    std::vector<simd::float3> primitiveMins;
+    std::vector<simd::float3> primitiveMaxs;
+    std::vector<simd::float3> primitiveCentroids;
     size_t allocationEvents = 0;
     size_t maxScratchSize = 0;
 
@@ -180,6 +179,7 @@ private:
   int buildTLASRecursive(size_t start, size_t end);
   float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax);
   float primitiveAxisValue(const Primitive &p, int axis) const;
+  simd::float3 primitiveCentroid(const Primitive &p) const;
   float objectAxisValue(size_t objectIndex, int axis) const;
   void primitiveBounds(const Primitive &p, simd::float3 &pMin,
                        simd::float3 &pMax) const;
