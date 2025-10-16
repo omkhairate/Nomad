@@ -147,8 +147,7 @@ private:
   bool rayHitCopyReady() const;
   void processRayHitCounters();
   bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
-                       ResidentObjectGpuResources &residentResources,
-                       MTL::CommandBuffer *&outCommandBuffer);
+                       ResidentObjectGpuResources &residentResources);
   bool ensureDummyBlas();
   void updateTopLevelAccelerationStructure(
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
@@ -193,8 +192,6 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
-  MTL::CommandBuffer *_primitiveHitClearCommand = nullptr;
-  bool _primitiveHitClearCompleted = false;
   MTL::CommandBuffer *_lastRayHitCommandBuffer = nullptr;
   bool _rayHitCopyError = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
