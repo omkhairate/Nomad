@@ -76,6 +76,12 @@ struct UniformsData
     uint textureCount;
 };
 
+struct TileRegion
+{
+    uint2 origin;
+    uint2 size;
+};
+
 struct PackedTexture
 {
     uint offset;
