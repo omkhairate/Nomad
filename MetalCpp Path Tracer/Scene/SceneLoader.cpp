@@ -150,6 +150,12 @@ static Material ConvertTinyMaterial(const tinyobj::material_t& src,
     material.diffuseTextureIndex = ResolveTextureIndex(src.diffuse_texname,
                                                        baseDir, scene,
                                                        textureCache);
+    if (material.diffuseTextureIndex >= 0) {
+        constexpr float kMinDiffuseLuminance = 1.0e-4f;
+        if (luminance(material.diffuseColor) <= kMinDiffuseLuminance) {
+            material.diffuseColor = simd::make_float3(1.0f, 1.0f, 1.0f);
+        }
+    }
     material.specularTextureIndex = ResolveTextureIndex(src.specular_texname,
                                                         baseDir, scene,
                                                         textureCache);
