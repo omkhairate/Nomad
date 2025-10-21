@@ -683,11 +683,13 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
       }
     }
 
-    r.origin = bestHit.point + 0.0001 * offsetNormal;
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
     float3 scatterWeight = scatter(r, bestHit, material, seed);
     seed = random(seed);
+    float3 biasNormal =
+        (dot(r.direction, offsetNormal) < 0.0f) ? -offsetNormal : offsetNormal;
+    r.origin = bestHit.point + 0.0001f * biasNormal;
     absorption.xyz *= scatterWeight;
     absorption.w = 1.0f;
 
