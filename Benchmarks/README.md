@@ -8,3 +8,20 @@ The path tracer can emit additional metrics and frame captures while running ben
 - `MPT_CAPTURE_INTERVAL` (default: `4`) – capture every _n_ frames when EXR capture is enabled. Values less than `1` are ignored and treated as `1`.
 
 These variables can be exported in your shell or added to any run scripts you maintain for benchmarking sessions.
+
+## Comparing EXR captures
+
+Use `compare_exr_ssim.cpp` to quantify the visual difference between two EXR frames with the Structural Similarity Index (SSIM). Build the tool with a C++17 compiler:
+
+```bash
+cd MetalPathtracer
+g++ -std=c++17 compare_exr_ssim.cpp -o compare_exr_ssim
+```
+
+The executable expects two EXR files that share the same resolution. By default it evaluates the RGB channels (ignoring alpha):
+
+```bash
+./compare_exr_ssim Benchmarks/frames/frame_000000.exr Benchmarks/frames/frame_000006.exr
+```
+
+Use `--include-alpha` to keep the alpha channel in the computation or `--luminance` to reduce RGB data to a single luminance channel prior to computing SSIM. The SSIM kernel can be adjusted with `--window-size` (odd integer) and `--sigma` if you need to tune the spatial weighting.
