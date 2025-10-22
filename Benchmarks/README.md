@@ -25,3 +25,8 @@ The executable expects two EXR files that share the same resolution. By default 
 ```
 
 Use `--include-alpha` to keep the alpha channel in the computation or `--luminance` to reduce RGB data to a single luminance channel prior to computing SSIM. The SSIM kernel can be adjusted with `--window-size` (odd integer) and `--sigma` if you need to tune the spatial weighting.
+
+## Latest benchmark snapshot
+
+- `metrics_20251015_150120.csv` captures the baseline renderer before the TLAS leaf caching changes.
+- `metrics_20251016_101530.csv` reflects the post-optimization run and shows an average GPU frame time that is roughly 15% lower.

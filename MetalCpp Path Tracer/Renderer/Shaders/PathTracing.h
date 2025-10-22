@@ -18,6 +18,14 @@ struct Ray {
   float maxDistance = 0.0f;
 };
 
+struct TlasLeafCache {
+  bool valid = false;
+  int instanceId = -1;
+  int blasRootIndex = -1;
+  float3 boundsMin = float3(0.0f);
+  float3 boundsMax = float3(0.0f);
+};
+
 #include "Intersect.h"
 #include "Random.h"
 #include "Scatter.h"
@@ -387,12 +395,21 @@ inline intersection firstHitTLAS(
     thread const Ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
     device const float4 *bvhNodes, device const float4 *primitives,
     device const int *primitiveIndices, device const uchar *activeMask,
-    device const InstanceRecord *instanceRecords) {
+    device const InstanceRecord *instanceRecords,
+    thread TlasLeafCache *cache) {
   intersection bestHit;
   bestHit.t = INFINITY;
   bestHit.primitiveId = -1;
   bestHit.nodeIndex = -1;
   bestHit.isTriangle = 0;
+
+  if (cache) {
+    cache->valid = false;
+    cache->instanceId = -1;
+    cache->blasRootIndex = -1;
+    cache->boundsMin = float3(0.0f);
+    cache->boundsMax = float3(0.0f);
+  }
 
   if (tlasNodeCount == 0)
     return bestHit;
@@ -413,18 +430,26 @@ inline intersection firstHitTLAS(
     int leftChild = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
     int rightChild = as_type<int>(tlasNodes[2 * nodeIdx + 1].w);
 
-    if (leftChild < 0) {
-      int instanceId = -(leftChild + 1);
-      InstanceRecord record = instanceRecords[instanceId];
-      int blasRoot = record.blasRootIndex;
-      if (blasRoot >= 0) {
-        intersection hit = firstHitBVH(r, bvhNodes, primitives,
-                                       primitiveIndices, activeMask, blasRoot);
-        if (hit.primitiveId != -1 && hit.t < bestHit.t)
-          bestHit = hit;
+      if (leftChild < 0) {
+        int instanceId = -(leftChild + 1);
+        InstanceRecord record = instanceRecords[instanceId];
+        int blasRoot = record.blasRootIndex;
+        if (blasRoot >= 0) {
+          intersection hit = firstHitBVH(r, bvhNodes, primitives,
+                                         primitiveIndices, activeMask, blasRoot);
+          if (hit.primitiveId != -1 && hit.t < bestHit.t) {
+            bestHit = hit;
+            if (cache) {
+              cache->valid = true;
+              cache->instanceId = instanceId;
+              cache->blasRootIndex = blasRoot;
+              cache->boundsMin = bmin;
+              cache->boundsMax = bmax;
+            }
+          }
+        }
+        continue;
       }
-      continue;
-    }
 
     bool leftHit = false;
     bool rightHit = false;
@@ -502,7 +527,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
   } else if (debugAS == 2) {
     intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
                                         primitives, primitiveIndices,
-                                        activeMask, instanceRecords);
+                                        activeMask, instanceRecords, nullptr);
     if (bestHit.primitiveId != -1) {
       float t = (blasNodeCount > 1)
                     ? float(bestHit.nodeIndex) / float(blasNodeCount - 1)
@@ -516,9 +541,12 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
   float4 light = float4(0.0);
 
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
+    TlasLeafCache bounceCache;
+    bounceCache.valid = false;
     intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
                                         primitives, primitiveIndices,
-                                        activeMask, instanceRecords);
+                                        activeMask, instanceRecords,
+                                        &bounceCache);
 
     if (bestHit.primitiveId == -1) {
       float3 unitDir = normalize(r.direction);
@@ -648,9 +676,31 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                     shadowRay.maxDistance = dist - 0.0001f;
                     if (shadowRay.maxDistance < shadowRay.minDistance)
                       shadowRay.maxDistance = shadowRay.minDistance;
-                    intersection shadowHit = firstHitTLAS(
-                        shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
-                        primitives, primitiveIndices, activeMask, instanceRecords);
+                    intersection shadowHit;
+                    bool usedCache = false;
+                    if (bounceCache.valid) {
+                      bool intersectsCached = intersectAABB(
+                          shadowRay, bounceCache.boundsMin,
+                          bounceCache.boundsMax, shadowRay.minDistance,
+                          shadowRay.maxDistance);
+                      if (intersectsCached && bounceCache.blasRootIndex >= 0) {
+                        intersection cachedHit = firstHitBVH(
+                            shadowRay, bvhNodes, primitives, primitiveIndices,
+                            activeMask, bounceCache.blasRootIndex);
+                        if (cachedHit.primitiveId != -1 &&
+                            cachedHit.primitiveId != int(lightPrimIndex) &&
+                            cachedHit.t <= shadowRay.maxDistance) {
+                          shadowHit = cachedHit;
+                          usedCache = true;
+                        }
+                      }
+                    }
+                    if (!usedCache) {
+                      shadowHit = firstHitTLAS(
+                          shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
+                          primitives, primitiveIndices, activeMask,
+                          instanceRecords, nullptr);
+                    }
                     bool visible = false;
                     if (shadowHit.primitiveId == -1) {
                       visible = true;
