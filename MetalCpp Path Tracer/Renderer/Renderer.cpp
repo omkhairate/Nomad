@@ -29,7 +29,6 @@
 #include <numeric>
 #include <simd/simd.h>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <tuple>
@@ -1243,7 +1242,6 @@ void Renderer::setDeltaTime(double deltaSeconds) {
 void Renderer::buildShaders() {
   using NS::StringEncoding::UTF8StringEncoding;
 
-  _shadersReady = false;
   if (_pPSO) {
     _pPSO->release();
     _pPSO = nullptr;
@@ -1265,9 +1263,8 @@ void Renderer::buildShaders() {
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
 
   if (!pLibrary) {
-    const char *message = "Failed to load Metal library";
-    __builtin_printf("%s\n", message);
-    throw std::runtime_error(message);
+    __builtin_printf("Failed to load Metal library\n");
+    assert(false);
   }
 
   MTL::Function *pVertexFn = pLibrary->newFunction(
@@ -1277,33 +1274,6 @@ void Renderer::buildShaders() {
 
   MTL::RenderPipelineDescriptor *pDesc =
       MTL::RenderPipelineDescriptor::alloc()->init();
-
-  auto cleanupLibraryResources = [&]() {
-    if (pVertexFn) {
-      pVertexFn->release();
-      pVertexFn = nullptr;
-    }
-    if (pFragFn) {
-      pFragFn->release();
-      pFragFn = nullptr;
-    }
-    if (pDesc) {
-      pDesc->release();
-      pDesc = nullptr;
-    }
-    if (pLibrary) {
-      pLibrary->release();
-      pLibrary = nullptr;
-    }
-  };
-
-  if (!pVertexFn || !pFragFn || !pDesc) {
-    const char *message = "Failed to create shader functions";
-    __builtin_printf("%s\n", message);
-    cleanupLibraryResources();
-    throw std::runtime_error(message);
-  }
-
   pDesc->setVertexFunction(pVertexFn);
   pDesc->setFragmentFunction(pFragFn);
   pDesc->colorAttachments()->object(0)->setPixelFormat(
@@ -1311,28 +1281,9 @@ void Renderer::buildShaders() {
 
   _pPSO = _pDevice->newRenderPipelineState(pDesc, &pError);
   if (!_pPSO) {
-    std::string message = "Failed to create present pipeline state";
-    if (pError && pError->localizedDescription()) {
-      const char *errorText = pError->localizedDescription()->utf8String();
-      if (errorText) {
-        __builtin_printf("%s\n", errorText);
-        message += ": ";
-        message += errorText;
-      }
-    }
-    cleanupLibraryResources();
-    throw std::runtime_error(message);
+    __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    assert(false);
   }
-
-  if (pVertexFn)
-    pVertexFn->release();
-  pVertexFn = nullptr;
-  if (pFragFn)
-    pFragFn->release();
-  pFragFn = nullptr;
-  if (pDesc)
-    pDesc->release();
-  pDesc = nullptr;
 
   pError = nullptr;
   MTL::Function *pOverlayVertexFn = pLibrary->newFunction(
@@ -1353,8 +1304,7 @@ void Renderer::buildShaders() {
     if (!_pOverlayPSO && pError) {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
-    if (pOverlayDesc)
-      pOverlayDesc->release();
+    pOverlayDesc->release();
   }
   if (pOverlayVertexFn)
     pOverlayVertexFn->release();
@@ -1403,11 +1353,7 @@ void Renderer::buildShaders() {
         }
       }
     }
-    if (pPathTraceFn)
-      pPathTraceFn->release();
-  } else {
-    cleanupLibraryResources();
-    throw std::runtime_error("Failed to load path tracing kernel function");
+    pPathTraceFn->release();
   }
 
   pError = nullptr;
@@ -1419,17 +1365,13 @@ void Renderer::buildShaders() {
     if (!_pAdaptiveSamplingPSO && pError) {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
-    if (pAdaptiveFn)
-      pAdaptiveFn->release();
+    pAdaptiveFn->release();
   }
 
-  if (!_pPathTracePSO) {
-    cleanupLibraryResources();
-    throw std::runtime_error("Failed to create path tracing pipeline state");
-  }
-
-  _shadersReady = _pPSO && _pPathTracePSO;
-  cleanupLibraryResources();
+  pVertexFn->release();
+  pFragFn->release();
+  pDesc->release();
+  pLibrary->release();
 }
 
 void Renderer::updateVisibleScene() {
@@ -4521,13 +4463,6 @@ void Renderer::draw(MTK::View *pView) {
     } else {
       completeFrameMetrics(nullptr);
     }
-    ++_renderedFrameCount;
-    pPool->release();
-    return;
-  }
-
-  if (!_shadersReady) {
-    completeFrameMetrics(nullptr);
     ++_renderedFrameCount;
     pPool->release();
     return;
