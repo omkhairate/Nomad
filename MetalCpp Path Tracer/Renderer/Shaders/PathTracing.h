@@ -10,6 +10,9 @@ using namespace metal;
 
 constant uint kMaterialFloat4Count = 5;
 constant uint kPrimitiveFloat4Count = 4;
+constant uint kMaxMaterialTextures = 64;
+
+constexpr sampler kMaterialTextureSampler(address::repeat, filter::linear);
 
 struct Ray {
   float3 origin;
@@ -93,42 +96,25 @@ inline MaterialPayload decodeMaterial(int baseIndex,
   return payload;
 }
 
+template <typename TextureArray>
 inline float4 samplePackedTexture(int index, float2 uv,
-                                  device const PackedTexture *textures,
-                                  device const float4 *textureData,
+                                  thread const TextureArray &textures,
                                   uint textureCount) {
-  if (index < 0 || textures == nullptr || textureData == nullptr)
+  if (index < 0)
     return float4(1.0f);
+
   uint texIndex = uint(index);
   if (texIndex >= textureCount)
     return float4(1.0f);
 
-  PackedTexture tex = textures[texIndex];
-  if (tex.width == 0 || tex.height == 0)
+  texture2d<float, access::sample> tex = textures[texIndex];
+  uint width = tex.get_width();
+  uint height = tex.get_height();
+  if (width == 0 || height == 0)
     return float4(1.0f);
 
   float2 coord = float2(uv.x - floor(uv.x), uv.y - floor(uv.y));
-  float sx = coord.x * (float(tex.width) - 1.0f);
-  float sy = coord.y * (float(tex.height) - 1.0f);
-  int x0 = clamp(int(floor(sx)), 0, int(tex.width - 1));
-  int y0 = clamp(int(floor(sy)), 0, int(tex.height - 1));
-  int x1 = min(x0 + 1, int(tex.width - 1));
-  int y1 = min(y0 + 1, int(tex.height - 1));
-  float fx = sx - float(x0);
-  float fy = sy - float(y0);
-
-  auto texelAt = [&](int x, int y) -> float4 {
-    uint offset = tex.offset + uint(y) * tex.width + uint(x);
-    return textureData[offset];
-  };
-
-  float4 c00 = texelAt(x0, y0);
-  float4 c10 = texelAt(x1, y0);
-  float4 c01 = texelAt(x0, y1);
-  float4 c11 = texelAt(x1, y1);
-  float4 c0 = mix(c00, c10, fx);
-  float4 c1 = mix(c01, c11, fx);
-  return mix(c0, c1, fy);
+  return tex.sample(kMaterialTextureSampler, coord, level(0.0f));
 }
 
 inline uint selectLightOffset(float xi, device const float *lightCdf,
@@ -494,6 +480,7 @@ inline intersection firstHitTLAS(
   return bestHit;
 }
 
+template <typename TextureArray>
 inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                        device const float4 *tlasNodes,
                        uint tlasNodeCount, device const float4 *bvhNodes,
@@ -509,8 +496,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                        thread uint32_t &seed, uint maxRayDepth,
                        uint debugAS, uint blasNodeCount, uint lightCount,
                        float lightTotalWeight, uint totalPrimitiveCount,
-                       device const PackedTexture *textures,
-                       device const float4 *textureData,
+                       thread const TextureArray &textures,
                        uint textureCount) {
   float footprint = length(cross(rayDx, rayDy));
   float lodAtten = 1.0 / (1.0 + footprint);
@@ -607,15 +593,13 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
     if (haveUV) {
       if (material.diffuseTextureIndex >= 0) {
         float4 sample = samplePackedTexture(material.diffuseTextureIndex,
-                                            surfaceUV, textures, textureData,
-                                            textureCount);
+                                            surfaceUV, textures, textureCount);
         material.diffuseColor *= sample.xyz;
         material.opacity *= clamp(sample.w, 0.0f, 1.0f);
       }
       if (material.specularTextureIndex >= 0) {
         float4 sample = samplePackedTexture(material.specularTextureIndex,
-                                            surfaceUV, textures, textureData,
-                                            textureCount);
+                                            surfaceUV, textures, textureCount);
         material.specularColor *= sample.xyz;
       }
     }
