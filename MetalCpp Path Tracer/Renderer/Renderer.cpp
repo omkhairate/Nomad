@@ -185,51 +185,6 @@ size_t alignTo(size_t value, size_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
-std::string nsStringToStd(NS::String *string) {
-  if (!string)
-    return {};
-  const char *utf8 = string->utf8String();
-  if (!utf8)
-    return {};
-  return std::string(utf8);
-}
-
-std::string describeError(NS::Error *error) {
-  if (!error)
-    return {};
-  return nsStringToStd(error->localizedDescription());
-}
-
-void writeToStderr(const std::string &text) {
-  if (text.empty())
-    return;
-  std::fprintf(stderr, "%s\n", text.c_str());
-  std::fflush(stderr);
-}
-
-void logShaderDiagnostic(const char *message, NS::Error *error = nullptr) {
-  if (message && *message)
-    writeToStderr(message);
-  std::string description = describeError(error);
-  if (!description.empty())
-    writeToStderr(description);
-}
-
-std::string logShaderFailure(const char *message, NS::Error *error = nullptr) {
-  std::string combined = message ? std::string(message) : std::string();
-  std::string description = describeError(error);
-  if (!combined.empty())
-    writeToStderr(combined);
-  if (!description.empty())
-    writeToStderr(description);
-  if (!description.empty()) {
-    if (!combined.empty())
-      combined += ": ";
-    combined += description;
-  }
-  return combined;
-}
-
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
 constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
 constexpr float kFrustumDebugNear = 0.1f;
@@ -809,9 +764,7 @@ Renderer::Renderer(MTL::Device *pDevice)
   _observerCameraState = _primaryCameraState;
 
   updateVisibleScene();
-  ShaderBuildResult shaderStatus = buildShaders();
-  if (!shaderStatus.success && shaderStatus.message.empty())
-    writeToStderr("Renderer shader build failed with no diagnostic message.");
+  buildShaders();
   buildTextures();
 
   recalculateViewport();
@@ -1287,10 +1240,8 @@ void Renderer::setDeltaTime(double deltaSeconds) {
   Camera::deltaTime = static_cast<float>(_deltaTimeSeconds);
 }
 
-Renderer::ShaderBuildResult Renderer::buildShaders() {
+void Renderer::buildShaders() {
   using NS::StringEncoding::UTF8StringEncoding;
-
-  ShaderBuildResult result{};
 
   _shadersReady = false;
   if (_pPSO) {
@@ -1312,14 +1263,20 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
-  MTL::Function *pVertexFn = nullptr;
-  MTL::Function *pFragFn = nullptr;
-  MTL::RenderPipelineDescriptor *pDesc = nullptr;
-  MTL::Function *pOverlayVertexFn = nullptr;
-  MTL::Function *pOverlayFragmentFn = nullptr;
-  MTL::RenderPipelineDescriptor *pOverlayDesc = nullptr;
-  MTL::Function *pPathTraceFn = nullptr;
-  MTL::Function *pAdaptiveFn = nullptr;
+
+  if (!pLibrary) {
+    const char *message = "Failed to load Metal library";
+    __builtin_printf("%s\n", message);
+    throw std::runtime_error(message);
+  }
+
+  MTL::Function *pVertexFn = pLibrary->newFunction(
+      NS::String::string("vertexMain", UTF8StringEncoding));
+  MTL::Function *pFragFn = pLibrary->newFunction(
+      NS::String::string("presentMain", UTF8StringEncoding));
+
+  MTL::RenderPipelineDescriptor *pDesc =
+      MTL::RenderPipelineDescriptor::alloc()->init();
 
   auto cleanupLibraryResources = [&]() {
     if (pVertexFn) {
@@ -1334,48 +1291,17 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
       pDesc->release();
       pDesc = nullptr;
     }
-    if (pOverlayVertexFn) {
-      pOverlayVertexFn->release();
-      pOverlayVertexFn = nullptr;
-    }
-    if (pOverlayFragmentFn) {
-      pOverlayFragmentFn->release();
-      pOverlayFragmentFn = nullptr;
-    }
-    if (pOverlayDesc) {
-      pOverlayDesc->release();
-      pOverlayDesc = nullptr;
-    }
-    if (pPathTraceFn) {
-      pPathTraceFn->release();
-      pPathTraceFn = nullptr;
-    }
-    if (pAdaptiveFn) {
-      pAdaptiveFn->release();
-      pAdaptiveFn = nullptr;
-    }
     if (pLibrary) {
       pLibrary->release();
       pLibrary = nullptr;
     }
   };
 
-  if (!pLibrary) {
-    result.message = logShaderFailure("Failed to load Metal library");
-    cleanupLibraryResources();
-    return result;
-  }
-
-  pVertexFn = pLibrary->newFunction(
-      NS::String::string("vertexMain", UTF8StringEncoding));
-  pFragFn = pLibrary->newFunction(
-      NS::String::string("presentMain", UTF8StringEncoding));
-  pDesc = MTL::RenderPipelineDescriptor::alloc()->init();
-
   if (!pVertexFn || !pFragFn || !pDesc) {
-    result.message = logShaderFailure("Failed to create shader functions");
+    const char *message = "Failed to create shader functions";
+    __builtin_printf("%s\n", message);
     cleanupLibraryResources();
-    return result;
+    throw std::runtime_error(message);
   }
 
   pDesc->setVertexFunction(pVertexFn);
@@ -1385,138 +1311,125 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
 
   _pPSO = _pDevice->newRenderPipelineState(pDesc, &pError);
   if (!_pPSO) {
-    result.message =
-        logShaderFailure("Failed to create present pipeline state", pError);
-    pError = nullptr;
+    std::string message = "Failed to create present pipeline state";
+    if (pError && pError->localizedDescription()) {
+      const char *errorText = pError->localizedDescription()->utf8String();
+      if (errorText) {
+        __builtin_printf("%s\n", errorText);
+        message += ": ";
+        message += errorText;
+      }
+    }
     cleanupLibraryResources();
-    return result;
+    throw std::runtime_error(message);
   }
 
-  if (pVertexFn) {
+  if (pVertexFn)
     pVertexFn->release();
-    pVertexFn = nullptr;
-  }
-  if (pFragFn) {
+  pVertexFn = nullptr;
+  if (pFragFn)
     pFragFn->release();
-    pFragFn = nullptr;
-  }
-  if (pDesc) {
+  pFragFn = nullptr;
+  if (pDesc)
     pDesc->release();
-    pDesc = nullptr;
-  }
+  pDesc = nullptr;
 
   pError = nullptr;
-  pOverlayVertexFn = pLibrary->newFunction(
+  MTL::Function *pOverlayVertexFn = pLibrary->newFunction(
       NS::String::string("frustumDebugVertexMain", UTF8StringEncoding));
-  pOverlayFragmentFn = pLibrary->newFunction(
+  MTL::Function *pOverlayFragmentFn = pLibrary->newFunction(
       NS::String::string("frustumDebugFragmentMain", UTF8StringEncoding));
   if (pOverlayVertexFn && pOverlayFragmentFn) {
-    pOverlayDesc = MTL::RenderPipelineDescriptor::alloc()->init();
-    if (pOverlayDesc) {
-      pOverlayDesc->setVertexFunction(pOverlayVertexFn);
-      pOverlayDesc->setFragmentFunction(pOverlayFragmentFn);
-      pOverlayDesc->colorAttachments()->object(0)->setPixelFormat(
-          MTL::PixelFormat::PixelFormatRGBA16Float);
-      pOverlayDesc->setInputPrimitiveTopology(
-          MTL::PrimitiveTopologyClass::PrimitiveTopologyClassLine);
+    MTL::RenderPipelineDescriptor *pOverlayDesc =
+        MTL::RenderPipelineDescriptor::alloc()->init();
+    pOverlayDesc->setVertexFunction(pOverlayVertexFn);
+    pOverlayDesc->setFragmentFunction(pOverlayFragmentFn);
+    pOverlayDesc->colorAttachments()->object(0)->setPixelFormat(
+        MTL::PixelFormat::PixelFormatRGBA16Float);
+    pOverlayDesc->setInputPrimitiveTopology(
+        MTL::PrimitiveTopologyClass::PrimitiveTopologyClassLine);
 
-      _pOverlayPSO = _pDevice->newRenderPipelineState(pOverlayDesc, &pError);
-      if (!_pOverlayPSO && pError) {
-        logShaderDiagnostic("Failed to create overlay pipeline state", pError);
-      }
-      pOverlayDesc->release();
-      pOverlayDesc = nullptr;
+    _pOverlayPSO = _pDevice->newRenderPipelineState(pOverlayDesc, &pError);
+    if (!_pOverlayPSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
+    if (pOverlayDesc)
+      pOverlayDesc->release();
   }
-  if (pOverlayVertexFn) {
+  if (pOverlayVertexFn)
     pOverlayVertexFn->release();
-    pOverlayVertexFn = nullptr;
-  }
-  if (pOverlayFragmentFn) {
+  if (pOverlayFragmentFn)
     pOverlayFragmentFn->release();
-    pOverlayFragmentFn = nullptr;
-  }
 
   pError = nullptr;
   _useAccelerationStructureBindings = false;
-  pPathTraceFn = pLibrary->newFunction(
+  MTL::Function *pPathTraceFn = pLibrary->newFunction(
       NS::String::string("pathTraceKernel", UTF8StringEncoding));
-  if (!pPathTraceFn) {
-    result.message =
-        logShaderFailure("Failed to load path tracing kernel function");
-    cleanupLibraryResources();
-    return result;
-  }
-
-  MTL::AutoreleasedComputePipelineReflection reflection = nullptr;
-  _pPathTracePSO = _pDevice->newComputePipelineState(
-      pPathTraceFn, MTL::PipelineOptionArgumentInfo, &reflection, &pError);
-  if (!_pPathTracePSO) {
-    if (pError) {
-      logShaderDiagnostic(
-          "Failed to create path tracing pipeline with argument reflection",
-          pError);
+  if (pPathTraceFn) {
+    MTL::AutoreleasedComputePipelineReflection reflection = nullptr;
+    _pPathTracePSO = _pDevice->newComputePipelineState(
+        pPathTraceFn, MTL::PipelineOptionArgumentInfo, &reflection, &pError);
+    if (!_pPathTracePSO) {
+      if (pError) {
+        __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+      }
+      pError = nullptr;
+      reflection = nullptr;
+      _pPathTracePSO =
+          _pDevice->newComputePipelineState(pPathTraceFn, &pError);
+      if (!_pPathTracePSO && pError) {
+        __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+      }
     }
-    pError = nullptr;
-    reflection = nullptr;
-    _pPathTracePSO = _pDevice->newComputePipelineState(pPathTraceFn, &pError);
-    if (!_pPathTracePSO && pError) {
-      logShaderDiagnostic("Failed to create path tracing pipeline state",
-                          pError);
-    }
-  }
-
-  if (!_pPathTracePSO) {
-    result.message =
-        logShaderFailure("Failed to create path tracing pipeline state", pError);
-    cleanupLibraryResources();
-    return result;
-  }
-
-  if (_pPathTracePSO && reflection) {
-    NS::Array *arguments = reflection->arguments();
-    if (arguments) {
-      for (NS::UInteger i = 0; i < arguments->count(); ++i) {
-        auto *argument = static_cast<MTL::Argument *>(arguments->object(i));
-        if (!argument)
-          continue;
-        if (argument->type() ==
-            MTL::ArgumentType::ArgumentTypeInstanceAccelerationStructure) {
-          _useAccelerationStructureBindings = true;
-          break;
-        }
-        if (argument->type() == MTL::ArgumentType::ArgumentTypeBuffer &&
-            argument->bufferDataType() ==
-                MTL::DataType::DataTypeInstanceAccelerationStructure) {
-          _useAccelerationStructureBindings = true;
-          break;
+    if (_pPathTracePSO && reflection) {
+      NS::Array *arguments = reflection->arguments();
+      if (arguments) {
+        for (NS::UInteger i = 0; i < arguments->count(); ++i) {
+          auto *argument =
+              static_cast<MTL::Argument *>(arguments->object(i));
+          if (!argument)
+            continue;
+          if (argument->type() ==
+              MTL::ArgumentType::ArgumentTypeInstanceAccelerationStructure) {
+            _useAccelerationStructureBindings = true;
+            break;
+          }
+          if (argument->type() == MTL::ArgumentType::ArgumentTypeBuffer &&
+              argument->bufferDataType() ==
+                  MTL::DataType::DataTypeInstanceAccelerationStructure) {
+            _useAccelerationStructureBindings = true;
+            break;
+          }
         }
       }
     }
-  }
-  if (pPathTraceFn) {
-    pPathTraceFn->release();
-    pPathTraceFn = nullptr;
+    if (pPathTraceFn)
+      pPathTraceFn->release();
+  } else {
+    cleanupLibraryResources();
+    throw std::runtime_error("Failed to load path tracing kernel function");
   }
 
   pError = nullptr;
-  pAdaptiveFn = pLibrary->newFunction(
+  MTL::Function *pAdaptiveFn = pLibrary->newFunction(
       NS::String::string("adaptiveSamplingMain", UTF8StringEncoding));
   if (pAdaptiveFn) {
     _pAdaptiveSamplingPSO =
         _pDevice->newComputePipelineState(pAdaptiveFn, &pError);
     if (!_pAdaptiveSamplingPSO && pError) {
-      logShaderDiagnostic("Failed to create adaptive sampling pipeline state",
-                          pError);
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
-    pAdaptiveFn->release();
-    pAdaptiveFn = nullptr;
+    if (pAdaptiveFn)
+      pAdaptiveFn->release();
+  }
+
+  if (!_pPathTracePSO) {
+    cleanupLibraryResources();
+    throw std::runtime_error("Failed to create path tracing pipeline state");
   }
 
   _shadersReady = _pPSO && _pPathTracePSO;
-  result.success = _shadersReady;
   cleanupLibraryResources();
-  return result;
 }
 
 void Renderer::updateVisibleScene() {
