@@ -27,7 +27,6 @@ private:
   std::string _dumpPath;
   std::ofstream _gpuMemLog;
   std::ofstream _perfLog;
-  bool _rendererReady = false;
 };
 
 }; // namespace MetalCppPathTracer
