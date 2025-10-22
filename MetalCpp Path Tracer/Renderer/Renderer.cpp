@@ -39,29 +39,6 @@
 
 namespace MetalCppPathTracer {
 
-namespace {
-using Clock = std::chrono::high_resolution_clock;
-
-template <typename T>
-bool ensureSizeAndFill(std::vector<T> &vec, size_t size, const T &value) {
-  if (vec.size() != size) {
-    vec.assign(size, value);
-    return true;
-  }
-  std::fill(vec.begin(), vec.end(), value);
-  return false;
-}
-
-template <typename T>
-bool ensureSize(std::vector<T> &vec, size_t size) {
-  if (vec.size() != size) {
-    vec.resize(size);
-    return true;
-  }
-  return false;
-}
-} // namespace
-
 void ResidentObjectGpuResources::clearPendingCommand() {
   if (pendingCommand) {
     pendingCommand->release();
@@ -1456,16 +1433,6 @@ void Renderer::updateVisibleScene() {
   _cachedLightIndices.clear();
   _cachedLightCdf.clear();
   _cpuActiveMask.clear();
-  _lodObjectDistances.clear();
-  _lodObjectBehind.clear();
-  _lodSortedIndices.clear();
-  _energyPrimitiveDesiredState.clear();
-  _energyPrimitiveSortedIndices.clear();
-  _energyDesiredObjectState.clear();
-  _energyDesiredGroupState.clear();
-  _energyMeshAggregates.clear();
-  _energyMeshAverageImportance.clear();
-  _energyMeshSortedIndices.clear();
 
   size_t totalTriangleCount = _pScene->getTriangleCount();
   _maxPrimitiveCount = std::max<size_t>(primCount, 1);
@@ -4423,8 +4390,6 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   if (!_pScene)
     return;
 
-  _residencyProfiling.resetFrame();
-
   _framePrimitiveActivations = 0;
   _framePrimitiveDeactivations = 0;
   _frameObjectActivations = 0;
@@ -4537,20 +4502,10 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   bool changed = false;
 
   const size_t objectCount = _allSceneObjects.size();
-  if (objectCount == 0)
-    return false;
-
-  if (ensureSizeAndFill(_lodObjectDistances, objectCount,
-                        std::numeric_limits<float>::max()))
-    ++_residencyProfiling.lodScratchResizes;
-  if (ensureSizeAndFill(_lodObjectBehind, objectCount, uint8_t(0)))
-    ++_residencyProfiling.lodScratchResizes;
-  if (ensureSize(_lodSortedIndices, objectCount))
-    ++_residencyProfiling.lodScratchResizes;
-
-  auto &objectDistances = _lodObjectDistances;
-  auto &objectBehind = _lodObjectBehind;
-  auto &sortedIndices = _lodSortedIndices;
+  std::vector<float> objectDistances(objectCount,
+                                     std::numeric_limits<float>::max());
+  std::vector<bool> objectBehind(objectCount, false);
+  std::vector<size_t> sortedIndices(objectCount);
   simd::float3 forward = Camera::forward;
   float forwardLenSq = simd::length_squared(forward);
   bool forwardValid = forwardLenSq >= 1e-6f;
@@ -4567,26 +4522,19 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
       float forwardDepth = simd::dot(toCenter, forward);
       if (forwardDepth + sphere.radius <= 0.0f) {
         objectDistances[objectIndex] = std::numeric_limits<float>::max();
-        objectBehind[objectIndex] = 1;
+        objectBehind[objectIndex] = true;
         sortedIndices[objectIndex] = objectIndex;
         continue;
       }
     }
     objectDistances[objectIndex] = std::max(dist, 0.0f);
-    objectBehind[objectIndex] = 0;
     sortedIndices[objectIndex] = objectIndex;
   }
 
-  auto lodSortStart = Clock::now();
   std::sort(sortedIndices.begin(), sortedIndices.end(),
             [&objectDistances](size_t a, size_t b) {
               return objectDistances[a] < objectDistances[b];
             });
-  auto lodSortEnd = Clock::now();
-  ++_residencyProfiling.lodSortCount;
-  _residencyProfiling.lodSortTimeMs +=
-      std::chrono::duration<double, std::milli>(lodSortEnd - lodSortStart)
-          .count();
 
   for (size_t orderIndex = 0; orderIndex < objectCount; ++orderIndex) {
     size_t objectIndex = sortedIndices[orderIndex];
@@ -4596,8 +4544,7 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
 
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
-    bool behind =
-        objectIndex < objectBehind.size() && objectBehind[objectIndex] != 0;
+    bool behind = objectIndex < objectBehind.size() && objectBehind[objectIndex];
     bool shouldBeActive =
         currentlyActive ? (dist <= _residencyConfig.lodExitDistance && !behind)
                          : (dist < _residencyConfig.lodEnterDistance && !behind);
@@ -4700,20 +4647,9 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (objectCount == 0) {
     // Fall back to primitive-level logic if no objects are available.
     const size_t primCount = _activePrimitive.size();
-    if (primCount == 0)
-      return false;
-
-    if (ensureSizeAndFill(_energyPrimitiveDesiredState, primCount, uint8_t(0)))
-      ++_residencyProfiling.energyDesiredStateResizes;
-    if (ensureSize(_energyPrimitiveSortedIndices, primCount))
-      ++_residencyProfiling.energyPrimitiveScratchResizes;
-
-    auto &desiredState = _energyPrimitiveDesiredState;
-    auto &sortedIndices = _energyPrimitiveSortedIndices;
-    for (size_t i = 0; i < primCount; ++i)
-      sortedIndices[i] = i;
-
-    auto primitiveSortStart = Clock::now();
+    std::vector<bool> desiredState(primCount, false);
+    std::vector<size_t> sortedIndices(primCount);
+    std::iota(sortedIndices.begin(), sortedIndices.end(), size_t(0));
     std::sort(sortedIndices.begin(), sortedIndices.end(),
               [this](size_t a, size_t b) {
                 float scoreA = sanitizeSortValue(_primitiveImportance[a]);
@@ -4722,12 +4658,6 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
                   return a < b;
                 return scoreA > scoreB;
               });
-    auto primitiveSortEnd = Clock::now();
-    ++_residencyProfiling.energyPrimitiveSortCount;
-    _residencyProfiling.energyPrimitiveSortTimeMs +=
-        std::chrono::duration<double, std::milli>(primitiveSortEnd -
-                                                  primitiveSortStart)
-            .count();
 
     size_t minActive =
         std::min(primCount, _residencyConfig.energyMinActivePrimitives);
@@ -4737,8 +4667,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       for (size_t index : sortedIndices) {
         if (enabledPrimitives >= minActive)
           break;
-        if (index < desiredState.size())
-          desiredState[index] = 1;
+        desiredState[index] = true;
         ++enabledPrimitives;
       }
     } else {
@@ -4749,20 +4678,19 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       for (size_t index : sortedIndices) {
         if (enabled >= minActive && cumulative >= targetImportance)
           break;
-        if (index < desiredState.size())
-          desiredState[index] = 1;
+        desiredState[index] = true;
         cumulative += std::max(_primitiveImportance[index], 0.0f);
         ++enabled;
       }
 
       for (size_t i = 0; i < minActive && i < sortedIndices.size(); ++i)
-        desiredState[sortedIndices[i]] = 1;
+        desiredState[sortedIndices[i]] = true;
     }
 
     bool changed = false;
     size_t toggles = 0;
     for (size_t i = 0; i < primCount; ++i) {
-      bool shouldBeActive = desiredState[i] != 0;
+      bool shouldBeActive = desiredState[i];
       if (shouldBeActive == _activePrimitive[i])
         continue;
       if (!forceAllToggles) {
@@ -4877,7 +4805,6 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     }
   }
 
-  auto energyObjectSortStart = Clock::now();
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
             [this](size_t a, size_t b) {
               float scoreA = 0.0f;
@@ -4890,21 +4817,13 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
                 return a < b;
               return scoreA > scoreB;
             });
-  auto energyObjectSortEnd = Clock::now();
-  ++_residencyProfiling.energyObjectSortCount;
-  _residencyProfiling.energyObjectSortTimeMs +=
-      std::chrono::duration<double, std::milli>(energyObjectSortEnd -
-                                                energyObjectSortStart)
-          .count();
 
   const size_t primCount = _activePrimitive.size();
   const size_t minActivePrimitives =
       std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
   if (!anyMeshGroups) {
-    if (ensureSizeAndFill(_energyDesiredObjectState, objectCount, uint8_t(0)))
-      ++_residencyProfiling.energyDesiredStateResizes;
-    auto &desiredObjectState = _energyDesiredObjectState;
+    std::vector<bool> desiredObjectState(objectCount, false);
     size_t primitivesEnabled = 0;
 
     if (_totalPrimitiveImportance <= 0.0f) {
@@ -4914,7 +4833,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
         size_t count = objectPrimitiveCounts[idx];
         if (count == 0)
           continue;
-        desiredObjectState[idx] = 1;
+        desiredObjectState[idx] = true;
         primitivesEnabled += count;
         if (primitivesEnabled >= minActivePrimitives)
           break;
@@ -4931,7 +4850,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
             (idx < _objectImportance.size()) ? _objectImportance[idx] : 0.0f;
         if (count == 0 && importance <= 0.0f)
           continue;
-        desiredObjectState[idx] = 1;
+        desiredObjectState[idx] = true;
         primitivesEnabled += count;
         cumulativeImportance += std::max(importance, 0.0f);
         if (primitivesEnabled >= minActivePrimitives &&
@@ -4944,12 +4863,12 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       for (size_t idx : _energySortedIndices) {
         if (idx >= objectPrimitiveCounts.size())
           continue;
-        if (desiredObjectState[idx] != 0)
+        if (desiredObjectState[idx])
           continue;
         size_t count = objectPrimitiveCounts[idx];
         if (count == 0)
           continue;
-        desiredObjectState[idx] = 1;
+        desiredObjectState[idx] = true;
         primitivesEnabled += count;
         if (primitivesEnabled >= minActivePrimitives)
           break;
@@ -4959,9 +4878,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     bool changed = false;
     size_t toggledPrimitiveCount = 0;
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-      bool shouldBeActive =
-          objectIndex < desiredObjectState.size() &&
-          desiredObjectState[objectIndex] != 0;
+      bool shouldBeActive = desiredObjectState[objectIndex];
       bool currentlyActive =
           objectIndex < _objectActive.size() && _objectActive[objectIndex];
       if (shouldBeActive == currentlyActive)
@@ -5055,21 +4972,17 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     return changed;
   }
 
-  if (ensureSize(_energyMeshAggregates, _meshGroups.size()))
-    ++_residencyProfiling.energyMeshScratchResizes;
-  auto &meshGroups = _energyMeshAggregates;
-  for (auto &group : meshGroups) {
-    group.info = nullptr;
-    group.importance = 0.0f;
-    group.primitiveCount = 0;
-  }
+  struct MeshGroupAggregate {
+    const MeshGroupInfo *info = nullptr;
+    float importance = 0.0f;
+    size_t primitiveCount = 0;
+  };
 
-  for (size_t groupIndex = 0; groupIndex < _meshGroups.size(); ++groupIndex) {
-    const auto &info = _meshGroups[groupIndex];
-    auto &aggregate = meshGroups[groupIndex];
+  std::vector<MeshGroupAggregate> meshGroups;
+  meshGroups.reserve(_meshGroups.size());
+  for (const auto &info : _meshGroups) {
+    MeshGroupAggregate aggregate;
     aggregate.info = &info;
-    aggregate.importance = 0.0f;
-    aggregate.primitiveCount = 0;
     size_t fallbackPrimitiveCount = 0;
     for (size_t objectIndex : info.objectIndices) {
       if (objectIndex < _objectImportance.size())
@@ -5081,13 +4994,12 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       aggregate.primitiveCount = info.primitiveCount;
     else
       aggregate.primitiveCount = fallbackPrimitiveCount;
+    meshGroups.push_back(std::move(aggregate));
   }
 
-  if (ensureSizeAndFill(_energyMeshAverageImportance, meshGroups.size(), 0.0f))
-    ++_residencyProfiling.energyMeshScratchResizes;
-  auto &meshGroupAverageImportance = _energyMeshAverageImportance;
+  std::vector<float> meshGroupAverageImportance(meshGroups.size(), 0.0f);
   for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
-    const EnergyMeshAggregate &group = meshGroups[groupIndex];
+    const MeshGroupAggregate &group = meshGroups[groupIndex];
     if (group.primitiveCount > 0) {
       meshGroupAverageImportance[groupIndex] =
           group.importance /
@@ -5095,13 +5007,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     }
   }
 
-  if (ensureSize(_energyMeshSortedIndices, meshGroups.size()))
-    ++_residencyProfiling.energyMeshScratchResizes;
-  auto &meshSortedIndices = _energyMeshSortedIndices;
-  for (size_t i = 0; i < meshSortedIndices.size(); ++i)
-    meshSortedIndices[i] = i;
-
-  auto meshSortStart = Clock::now();
+  std::vector<size_t> meshSortedIndices(meshGroups.size());
+  std::iota(meshSortedIndices.begin(), meshSortedIndices.end(), size_t(0));
   std::sort(meshSortedIndices.begin(), meshSortedIndices.end(),
             [&meshGroups](size_t a, size_t b) {
               float scoreA = (a < meshGroups.size())
@@ -5114,16 +5021,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
                 return a < b;
               return scoreA > scoreB;
             });
-  auto meshSortEnd = Clock::now();
-  ++_residencyProfiling.energyMeshSortCount;
-  _residencyProfiling.energyMeshSortTimeMs +=
-      std::chrono::duration<double, std::milli>(meshSortEnd - meshSortStart)
-          .count();
 
-  if (ensureSizeAndFill(_energyDesiredGroupState, meshGroups.size(),
-                        uint8_t(0)))
-    ++_residencyProfiling.energyDesiredStateResizes;
-  auto &desiredGroupState = _energyDesiredGroupState;
+  std::vector<bool> desiredGroupState(meshGroups.size(), false);
   size_t primitivesEnabled = 0;
 
   bool meshTargetSatisfied = false;
@@ -5136,10 +5035,10 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     for (size_t idx : meshSortedIndices) {
       if (idx >= meshGroups.size())
         continue;
-      const EnergyMeshAggregate &group = meshGroups[idx];
+      const MeshGroupAggregate &group = meshGroups[idx];
       if (group.primitiveCount == 0)
         continue;
-      desiredGroupState[idx] = 1;
+      desiredGroupState[idx] = true;
       primitivesEnabled += group.primitiveCount;
       if (primitivesEnabled >= minActivePrimitives)
         break;
@@ -5153,10 +5052,10 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       size_t idx = meshSortedIndices[sortedPos];
       if (idx >= meshGroups.size())
         continue;
-      const EnergyMeshAggregate &group = meshGroups[idx];
+      const MeshGroupAggregate &group = meshGroups[idx];
       if (group.primitiveCount == 0 && group.importance <= 0.0f)
         continue;
-      desiredGroupState[idx] = 1;
+      desiredGroupState[idx] = true;
       primitivesEnabled += group.primitiveCount;
       cumulativeImportance += std::max(group.importance, 0.0f);
       if (meshHasPrimaryAverage)
@@ -5179,12 +5078,12 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     for (size_t idx : meshSortedIndices) {
       if (idx >= meshGroups.size())
         continue;
-      const EnergyMeshAggregate &group = meshGroups[idx];
+      const MeshGroupAggregate &group = meshGroups[idx];
       if (group.primitiveCount == 0)
         continue;
-      if (desiredGroupState[idx] != 0)
+      if (desiredGroupState[idx])
         continue;
-      desiredGroupState[idx] = 1;
+      desiredGroupState[idx] = true;
       primitivesEnabled += group.primitiveCount;
       if (primitivesEnabled >= minActivePrimitives)
         break;
@@ -5224,9 +5123,9 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       float epsilon = std::max(1e-5f, meshLastPrimaryAverage * 1e-3f);
       for (size_t groupIndex = 0; groupIndex < meshGroups.size();
            ++groupIndex) {
-        if (desiredGroupState[groupIndex] != 0)
+        if (desiredGroupState[groupIndex])
           continue;
-        const EnergyMeshAggregate &group = meshGroups[groupIndex];
+        const MeshGroupAggregate &group = meshGroups[groupIndex];
         if (group.primitiveCount == 0)
           continue;
         float average = meshGroupAverageImportance[groupIndex];
@@ -5234,33 +5133,31 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
           continue;
         float difference = meshLastPrimaryAverage - average;
         if (difference <= allowedDelta + epsilon)
-          desiredGroupState[groupIndex] = 1;
+          desiredGroupState[groupIndex] = true;
       }
     }
   }
 
-  if (ensureSizeAndFill(_energyDesiredObjectState, objectCount, uint8_t(0)))
-    ++_residencyProfiling.energyDesiredStateResizes;
-  auto &desiredObjectState = _energyDesiredObjectState;
+  std::vector<bool> desiredObjectState(objectCount, false);
   for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
-    if (desiredGroupState[groupIndex] == 0)
+    if (!desiredGroupState[groupIndex])
       continue;
-    const EnergyMeshAggregate &group = meshGroups[groupIndex];
+    const MeshGroupAggregate &group = meshGroups[groupIndex];
     const auto *objectIndices =
         group.info ? &group.info->objectIndices : nullptr;
     if (!objectIndices)
       continue;
     for (size_t objectIndex : *objectIndices) {
       if (objectIndex < desiredObjectState.size())
-        desiredObjectState[objectIndex] = 1;
+        desiredObjectState[objectIndex] = true;
     }
   }
 
   bool changed = false;
   size_t toggledPrimitiveCount = 0;
   for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
-    const EnergyMeshAggregate &group = meshGroups[groupIndex];
-    bool groupShouldBeActive = desiredGroupState[groupIndex] != 0;
+    const MeshGroupAggregate &group = meshGroups[groupIndex];
+    bool groupShouldBeActive = desiredGroupState[groupIndex];
     size_t groupToggleCount = 0;
     bool groupNeedsToggle = false;
     bool groupCanToggle = true;
@@ -5272,7 +5169,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     for (size_t objectIndex : *objectIndices) {
       bool shouldBeActive =
           (objectIndex < desiredObjectState.size())
-              ? desiredObjectState[objectIndex] != 0
+              ? desiredObjectState[objectIndex]
               : groupShouldBeActive;
       bool currentlyActive =
           (objectIndex < _objectActive.size()) ? _objectActive[objectIndex]
@@ -5311,7 +5208,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     for (size_t objectIndex : *objectIndices) {
       bool shouldBeActive =
           (objectIndex < desiredObjectState.size())
-              ? desiredObjectState[objectIndex] != 0
+              ? desiredObjectState[objectIndex]
               : groupShouldBeActive;
       bool currentlyActive =
           (objectIndex < _objectActive.size()) ? _objectActive[objectIndex]
@@ -5346,7 +5243,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     for (size_t idx : meshSortedIndices) {
       if (idx >= meshGroups.size())
         continue;
-      const EnergyMeshAggregate &group = meshGroups[idx];
+      const MeshGroupAggregate &group = meshGroups[idx];
       if (group.primitiveCount == 0)
         continue;
       const auto *objectIndices = group.info ? &group.info->objectIndices : nullptr;
@@ -6157,28 +6054,6 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
          _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
          _lastGPUTime * 1000.0, _lastRaysPerSecond);
-
-  const auto &profile = _residencyProfiling;
-  if (profile.lodSortCount > 0 || profile.lodScratchResizes > 0 ||
-      profile.energyPrimitiveSortCount > 0 ||
-      profile.energyPrimitiveScratchResizes > 0 ||
-      profile.energyObjectSortCount > 0 || profile.energyMeshSortCount > 0 ||
-      profile.energyMeshScratchResizes > 0 ||
-      profile.energyDesiredStateResizes > 0) {
-    printf("Residency profiling: LOD %.3f ms (%zu sorts, %zu scratch resizes) | "
-           "Energy prim %.3f ms (%zu sorts, %zu scratch) | Energy obj %.3f ms (%zu sorts) | "
-           "Energy mesh %.3f ms (%zu sorts, %zu scratch)\n",
-           profile.lodSortTimeMs, profile.lodSortCount,
-           profile.lodScratchResizes, profile.energyPrimitiveSortTimeMs,
-           profile.energyPrimitiveSortCount,
-           profile.energyPrimitiveScratchResizes,
-           profile.energyObjectSortTimeMs, profile.energyObjectSortCount,
-           profile.energyMeshSortTimeMs, profile.energyMeshSortCount,
-           profile.energyMeshScratchResizes);
-    if (profile.energyDesiredStateResizes > 0)
-      printf("  Desired state buffers resized %zu times\n",
-             profile.energyDesiredStateResizes);
-  }
 
   if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty()) {
     BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
