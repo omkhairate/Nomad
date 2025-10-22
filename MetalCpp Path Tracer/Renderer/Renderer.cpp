@@ -6154,9 +6154,9 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
-  printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
-         _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
-         _lastGPUTime * 1000.0, _lastRaysPerSecond);
+  printf("Active nodes: %zu resident: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+         _activeNodeCount, _residentNodeCount, offloaded,
+         _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond);
 
   const auto &profile = _residencyProfiling;
   if (profile.lodSortCount > 0 || profile.lodScratchResizes > 0 ||
