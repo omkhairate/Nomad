@@ -1,7 +1,7 @@
 <Scene width="1280" height="720" maxRayDepth="8" startCompacted="true"
        residencyStrategy="distance" textureResidencyMemoryCapMB="256"
        lodEnterDistance="60" lodExitDistance="90" residencyCooldown="1" lodToggleBudget="12000">
-    <ObserverCamera position="0,22,28" lookAt="0,4,0" verticalFov="45" />
+    <ObserverCamera position="18,12,18" lookAt="0,4,0" verticalFov="45" />
 
     <CameraPath>
         <Keyframe frame="0" position="12,4,16" lookAt="0,3,0" />
@@ -40,18 +40,18 @@
           rotation="0,-45,0" albedo="0.9,0.9,0.9" emission="0,0,0"
           materialType="0" emissionPower="0" />
 
-    <Mesh file="assets/bunny.obj" position="4,0.1,6" scale="0.8"
-          rotation="0,20,0" albedo="0.98,0.99,1.0" emission="0,0,0"
+    <Mesh file="assets/bunny.obj" position="2.5,0.1,4.5" scale="0.8"
+          rotation="0,15,0" albedo="0.98,0.99,1.0" emission="0,0,0"
           materialType="1.48" transmission="1,1,1" roughness="0.05"
           emissionPower="0" />
 
-    <Mesh file="assets/bunny.obj" position="1.5,0.1,8" scale="0.65"
-          rotation="0,-35,0" albedo="0.98,0.99,1.0" emission="0,0,0"
+    <Mesh file="assets/bunny.obj" position="-0.5,0.1,6.5" scale="0.65"
+          rotation="0,-20,0" albedo="0.98,0.99,1.0" emission="0,0,0"
           materialType="1.48" transmission="1,1,1" roughness="0.08"
           emissionPower="0" />
 
-    <Mesh file="assets/bunny.obj" position="-1,0.1,5.5" scale="0.7"
-          rotation="0,60,0" albedo="0.98,0.99,1.0" emission="0,0,0"
+    <Mesh file="assets/bunny.obj" position="-3,0.1,5" scale="0.7"
+          rotation="0,45,0" albedo="0.98,0.99,1.0" emission="0,0,0"
           materialType="1.48" transmission="1,1,1" roughness="0.06"
           emissionPower="0" />
 </Scene>
