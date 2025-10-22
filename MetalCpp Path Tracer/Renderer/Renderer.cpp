@@ -139,6 +139,7 @@ struct TileDispatchRegion {
 
 constexpr uint32_t kPathTraceTileWidth = 128;
 constexpr uint32_t kPathTraceTileHeight = 128;
+constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
 inline uint32_t bitm_random() {
   static uint32_t current_seed = 92407235;
@@ -749,10 +750,7 @@ Renderer::~Renderer() {
     _pGeometryHandleBuffer->release();
   if (_pFrustumVertexBuffer)
     _pFrustumVertexBuffer->release();
-  if (_pTextureInfoBuffer)
-    _pTextureInfoBuffer->release();
-  if (_pTextureDataBuffer)
-    _pTextureDataBuffer->release();
+  clearMaterialTextures();
 
   _cachedInstanceDescriptors.clear();
   _cachedInstancedAccelerationStructures.clear();
@@ -2425,6 +2423,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       }
     }
 
+    rebuildMaterialTextures();
+
     _pScene->createTriangleBuffers(_cachedTriangleVertices,
                                    _cachedTriangleIndices);
 
@@ -2570,9 +2570,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       &_cachedTriangleVertices;
   const std::vector<simd::uint3> *triangleIndexSource =
       &_cachedTriangleIndices;
-  const std::vector<TextureInfo> *textureInfoSource = &_cachedTextureInfos;
-  const std::vector<simd::float4> *textureDataSource = &_cachedTextureData;
-
   if (!useCompaction) {
     remapUpload.resize(totalPrimitiveCount);
     for (size_t i = 0; i < totalPrimitiveCount; ++i) {
@@ -3239,44 +3236,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                          NS::Range::Make(0, indexBytes));
     }
 
-    size_t textureInfoCount = std::max<size_t>(textureInfoSource->size(),
-                                               size_t(1));
-    size_t textureInfoBytes = textureInfoCount * sizeof(TextureInfo);
-    ensureBufferCapacity(_pTextureInfoBuffer, textureInfoBytes,
-                         _textureInfoBufferCapacity, allowShrink);
-    if (_pTextureInfoBuffer) {
-      auto *dst = static_cast<TextureInfo *>(_pTextureInfoBuffer->contents());
-      if (textureInfoSource->empty()) {
-        dst[0] = TextureInfo{};
-      } else {
-        std::memcpy(dst, textureInfoSource->data(),
-                    textureInfoSource->size() * sizeof(TextureInfo));
-        if (textureInfoSource->size() < textureInfoCount)
-          dst[textureInfoSource->size()] = TextureInfo{};
-      }
-      markBufferModified(_pTextureInfoBuffer,
-                         NS::Range::Make(0, textureInfoBytes));
-    }
-
-    size_t textureDataCount = std::max<size_t>(textureDataSource->size(),
-                                               size_t(1));
-    size_t textureDataBytes = textureDataCount * sizeof(simd::float4);
-    ensureBufferCapacity(_pTextureDataBuffer, textureDataBytes,
-                         _textureDataBufferCapacity, allowShrink);
-    if (_pTextureDataBuffer) {
-      auto *dst = static_cast<simd::float4 *>(_pTextureDataBuffer->contents());
-      if (textureDataSource->empty()) {
-        dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 1.0f};
-      } else {
-        std::memcpy(dst, textureDataSource->data(),
-                    textureDataSource->size() * sizeof(simd::float4));
-        if (textureDataSource->size() < textureDataCount)
-          dst[textureDataSource->size()] = simd::float4{0.0f, 0.0f, 0.0f, 1.0f};
-      }
-      markBufferModified(_pTextureDataBuffer,
-                         NS::Range::Make(0, textureDataBytes));
-    }
-
     _residentBuffersInitialized = true;
   }
 
@@ -3649,6 +3608,98 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
     blit->endEncoding();
 }
 
+void Renderer::clearMaterialTextures() {
+  for (MTL::Texture *texture : _materialTextures) {
+    if (texture)
+      texture->release();
+  }
+  _materialTextures.clear();
+}
+
+void Renderer::rebuildMaterialTextures() {
+  clearMaterialTextures();
+
+  if (!_pDevice)
+    return;
+
+  size_t availableSlots = static_cast<size_t>(kMaxMaterialTextureSlots);
+  size_t requestedTextures = _cachedTextureInfos.size();
+  if (requestedTextures > availableSlots) {
+    std::printf(
+        "[Renderer] Truncating material textures from %zu to %u to fit shader "
+        "bind slots.\n",
+        requestedTextures, kMaxMaterialTextureSlots);
+  }
+
+  size_t maxTextures = std::min(requestedTextures, availableSlots);
+  size_t totalTexels = _cachedTextureData.size();
+  _materialTextures.reserve(maxTextures);
+
+  auto createFallbackTexture = [&]() -> MTL::Texture * {
+    MTL::TextureDescriptor *descriptor = MTL::TextureDescriptor::alloc()->init();
+    descriptor->setTextureType(MTL::TextureType::TextureType2D);
+    descriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA32Float);
+    descriptor->setWidth(1);
+    descriptor->setHeight(1);
+    descriptor->setUsage(MTL::TextureUsage::TextureUsageShaderRead);
+    descriptor->setStorageMode(MTL::StorageMode::StorageModeManaged);
+
+    MTL::Texture *texture = _pDevice->newTexture(descriptor);
+    descriptor->release();
+    if (!texture)
+      return nullptr;
+
+    simd::float4 pixel = simd::float4{1.0f, 1.0f, 1.0f, 1.0f};
+    NS::UInteger bytesPerRow = sizeof(simd::float4);
+    MTL::Region region = MTL::Region::Make2D(0, 0, 1, 1);
+    texture->replaceRegion(region, 0, &pixel, bytesPerRow);
+    return texture;
+  };
+
+  for (size_t texIndex = 0; texIndex < maxTextures; ++texIndex) {
+    const TextureInfo &info = _cachedTextureInfos[texIndex];
+    size_t texelCount = static_cast<size_t>(info.width) * info.height;
+    bool hasValidDimensions = info.width > 0 && info.height > 0;
+    bool hasValidRange = info.offset < totalTexels &&
+                         texelCount > 0 &&
+                         info.offset + texelCount <= totalTexels;
+
+    if (!hasValidDimensions || !hasValidRange) {
+      MTL::Texture *fallback = createFallbackTexture();
+      _materialTextures.push_back(fallback);
+      continue;
+    }
+
+    MTL::TextureDescriptor *descriptor = MTL::TextureDescriptor::alloc()->init();
+    descriptor->setTextureType(MTL::TextureType::TextureType2D);
+    descriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA32Float);
+    descriptor->setWidth(info.width);
+    descriptor->setHeight(info.height);
+    descriptor->setUsage(MTL::TextureUsage::TextureUsageShaderRead);
+    descriptor->setStorageMode(MTL::StorageMode::StorageModeManaged);
+
+    MTL::Texture *texture = _pDevice->newTexture(descriptor);
+    descriptor->release();
+
+    if (!texture) {
+      std::printf(
+          "[Renderer] Failed to allocate material texture %zu (%ux%u).\n",
+          texIndex, info.width, info.height);
+      MTL::Texture *fallback = createFallbackTexture();
+      _materialTextures.push_back(fallback);
+      continue;
+    }
+
+    const simd::float4 *src = _cachedTextureData.data() + info.offset;
+    NS::UInteger bytesPerRow =
+        static_cast<NS::UInteger>(info.width * sizeof(simd::float4));
+    MTL::Region region = MTL::Region::Make2D(0, 0, info.width, info.height);
+    texture->replaceRegion(region, 0, src, bytesPerRow);
+
+    _materialTextures.push_back(texture);
+  }
+}
+
 void Renderer::buildTextures() {
   NS::UInteger width = std::max<NS::UInteger>(
       1, static_cast<NS::UInteger>(Camera::screenSize.x));
@@ -3874,7 +3925,9 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.sampleImportanceTextureIndex = 3;
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
-  u.textureCount = static_cast<uint32_t>(_cachedTextureInfos.size());
+  size_t boundTextureCount = std::min(
+      _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
+  u.textureCount = static_cast<uint32_t>(boundTextureCount);
 
   uint64_t residentPrimitiveCount = _residentPrimitiveCount;
   uint64_t residentTriangleCount = _residentTriangleCount;
@@ -4075,8 +4128,6 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
-        pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
-        pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -4092,14 +4143,19 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
-        pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
       }
 
       pCompute->setTexture(accum0, 0);
       pCompute->setTexture(accum1, 1);
       pCompute->setTexture(sampleCount, 2);
       pCompute->setTexture(sampleImportance, 3);
+
+      for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
+        MTL::Texture *materialTex =
+            (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
+                                                : nullptr;
+        pCompute->setTexture(materialTex, 4 + texIdx);
+      }
 
       TileDispatchRegion tileParams = tile;
       pCompute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);

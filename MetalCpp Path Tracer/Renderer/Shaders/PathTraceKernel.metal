@@ -19,12 +19,12 @@ kernel void pathTraceKernel(
     device const uint *primitiveRemap [[buffer(11)]],
     device atomic_uint *primitiveHitCounts [[buffer(12)]],
     device const InstanceRecord *instanceRecords [[buffer(13)]],
-    device const PackedTexture *textureInfos [[buffer(14)]],
-    device const float4 *textureData [[buffer(15)]],
     texture2d<half, access::read> lastFrame [[texture(0)]],
     texture2d<half, access::write> currentFrame [[texture(1)]],
     texture2d<half, access::read_write> sampleCount [[texture(2)]],
     texture2d<half, access::read> sampleImportance [[texture(3)]],
+    array<texture2d<float, access::sample>, kMaxMaterialTextures>
+        materialTextures [[texture(4)]],
     constant TileRegion &tile [[buffer(16)]],
     uint2 gid [[thread_position_in_grid]]) {
   if (!uniforms)
@@ -90,7 +90,7 @@ kernel void pathTraceKernel(
                                  primitiveRemap, primitiveHitCounts, seed, u.maxRayDepth,
                                  u.debugAS, u.blasNodeCount, u.lightCount,
                                  u.lightTotalWeight, static_cast<uint>(u.totalPrimitiveCount),
-                                 textureInfos, textureData, u.textureCount);
+                                 materialTextures, u.textureCount);
   }
 
   float totalSamples = previousSampleCount + float(samplesThisFrame);

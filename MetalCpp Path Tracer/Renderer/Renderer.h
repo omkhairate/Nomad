@@ -155,6 +155,8 @@ private:
       const std::vector<MTL::AccelerationStructure *> &structures);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
+  void rebuildMaterialTextures();
+  void clearMaterialTextures();
   void initializeBenchmarking();
   void ensureBenchmarkStream();
   void writeBenchmarkHeader();
@@ -200,8 +202,6 @@ private:
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
   MTL::Buffer *_pFrustumVertexBuffer = nullptr;
-  MTL::Buffer *_pTextureInfoBuffer = nullptr;
-  MTL::Buffer *_pTextureDataBuffer = nullptr;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -333,6 +333,7 @@ private:
   std::vector<simd::uint3> _cachedTriangleIndices;
   std::vector<TextureInfo> _cachedTextureInfos;
   std::vector<simd::float4> _cachedTextureData;
+  std::vector<MTL::Texture *> _materialTextures;
   std::vector<uint32_t> _cachedLightIndices;
   std::vector<float> _cachedLightCdf;
 
@@ -356,8 +357,6 @@ private:
   size_t _sphereMaterialBufferCapacity = 0;
   size_t _triangleVertexBufferCapacity = 0;
   size_t _triangleIndexBufferCapacity = 0;
-  size_t _textureInfoBufferCapacity = 0;
-  size_t _textureDataBufferCapacity = 0;
   size_t _bvhBufferCapacity = 0;
   size_t _tlasBufferCapacity = 0;
   size_t _primitiveIndexBufferCapacity = 0;
