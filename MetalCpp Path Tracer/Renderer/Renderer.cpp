@@ -809,8 +809,9 @@ Renderer::Renderer(MTL::Device *pDevice)
   _observerCameraState = _primaryCameraState;
 
   updateVisibleScene();
-  ShaderBuildResult shaderStatus = buildShaders();
-  if (!shaderStatus.success && shaderStatus.message.empty())
+  _lastShaderBuildResult = buildShaders();
+  if (!_lastShaderBuildResult.success &&
+      _lastShaderBuildResult.message.empty())
     writeToStderr("Renderer shader build failed with no diagnostic message.");
   buildTextures();
 
@@ -909,6 +910,9 @@ Renderer::~Renderer() {
 }
 
 void Renderer::setBenchmarkMode(bool enabled) {
+  if (!_lastShaderBuildResult.success)
+    return;
+
   if (enabled == _benchmarkEnabled)
     return;
 
@@ -947,6 +951,9 @@ void Renderer::setFrameCaptureInterval(size_t interval) {
 }
 
 void Renderer::initializeBenchmarking() {
+  if (!_lastShaderBuildResult.success)
+    return;
+
   const char *primaryEnv = std::getenv("METALPT_BENCH");
   const char *legacyEnv = std::getenv("METALAPT_BENCH");
   const char *env = primaryEnv ? primaryEnv : legacyEnv;
@@ -966,6 +973,9 @@ void Renderer::initializeBenchmarking() {
 }
 
 void Renderer::ensureBenchmarkStream() {
+  if (!_lastShaderBuildResult.success)
+    return;
+
   if (!_benchmarkEnabled)
     return;
   if (_benchmarkStream.is_open())
@@ -996,6 +1006,9 @@ void Renderer::ensureBenchmarkStream() {
 }
 
 void Renderer::writeBenchmarkHeader() {
+  if (!_lastShaderBuildResult.success)
+    return;
+
   if (!_benchmarkStream.is_open())
     return;
   if (_benchmarkHeaderWritten)
@@ -1026,6 +1039,9 @@ static std::string formatFixed(double value, int precision) {
 }
 
 void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
+  if (!_lastShaderBuildResult.success)
+    return;
+
   if (!_benchmarkStream.is_open())
     return;
 
@@ -1363,7 +1379,8 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
   if (!pLibrary) {
     result.message = logShaderFailure("Failed to load Metal library");
     cleanupLibraryResources();
-    return result;
+    _lastShaderBuildResult = result;
+    return _lastShaderBuildResult;
   }
 
   pVertexFn = pLibrary->newFunction(
@@ -1375,7 +1392,8 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
   if (!pVertexFn || !pFragFn || !pDesc) {
     result.message = logShaderFailure("Failed to create shader functions");
     cleanupLibraryResources();
-    return result;
+    _lastShaderBuildResult = result;
+    return _lastShaderBuildResult;
   }
 
   pDesc->setVertexFunction(pVertexFn);
@@ -1389,7 +1407,8 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
         logShaderFailure("Failed to create present pipeline state", pError);
     pError = nullptr;
     cleanupLibraryResources();
-    return result;
+    _lastShaderBuildResult = result;
+    return _lastShaderBuildResult;
   }
 
   if (pVertexFn) {
@@ -1445,7 +1464,8 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
     result.message =
         logShaderFailure("Failed to load path tracing kernel function");
     cleanupLibraryResources();
-    return result;
+    _lastShaderBuildResult = result;
+    return _lastShaderBuildResult;
   }
 
   MTL::AutoreleasedComputePipelineReflection reflection = nullptr;
@@ -1470,7 +1490,8 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
     result.message =
         logShaderFailure("Failed to create path tracing pipeline state", pError);
     cleanupLibraryResources();
-    return result;
+    _lastShaderBuildResult = result;
+    return _lastShaderBuildResult;
   }
 
   if (_pPathTracePSO && reflection) {
@@ -1516,7 +1537,12 @@ Renderer::ShaderBuildResult Renderer::buildShaders() {
   _shadersReady = _pPSO && _pPathTracePSO;
   result.success = _shadersReady;
   cleanupLibraryResources();
-  return result;
+  _lastShaderBuildResult = result;
+  return _lastShaderBuildResult;
+}
+
+const Renderer::ShaderBuildResult &Renderer::shaderBuildStatus() const {
+  return _lastShaderBuildResult;
 }
 
 void Renderer::updateVisibleScene() {

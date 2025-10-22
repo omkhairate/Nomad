@@ -96,6 +96,7 @@ public:
 
   void updateVisibleScene();
   ShaderBuildResult buildShaders();
+  const ShaderBuildResult &shaderBuildStatus() const;
   void buildTextures();
 
   void recalculateViewport();
@@ -196,6 +197,7 @@ private:
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
   bool _shadersReady = false;
+  ShaderBuildResult _lastShaderBuildResult{};
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
