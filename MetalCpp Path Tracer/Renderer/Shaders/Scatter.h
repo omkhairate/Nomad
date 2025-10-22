@@ -73,7 +73,7 @@ inline float3 sampleCosineHemisphere(thread const float3 &normal,
 inline float3 scatter(thread Ray &r, thread const intersection &i,
                       thread const MaterialPayload &material,
                       thread uint32_t &seed) {
-    float3 normal = i.frontFace ? i.normal : -i.normal;
+    float3 normal = i.normal;
 
     float diffuseWeight = max(luminance(material.diffuseColor) * material.opacity,
                               0.0f);
