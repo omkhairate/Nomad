@@ -190,6 +190,7 @@ private:
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
+  bool _shadersReady = false;
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
