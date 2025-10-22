@@ -77,46 +77,22 @@ void ResidentObjectGpuResources::transitionToCold(
 
 bool ResidentObjectGpuResources::ensureResident(
     Renderer &renderer, size_t objectIndex, const SceneObject &object,
-    BlasInstanceRecord &instanceRecord, bool forceRebuild,
-    MTL::CommandBuffer *&commandBuffer) {
-  if (pendingCommand) {
-    auto status = pendingCommand->status();
-    using Status = MTL::CommandBufferStatus;
-    if (status == Status::CommandBufferStatusCompleted) {
-      clearPendingCommand();
-      state = ResidencyState::Resident;
-      geometryValid = true;
-      lastStateChange = std::chrono::steady_clock::now();
-    } else if (status == Status::CommandBufferStatusError) {
-      clearPendingCommand();
-      transitionToCold(instanceRecord);
-      return false;
-    } else {
-      state = ResidencyState::Streaming;
-      return true;
-    }
-  }
-
+    BlasInstanceRecord &instanceRecord, bool forceRebuild) {
   if (isResident() && !forceRebuild) {
     lastStateChange = std::chrono::steady_clock::now();
     return true;
   }
 
-  if (!renderer._pCommandQueue)
-    return false;
-
-  if (!commandBuffer)
-    commandBuffer = renderer._pCommandQueue->commandBuffer();
-
-  if (!commandBuffer)
-    return false;
-
-  bool built = renderer.buildObjectBlas(objectIndex, object, *this, commandBuffer);
+  transitionToStreaming();
+  bool built = renderer.buildObjectBlas(objectIndex, object, *this);
   if (!built) {
     transitionToCold(instanceRecord);
     return false;
   }
 
+  clearPendingCommand();
+  state = ResidencyState::Resident;
+  lastStateChange = std::chrono::steady_clock::now();
   return true;
 }
 
@@ -782,12 +758,6 @@ Renderer::~Renderer() {
   _cachedInstancedAccelerationStructures.clear();
   _pTlasInstanceDescriptorBuffer = nullptr;
   _pTlasStructure = nullptr;
-  if (_pPendingTlasStructure)
-    _pPendingTlasStructure->release();
-  _pPendingTlasStructure = nullptr;
-  if (_pPendingTlasCommand)
-    _pPendingTlasCommand->release();
-  _pPendingTlasCommand = nullptr;
   _pDummyBlas = nullptr;
 
   _tlasHeap.destroy();
@@ -1690,12 +1660,8 @@ void Renderer::recalculateViewport() {
 }
 
 bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
-                               ResidentObjectGpuResources &resident,
-                               MTL::CommandBuffer *commandBuffer) {
+                               ResidentObjectGpuResources &resident) {
   if (!_pDevice || !_pCommandQueue)
-    return false;
-
-  if (!commandBuffer)
     return false;
 
   NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
@@ -1733,8 +1699,6 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
 
   size_t triangleCount = indices.size() / 3;
 
-  resident.geometryValid = false;
-
   if (triangleCount == 0) {
     resident.resources.ensureAccelerationStructure(0, nullptr);
     resident.byteSize = 0;
@@ -1743,9 +1707,6 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     resident.vertexBufferOffset = 0;
     resident.indexBufferOffset = 0;
     resident.geometryValid = false;
-    resident.clearPendingCommand();
-    resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
-    resident.lastStateChange = std::chrono::steady_clock::now();
     cleanupPool();
     return true;
   }
@@ -1905,6 +1866,22 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     scratchBuffer =
         _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
 
+  MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
+  if (!commandBuffer) {
+    if (scratchBuffer)
+      scratchBuffer->release();
+    if (indexStaging)
+      indexStaging->release();
+    if (vertexStaging)
+      vertexStaging->release();
+    if (geometryArray)
+      geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
+    cleanupPool();
+    return false;
+  }
+
   MTL::BlitCommandEncoder *blitEncoder = nullptr;
   auto ensureBlitEncoder = [&]() -> MTL::BlitCommandEncoder * {
     if (!blitEncoder)
@@ -1943,6 +1920,9 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
                                         scratchBuffer, 0);
   asEncoder->endEncoding();
 
+  commandBuffer->commit();
+  commandBuffer->waitUntilCompleted();
+
   if (scratchBuffer)
     scratchBuffer->release();
   if (indexStaging)
@@ -1959,25 +1939,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   resident.vertexCount = vertices.size();
   resident.vertexBufferOffset = 0;
   resident.indexBufferOffset = 0;
-  resident.transitionToStreaming(commandBuffer);
-
-  ResidentObjectGpuResources *residentPtr = &resident;
-  commandBuffer->addCompletedHandler(^void(MTL::CommandBuffer *cmd) {
-    auto status = cmd->status();
-    auto now = std::chrono::steady_clock::now();
-    using Status = MTL::CommandBufferStatus;
-    if (status == Status::CommandBufferStatusCompleted) {
-      residentPtr->geometryValid = true;
-      residentPtr->state =
-          ResidentObjectGpuResources::ResidencyState::Resident;
-    } else {
-      residentPtr->geometryValid = false;
-      residentPtr->state =
-          ResidentObjectGpuResources::ResidencyState::Cold;
-    }
-    residentPtr->lastStateChange = now;
-    residentPtr->clearPendingCommand();
-  });
+  resident.geometryValid = true;
 
   cleanupPool();
   return true;
@@ -2170,15 +2132,11 @@ bool Renderer::ensureDummyBlas() {
 
 void Renderer::updateTopLevelAccelerationStructure(
     const std::vector<MTL::AccelerationStructureInstanceDescriptor> &descriptors,
-    const std::vector<MTL::AccelerationStructure *> &structures,
-    MTL::CommandBuffer *&commandBuffer) {
+    const std::vector<MTL::AccelerationStructure *> &structures) {
   if (!_pDevice || !_pCommandQueue)
     return;
 
   if (!ensureDummyBlas())
-    return;
-
-  if (_pPendingTlasStructure)
     return;
 
   _tlasHeap.initialize(_pDevice);
@@ -2267,29 +2225,17 @@ void Renderer::updateTopLevelAccelerationStructure(
   MTL::AccelerationStructureSizes sizes =
       _pDevice->accelerationStructureSizes(instanceDesc);
 
-  MTL::AccelerationStructure *retainedActive = nullptr;
-  if (needsRebuild && _pTlasStructure) {
-    retainedActive = _pTlasStructure;
-    retainedActive->retain();
-  }
-
-  MTL::AccelerationStructure *targetStructure = _pTlasStructure;
   if (needsRebuild) {
     MTL::AccelerationStructure *structure =
         _tlasHeap.ensureAccelerationStructure(
             sizes.accelerationStructureSize, "SceneTLAS");
     if (!structure) {
-      if (retainedActive) {
-        retainedActive->release();
-        retainedActive = nullptr;
-      }
       instanceDesc->release();
       if (stagingBuffer)
         stagingBuffer->release();
       return;
     }
-    targetStructure = structure;
-    _pPendingTlasStructure = structure;
+    _pTlasStructure = structure;
   }
 
   NS::UInteger scratchSize = needsRebuild ? sizes.buildScratchBufferSize
@@ -2299,22 +2245,12 @@ void Renderer::updateTopLevelAccelerationStructure(
     scratchBuffer =
         _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
 
-  if (!commandBuffer && _pCommandQueue)
-    commandBuffer = _pCommandQueue->commandBuffer();
-
+  MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
     if (scratchBuffer)
       scratchBuffer->release();
     if (stagingBuffer)
       stagingBuffer->release();
-    if (_pPendingTlasStructure) {
-      _pPendingTlasStructure->release();
-      _pPendingTlasStructure = nullptr;
-    }
-    if (retainedActive) {
-      retainedActive->release();
-      retainedActive = nullptr;
-    }
     instanceDesc->release();
     return;
   }
@@ -2332,14 +2268,6 @@ void Renderer::updateTopLevelAccelerationStructure(
       if (scratchBuffer)
         scratchBuffer->release();
       stagingBuffer->release();
-      if (_pPendingTlasStructure) {
-        _pPendingTlasStructure->release();
-        _pPendingTlasStructure = nullptr;
-      }
-      if (retainedActive) {
-        retainedActive->release();
-        retainedActive = nullptr;
-      }
       instanceDesc->release();
       return;
     }
@@ -2352,14 +2280,6 @@ void Renderer::updateTopLevelAccelerationStructure(
         scratchBuffer->release();
       if (stagingBuffer)
         stagingBuffer->release();
-      if (_pPendingTlasStructure) {
-        _pPendingTlasStructure->release();
-        _pPendingTlasStructure = nullptr;
-      }
-      if (retainedActive) {
-        retainedActive->release();
-        retainedActive = nullptr;
-      }
       instanceDesc->release();
       return;
     }
@@ -2377,62 +2297,21 @@ void Renderer::updateTopLevelAccelerationStructure(
       scratchBuffer->release();
     if (stagingBuffer)
       stagingBuffer->release();
-    if (_pPendingTlasStructure) {
-      _pPendingTlasStructure->release();
-      _pPendingTlasStructure = nullptr;
-    }
-    if (retainedActive) {
-      retainedActive->release();
-      retainedActive = nullptr;
-    }
     instanceDesc->release();
     return;
   }
 
   if (needsRebuild) {
-    encoder->buildAccelerationStructure(targetStructure, instanceDesc,
+    encoder->buildAccelerationStructure(_pTlasStructure, instanceDesc,
                                         scratchBuffer, 0);
   } else {
-    encoder->refitAccelerationStructure(targetStructure, instanceDesc,
-                                        targetStructure, scratchBuffer, 0);
+    encoder->refitAccelerationStructure(_pTlasStructure, instanceDesc,
+                                        _pTlasStructure, scratchBuffer, 0);
   }
   encoder->endEncoding();
 
-  if (needsRebuild) {
-    if (_pPendingTlasCommand)
-      _pPendingTlasCommand->release();
-    _pPendingTlasCommand = commandBuffer;
-    _pPendingTlasCommand->retain();
-
-    Renderer *self = this;
-    MTL::AccelerationStructure *pendingStructure = _pPendingTlasStructure;
-    MTL::AccelerationStructure *previousStructure = retainedActive;
-    commandBuffer->addCompletedHandler(^void(MTL::CommandBuffer *cmd) {
-      using Status = MTL::CommandBufferStatus;
-      Status status = cmd->status();
-      if (pendingStructure) {
-        if (status == Status::CommandBufferStatusCompleted) {
-          if (self->_pTlasStructure &&
-              self->_pTlasStructure != pendingStructure)
-            self->_pTlasStructure->release();
-          self->_pTlasStructure = pendingStructure;
-        } else {
-          pendingStructure->release();
-        }
-      }
-      if (previousStructure)
-        previousStructure->release();
-      if (self->_pPendingTlasCommand == cmd) {
-        self->_pPendingTlasCommand->release();
-        self->_pPendingTlasCommand = nullptr;
-        if (self->_pPendingTlasStructure == pendingStructure)
-          self->_pPendingTlasStructure = nullptr;
-      }
-    });
-  } else if (retainedActive) {
-    retainedActive->release();
-    retainedActive = nullptr;
-  }
+  commandBuffer->commit();
+  commandBuffer->waitUntilCompleted();
 
   if (scratchBuffer)
     scratchBuffer->release();
@@ -3125,8 +3004,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _lightCount = _cachedLightIndices.size();
   }
 
-  MTL::CommandBuffer *residencyCommandBuffer = nullptr;
-
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
     auto &gpuResident = _residentObjectGpuResources[objectIndex];
@@ -3135,7 +3012,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     if (shouldBeResident) {
       bool built = gpuResident.ensureResident(
           *this, objectIndex, sceneObjects[objectIndex], instanceRecord,
-          needFullUpload, residencyCommandBuffer);
+          needFullUpload);
       if (!built) {
         shouldBeResident = false;
         objectShouldBeResident[objectIndex] = false;
@@ -3210,11 +3087,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     geometryHandles[objectIndex + 1] = handle;
   }
 
-  updateTopLevelAccelerationStructure(instanceDescriptors, instancedStructures,
-                                      residencyCommandBuffer);
-
-  if (residencyCommandBuffer)
-    residencyCommandBuffer->commit();
+  updateTopLevelAccelerationStructure(instanceDescriptors, instancedStructures);
 
   _residentRemap = remapUpload;
 
