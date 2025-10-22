@@ -71,26 +71,6 @@ struct ResidentObjectGpuResources {
   MTL::CommandBuffer *pendingCommand = nullptr;
 };
 
-struct StrategyPerfCounters {
-  struct Stats {
-    size_t bufferExpansions = 0;
-    size_t bytesAllocated = 0;
-    size_t fullSorts = 0;
-    size_t partialSorts = 0;
-    size_t incrementalAdjustments = 0;
-    size_t candidateCount = 0;
-    size_t heapOperations = 0;
-  };
-
-  Stats energyImportance;
-  Stats distanceLod;
-
-  void reset() {
-    energyImportance = Stats{};
-    distanceLod = Stats{};
-  }
-};
-
 class Renderer {
   friend struct ResidentObjectGpuResources;
 
@@ -141,35 +121,6 @@ public:
   };
 
 private:
-  struct DistanceLodScratch {
-    struct ToggleCandidate {
-      size_t objectIndex = 0;
-      float distance = 0.0f;
-      size_t togglesNeeded = 0;
-      bool shouldBeActive = false;
-    };
-
-    std::vector<float> distances;
-    std::vector<uint8_t> behindFlags;
-    std::vector<ToggleCandidate> candidates;
-  };
-
-  struct EnergyImportanceScratch {
-    struct MeshGroupAggregate {
-      const MeshGroupInfo *info = nullptr;
-      float importance = 0.0f;
-      size_t primitiveCount = 0;
-    };
-
-    std::vector<uint8_t> primitiveDesiredState;
-    std::vector<size_t> primitiveSortedIndices;
-    std::vector<MeshGroupAggregate> meshGroups;
-    std::vector<float> meshGroupAverageImportance;
-    std::vector<size_t> meshSortedIndices;
-    std::vector<uint8_t> desiredGroupState;
-    std::vector<uint8_t> desiredObjectState;
-  };
-
   struct BenchmarkSample;
   struct FrameCaptureRequest;
   void rebuildResidentResources(bool forceFullRebuild);
@@ -308,18 +259,6 @@ private:
     bool accumulationReset = false;
     bool residentCompacted = false;
     bool overMemoryCap = false;
-    size_t distanceLodBufferExpansions = 0;
-    size_t distanceLodBytesAllocated = 0;
-    size_t distanceLodFullSorts = 0;
-    size_t distanceLodPartialSorts = 0;
-    size_t distanceLodHeapOperations = 0;
-    size_t distanceLodCandidates = 0;
-    size_t energyBufferExpansions = 0;
-    size_t energyBytesAllocated = 0;
-    size_t energyFullSorts = 0;
-    size_t energyPartialSorts = 0;
-    size_t energyIncrementalAdjustments = 0;
-    size_t energyDirtyObjects = 0;
   };
 
   struct FrameCaptureRequest {
@@ -344,10 +283,7 @@ private:
   std::vector<uint32_t> _objectCooldown;
   std::vector<float> _primitiveImportance;
   std::vector<float> _objectImportance;
-  std::vector<float> _objectImportancePrevious;
   std::vector<size_t> _energySortedIndices;
-  std::vector<size_t> _energyIndexToPosition;
-  std::vector<size_t> _energyDirtyObjects;
   std::vector<float> _primitiveHitScores;
   std::vector<float> _primitiveHitScoresSnapshot;
   std::vector<uint32_t> _primitiveHitLastFrame;
@@ -416,10 +352,6 @@ private:
   std::vector<size_t> _objectPrimitiveCounts;
   std::vector<size_t> _objectActivePrimitiveCounts;
   bool _anyMeshGroups = false;
-
-  DistanceLodScratch _distanceLodScratch;
-  EnergyImportanceScratch _energyScratch;
-  StrategyPerfCounters _strategyPerfCounters;
 
   size_t _maxPrimitiveCount = 0;
   size_t _maxTriangleVertexCount = 0;
