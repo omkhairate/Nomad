@@ -101,6 +101,37 @@ bool ResidentObjectGpuResources::ensureResident(
 
 using namespace MetalCppPathTracer;
 
+namespace {
+
+using Stats = MetalCppPathTracer::StrategyPerfCounters::Stats;
+
+template <typename T>
+void ensureScratchCapacity(std::vector<T> &buffer, size_t desiredCapacity,
+                           Stats &stats) {
+  if (desiredCapacity == 0)
+    return;
+  size_t currentCapacity = buffer.capacity();
+  if (currentCapacity >= desiredCapacity)
+    return;
+  size_t newCapacity = std::max(desiredCapacity,
+                                currentCapacity > 0 ? currentCapacity * 2
+                                                    : desiredCapacity);
+  buffer.reserve(newCapacity);
+  stats.bufferExpansions++;
+  stats.bytesAllocated += (newCapacity - currentCapacity) * sizeof(T);
+}
+
+template <typename T>
+void ensureScratchSize(std::vector<T> &buffer, size_t desiredSize, Stats &stats,
+                       bool zeroFill = false) {
+  ensureScratchCapacity(buffer, desiredSize, stats);
+  buffer.resize(desiredSize);
+  if (zeroFill)
+    std::fill(buffer.begin(), buffer.end(), T{});
+}
+
+} // namespace
+
 struct UniformsData {
   int primitiveIndex;
   simd::float3 cameraPosition;
@@ -900,7 +931,12 @@ void Renderer::writeBenchmarkHeader() {
          "object_deactivations,active_primitives,resident_primitives,total_primitives,"
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
          "resident_nodes,total_nodes,active_objects,resident_objects,gpu_memory_mb,"
-         "texture_memory_cap_mb,over_memory_cap,residency_compacted,"
+         "texture_memory_cap_mb,over_memory_cap,distance_lod_buffer_expansions,"
+         "distance_lod_bytes_allocated,distance_lod_full_sorts,"
+         "distance_lod_partial_sorts,distance_lod_heap_ops,distance_lod_candidates,"
+         "energy_buffer_expansions,energy_bytes_allocated,energy_full_sorts,"
+         "energy_partial_sorts,energy_incremental_adjustments,energy_dirty_objects,"
+         "residency_compacted,"
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
@@ -942,6 +978,18 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.gpuMemoryMB, 3) << ','
       << formatFixed(sample.textureMemoryCapMB, 3) << ','
       << boolToInt(sample.overMemoryCap) << ','
+      << sample.distanceLodBufferExpansions << ','
+      << sample.distanceLodBytesAllocated << ','
+      << sample.distanceLodFullSorts << ','
+      << sample.distanceLodPartialSorts << ','
+      << sample.distanceLodHeapOperations << ','
+      << sample.distanceLodCandidates << ','
+      << sample.energyBufferExpansions << ','
+      << sample.energyBytesAllocated << ','
+      << sample.energyFullSorts << ','
+      << sample.energyPartialSorts << ','
+      << sample.energyIncrementalAdjustments << ','
+      << sample.energyDirtyObjects << ','
       << boolToInt(sample.residentCompacted) << ','
       << boolToInt(sample.accumulationReset) << ','
       << formatFixed(_residencyConfig.rayHitDecay, 3) << ','
@@ -4390,6 +4438,8 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   if (!_pScene)
     return;
 
+  _strategyPerfCounters.reset();
+
   _framePrimitiveActivations = 0;
   _framePrimitiveDeactivations = 0;
   _frameObjectActivations = 0;
@@ -4498,59 +4548,66 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   // treated as infinitely far away and immediately culled regardless of
   // distance thresholds.
 
-  size_t toggles = 0;
-  bool changed = false;
-
   const size_t objectCount = _allSceneObjects.size();
-  std::vector<float> objectDistances(objectCount,
-                                     std::numeric_limits<float>::max());
-  std::vector<bool> objectBehind(objectCount, false);
-  std::vector<size_t> sortedIndices(objectCount);
+  if (objectCount == 0)
+    return false;
+
+  auto &scratch = _distanceLodScratch;
+  auto &stats = _strategyPerfCounters.distanceLod;
+
+  ensureScratchSize(scratch.distances, objectCount, stats);
+  ensureScratchSize(scratch.behindFlags, objectCount, stats, true);
+  ensureScratchCapacity(scratch.candidates, objectCount, stats);
+  scratch.candidates.clear();
+
   simd::float3 forward = Camera::forward;
   float forwardLenSq = simd::length_squared(forward);
   bool forwardValid = forwardLenSq >= 1e-6f;
   if (forwardValid)
     forward /= std::sqrt(forwardLenSq);
+
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const BoundingSphere &sphere =
-        (objectIndex < _objectBounds.size())
-            ? _objectBounds[objectIndex]
-            : BoundingSphere{simd::make_float3(0.0f, 0.0f, 0.0f), 0.0f};
+        (objectIndex < _objectBounds.size()) ? _objectBounds[objectIndex]
+                                             : BoundingSphere{simd::make_float3(0.0f, 0.0f, 0.0f), 0.0f};
     simd::float3 toCenter = sphere.center - Camera::position;
     float dist = simd::length(toCenter) - sphere.radius;
+    bool behind = false;
     if (forwardValid) {
       float forwardDepth = simd::dot(toCenter, forward);
-      if (forwardDepth + sphere.radius <= 0.0f) {
-        objectDistances[objectIndex] = std::numeric_limits<float>::max();
-        objectBehind[objectIndex] = true;
-        sortedIndices[objectIndex] = objectIndex;
-        continue;
-      }
+      if (forwardDepth + sphere.radius <= 0.0f)
+        behind = true;
     }
-    objectDistances[objectIndex] = std::max(dist, 0.0f);
-    sortedIndices[objectIndex] = objectIndex;
+    scratch.behindFlags[objectIndex] = behind ? 1u : 0u;
+    if (behind)
+      scratch.distances[objectIndex] = std::numeric_limits<float>::max();
+    else
+      scratch.distances[objectIndex] = std::max(dist, 0.0f);
   }
 
-  std::sort(sortedIndices.begin(), sortedIndices.end(),
-            [&objectDistances](size_t a, size_t b) {
-              return objectDistances[a] < objectDistances[b];
-            });
+  struct CandidateCompare {
+    bool operator()(const DistanceLodScratch::ToggleCandidate &lhs,
+                    const DistanceLodScratch::ToggleCandidate &rhs) const {
+      if (lhs.distance == rhs.distance)
+        return lhs.objectIndex > rhs.objectIndex;
+      return lhs.distance > rhs.distance;
+    }
+  } compare;
 
-  for (size_t orderIndex = 0; orderIndex < objectCount; ++orderIndex) {
-    size_t objectIndex = sortedIndices[orderIndex];
-    float dist = (objectIndex < objectDistances.size())
-                     ? objectDistances[objectIndex]
-                     : 0.0f;
+  const size_t toggleBudget = _residencyConfig.lodMaxTogglesPerFrame;
+  size_t toggles = 0;
+  bool changed = false;
 
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    float dist = scratch.distances[objectIndex];
+    bool behind = scratch.behindFlags[objectIndex] != 0;
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
-    bool behind = objectIndex < objectBehind.size() && objectBehind[objectIndex];
-    bool shouldBeActive =
-        currentlyActive ? (dist <= _residencyConfig.lodExitDistance && !behind)
-                         : (dist < _residencyConfig.lodEnterDistance && !behind);
-    bool canToggle =
-        forceAllToggles || objectIndex >= _objectCooldown.size() ||
-        _objectCooldown[objectIndex] == 0;
+    bool shouldBeActive = currentlyActive
+                              ? (dist <= _residencyConfig.lodExitDistance && !behind)
+                              : (dist < _residencyConfig.lodEnterDistance && !behind);
+    bool canToggle = forceAllToggles || objectIndex >= _objectCooldown.size() ||
+                     _objectCooldown[objectIndex] == 0;
     if (!canToggle || shouldBeActive == currentlyActive)
       continue;
 
@@ -4567,12 +4624,29 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
     if (togglesNeeded == 0)
       continue;
 
-    size_t toggleCost = forceAllToggles ? togglesNeeded : size_t(1);
-    if (!forceAllToggles &&
-        toggles + toggleCost > _residencyConfig.lodMaxTogglesPerFrame)
+    DistanceLodScratch::ToggleCandidate candidate;
+    candidate.objectIndex = objectIndex;
+    candidate.distance = dist;
+    candidate.togglesNeeded = togglesNeeded;
+    candidate.shouldBeActive = shouldBeActive;
+    scratch.candidates.push_back(candidate);
+    std::push_heap(scratch.candidates.begin(), scratch.candidates.end(), compare);
+    stats.candidateCount++;
+    stats.heapOperations++;
+  }
+
+  while (!scratch.candidates.empty() &&
+         (forceAllToggles || toggles < toggleBudget)) {
+    std::pop_heap(scratch.candidates.begin(), scratch.candidates.end(), compare);
+    auto candidate = scratch.candidates.back();
+    scratch.candidates.pop_back();
+    stats.heapOperations++;
+
+    size_t toggleCost = forceAllToggles ? candidate.togglesNeeded : size_t(1);
+    if (!forceAllToggles && toggles + toggleCost > toggleBudget)
       continue;
 
-    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+    size_t toggled = setObjectActive(candidate.objectIndex, candidate.shouldBeActive);
     if (toggled > 0) {
       toggles += toggleCost;
       changed = true;
@@ -4643,14 +4717,18 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
 
+  auto &stats = _strategyPerfCounters.energyImportance;
   const size_t objectCount = _allSceneObjects.size();
   if (objectCount == 0) {
     // Fall back to primitive-level logic if no objects are available.
     const size_t primCount = _activePrimitive.size();
-    std::vector<bool> desiredState(primCount, false);
-    std::vector<size_t> sortedIndices(primCount);
-    std::iota(sortedIndices.begin(), sortedIndices.end(), size_t(0));
-    std::sort(sortedIndices.begin(), sortedIndices.end(),
+    auto &scratch = _energyScratch;
+    ensureScratchSize(scratch.primitiveDesiredState, primCount, stats, true);
+    ensureScratchSize(scratch.primitiveSortedIndices, primCount, stats);
+    std::iota(scratch.primitiveSortedIndices.begin(),
+              scratch.primitiveSortedIndices.end(), size_t(0));
+    std::sort(scratch.primitiveSortedIndices.begin(),
+              scratch.primitiveSortedIndices.end(),
               [this](size_t a, size_t b) {
                 float scoreA = sanitizeSortValue(_primitiveImportance[a]);
                 float scoreB = sanitizeSortValue(_primitiveImportance[b]);
@@ -4658,16 +4736,19 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
                   return a < b;
                 return scoreA > scoreB;
               });
+    stats.fullSorts++;
+    stats.candidateCount += scratch.primitiveSortedIndices.size();
 
     size_t minActive =
         std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
     if (_totalPrimitiveImportance <= 0.0f) {
       size_t enabledPrimitives = 0;
-      for (size_t index : sortedIndices) {
+      for (size_t index : scratch.primitiveSortedIndices) {
         if (enabledPrimitives >= minActive)
           break;
-        desiredState[index] = true;
+        if (index < scratch.primitiveDesiredState.size())
+          scratch.primitiveDesiredState[index] = 1;
         ++enabledPrimitives;
       }
     } else {
@@ -4675,22 +4756,30 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       float targetImportance =
           _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
       size_t enabled = 0;
-      for (size_t index : sortedIndices) {
+      for (size_t index : scratch.primitiveSortedIndices) {
         if (enabled >= minActive && cumulative >= targetImportance)
           break;
-        desiredState[index] = true;
+        if (index < scratch.primitiveDesiredState.size())
+          scratch.primitiveDesiredState[index] = 1;
         cumulative += std::max(_primitiveImportance[index], 0.0f);
         ++enabled;
       }
 
-      for (size_t i = 0; i < minActive && i < sortedIndices.size(); ++i)
-        desiredState[sortedIndices[i]] = true;
+      for (size_t i = 0; i < minActive && i < scratch.primitiveSortedIndices.size();
+           ++i) {
+        size_t index = scratch.primitiveSortedIndices[i];
+        if (index < scratch.primitiveDesiredState.size())
+          scratch.primitiveDesiredState[index] = 1;
+      }
     }
 
     bool changed = false;
     size_t toggles = 0;
     for (size_t i = 0; i < primCount; ++i) {
-      bool shouldBeActive = desiredState[i];
+      bool shouldBeActive =
+          (i < scratch.primitiveDesiredState.size())
+              ? scratch.primitiveDesiredState[i] != 0
+              : false;
       if (shouldBeActive == _activePrimitive[i])
         continue;
       if (!forceAllToggles) {
@@ -4711,7 +4800,9 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
         ++activeCount;
 
     if (activeCount == 0 && !_activePrimitive.empty()) {
-      size_t fallback = !sortedIndices.empty() ? sortedIndices.front() : size_t(0);
+      size_t fallback = !scratch.primitiveSortedIndices.empty()
+                            ? scratch.primitiveSortedIndices.front()
+                            : size_t(0);
       if (setPrimitiveActive(fallback, true))
         changed = true;
     }
@@ -4724,10 +4815,17 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   else
     std::fill(_objectImportance.begin(), _objectImportance.end(), 0.0f);
 
-  if (_energySortedIndices.size() != objectCount)
+  if (_objectImportancePrevious.size() != objectCount)
+    _objectImportancePrevious.assign(objectCount, 0.0f);
+
+  if (_energySortedIndices.size() != objectCount) {
     _energySortedIndices.resize(objectCount);
-  std::iota(_energySortedIndices.begin(), _energySortedIndices.end(),
-            size_t(0));
+    std::iota(_energySortedIndices.begin(), _energySortedIndices.end(),
+              size_t(0));
+  }
+
+  ensureScratchCapacity(_energyDirtyObjects, objectCount, stats);
+  _energyDirtyObjects.clear();
 
   float screenArea = Camera::screenSize.x * Camera::screenSize.y;
   if (screenArea <= 0.0f)
@@ -4792,6 +4890,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       if (applyVisibilityBoost && prim < _primitiveScreenCoverage.size())
         coverage += std::max(_primitiveScreenCoverage[prim], 0.0f);
     }
+    float newImportance = totalImportance;
     if (applyVisibilityBoost) {
       float sphereCoverage = 0.0f;
       if (objectIndex < _objectBounds.size())
@@ -4799,31 +4898,106 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       float combinedCoverage = std::max(coverage, sphereCoverage);
       float visibilityFactor = combinedCoverage > 0.0f ? 1.0f : 0.0f;
       float multiplier = 1.0f + (visibilityBoost - 1.0f) * visibilityFactor;
-      _objectImportance[objectIndex] = totalImportance * multiplier;
-    } else {
-      _objectImportance[objectIndex] = totalImportance;
+      newImportance *= multiplier;
     }
+
+    float previous =
+        (objectIndex < _objectImportancePrevious.size())
+            ? _objectImportancePrevious[objectIndex]
+            : 0.0f;
+    const float kImportanceEpsilon = 1e-4f;
+    if (std::fabs(previous - newImportance) > kImportanceEpsilon)
+      _energyDirtyObjects.push_back(objectIndex);
+
+    if (objectIndex < _objectImportance.size())
+      _objectImportance[objectIndex] = newImportance;
+    if (objectIndex < _objectImportancePrevious.size())
+      _objectImportancePrevious[objectIndex] = newImportance;
   }
 
-  std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
-            [this](size_t a, size_t b) {
-              float scoreA = 0.0f;
-              if (a < _objectImportance.size())
-                scoreA = sanitizeSortValue(_objectImportance[a]);
-              float scoreB = 0.0f;
-              if (b < _objectImportance.size())
-                scoreB = sanitizeSortValue(_objectImportance[b]);
-              if (scoreA == scoreB)
-                return a < b;
-              return scoreA > scoreB;
-            });
+  stats.candidateCount += _energyDirtyObjects.size();
+
+  auto compareImportance = [this](size_t a, size_t b) {
+    float scoreA = (a < _objectImportance.size())
+                       ? sanitizeSortValue(_objectImportance[a])
+                       : 0.0f;
+    float scoreB = (b < _objectImportance.size())
+                       ? sanitizeSortValue(_objectImportance[b])
+                       : 0.0f;
+    if (scoreA == scoreB)
+      return a < b;
+    return scoreA > scoreB;
+  };
+
+  bool needFullSort = _energySortedIndices.size() != objectCount ||
+                      _energyDirtyObjects.size() * 4 >= objectCount;
+
+  if (needFullSort) {
+    std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
+              compareImportance);
+    stats.fullSorts++;
+  } else if (!_energyDirtyObjects.empty()) {
+    ensureScratchSize(_energyIndexToPosition, objectCount, stats);
+    for (size_t pos = 0; pos < _energySortedIndices.size(); ++pos) {
+      size_t objectIndex = _energySortedIndices[pos];
+      if (objectIndex < _energyIndexToPosition.size())
+        _energyIndexToPosition[objectIndex] = pos;
+    }
+
+    for (size_t objectIndex : _energyDirtyObjects) {
+      if (objectIndex >= _energySortedIndices.size())
+        continue;
+      size_t currentPos =
+          (objectIndex < _energyIndexToPosition.size())
+              ? _energyIndexToPosition[objectIndex]
+              : static_cast<size_t>(-1);
+      if (currentPos >= _energySortedIndices.size())
+        continue;
+
+      float score = sanitizeSortValue(_objectImportance[objectIndex]);
+      size_t pos = currentPos;
+      while (pos > 0) {
+        size_t prevIndex = _energySortedIndices[pos - 1];
+        float prevScore = sanitizeSortValue(_objectImportance[prevIndex]);
+        if (score > prevScore ||
+            (score == prevScore && objectIndex < prevIndex)) {
+          _energySortedIndices[pos] = prevIndex;
+          if (prevIndex < _energyIndexToPosition.size())
+            _energyIndexToPosition[prevIndex] = pos;
+          --pos;
+        } else {
+          break;
+        }
+      }
+
+      while (pos + 1 < _energySortedIndices.size()) {
+        size_t nextIndex = _energySortedIndices[pos + 1];
+        float nextScore = sanitizeSortValue(_objectImportance[nextIndex]);
+        if (score < nextScore ||
+            (score == nextScore && objectIndex > nextIndex)) {
+          _energySortedIndices[pos] = nextIndex;
+          if (nextIndex < _energyIndexToPosition.size())
+            _energyIndexToPosition[nextIndex] = pos;
+          ++pos;
+        } else {
+          break;
+        }
+      }
+
+      _energySortedIndices[pos] = objectIndex;
+      if (objectIndex < _energyIndexToPosition.size())
+        _energyIndexToPosition[objectIndex] = pos;
+      stats.incrementalAdjustments++;
+    }
+  }
 
   const size_t primCount = _activePrimitive.size();
   const size_t minActivePrimitives =
       std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
   if (!anyMeshGroups) {
-    std::vector<bool> desiredObjectState(objectCount, false);
+    auto &desiredObjectState = _energyScratch.desiredObjectState;
+    ensureScratchSize(desiredObjectState, objectCount, stats, true);
     size_t primitivesEnabled = 0;
 
     if (_totalPrimitiveImportance <= 0.0f) {
@@ -4833,7 +5007,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
         size_t count = objectPrimitiveCounts[idx];
         if (count == 0)
           continue;
-        desiredObjectState[idx] = true;
+        if (idx < desiredObjectState.size())
+          desiredObjectState[idx] = 1;
         primitivesEnabled += count;
         if (primitivesEnabled >= minActivePrimitives)
           break;
@@ -4850,7 +5025,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
             (idx < _objectImportance.size()) ? _objectImportance[idx] : 0.0f;
         if (count == 0 && importance <= 0.0f)
           continue;
-        desiredObjectState[idx] = true;
+        if (idx < desiredObjectState.size())
+          desiredObjectState[idx] = 1;
         primitivesEnabled += count;
         cumulativeImportance += std::max(importance, 0.0f);
         if (primitivesEnabled >= minActivePrimitives &&
@@ -4863,12 +5039,13 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       for (size_t idx : _energySortedIndices) {
         if (idx >= objectPrimitiveCounts.size())
           continue;
-        if (desiredObjectState[idx])
+        if (idx < desiredObjectState.size() && desiredObjectState[idx])
           continue;
         size_t count = objectPrimitiveCounts[idx];
         if (count == 0)
           continue;
-        desiredObjectState[idx] = true;
+        if (idx < desiredObjectState.size())
+          desiredObjectState[idx] = 1;
         primitivesEnabled += count;
         if (primitivesEnabled >= minActivePrimitives)
           break;
@@ -4878,7 +5055,10 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     bool changed = false;
     size_t toggledPrimitiveCount = 0;
     for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-      bool shouldBeActive = desiredObjectState[objectIndex];
+      bool shouldBeActive =
+          (objectIndex < desiredObjectState.size())
+              ? desiredObjectState[objectIndex] != 0
+              : false;
       bool currentlyActive =
           objectIndex < _objectActive.size() && _objectActive[objectIndex];
       if (shouldBeActive == currentlyActive)
@@ -4978,8 +5158,9 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     size_t primitiveCount = 0;
   };
 
-  std::vector<MeshGroupAggregate> meshGroups;
-  meshGroups.reserve(_meshGroups.size());
+  auto &meshGroups = _energyScratch.meshGroups;
+  ensureScratchCapacity(meshGroups, _meshGroups.size(), stats);
+  meshGroups.clear();
   for (const auto &info : _meshGroups) {
     MeshGroupAggregate aggregate;
     aggregate.info = &info;
@@ -4997,7 +5178,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     meshGroups.push_back(std::move(aggregate));
   }
 
-  std::vector<float> meshGroupAverageImportance(meshGroups.size(), 0.0f);
+  auto &meshGroupAverageImportance = _energyScratch.meshGroupAverageImportance;
+  ensureScratchSize(meshGroupAverageImportance, meshGroups.size(), stats, true);
   for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
     const MeshGroupAggregate &group = meshGroups[groupIndex];
     if (group.primitiveCount > 0) {
@@ -5007,7 +5189,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     }
   }
 
-  std::vector<size_t> meshSortedIndices(meshGroups.size());
+  auto &meshSortedIndices = _energyScratch.meshSortedIndices;
+  ensureScratchSize(meshSortedIndices, meshGroups.size(), stats);
   std::iota(meshSortedIndices.begin(), meshSortedIndices.end(), size_t(0));
   std::sort(meshSortedIndices.begin(), meshSortedIndices.end(),
             [&meshGroups](size_t a, size_t b) {
@@ -5021,8 +5204,11 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
                 return a < b;
               return scoreA > scoreB;
             });
+  if (!meshGroups.empty())
+    stats.partialSorts++;
 
-  std::vector<bool> desiredGroupState(meshGroups.size(), false);
+  auto &desiredGroupState = _energyScratch.desiredGroupState;
+  ensureScratchSize(desiredGroupState, meshGroups.size(), stats, true);
   size_t primitivesEnabled = 0;
 
   bool meshTargetSatisfied = false;
@@ -5038,7 +5224,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       const MeshGroupAggregate &group = meshGroups[idx];
       if (group.primitiveCount == 0)
         continue;
-      desiredGroupState[idx] = true;
+      if (idx < desiredGroupState.size())
+        desiredGroupState[idx] = 1;
       primitivesEnabled += group.primitiveCount;
       if (primitivesEnabled >= minActivePrimitives)
         break;
@@ -5055,7 +5242,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       const MeshGroupAggregate &group = meshGroups[idx];
       if (group.primitiveCount == 0 && group.importance <= 0.0f)
         continue;
-      desiredGroupState[idx] = true;
+      if (idx < desiredGroupState.size())
+        desiredGroupState[idx] = 1;
       primitivesEnabled += group.primitiveCount;
       cumulativeImportance += std::max(group.importance, 0.0f);
       if (meshHasPrimaryAverage)
@@ -5081,9 +5269,10 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       const MeshGroupAggregate &group = meshGroups[idx];
       if (group.primitiveCount == 0)
         continue;
-      if (desiredGroupState[idx])
+      if (idx < desiredGroupState.size() && desiredGroupState[idx])
         continue;
-      desiredGroupState[idx] = true;
+      if (idx < desiredGroupState.size())
+        desiredGroupState[idx] = 1;
       primitivesEnabled += group.primitiveCount;
       if (primitivesEnabled >= minActivePrimitives)
         break;
@@ -5123,7 +5312,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       float epsilon = std::max(1e-5f, meshLastPrimaryAverage * 1e-3f);
       for (size_t groupIndex = 0; groupIndex < meshGroups.size();
            ++groupIndex) {
-        if (desiredGroupState[groupIndex])
+        if (groupIndex < desiredGroupState.size() &&
+            desiredGroupState[groupIndex])
           continue;
         const MeshGroupAggregate &group = meshGroups[groupIndex];
         if (group.primitiveCount == 0)
@@ -5133,14 +5323,15 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
           continue;
         float difference = meshLastPrimaryAverage - average;
         if (difference <= allowedDelta + epsilon)
-          desiredGroupState[groupIndex] = true;
+          desiredGroupState[groupIndex] = 1;
       }
     }
   }
 
-  std::vector<bool> desiredObjectState(objectCount, false);
+  auto &desiredObjectState = _energyScratch.desiredObjectState;
+  ensureScratchSize(desiredObjectState, objectCount, stats, true);
   for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
-    if (!desiredGroupState[groupIndex])
+    if (groupIndex >= desiredGroupState.size() || !desiredGroupState[groupIndex])
       continue;
     const MeshGroupAggregate &group = meshGroups[groupIndex];
     const auto *objectIndices =
@@ -5149,7 +5340,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       continue;
     for (size_t objectIndex : *objectIndices) {
       if (objectIndex < desiredObjectState.size())
-        desiredObjectState[objectIndex] = true;
+        desiredObjectState[objectIndex] = 1;
     }
   }
 
@@ -5157,7 +5348,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   size_t toggledPrimitiveCount = 0;
   for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
     const MeshGroupAggregate &group = meshGroups[groupIndex];
-    bool groupShouldBeActive = desiredGroupState[groupIndex];
+    bool groupShouldBeActive =
+        (groupIndex < desiredGroupState.size()) && desiredGroupState[groupIndex];
     size_t groupToggleCount = 0;
     bool groupNeedsToggle = false;
     bool groupCanToggle = true;
@@ -5169,7 +5361,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     for (size_t objectIndex : *objectIndices) {
       bool shouldBeActive =
           (objectIndex < desiredObjectState.size())
-              ? desiredObjectState[objectIndex]
+              ? desiredObjectState[objectIndex] != 0
               : groupShouldBeActive;
       bool currentlyActive =
           (objectIndex < _objectActive.size()) ? _objectActive[objectIndex]
@@ -5208,7 +5400,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     for (size_t objectIndex : *objectIndices) {
       bool shouldBeActive =
           (objectIndex < desiredObjectState.size())
-              ? desiredObjectState[objectIndex]
+              ? desiredObjectState[objectIndex] != 0
               : groupShouldBeActive;
       bool currentlyActive =
           (objectIndex < _objectActive.size()) ? _objectActive[objectIndex]
@@ -6031,6 +6223,20 @@ void Renderer::beginFrameMetrics() {
     sample.accumulationReset = _needsAccumulationReset;
     sample.residentCompacted = _residentCompacted;
     sample.overMemoryCap = sample.gpuMemoryMB > _textureResidencyMemoryCapMB;
+    const auto &lodStats = _strategyPerfCounters.distanceLod;
+    sample.distanceLodBufferExpansions = lodStats.bufferExpansions;
+    sample.distanceLodBytesAllocated = lodStats.bytesAllocated;
+    sample.distanceLodFullSorts = lodStats.fullSorts;
+    sample.distanceLodPartialSorts = lodStats.partialSorts;
+    sample.distanceLodHeapOperations = lodStats.heapOperations;
+    sample.distanceLodCandidates = lodStats.candidateCount;
+    const auto &energyStats = _strategyPerfCounters.energyImportance;
+    sample.energyBufferExpansions = energyStats.bufferExpansions;
+    sample.energyBytesAllocated = energyStats.bytesAllocated;
+    sample.energyFullSorts = energyStats.fullSorts;
+    sample.energyPartialSorts = energyStats.partialSorts;
+    sample.energyIncrementalAdjustments = energyStats.incrementalAdjustments;
+    sample.energyDirtyObjects = energyStats.candidateCount;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
 }
