@@ -37,6 +37,18 @@ struct GeometryHandle {
   uint32_t padding = 0;
 };
 
+enum class DirtyEntryType : uint8_t { Primitive = 0, Object = 1 };
+
+struct DirtyEntry {
+  DirtyEntryType type = DirtyEntryType::Primitive;
+  size_t index = 0;
+};
+
+struct BufferUpdateRange {
+  size_t offset = 0;
+  size_t length = 0;
+};
+
 struct TextureInfo {
   uint32_t offset = 0;
   uint32_t width = 0;
@@ -154,7 +166,8 @@ private:
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
           &descriptors,
       const std::vector<MTL::AccelerationStructure *> &structures,
-      MTL::CommandBuffer *&commandBuffer);
+      MTL::CommandBuffer *&commandBuffer,
+      const std::vector<BufferUpdateRange> &descriptorRanges);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
   void initializeBenchmarking();
@@ -298,8 +311,8 @@ private:
   std::vector<BlasInstanceRecord> _instanceRecords;
   std::vector<Primitive> _residentPrimitives;
   std::vector<uint32_t> _residentRemap;
-  std::vector<size_t> _recentlyActivated;
-  std::vector<size_t> _recentlyDeactivated;
+  std::vector<DirtyEntry> _recentlyActivated;
+  std::vector<DirtyEntry> _recentlyDeactivated;
 
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
 
@@ -339,6 +352,7 @@ private:
   std::vector<simd::float4> _cachedTextureData;
   std::vector<uint32_t> _cachedLightIndices;
   std::vector<float> _cachedLightCdf;
+  std::vector<GeometryHandle> _cachedGeometryHandles;
 
   struct MeshGroupInfo {
     int meshGroupId = -1;

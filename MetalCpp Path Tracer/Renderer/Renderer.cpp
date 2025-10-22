@@ -31,6 +31,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <tuple>
 #include <unordered_map>
 
 #define TINYEXR_IMPLEMENTATION
@@ -401,6 +402,38 @@ void markBufferModified(MTL::Buffer *buffer, NS::Range range) {
 
   if (buffer->storageMode() == MTL::StorageModeManaged)
     buffer->didModifyRange(range);
+}
+
+void removeDirtyEntry(std::vector<DirtyEntry> &list, DirtyEntryType type,
+                      size_t index) {
+  list.erase(std::remove_if(list.begin(), list.end(),
+                            [&](const DirtyEntry &entry) {
+                              return entry.type == type && entry.index == index;
+                            }),
+             list.end());
+}
+
+void deduplicateDirtyEntries(std::vector<DirtyEntry> &entries) {
+  std::sort(entries.begin(), entries.end(),
+            [](const DirtyEntry &a, const DirtyEntry &b) {
+              return std::tie(a.type, a.index) < std::tie(b.type, b.index);
+            });
+  entries.erase(std::unique(entries.begin(), entries.end(),
+                            [](const DirtyEntry &a, const DirtyEntry &b) {
+                              return a.type == b.type && a.index == b.index;
+                            }),
+                entries.end());
+}
+
+void gatherDirtyIndices(const std::vector<DirtyEntry> &entries,
+                        DirtyEntryType type, std::vector<size_t> &out) {
+  out.clear();
+  for (const DirtyEntry &entry : entries) {
+    if (entry.type == type)
+      out.push_back(entry.index);
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
 }
 
 static bool cameraStatesDiffer(const Camera::State &a, const Camera::State &b,
@@ -2171,7 +2204,8 @@ bool Renderer::ensureDummyBlas() {
 void Renderer::updateTopLevelAccelerationStructure(
     const std::vector<MTL::AccelerationStructureInstanceDescriptor> &descriptors,
     const std::vector<MTL::AccelerationStructure *> &structures,
-    MTL::CommandBuffer *&commandBuffer) {
+    MTL::CommandBuffer *&commandBuffer,
+    const std::vector<BufferUpdateRange> &descriptorRanges) {
   if (!_pDevice || !_pCommandQueue)
     return;
 
@@ -2215,6 +2249,10 @@ void Renderer::updateTopLevelAccelerationStructure(
                       (_pTlasStructure == nullptr);
   bool needsDescriptorUpload = descriptorContentChanged || needsRebuild;
 
+  bool usePartialDescriptorUpdate =
+      needsDescriptorUpload && !descriptorRanges.empty() &&
+      !descriptorCountChanged && !needsRebuild;
+
   size_t descriptorCount = descriptors.size();
   size_t descriptorBytes =
       descriptorCount * sizeof(MTL::AccelerationStructureInstanceDescriptor);
@@ -2232,7 +2270,19 @@ void Renderer::updateTopLevelAccelerationStructure(
   _pTlasInstanceDescriptorBuffer = instanceBuffer;
 
   MTL::Buffer *stagingBuffer = nullptr;
-  if (needsDescriptorUpload && descriptorBytes > 0) {
+  std::vector<std::pair<MTL::Buffer *, BufferUpdateRange>> partialUploads;
+  auto releasePartialUploads = [&]() {
+    for (auto &entry : partialUploads) {
+      if (entry.first) {
+        entry.first->release();
+        entry.first = nullptr;
+      }
+    }
+    partialUploads.clear();
+  };
+
+  if (needsDescriptorUpload && descriptorBytes > 0 &&
+      !usePartialDescriptorUpdate) {
     stagingBuffer =
         _pDevice->newBuffer(descriptorBytes, MTL::ResourceStorageModeShared);
     if (!stagingBuffer)
@@ -2242,6 +2292,25 @@ void Renderer::updateTopLevelAccelerationStructure(
     NS::UInteger stagingLength =
         static_cast<NS::UInteger>(descriptorBytes);
     markBufferModified(stagingBuffer, NS::Range::Make(0, stagingLength));
+  } else if (usePartialDescriptorUpdate) {
+    partialUploads.reserve(descriptorRanges.size());
+    const uint8_t *sourceBytes =
+        reinterpret_cast<const uint8_t *>(descriptors.data());
+    for (const BufferUpdateRange &range : descriptorRanges) {
+      if (range.length == 0 || range.offset + range.length > descriptorBytes)
+        continue;
+      MTL::Buffer *partial =
+          _pDevice->newBuffer(range.length, MTL::ResourceStorageModeShared);
+      if (!partial)
+        continue;
+      std::memcpy(partial->contents(), sourceBytes + range.offset,
+                  range.length);
+      markBufferModified(partial,
+                         NS::Range::Make(0, static_cast<NS::UInteger>(range.length)));
+      partialUploads.emplace_back(partial, range);
+    }
+    if (partialUploads.empty())
+      needsDescriptorUpload = false;
   }
 
   MTL::InstanceAccelerationStructureDescriptor *instanceDesc =
@@ -2286,6 +2355,7 @@ void Renderer::updateTopLevelAccelerationStructure(
       instanceDesc->release();
       if (stagingBuffer)
         stagingBuffer->release();
+      releasePartialUploads();
       return;
     }
     targetStructure = structure;
@@ -2307,6 +2377,7 @@ void Renderer::updateTopLevelAccelerationStructure(
       scratchBuffer->release();
     if (stagingBuffer)
       stagingBuffer->release();
+    releasePartialUploads();
     if (_pPendingTlasStructure) {
       _pPendingTlasStructure->release();
       _pPendingTlasStructure = nullptr;
@@ -2332,6 +2403,7 @@ void Renderer::updateTopLevelAccelerationStructure(
       if (scratchBuffer)
         scratchBuffer->release();
       stagingBuffer->release();
+      releasePartialUploads();
       if (_pPendingTlasStructure) {
         _pPendingTlasStructure->release();
         _pPendingTlasStructure = nullptr;
@@ -2344,6 +2416,29 @@ void Renderer::updateTopLevelAccelerationStructure(
       return;
     }
     enc->copyFromBuffer(stagingBuffer, 0, instanceBuffer, 0, descriptorBytes);
+  } else if (usePartialDescriptorUpdate && !partialUploads.empty()) {
+    MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
+    if (!enc) {
+      if (scratchBuffer)
+        scratchBuffer->release();
+      if (stagingBuffer)
+        stagingBuffer->release();
+      releasePartialUploads();
+      if (_pPendingTlasStructure) {
+        _pPendingTlasStructure->release();
+        _pPendingTlasStructure = nullptr;
+      }
+      if (retainedActive) {
+        retainedActive->release();
+        retainedActive = nullptr;
+      }
+      instanceDesc->release();
+      return;
+    }
+    for (const auto &upload : partialUploads) {
+      enc->copyFromBuffer(upload.first, 0, instanceBuffer, upload.second.offset,
+                          upload.second.length);
+    }
   } else if (needsDescriptorUpload && descriptorBytes == 0 && instanceBuffer &&
              instanceBuffer->length() > 0) {
     MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
@@ -2352,6 +2447,7 @@ void Renderer::updateTopLevelAccelerationStructure(
         scratchBuffer->release();
       if (stagingBuffer)
         stagingBuffer->release();
+      releasePartialUploads();
       if (_pPendingTlasStructure) {
         _pPendingTlasStructure->release();
         _pPendingTlasStructure = nullptr;
@@ -2377,6 +2473,7 @@ void Renderer::updateTopLevelAccelerationStructure(
       scratchBuffer->release();
     if (stagingBuffer)
       stagingBuffer->release();
+    releasePartialUploads();
     if (_pPendingTlasStructure) {
       _pPendingTlasStructure->release();
       _pPendingTlasStructure = nullptr;
@@ -2438,6 +2535,7 @@ void Renderer::updateTopLevelAccelerationStructure(
     scratchBuffer->release();
   if (stagingBuffer)
     stagingBuffer->release();
+  releasePartialUploads();
   instanceDesc->release();
 
   _cachedInstanceDescriptors = descriptors;
@@ -2578,6 +2676,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   }
 
   const auto &sceneObjects = _pScene->getObjects();
+  std::vector<BlasInstanceRecord> previousInstanceRecords = _instanceRecords;
   _instanceRecords.resize(sceneObjects.size());
   std::vector<bool> objectShouldBeResident(sceneObjects.size(), false);
 
@@ -2586,23 +2685,119 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   if (needFullUpload)
     std::fill(_cpuActiveMask.begin(), _cpuActiveMask.end(), 0);
 
-  auto deduplicate = [](std::vector<size_t> &values) {
-    std::sort(values.begin(), values.end());
-    values.erase(std::unique(values.begin(), values.end()), values.end());
-  };
-
   if (!needFullUpload) {
-    deduplicate(_recentlyActivated);
-    deduplicate(_recentlyDeactivated);
+    deduplicateDirtyEntries(_recentlyActivated);
+    deduplicateDirtyEntries(_recentlyDeactivated);
     if (!_recentlyActivated.empty() && !_recentlyDeactivated.empty()) {
-      for (size_t idx : _recentlyDeactivated) {
-        auto it = std::lower_bound(_recentlyActivated.begin(),
-                                   _recentlyActivated.end(), idx);
-        if (it != _recentlyActivated.end() && *it == idx)
+      for (const DirtyEntry &entry : _recentlyDeactivated) {
+        auto it = std::find_if(_recentlyActivated.begin(),
+                               _recentlyActivated.end(),
+                               [&](const DirtyEntry &candidate) {
+                                 return candidate.type == entry.type &&
+                                        candidate.index == entry.index;
+                               });
+        if (it != _recentlyActivated.end())
           _recentlyActivated.erase(it);
       }
     }
   }
+
+  std::vector<size_t> activatedPrimitives;
+  std::vector<size_t> deactivatedPrimitives;
+  gatherDirtyIndices(_recentlyActivated, DirtyEntryType::Primitive,
+                     activatedPrimitives);
+  gatherDirtyIndices(_recentlyDeactivated, DirtyEntryType::Primitive,
+                     deactivatedPrimitives);
+
+  std::vector<size_t> dirtyPrimitiveIndices = activatedPrimitives;
+  dirtyPrimitiveIndices.insert(dirtyPrimitiveIndices.end(),
+                               deactivatedPrimitives.begin(),
+                               deactivatedPrimitives.end());
+  std::sort(dirtyPrimitiveIndices.begin(), dirtyPrimitiveIndices.end());
+  dirtyPrimitiveIndices.erase(
+      std::unique(dirtyPrimitiveIndices.begin(), dirtyPrimitiveIndices.end()),
+      dirtyPrimitiveIndices.end());
+
+  if (!needFullUpload) {
+    auto updatePrimitiveCache = [&](size_t primIndex) {
+      if (primIndex >= _allPrimitives.size())
+        return;
+      if (_cachedPrimitiveData.size() <
+          (primIndex + 1) * kPrimitiveFloat4Count)
+        return;
+      if (_cachedMaterialData.size() <
+          (primIndex + 1) * kMaterialFloat4Count)
+        return;
+
+      const Primitive &p = _allPrimitives[primIndex];
+      simd::float4 prim0;
+      simd::float4 prim1;
+      simd::float4 prim2;
+      simd::float4 prim3 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      switch (p.type) {
+      case PrimitiveType::Sphere: {
+        prim0 =
+            simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+        prim1 = simd::make_float4(
+            simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
+        prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        break;
+      }
+      case PrimitiveType::Rectangle: {
+        prim0 =
+            simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+        prim1 = simd::make_float4(p.rectangle.u, 0.0f);
+        prim2 = simd::make_float4(p.rectangle.v, 0.0f);
+        break;
+      }
+      case PrimitiveType::Triangle: {
+        prim0 = simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+        prim1 = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
+        prim2 = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
+        prim3 = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
+                                  p.triangle.uv2.x, p.triangle.uv2.y);
+        break;
+      }
+      }
+
+      simd::float4 *primBase =
+          &_cachedPrimitiveData[primIndex * kPrimitiveFloat4Count];
+      primBase[0] = prim0;
+      primBase[1] = prim1;
+      primBase[2] = prim2;
+      primBase[3] = prim3;
+
+      const Material &m = p.material;
+      auto packed = encodeMaterial(m);
+      simd::float4 *matBase =
+          &_cachedMaterialData[primIndex * kMaterialFloat4Count];
+      for (size_t j = 0; j < kMaterialFloat4Count; ++j)
+        matBase[j] = packed[j];
+    };
+
+    for (size_t primIndex : dirtyPrimitiveIndices)
+      updatePrimitiveCache(primIndex);
+  }
+
+  if (_cachedGeometryHandles.size() != sceneObjects.size() + 1)
+    _cachedGeometryHandles.assign(sceneObjects.size() + 1, GeometryHandle{});
+
+  std::vector<size_t> dirtyInstanceRecordSlots;
+  std::vector<size_t> dirtyGeometryHandleSlots;
+  std::vector<size_t> dirtyInstanceDescriptorSlots;
+
+  auto commitInstanceRecord = [&](size_t idx, const BlasInstanceRecord &rec) {
+    if (idx >= _instanceRecords.size())
+      return;
+    bool changed = true;
+    if (idx < previousInstanceRecords.size()) {
+      changed = std::memcmp(&previousInstanceRecords[idx], &rec,
+                            sizeof(BlasInstanceRecord)) != 0;
+    }
+    if (changed)
+      dirtyInstanceRecordSlots.push_back(idx);
+    _instanceRecords[idx] = rec;
+  };
 
   _cachedLightIndices.clear();
   _cachedLightCdf.clear();
@@ -2725,7 +2920,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       }
       record.blasRootIndex = anyActive ? obj.blasRootIndex : -1;
       objectShouldBeResident[objectIndex] = anyActive;
-      _instanceRecords[objectIndex] = record;
+      commitInstanceRecord(objectIndex, record);
     }
   } else {
     remapUpload.clear();
@@ -2859,8 +3054,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           for (const auto &edit : residentIndexEdits)
             if (edit.first < _primitiveToResidentIndex.size())
               _primitiveToResidentIndex[edit.first] = edit.second;
-          objectShouldBeResident[objectIndex] = false;
-          _instanceRecords[objectIndex] = record;
+        objectShouldBeResident[objectIndex] = false;
+        commitInstanceRecord(objectIndex, record);
           ++blasCacheSkipped;
           continue;
         }
@@ -2943,7 +3138,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           }
 
           objectShouldBeResident[objectIndex] = true;
-          _instanceRecords[objectIndex] = record;
+          commitInstanceRecord(objectIndex, record);
           ++blasCacheReused;
           continue;
         }
@@ -2979,7 +3174,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       record.primitiveCount = static_cast<uint32_t>(activeLocalPrims.size());
       if (activeLocalPrims.empty()) {
         objectShouldBeResident[objectIndex] = false;
-        _instanceRecords[objectIndex] = record;
+        commitInstanceRecord(objectIndex, record);
         continue;
       }
 
@@ -3003,7 +3198,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       if (localNodeCount == 0 || localNodes.empty()) {
         record.primitiveCount = 0;
         objectShouldBeResident[objectIndex] = false;
-        _instanceRecords[objectIndex] = record;
+        commitInstanceRecord(objectIndex, record);
         continue;
       }
 
@@ -3093,7 +3288,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
       record.blasRootIndex = static_cast<int32_t>(nodeBase);
       objectShouldBeResident[objectIndex] = record.primitiveCount > 0;
-      _instanceRecords[objectIndex] = record;
+      commitInstanceRecord(objectIndex, record);
     }
 
     printf("BLAS cache stats: reused %zu, rebuilt %zu, skipped %zu\n",
@@ -3147,11 +3342,30 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
   }
 
-  std::vector<MTL::AccelerationStructureInstanceDescriptor> instanceDescriptors(
-      sceneObjects.size());
-  std::vector<MTL::AccelerationStructure *> instancedStructures(
-      sceneObjects.size(), nullptr);
-  std::vector<GeometryHandle> geometryHandles(sceneObjects.size() + 1);
+  std::vector<MTL::AccelerationStructureInstanceDescriptor> instanceDescriptors;
+  if (needFullUpload ||
+      _cachedInstanceDescriptors.size() != sceneObjects.size()) {
+    instanceDescriptors.assign(sceneObjects.size(),
+                               MTL::AccelerationStructureInstanceDescriptor());
+  } else {
+    instanceDescriptors = _cachedInstanceDescriptors;
+  }
+
+  std::vector<MTL::AccelerationStructure *> instancedStructures;
+  if (needFullUpload ||
+      _cachedInstancedAccelerationStructures.size() != sceneObjects.size()) {
+    instancedStructures.assign(sceneObjects.size(), nullptr);
+  } else {
+    instancedStructures = _cachedInstancedAccelerationStructures;
+  }
+
+  std::vector<GeometryHandle> geometryHandles;
+  if (needFullUpload ||
+      _cachedGeometryHandles.size() != sceneObjects.size() + 1) {
+    geometryHandles.assign(sceneObjects.size() + 1, GeometryHandle{});
+  } else {
+    geometryHandles = _cachedGeometryHandles;
+  }
   if (!geometryHandles.empty())
     geometryHandles[0] = GeometryHandle{};
   MTL::PackedFloat4x3 identityMatrix;
@@ -3162,56 +3376,113 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
        ++objectIndex) {
-    auto &desc = instanceDescriptors[objectIndex];
-    desc.transformationMatrix = identityMatrix;
-    desc.options = MTL::AccelerationStructureInstanceOptionNone;
-    desc.intersectionFunctionTableOffset = 0;
-    desc.accelerationStructureIndex =
+    MTL::AccelerationStructureInstanceDescriptor oldDesc =
+        instanceDescriptors[objectIndex];
+    MTL::AccelerationStructureInstanceDescriptor newDesc = oldDesc;
+    newDesc.transformationMatrix = identityMatrix;
+    newDesc.options = MTL::AccelerationStructureInstanceOptionNone;
+    newDesc.intersectionFunctionTableOffset = 0;
+    newDesc.accelerationStructureIndex =
         static_cast<uint32_t>(objectIndex + 1);
 
     bool resident = false;
+    MTL::AccelerationStructure *structurePtr = nullptr;
     if (objectIndex < _residentObjectGpuResources.size()) {
       const auto &gpuResident = _residentObjectGpuResources[objectIndex];
       resident = gpuResident.isResident() && objectShouldBeResident[objectIndex];
       if (resident) {
-        MTL::AccelerationStructure *structure =
-            gpuResident.resources.accelerationStructure();
-        if (structure) {
-          instancedStructures[objectIndex] = structure;
-        } else {
+        structurePtr = gpuResident.resources.accelerationStructure();
+        if (!structurePtr)
           resident = false;
-        }
       }
     }
 
-    desc.mask = resident ? 0xFFu : 0u;
+    newDesc.mask = resident ? 0xFFu : 0u;
 
-    GeometryHandle handle{};
+    GeometryHandle newHandle{};
     if (resident && objectIndex < _residentObjectGpuResources.size()) {
       const auto &gpuResident = _residentObjectGpuResources[objectIndex];
       if (gpuResident.geometryValid) {
         MTL::Buffer *vertexBuffer = gpuResident.resources.vertexBuffer();
         MTL::Buffer *indexBuffer = gpuResident.resources.indexBuffer();
         if (vertexBuffer && indexBuffer) {
-          handle.vertexBufferAddress =
+          newHandle.vertexBufferAddress =
               vertexBuffer->gpuAddress() + gpuResident.vertexBufferOffset;
-          handle.indexBufferAddress =
+          newHandle.indexBufferAddress =
               indexBuffer->gpuAddress() + gpuResident.indexBufferOffset;
-          handle.vertexStride = static_cast<uint32_t>(sizeof(simd::float3));
-          handle.indexStride = static_cast<uint32_t>(sizeof(uint32_t));
-          handle.vertexCount =
+          newHandle.vertexStride =
+              static_cast<uint32_t>(sizeof(simd::float3));
+          newHandle.indexStride = static_cast<uint32_t>(sizeof(uint32_t));
+          newHandle.vertexCount =
               static_cast<uint32_t>(gpuResident.vertexCount);
-          handle.indexCount =
+          newHandle.indexCount =
               static_cast<uint32_t>(gpuResident.triangleCount * 3);
-          handle.instanceSlot = static_cast<uint32_t>(objectIndex + 1);
+          newHandle.instanceSlot = static_cast<uint32_t>(objectIndex + 1);
         }
       }
     }
-    geometryHandles[objectIndex + 1] = handle;
+
+    bool descriptorChanged =
+        std::memcmp(&oldDesc, &newDesc, sizeof(newDesc)) != 0;
+    instanceDescriptors[objectIndex] = newDesc;
+    if (descriptorChanged)
+      dirtyInstanceDescriptorSlots.push_back(objectIndex);
+
+    MTL::AccelerationStructure *newStructure = resident ? structurePtr : nullptr;
+    instancedStructures[objectIndex] = newStructure;
+
+    GeometryHandle oldHandle = geometryHandles[objectIndex + 1];
+    geometryHandles[objectIndex + 1] = newHandle;
+    if (std::memcmp(&oldHandle, &newHandle, sizeof(GeometryHandle)) != 0)
+      dirtyGeometryHandleSlots.push_back(objectIndex + 1);
+  }
+
+  auto dedupIndices = [](std::vector<size_t> &values) {
+    std::sort(values.begin(), values.end());
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+  };
+  dedupIndices(dirtyInstanceRecordSlots);
+  dedupIndices(dirtyGeometryHandleSlots);
+  dedupIndices(dirtyInstanceDescriptorSlots);
+
+  auto buildRangesFromSlots = [](const std::vector<size_t> &slots,
+                                 size_t stride) {
+    std::vector<BufferUpdateRange> ranges;
+    if (slots.empty())
+      return ranges;
+    size_t start = slots.front();
+    size_t prev = start;
+    for (size_t i = 1; i < slots.size(); ++i) {
+      size_t idx = slots[i];
+      if (idx == prev + 1) {
+        prev = idx;
+        continue;
+      }
+      ranges.push_back({start * stride, (prev - start + 1) * stride});
+      start = idx;
+      prev = idx;
+    }
+    ranges.push_back({start * stride, (prev - start + 1) * stride});
+    return ranges;
+  };
+
+  std::vector<BufferUpdateRange> descriptorRanges;
+  if (needFullUpload ||
+      instanceDescriptors.size() != _cachedInstanceDescriptors.size()) {
+    size_t totalBytes = instanceDescriptors.size() *
+                        sizeof(MTL::AccelerationStructureInstanceDescriptor);
+    if (totalBytes > 0)
+      descriptorRanges.push_back({0, totalBytes});
+  } else {
+    descriptorRanges = buildRangesFromSlots(
+        dirtyInstanceDescriptorSlots,
+        sizeof(MTL::AccelerationStructureInstanceDescriptor));
   }
 
   updateTopLevelAccelerationStructure(instanceDescriptors, instancedStructures,
-                                      residencyCommandBuffer);
+                                      residencyCommandBuffer, descriptorRanges);
+
+  _cachedGeometryHandles = geometryHandles;
 
   if (residencyCommandBuffer)
     residencyCommandBuffer->commit();
@@ -3405,13 +3676,75 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     _residentBuffersInitialized = true;
+  } else {
+    if (_pSphereBuffer && !dirtyPrimitiveIndices.empty()) {
+      simd::float4 *dst =
+          static_cast<simd::float4 *>(_pSphereBuffer->contents());
+      for (size_t primIndex : dirtyPrimitiveIndices) {
+        size_t base = primIndex * kPrimitiveFloat4Count;
+        if (base + kPrimitiveFloat4Count > _cachedPrimitiveData.size())
+          continue;
+        std::memcpy(dst + base, &_cachedPrimitiveData[base],
+                    kPrimitiveFloat4Count * sizeof(simd::float4));
+        markBufferModified(
+            _pSphereBuffer,
+            NS::Range::Make(base * sizeof(simd::float4),
+                            kPrimitiveFloat4Count * sizeof(simd::float4)));
+      }
+    }
+
+    if (_pSphereMaterialBuffer && !dirtyPrimitiveIndices.empty()) {
+      simd::float4 *dst = static_cast<simd::float4 *>(
+          _pSphereMaterialBuffer->contents());
+      for (size_t primIndex : dirtyPrimitiveIndices) {
+        size_t base = primIndex * kMaterialFloat4Count;
+        if (base + kMaterialFloat4Count > _cachedMaterialData.size())
+          continue;
+        std::memcpy(dst + base, &_cachedMaterialData[base],
+                    kMaterialFloat4Count * sizeof(simd::float4));
+        markBufferModified(
+            _pSphereMaterialBuffer,
+            NS::Range::Make(base * sizeof(simd::float4),
+                            kMaterialFloat4Count * sizeof(simd::float4)));
+      }
+    }
+
+    if (_pInstanceBuffer && !dirtyInstanceRecordSlots.empty()) {
+      auto *dst = static_cast<BlasInstanceRecord *>(
+          _pInstanceBuffer->contents());
+      for (size_t idx : dirtyInstanceRecordSlots) {
+        if (idx >= _instanceRecords.size())
+          continue;
+        dst[idx] = _instanceRecords[idx];
+        markBufferModified(
+            _pInstanceBuffer,
+            NS::Range::Make(idx * sizeof(BlasInstanceRecord),
+                            sizeof(BlasInstanceRecord)));
+      }
+    }
+
+    if (_pGeometryHandleBuffer && !dirtyGeometryHandleSlots.empty()) {
+      auto *dst = static_cast<GeometryHandle *>(
+          _pGeometryHandleBuffer->contents());
+      for (size_t slot : dirtyGeometryHandleSlots) {
+        if (slot >= _cachedGeometryHandles.size())
+          continue;
+        dst[slot] = _cachedGeometryHandles[slot];
+        markBufferModified(
+            _pGeometryHandleBuffer,
+            NS::Range::Make(slot * sizeof(GeometryHandle),
+                            sizeof(GeometryHandle)));
+      }
+    }
+
+    _residentBuffersInitialized = true;
   }
 
   size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
   size_t instanceBytes = instanceCount * sizeof(BlasInstanceRecord);
   ensureBufferCapacity(_pInstanceBuffer, instanceBytes, _instanceBufferCapacity,
                        allowShrink);
-  if (_pInstanceBuffer) {
+  if (uploadAll && _pInstanceBuffer) {
     auto *dst = static_cast<BlasInstanceRecord *>(
         _pInstanceBuffer->contents());
     if (_instanceRecords.empty()) {
@@ -3431,7 +3764,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       sizeof(GeometryHandle);
   ensureBufferCapacity(_pGeometryHandleBuffer, geometryHandleBytes,
                        _geometryHandleBufferCapacity, allowShrink);
-  if (_pGeometryHandleBuffer) {
+  if (uploadAll && _pGeometryHandleBuffer) {
     auto *dst = static_cast<GeometryHandle *>(
         _pGeometryHandleBuffer->contents());
     if (!geometryHandles.empty()) {
@@ -3469,19 +3802,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         activePtr[0] = 0;
       markBufferModified(_pActiveBuffer, NS::Range::Make(0, activeBytes));
     } else {
-      auto updateMask = [&](const std::vector<size_t> &indices) {
-        for (size_t idx : indices) {
-          if (idx >= totalPrimitiveCount)
-            continue;
-          bool active = idx < _activePrimitive.size() && _activePrimitive[idx];
-          uint8_t value = active ? 1 : 0;
-          _cpuActiveMask[idx] = value;
-          activePtr[idx] = value;
-          markBufferModified(_pActiveBuffer, NS::Range::Make(idx, 1));
-        }
-      };
-      updateMask(_recentlyActivated);
-      updateMask(_recentlyDeactivated);
+      for (size_t idx : dirtyPrimitiveIndices) {
+        if (idx >= totalPrimitiveCount)
+          continue;
+        bool active = idx < _activePrimitive.size() && _activePrimitive[idx];
+        uint8_t value = active ? 1 : 0;
+        _cpuActiveMask[idx] = value;
+        activePtr[idx] = value;
+        markBufferModified(_pActiveBuffer, NS::Range::Make(idx, 1));
+      }
     }
   }
 
@@ -4593,6 +4922,10 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
       ++_frameObjectActivations;
     else
       ++_frameObjectDeactivations;
+    auto &objectCancel = newState ? _recentlyDeactivated : _recentlyActivated;
+    removeDirtyEntry(objectCancel, DirtyEntryType::Object, objectIndex);
+    auto &objectTarget = newState ? _recentlyActivated : _recentlyDeactivated;
+    objectTarget.push_back({DirtyEntryType::Object, objectIndex});
   }
 
   if (toggled > 0 || prevState != newState || fullyInactive)
@@ -5735,19 +6068,22 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
   else
     ++_framePrimitiveDeactivations;
   auto &cancelList = active ? _recentlyDeactivated : _recentlyActivated;
-  cancelList.erase(
-      std::remove(cancelList.begin(), cancelList.end(), index),
-      cancelList.end());
-  if (active)
-    _recentlyActivated.push_back(index);
-  else
-    _recentlyDeactivated.push_back(index);
+  removeDirtyEntry(cancelList, DirtyEntryType::Primitive, index);
+  auto &targetList = active ? _recentlyActivated : _recentlyDeactivated;
+  targetList.push_back({DirtyEntryType::Primitive, index});
   if (index < _primitiveCooldown.size())
     _primitiveCooldown[index] = _residencyConfig.stateCooldownFrames;
 
   if (index < _primitiveToObject.size()) {
     size_t objectIndex = _primitiveToObject[index];
     if (objectIndex < _allSceneObjects.size()) {
+      if (objectIndex != std::numeric_limits<size_t>::max()) {
+        auto &objectCancel = active ? _recentlyDeactivated : _recentlyActivated;
+        removeDirtyEntry(objectCancel, DirtyEntryType::Object, objectIndex);
+        auto &objectTargets =
+            active ? _recentlyActivated : _recentlyDeactivated;
+        objectTargets.push_back({DirtyEntryType::Object, objectIndex});
+      }
       if (objectIndex >= _objectActive.size())
         _objectActive.resize(objectIndex + 1, false);
       if (objectIndex >= _objectCooldown.size())
@@ -5769,6 +6105,14 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
       _objectActive[objectIndex] = newState;
       if (prevState != newState || fullyInactive)
         _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
+      if (prevState != newState) {
+        auto &objectCancel =
+            newState ? _recentlyDeactivated : _recentlyActivated;
+        removeDirtyEntry(objectCancel, DirtyEntryType::Object, objectIndex);
+        auto &objectTarget =
+            newState ? _recentlyActivated : _recentlyDeactivated;
+        objectTarget.push_back({DirtyEntryType::Object, objectIndex});
+      }
     }
   }
   return true;
