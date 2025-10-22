@@ -599,7 +599,7 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
                material.emissionPower;
     }
 
-    float3 offsetNormal = bestHit.frontFace ? bestHit.normal : -bestHit.normal;
+    float3 offsetNormal = bestHit.normal;
 
     float3 diffuseColor = material.diffuseColor * material.opacity;
     float diffuseLum = luminance(diffuseColor);
