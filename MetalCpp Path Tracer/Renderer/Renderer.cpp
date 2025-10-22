@@ -1,6 +1,7 @@
 #include "Renderer.h"
 
 #include "Camera.h"
+#include "IncrementalUpdateUtils.h"
 #include "InputSystem.h"
 #include "Scene.h"
 #include "SceneLoader.h"
@@ -748,6 +749,10 @@ Renderer::~Renderer() {
     _pInstanceBuffer->release();
   if (_pGeometryHandleBuffer)
     _pGeometryHandleBuffer->release();
+  if (_pTlasDescriptorStaging)
+    _pTlasDescriptorStaging->release();
+  _pTlasDescriptorStaging = nullptr;
+  _tlasDescriptorStagingCapacity = 0;
   if (_pFrustumVertexBuffer)
     _pFrustumVertexBuffer->release();
   clearMaterialTextures();
@@ -2175,6 +2180,17 @@ void Renderer::updateTopLevelAccelerationStructure(
   bool needsDescriptorUpload = descriptorContentChanged || needsRebuild;
 
   size_t descriptorCount = descriptors.size();
+  std::vector<RangeUpdate> descriptorRanges;
+  bool uploadFullDescriptors = needsRebuild || descriptorCountChanged;
+  if (needsDescriptorUpload && !uploadFullDescriptors && descriptorCount > 0 &&
+      !_cachedInstanceDescriptors.empty()) {
+    descriptorRanges = computeChangedRanges(
+        _cachedInstanceDescriptors.data(), descriptors.data(),
+        sizeof(MTL::AccelerationStructureInstanceDescriptor), descriptorCount);
+    if (descriptorRanges.empty())
+      needsDescriptorUpload = false;
+  }
+
   size_t descriptorBytes =
       descriptorCount * sizeof(MTL::AccelerationStructureInstanceDescriptor);
   size_t uploadBytes =
@@ -2192,15 +2208,41 @@ void Renderer::updateTopLevelAccelerationStructure(
 
   MTL::Buffer *stagingBuffer = nullptr;
   if (needsDescriptorUpload && descriptorBytes > 0) {
-    stagingBuffer =
-        _pDevice->newBuffer(descriptorBytes, MTL::ResourceStorageModeShared);
+    if (!_pTlasDescriptorStaging ||
+        _tlasDescriptorStagingCapacity < descriptorBytes) {
+      if (_pTlasDescriptorStaging)
+        _pTlasDescriptorStaging->release();
+      _pTlasDescriptorStaging =
+          _pDevice->newBuffer(descriptorBytes, MTL::ResourceStorageModeShared);
+      _tlasDescriptorStagingCapacity =
+          _pTlasDescriptorStaging ? descriptorBytes : 0;
+    }
+
+    stagingBuffer = _pTlasDescriptorStaging;
     if (!stagingBuffer)
       return;
 
-    std::memcpy(stagingBuffer->contents(), descriptors.data(), descriptorBytes);
-    NS::UInteger stagingLength =
-        static_cast<NS::UInteger>(descriptorBytes);
-    markBufferModified(stagingBuffer, NS::Range::Make(0, stagingLength));
+    uint8_t *dstBytes = static_cast<uint8_t *>(stagingBuffer->contents());
+    const uint8_t *srcBytes =
+        reinterpret_cast<const uint8_t *>(descriptors.data());
+
+    if (uploadFullDescriptors || descriptorRanges.empty()) {
+      std::memcpy(dstBytes, srcBytes, descriptorBytes);
+      descriptorRanges.clear();
+      descriptorRanges.push_back({0, descriptorBytes});
+    } else {
+      for (const RangeUpdate &range : descriptorRanges) {
+        if (range.length == 0)
+          continue;
+        std::memcpy(dstBytes + range.offset, srcBytes + range.offset,
+                    range.length);
+      }
+    }
+
+    markBufferModified(stagingBuffer,
+                       NS::Range::Make(0, static_cast<NS::UInteger>(descriptorBytes)));
+  } else {
+    descriptorRanges.clear();
   }
 
   MTL::InstanceAccelerationStructureDescriptor *instanceDesc =
@@ -2232,8 +2274,6 @@ void Renderer::updateTopLevelAccelerationStructure(
             sizes.accelerationStructureSize, "SceneTLAS");
     if (!structure) {
       instanceDesc->release();
-      if (stagingBuffer)
-        stagingBuffer->release();
       return;
     }
     _pTlasStructure = structure;
@@ -2250,8 +2290,6 @@ void Renderer::updateTopLevelAccelerationStructure(
   if (!commandBuffer) {
     if (scratchBuffer)
       scratchBuffer->release();
-    if (stagingBuffer)
-      stagingBuffer->release();
     instanceDesc->release();
     return;
   }
@@ -2263,24 +2301,27 @@ void Renderer::updateTopLevelAccelerationStructure(
     return blit;
   };
 
-  if (stagingBuffer && descriptorBytes > 0) {
+  if (stagingBuffer && !descriptorRanges.empty()) {
     MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
     if (!enc) {
       if (scratchBuffer)
         scratchBuffer->release();
-      stagingBuffer->release();
       instanceDesc->release();
       return;
     }
-    enc->copyFromBuffer(stagingBuffer, 0, instanceBuffer, 0, descriptorBytes);
+    for (const RangeUpdate &range : descriptorRanges) {
+      if (range.length == 0)
+        continue;
+      enc->copyFromBuffer(stagingBuffer, static_cast<NS::UInteger>(range.offset),
+                          instanceBuffer, static_cast<NS::UInteger>(range.offset),
+                          static_cast<NS::UInteger>(range.length));
+    }
   } else if (needsDescriptorUpload && descriptorBytes == 0 && instanceBuffer &&
              instanceBuffer->length() > 0) {
     MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
     if (!enc) {
       if (scratchBuffer)
         scratchBuffer->release();
-      if (stagingBuffer)
-        stagingBuffer->release();
       instanceDesc->release();
       return;
     }
@@ -2296,8 +2337,6 @@ void Renderer::updateTopLevelAccelerationStructure(
   if (!encoder) {
     if (scratchBuffer)
       scratchBuffer->release();
-    if (stagingBuffer)
-      stagingBuffer->release();
     instanceDesc->release();
     return;
   }
@@ -2316,14 +2355,16 @@ void Renderer::updateTopLevelAccelerationStructure(
 
   if (scratchBuffer)
     scratchBuffer->release();
-  if (stagingBuffer)
-    stagingBuffer->release();
   instanceDesc->release();
 
   _cachedInstanceDescriptors = descriptors;
   _cachedInstancedAccelerationStructures = instancedStructures;
 }
 
+// Repack GPU-facing caches to match the most recent CPU residency state.
+// This routine refreshes the primitive/material buffers, BLAS/TLAS bindings,
+// light sampling tables, active masks and any compaction remap tables.  When
+// possible it reuses cached data so only modified ranges are uploaded.
 void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t totalPrimitiveCount = _allPrimitives.size();
   size_t cachedTotalPrimitiveCount = _cachedTotalPrimitiveCount;
@@ -2351,6 +2392,12 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   bool sizeChanged = cachedTotalPrimitiveCount != totalPrimitiveCount;
   bool needFullUpload =
       forceFullRebuild || !_residentBuffersInitialized || sizeChanged;
+
+  const auto &sceneObjects = _pScene->getObjects();
+  if (_objectResidentState.size() != sceneObjects.size()) {
+    _objectResidentState.assign(sceneObjects.size(), false);
+    needFullUpload = true;
+  }
 
   if (needFullUpload) {
     _cachedPrimitiveData.assign(totalPrimitiveCount * kPrimitiveFloat4Count,
@@ -2459,7 +2506,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _cachedTotalPrimitiveCount = totalPrimitiveCount;
   }
 
-  const auto &sceneObjects = _pScene->getObjects();
   _instanceRecords.resize(sceneObjects.size());
   std::vector<bool> objectShouldBeResident(sceneObjects.size(), false);
 
@@ -2473,9 +2519,12 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     values.erase(std::unique(values.begin(), values.end()), values.end());
   };
 
-  if (!needFullUpload) {
+  if (needFullUpload) {
+    _dirtyResidentObjects.clear();
+  } else {
     deduplicate(_recentlyActivated);
     deduplicate(_recentlyDeactivated);
+    deduplicate(_dirtyResidentObjects);
     if (!_recentlyActivated.empty() && !_recentlyDeactivated.empty()) {
       for (size_t idx : _recentlyDeactivated) {
         auto it = std::lower_bound(_recentlyActivated.begin(),
@@ -2585,26 +2634,59 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _blasNodeCount = _cachedBVHNodes.size() / 2;
     _tlasNodeCount = _cachedTLASNodes.size() / 2;
 
-    for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
-         ++objectIndex) {
-      const SceneObject &obj = sceneObjects[objectIndex];
-      BlasInstanceRecord record{};
-      record.primitiveBase = static_cast<uint32_t>(obj.firstPrimitive);
-      record.primitiveCount = static_cast<uint32_t>(obj.primitiveCount);
-      record.primitiveIndexBase = static_cast<uint32_t>(obj.firstPrimitive);
-      bool anyActive = false;
-      size_t first = obj.firstPrimitive;
-      size_t last = first + obj.primitiveCount;
-      for (size_t prim = first;
-           prim < last && prim < _activePrimitive.size(); ++prim) {
-        if (_activePrimitive[prim]) {
-          anyActive = true;
-          break;
+    if (needFullUpload) {
+      for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
+           ++objectIndex) {
+        const SceneObject &obj = sceneObjects[objectIndex];
+        BlasInstanceRecord record{};
+        record.primitiveBase = static_cast<uint32_t>(obj.firstPrimitive);
+        record.primitiveCount = static_cast<uint32_t>(obj.primitiveCount);
+        record.primitiveIndexBase = static_cast<uint32_t>(obj.firstPrimitive);
+        bool anyActive = false;
+        size_t first = obj.firstPrimitive;
+        size_t last = first + obj.primitiveCount;
+        for (size_t prim = first;
+             prim < last && prim < _activePrimitive.size(); ++prim) {
+          if (_activePrimitive[prim]) {
+            anyActive = true;
+            break;
+          }
         }
+        record.blasRootIndex = anyActive ? obj.blasRootIndex : -1;
+        objectShouldBeResident[objectIndex] = anyActive;
+        _instanceRecords[objectIndex] = record;
       }
-      record.blasRootIndex = anyActive ? obj.blasRootIndex : -1;
-      objectShouldBeResident[objectIndex] = anyActive;
-      _instanceRecords[objectIndex] = record;
+    } else {
+      for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
+           ++objectIndex) {
+        const SceneObject &obj = sceneObjects[objectIndex];
+        BlasInstanceRecord record{};
+        record.primitiveBase = static_cast<uint32_t>(obj.firstPrimitive);
+        record.primitiveCount = static_cast<uint32_t>(obj.primitiveCount);
+        record.primitiveIndexBase = static_cast<uint32_t>(obj.firstPrimitive);
+        bool cachedResident =
+            (objectIndex < _objectResidentState.size())
+                ? _objectResidentState[objectIndex]
+                : false;
+        record.blasRootIndex = cachedResident ? obj.blasRootIndex : -1;
+        _instanceRecords[objectIndex] = record;
+        objectShouldBeResident[objectIndex] = cachedResident;
+      }
+
+      for (size_t dirtyIndex : _dirtyResidentObjects) {
+        if (dirtyIndex >= sceneObjects.size())
+          continue;
+        const SceneObject &obj = sceneObjects[dirtyIndex];
+        bool anyActive =
+            (dirtyIndex < _objectActive.size()) ? _objectActive[dirtyIndex]
+                                                : false;
+        BlasInstanceRecord &record = _instanceRecords[dirtyIndex];
+        record.primitiveBase = static_cast<uint32_t>(obj.firstPrimitive);
+        record.primitiveCount = static_cast<uint32_t>(obj.primitiveCount);
+        record.primitiveIndexBase = static_cast<uint32_t>(obj.firstPrimitive);
+        record.blasRootIndex = anyActive ? obj.blasRootIndex : -1;
+        objectShouldBeResident[dirtyIndex] = anyActive;
+      }
     }
   } else {
     remapUpload.clear();
@@ -3367,6 +3449,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   }
   _activeNodeCount = activeBlasNodes + activeTlasNodes;
 
+  _objectResidentState = objectShouldBeResident;
+  _dirtyResidentObjects.clear();
   _recentlyActivated.clear();
   _recentlyDeactivated.clear();
 
@@ -4549,6 +4633,9 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
   if (toggled > 0 || prevState != newState || fullyInactive)
     _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
 
+  if (toggled > 0 || prevState != newState || fullyInactive)
+    _dirtyResidentObjects.push_back(objectIndex);
+
   return toggled;
 }
 
@@ -5644,9 +5731,13 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   return changed;
 }
 
+// Propagate any pending primitive/object toggles to GPU memory.  The method
+// skips expensive repacks if nothing changed, otherwise it forwards to
+// rebuildResidentResources to patch only the dirty ranges (or rebuild
+// everything when forced).
 void Renderer::flushResidencyChanges(bool forceFullRebuild) {
   if (!forceFullRebuild && _recentlyActivated.empty() &&
-      _recentlyDeactivated.empty()) {
+      _recentlyDeactivated.empty() && _dirtyResidentObjects.empty()) {
     for (size_t objectIndex = 0;
          objectIndex < _residentObjectGpuResources.size(); ++objectIndex) {
       auto &resident = _residentObjectGpuResources[objectIndex];
@@ -5720,6 +5811,8 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
       _objectActive[objectIndex] = newState;
       if (prevState != newState || fullyInactive)
         _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
+
+      _dirtyResidentObjects.push_back(objectIndex);
     }
   }
   return true;
