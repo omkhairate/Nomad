@@ -4173,74 +4173,75 @@ void Renderer::draw(MTK::View *pView) {
     MTL::Size threadsPerThreadgroup =
         MTL::Size::Make(tgWidth, tgHeight, 1);
 
-    MTL::CommandBuffer *tileCmd = _pCommandQueue->commandBuffer();
-    if (tileCmd) {
+    for (const TileDispatchRegion &tile : tiles) {
+      MTL::CommandBuffer *tileCmd = _pCommandQueue->commandBuffer();
+      if (!tileCmd)
+        continue;
+
       MTL::ComputeCommandEncoder *pCompute = tileCmd->computeCommandEncoder();
-
-      if (pCompute) {
-        pCompute->setComputePipelineState(_pPathTracePSO);
-
-        bool useAccelerationStructureLayout =
-            _useAccelerationStructureBindings && _pTlasStructure &&
-            _pGeometryHandleBuffer;
-
-        if (useAccelerationStructureLayout) {
-          pCompute->setAccelerationStructure(_pTlasStructure, 0);
-          pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
-          pCompute->setBuffer(_pSphereBuffer, 0, 2);
-          pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
-          pCompute->setBuffer(_pUniformsBuffer, 0, 4);
-          pCompute->setBuffer(_pActiveBuffer, 0, 5);
-          pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
-          pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
-          pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
-          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
-          pCompute->setBuffer(_pInstanceBuffer, 0, 10);
-          pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
-          pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
-        } else {
-          pCompute->setBuffer(_pBVHBuffer, 0, 0);
-          pCompute->setBuffer(_pSphereBuffer, 0, 1);
-          pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
-          pCompute->setBuffer(_pUniformsBuffer, 0, 3);
-          pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
-          pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
-          pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
-          pCompute->setBuffer(_pTLASBuffer, 0, 7);
-          pCompute->setBuffer(_pActiveBuffer, 0, 8);
-          pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
-          pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
-          pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
-          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
-          pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-          pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
-          pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
-        }
-
-        pCompute->setTexture(accum0, 0);
-        pCompute->setTexture(accum1, 1);
-        pCompute->setTexture(sampleCount, 2);
-        pCompute->setTexture(sampleImportance, 3);
-
-        for (const TileDispatchRegion &tile : tiles) {
-          TileDispatchRegion tileParams = tile;
-          pCompute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);
-
-          NS::UInteger localWidth = static_cast<NS::UInteger>(tile.width);
-          NS::UInteger localHeight = static_cast<NS::UInteger>(tile.height);
-          MTL::Size threadgroups = MTL::Size::Make(
-              (localWidth + threadsPerThreadgroup.width - 1) /
-                  threadsPerThreadgroup.width,
-              (localHeight + threadsPerThreadgroup.height - 1) /
-                  threadsPerThreadgroup.height,
-              1);
-
-          pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-        }
-
-        pCompute->endEncoding();
+      if (!pCompute) {
+        tileCmd->commit();
+        continue;
       }
 
+      pCompute->setComputePipelineState(_pPathTracePSO);
+
+      bool useAccelerationStructureLayout =
+          _useAccelerationStructureBindings && _pTlasStructure &&
+          _pGeometryHandleBuffer;
+
+      if (useAccelerationStructureLayout) {
+        pCompute->setAccelerationStructure(_pTlasStructure, 0);
+        pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
+        pCompute->setBuffer(_pSphereBuffer, 0, 2);
+        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
+        pCompute->setBuffer(_pUniformsBuffer, 0, 4);
+        pCompute->setBuffer(_pActiveBuffer, 0, 5);
+        pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
+        pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
+        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
+        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
+        pCompute->setBuffer(_pInstanceBuffer, 0, 10);
+        pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
+        pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
+      } else {
+        pCompute->setBuffer(_pBVHBuffer, 0, 0);
+        pCompute->setBuffer(_pSphereBuffer, 0, 1);
+        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
+        pCompute->setBuffer(_pUniformsBuffer, 0, 3);
+        pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
+        pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
+        pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
+        pCompute->setBuffer(_pTLASBuffer, 0, 7);
+        pCompute->setBuffer(_pActiveBuffer, 0, 8);
+        pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
+        pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
+        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
+        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+        pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+        pCompute->setBuffer(_pTextureInfoBuffer, 0, 14);
+        pCompute->setBuffer(_pTextureDataBuffer, 0, 15);
+      }
+
+      pCompute->setTexture(accum0, 0);
+      pCompute->setTexture(accum1, 1);
+      pCompute->setTexture(sampleCount, 2);
+      pCompute->setTexture(sampleImportance, 3);
+
+      TileDispatchRegion tileParams = tile;
+      pCompute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);
+
+      NS::UInteger localWidth = static_cast<NS::UInteger>(tile.width);
+      NS::UInteger localHeight = static_cast<NS::UInteger>(tile.height);
+      MTL::Size threadgroups = MTL::Size::Make(
+          (localWidth + threadsPerThreadgroup.width - 1) /
+              threadsPerThreadgroup.width,
+          (localHeight + threadsPerThreadgroup.height - 1) /
+              threadsPerThreadgroup.height,
+          1);
+
+      pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+      pCompute->endEncoding();
       tileCmd->commit();
     }
   }
