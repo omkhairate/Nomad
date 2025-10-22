@@ -1,0 +1,188 @@
+<Scene width="960" height="540" maxRayDepth="5" startCompacted="true"
+       residencyStrategy="screenspace" textureResidencyMemoryCapMB="256" residencyCooldown="2" screenTargetFraction="0.72" screenMinPixelCoverage="32" screenMinActive="340" screenToggleBudget="18000" buildCachedBlas="true">
+
+<ObserverCamera position="22,10,26" lookAt="0,4,0" verticalFov="45" />
+
+<CameraPath>
+    <Keyframe frame="0" position="24,7,28" lookAt="0,4,0" />
+    <Keyframe frame="120" position="14,5,16" lookAt="0,3,0" />
+    <Keyframe frame="240" position="-4,4,14" lookAt="-2,3,6" />
+    <Keyframe frame="360" position="-18,5,18" lookAt="-12,4,20" />
+    <Keyframe frame="480" position="-26,6,6" lookAt="-12,3,4" />
+    <Keyframe frame="600" position="-24,6,-10" lookAt="-8,3,-6" />
+    <Keyframe frame="720" position="16,5,-14" lookAt="6,3,-4" />
+    <Keyframe frame="840" position="26,6,4" lookAt="4,4,6" />
+</CameraPath>
+
+<Sphere position="0,-1000,0" radius="1000" albedo="0.74,0.76,0.78"
+        emission="0.05,0.05,0.06" materialType="0" emissionPower="1.2" />
+
+<Rectangle position="0,0,0" u="28,0,0" v="0,0,-28" albedo="0.34,0.33,0.32"
+           emission="0,0,0" materialType="0" emissionPower="0" />
+
+<Rectangle position="0,12,0" u="10,0,0" v="0,0,10" rotation="180,0,0"
+           albedo="1,1,1" emission="1.0,0.94,0.84" materialType="-1" emissionPower="26" />
+
+<Rectangle position="-20,18,12" u="6,0,0" v="0,0,-10" rotation="140,25,0"
+           albedo="1,1,1" emission="1.0,0.97,0.9" materialType="-1" emissionPower="34" />
+
+<Rectangle position="6,9,-18" u="8,0,0" v="0,0,6" rotation="160,-10,0"
+           albedo="1,1,1" emission="0.85,0.9,1.0" materialType="-1" emissionPower="18" />
+
+<Rectangle position="0,0,12" u="8,0,0" v="0,0,12" albedo="0.37,0.36,0.34"
+           emission="0,0,0" materialType="0" emissionPower="0" />
+
+<Mesh file="assets/casa.obj" position="0,0,0" scale="10"
+      rotation="0,45,0" clusterMaxTriangles="4096" clusterMaxExtent="32"
+      albedo="0.82,0.78,0.74" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/casa.obj" position="32,0,32" scale="8"
+      rotation="0,-20,0" clusterMaxTriangles="4096" clusterMaxExtent="32"
+      albedo="0.78,0.76,0.72" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/casa.obj" position="-42,0,-28" scale="9"
+      rotation="0,120,0" clusterMaxTriangles="4096" clusterMaxExtent="32"
+      albedo="0.79,0.75,0.7" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-22,0,24" scale="6.4"
+      rotation="0,-20,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.88,0.9,0.86" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-8,0,28" scale="5.8"
+      rotation="0,10,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.86,0.9,0.88" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="10,0,28" scale="6.0"
+      rotation="0,-5,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.9,0.9,0.86" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="24,0,20" scale="6.8"
+      rotation="0,35,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.9,0.88,0.84" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="28,0,6" scale="6.5"
+      rotation="0,60,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.92,0.9,0.86" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="28,0,-10" scale="6.3"
+      rotation="0,100,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.9,0.92,0.88" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="20,0,-26" scale="6.7"
+      rotation="0,130,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.88,0.9,0.92" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="8,0,-28" scale="6.0"
+      rotation="0,160,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.9,0.88,0.9" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-10,0,-26" scale="6.2"
+      rotation="0,-140,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.88,0.9,0.9" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-24,0,-18" scale="6.6"
+      rotation="0,-110,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.9,0.86,0.88" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-30,0,-2" scale="6.7"
+      rotation="0,-80,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.9,0.88,0.84" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-26,0,14" scale="6.3"
+      rotation="0,-50,0" clusterMaxTriangles="640" clusterMaxExtent="20"
+      albedo="0.88,0.86,0.9" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="14,0,14" scale="4.5"
+      rotation="0,15,0" clusterMaxTriangles="512" clusterMaxExtent="16"
+      albedo="0.84,0.88,0.9" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-12,0,14" scale="4.7"
+      rotation="0,-25,0" clusterMaxTriangles="512" clusterMaxExtent="16"
+      albedo="0.86,0.84,0.9" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="16,0,-6" scale="4.2"
+      rotation="0,45,0" clusterMaxTriangles="512" clusterMaxExtent="16"
+      albedo="0.9,0.86,0.84" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-14,0,-4" scale="4.4"
+      rotation="0,-65,0" clusterMaxTriangles="512" clusterMaxExtent="16"
+      albedo="0.86,0.88,0.84" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="4,0,20" scale="4.3"
+      rotation="0,0,0" clusterMaxTriangles="512" clusterMaxExtent="16"
+      albedo="0.88,0.86,0.86" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/Tree.obj" position="-4,0,20" scale="4.1"
+      rotation="0,0,0" clusterMaxTriangles="512" clusterMaxExtent="16"
+      albedo="0.86,0.88,0.86" emission="0,0,0"
+      materialType="0" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="-2,0.1,8" scale="0.85"
+      rotation="0,5,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.98,0.99,1.0" emission="0,0,0"
+      materialType="1.48" transmission="1,1,1" roughness="0.05"
+      emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="4.8,0.1,3.5" scale="0.75"
+      rotation="0,-15,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.98,0.99,1.0" emission="0,0,0"
+      materialType="1.48" transmission="1,1,1" roughness="0.06"
+      emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="-5.5,0.1,4.2" scale="0.9"
+      rotation="0,35,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.98,0.99,1.0" emission="0,0,0"
+      materialType="1.48" transmission="1,1,1" roughness="0.07"
+      emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="7.0,0.1,13.5" scale="0.95"
+      rotation="0,-30,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.85,0.84,0.82" emission="0,0,0"
+      materialType="0" roughness="0.18" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="-8.5,0.1,11.0" scale="1.0"
+      rotation="0,20,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.84,0.86,0.88" emission="0,0,0"
+      materialType="0" roughness="0.12" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="2.5,0.1,-2.0" scale="0.8"
+      rotation="0,-10,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.78,0.8,0.82" emission="0,0,0"
+      materialType="0" roughness="0.16" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="-1.5,0.1,-4.5" scale="0.82"
+      rotation="0,15,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.82,0.8,0.78" emission="0,0,0"
+      materialType="0" roughness="0.14" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="6.0,0.1,-8.0" scale="0.88"
+      rotation="0,45,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.8,0.78,0.76" emission="0,0,0"
+      materialType="0" roughness="0.2" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="-6.0,0.1,-7.0" scale="0.86"
+      rotation="0,-35,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.76,0.78,0.8" emission="0,0,0"
+      materialType="0" roughness="0.22" emissionPower="0" />
+
+</Scene>
