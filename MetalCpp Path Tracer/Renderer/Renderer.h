@@ -299,6 +299,8 @@ private:
   std::vector<uint32_t> _residentRemap;
   std::vector<size_t> _recentlyActivated;
   std::vector<size_t> _recentlyDeactivated;
+  std::vector<size_t> _dirtyResidentObjects;
+  std::vector<bool> _objectResidentState;
 
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
 
@@ -309,6 +311,8 @@ private:
   std::vector<MTL::AccelerationStructureInstanceDescriptor>
       _cachedInstanceDescriptors;
   std::vector<MTL::AccelerationStructure *> _cachedInstancedAccelerationStructures;
+  MTL::Buffer *_pTlasDescriptorStaging = nullptr;
+  size_t _tlasDescriptorStagingCapacity = 0;
 
   uint32_t _rayHitRebuildCooldown = 0;
 
