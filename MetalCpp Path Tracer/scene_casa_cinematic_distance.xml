@@ -1,4 +1,4 @@
-<Scene width="1280" height="720" maxRayDepth="8" startCompacted="true"
+<Scene width="960" height="540" maxRayDepth="5" startCompacted="true"
        residencyStrategy="distance" textureResidencyMemoryCapMB="256" lodEnterDistance="55" lodExitDistance="85" residencyCooldown="2" lodToggleBudget="20000" buildCachedBlas="true">
 
 <ObserverCamera position="22,10,26" lookAt="0,4,0" verticalFov="45" />
