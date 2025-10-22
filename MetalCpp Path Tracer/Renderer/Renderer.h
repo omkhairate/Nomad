@@ -51,8 +51,8 @@ struct ResidentObjectGpuResources {
 
   bool ensureResident(Renderer &renderer, size_t objectIndex,
                       const SceneObject &object,
-                      BlasInstanceRecord &instanceRecord,
-                      bool forceRebuild);
+                      BlasInstanceRecord &instanceRecord, bool forceRebuild,
+                      MTL::CommandBuffer *&commandBuffer);
   void transitionToStreaming(MTL::CommandBuffer *pending = nullptr);
   void transitionToCold(BlasInstanceRecord &instanceRecord);
   void clearPendingCommand();
@@ -147,12 +147,14 @@ private:
   bool rayHitCopyReady() const;
   void processRayHitCounters();
   bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
-                       ResidentObjectGpuResources &residentResources);
+                       ResidentObjectGpuResources &residentResources,
+                       MTL::CommandBuffer *commandBuffer);
   bool ensureDummyBlas();
   void updateTopLevelAccelerationStructure(
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
           &descriptors,
-      const std::vector<MTL::AccelerationStructure *> &structures);
+      const std::vector<MTL::AccelerationStructure *> &structures,
+      MTL::CommandBuffer *&commandBuffer);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
   void initializeBenchmarking();
@@ -304,6 +306,8 @@ private:
   GpuHeapResources _tlasHeap;
   GpuHeapResources _dummyBlasResources;
   MTL::AccelerationStructure *_pTlasStructure = nullptr;
+  MTL::AccelerationStructure *_pPendingTlasStructure = nullptr;
+  MTL::CommandBuffer *_pPendingTlasCommand = nullptr;
   MTL::AccelerationStructure *_pDummyBlas = nullptr;
   std::vector<MTL::AccelerationStructureInstanceDescriptor>
       _cachedInstanceDescriptors;
