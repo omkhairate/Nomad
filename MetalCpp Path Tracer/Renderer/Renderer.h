@@ -123,35 +123,6 @@ public:
 private:
   struct BenchmarkSample;
   struct FrameCaptureRequest;
-  struct ResidencyProfilingStats {
-    size_t lodScratchResizes = 0;
-    size_t lodSortCount = 0;
-    double lodSortTimeMs = 0.0;
-    size_t energyPrimitiveScratchResizes = 0;
-    size_t energyPrimitiveSortCount = 0;
-    double energyPrimitiveSortTimeMs = 0.0;
-    size_t energyObjectSortCount = 0;
-    double energyObjectSortTimeMs = 0.0;
-    size_t energyMeshScratchResizes = 0;
-    size_t energyMeshSortCount = 0;
-    double energyMeshSortTimeMs = 0.0;
-    size_t energyDesiredStateResizes = 0;
-
-    void resetFrame() {
-      lodScratchResizes = 0;
-      lodSortCount = 0;
-      lodSortTimeMs = 0.0;
-      energyPrimitiveScratchResizes = 0;
-      energyPrimitiveSortCount = 0;
-      energyPrimitiveSortTimeMs = 0.0;
-      energyObjectSortCount = 0;
-      energyObjectSortTimeMs = 0.0;
-      energyMeshScratchResizes = 0;
-      energyMeshSortCount = 0;
-      energyMeshSortTimeMs = 0.0;
-      energyDesiredStateResizes = 0;
-    }
-  };
   void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                             size_t &currentCapacity,
@@ -382,24 +353,6 @@ private:
   std::vector<size_t> _objectActivePrimitiveCounts;
   bool _anyMeshGroups = false;
 
-  struct EnergyMeshAggregate {
-    const MeshGroupInfo *info = nullptr;
-    float importance = 0.0f;
-    size_t primitiveCount = 0;
-  };
-
-  std::vector<float> _lodObjectDistances;
-  std::vector<uint8_t> _lodObjectBehind;
-  std::vector<size_t> _lodSortedIndices;
-
-  std::vector<uint8_t> _energyPrimitiveDesiredState;
-  std::vector<size_t> _energyPrimitiveSortedIndices;
-  std::vector<uint8_t> _energyDesiredObjectState;
-  std::vector<uint8_t> _energyDesiredGroupState;
-  std::vector<EnergyMeshAggregate> _energyMeshAggregates;
-  std::vector<float> _energyMeshAverageImportance;
-  std::vector<size_t> _energyMeshSortedIndices;
-
   size_t _maxPrimitiveCount = 0;
   size_t _maxTriangleVertexCount = 0;
   size_t _maxTriangleIndexCount = 0;
@@ -428,8 +381,6 @@ private:
   double _lastGPUTime = 0.0;
   double _lastRaysPerSecond = 0.0;
   size_t _lastRayCount = 0;
-
-  ResidencyProfilingStats _residencyProfiling;
 
   double _deltaTimeSeconds = 0.0;
 
