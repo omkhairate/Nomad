@@ -74,7 +74,6 @@ inline float3 scatter(thread Ray &r, thread const intersection &i,
                       thread const MaterialPayload &material,
                       thread uint32_t &seed) {
     float3 normal = i.frontFace ? i.normal : -i.normal;
-    float3 shadingNormal = i.normal;
 
     float diffuseWeight = max(luminance(material.diffuseColor) * material.opacity,
                               0.0f);
@@ -136,15 +135,15 @@ inline float3 scatter(thread Ray &r, thread const intersection &i,
     float probability = max(dielectricWeight / totalWeight, 1e-4f);
     float eta = max(material.indexOfRefraction, 1e-3f);
     float etaRatio = i.frontFace ? (1.0f / eta) : eta;
-    bool reflectSample = mirrorAngle(etaRatio, shadingNormal, r.direction, seed);
+    bool reflectSample = mirrorAngle(etaRatio, normal, r.direction, seed);
     if (reflectSample) {
-        r.direction = reflect(r.direction, shadingNormal);
+        r.direction = reflect(r.direction, normal);
         return material.specularColor / probability;
     }
 
-    float3 refracted = refract(r.direction, shadingNormal, etaRatio);
+    float3 refracted = refract(r.direction, normal, etaRatio);
     if (!all(isfinite(refracted))) {
-        r.direction = reflect(r.direction, shadingNormal);
+        r.direction = reflect(r.direction, normal);
         return material.specularColor / probability;
     }
 
