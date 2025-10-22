@@ -3641,7 +3641,7 @@ void Renderer::rebuildMaterialTextures() {
     descriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA32Float);
     descriptor->setWidth(1);
     descriptor->setHeight(1);
-    descriptor->setUsage(MTL::TextureUsage::TextureUsageShaderRead);
+    descriptor->setUsage(MTL::TextureUsageShaderRead);
     descriptor->setStorageMode(MTL::StorageMode::StorageModeManaged);
 
     MTL::Texture *texture = _pDevice->newTexture(descriptor);
@@ -3675,7 +3675,7 @@ void Renderer::rebuildMaterialTextures() {
     descriptor->setPixelFormat(MTL::PixelFormat::PixelFormatRGBA32Float);
     descriptor->setWidth(info.width);
     descriptor->setHeight(info.height);
-    descriptor->setUsage(MTL::TextureUsage::TextureUsageShaderRead);
+    descriptor->setUsage(MTL::TextureUsageShaderRead);
     descriptor->setStorageMode(MTL::StorageMode::StorageModeManaged);
 
     MTL::Texture *texture = _pDevice->newTexture(descriptor);
