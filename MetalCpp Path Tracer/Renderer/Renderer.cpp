@@ -4161,6 +4161,25 @@ void Renderer::draw(MTK::View *pView) {
           std::max<NS::UInteger>(kPathTraceTileWidth, 1);
       NS::UInteger tileHeight =
           std::max<NS::UInteger>(kPathTraceTileHeight, 1);
+
+      uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
+      uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
+      minSamples = std::max<uint32_t>(minSamples, 1);
+      maxSamples = std::max<uint32_t>(maxSamples, minSamples);
+
+      if (maxSamples > 1) {
+        double sampleScale =
+            std::max<double>(1.0, std::sqrt(static_cast<double>(maxSamples)));
+        double scaledWidth =
+            std::floor(static_cast<double>(tileWidth) / sampleScale);
+        double scaledHeight =
+            std::floor(static_cast<double>(tileHeight) / sampleScale);
+
+        tileWidth = std::max<NS::UInteger>(
+            1, static_cast<NS::UInteger>(std::max(1.0, scaledWidth)));
+        tileHeight = std::max<NS::UInteger>(
+            1, static_cast<NS::UInteger>(std::max(1.0, scaledHeight)));
+      }
       for (NS::UInteger y = 0; y < height; y += tileHeight) {
         NS::UInteger actualHeight = std::min(tileHeight, height - y);
         for (NS::UInteger x = 0; x < width; x += tileWidth) {
