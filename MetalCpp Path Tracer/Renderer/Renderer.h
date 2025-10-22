@@ -13,6 +13,7 @@
 #include <vector>
 #include <memory>
 
+#include "AlwaysResidentCache.h"
 #include "GpuHeapResources.h"
 #include "Camera.h"
 #include "Scene.h"
@@ -393,6 +394,8 @@ private:
   size_t _frameObjectActivations = 0;
   size_t _frameObjectDeactivations = 0;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
+  ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
+  AlwaysResidentCache _alwaysResidentCache;
   bool _frameCaptureEnabled = false;
   size_t _frameCaptureInterval = 4;
   uint64_t _renderedFrameCount = 0;

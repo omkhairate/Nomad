@@ -1392,6 +1392,8 @@ void Renderer::updateVisibleScene() {
   }
   printf("Active primitive residency strategy: %s\n", strategyName);
 
+  _alwaysResidentCache.reset();
+
   // Store full primitive list and initialize tracking
   _allPrimitives = _pScene->getPrimitives();
   size_t primCount = _allPrimitives.size();
@@ -4307,7 +4309,13 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _framePrimitiveDeactivations = 0;
   _frameObjectActivations = 0;
   _frameObjectDeactivations = 0;
-  _frameStrategy = _pScene->getResidencyStrategy();
+  ResidencyStrategy strategy = _pScene->getResidencyStrategy();
+  if (strategy != _lastResidencyStrategy) {
+    if (strategy == ResidencyStrategy::AlwaysResident)
+      _alwaysResidentCache.markDirty();
+    _lastResidencyStrategy = strategy;
+  }
+  _frameStrategy = strategy;
 
   for (uint32_t &cooldown : _primitiveCooldown)
     if (cooldown > 0)
@@ -4319,7 +4327,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     --_compactionCooldown;
 
   bool changed = false;
-  switch (_pScene->getResidencyStrategy()) {
+  switch (strategy) {
   case ResidencyStrategy::EnergyImportance:
     changed = updateEnergyImportance(forceAllToggles);
     break;
@@ -4342,18 +4350,28 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     flushResidencyChanges(forceFullRebuild);
 }
 
-bool Renderer::updateAlwaysResident(bool /*forceAllToggles*/) {
+bool Renderer::updateAlwaysResident(bool forceAllToggles) {
+  size_t primitiveCount = _activePrimitive.size();
+  size_t objectCount = _allSceneObjects.size();
+  bool hasRecentChanges = !_recentlyActivated.empty() || !_recentlyDeactivated.empty();
+
   bool changed = false;
 
-  for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size(); ++objectIndex) {
-    size_t toggled = setObjectActive(objectIndex, true);
-    if (toggled > 0)
-      changed = true;
-  }
+  if (_alwaysResidentCache.needsUpdate(forceAllToggles, primitiveCount,
+                                       objectCount, hasRecentChanges)) {
+    for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+         ++objectIndex) {
+      size_t toggled = setObjectActive(objectIndex, true);
+      if (toggled > 0)
+        changed = true;
+    }
 
-  for (size_t primIndex = 0; primIndex < _activePrimitive.size(); ++primIndex) {
-    if (setPrimitiveActive(primIndex, true))
-      changed = true;
+    for (size_t primIndex = 0; primIndex < _activePrimitive.size(); ++primIndex) {
+      if (setPrimitiveActive(primIndex, true))
+        changed = true;
+    }
+
+    _alwaysResidentCache.markUpdated(primitiveCount, objectCount);
   }
 
   bool anyInactivePrimitive =
@@ -5664,6 +5682,8 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
     ++_framePrimitiveActivations;
   else
     ++_framePrimitiveDeactivations;
+  if (!active)
+    _alwaysResidentCache.markDirty();
   auto &cancelList = active ? _recentlyDeactivated : _recentlyActivated;
   cancelList.erase(
       std::remove(cancelList.begin(), cancelList.end(), index),
