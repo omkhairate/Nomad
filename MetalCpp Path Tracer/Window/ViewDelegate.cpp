@@ -14,6 +14,19 @@ using namespace MetalCppPathTracer;
 ViewDelegate::ViewDelegate(MTL::Device *pDevice)
     : MTK::ViewDelegate(), _pRenderer(new Renderer(pDevice)),
       _lastTime(std::chrono::steady_clock::now()) {
+  if (_pRenderer) {
+    const Renderer::ShaderBuildResult &status =
+        _pRenderer->shaderBuildStatus();
+    _rendererReady = status.success;
+    if (!_rendererReady) {
+      std::string message = status.message;
+      if (message.empty())
+        message = "Renderer shader build failed without a diagnostic message.";
+      std::fprintf(stderr, "Renderer initialization failed: %s\n", message.c_str());
+      std::fflush(stderr);
+    }
+  }
+
   if (const char *env = std::getenv("MPT_MAX_FRAMES"))
     _maxFrames = std::strtoul(env, nullptr, 10);
   if (const char *runs = std::getenv("MPT_RUNS_PATH")) {
@@ -54,8 +67,10 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
       captureInterval = parsed;
   }
 
-  _pRenderer->setFrameCaptureEnabled(captureEnabled);
-  _pRenderer->setFrameCaptureInterval(captureInterval);
+  if (_rendererReady && _pRenderer) {
+    _pRenderer->setFrameCaptureEnabled(captureEnabled);
+    _pRenderer->setFrameCaptureInterval(captureInterval);
+  }
 }
 
 ViewDelegate::~ViewDelegate() {
@@ -72,8 +87,11 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
       std::chrono::duration<double>(current - _lastTime).count();
   if (deltaSeconds <= 0.0)
     deltaSeconds = std::numeric_limits<double>::min();
-  double fps = 1.0 / deltaSeconds;
   _lastTime = current;
+  if (!_rendererReady || !_pRenderer)
+    return;
+
+  double fps = 1.0 / deltaSeconds;
   updateFPS(fps);
   updateMemoryUsage(_pRenderer->currentGPUMemoryMB());
   _pRenderer->setDeltaTime(deltaSeconds);
@@ -108,5 +126,7 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
 }
 
 void ViewDelegate::drawableSizeWillChange(MTK::View *pView, CGSize size) {
+  if (!_rendererReady || !_pRenderer)
+    return;
   _pRenderer->drawableSizeWillChange(pView, size);
 }
