@@ -86,16 +86,11 @@ class Renderer {
   friend struct ResidentObjectGpuResources;
 
 public:
-  struct ShaderBuildResult {
-    bool success = false;
-    std::string message;
-  };
-
   Renderer(MTL::Device *pDevice);
   ~Renderer();
 
   void updateVisibleScene();
-  ShaderBuildResult buildShaders();
+  void buildShaders();
   void buildTextures();
 
   void recalculateViewport();
