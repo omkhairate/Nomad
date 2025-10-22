@@ -1514,6 +1514,7 @@ void Renderer::updateVisibleScene() {
   _meshGroups.clear();
   _meshGroups.reserve(objectCount);
   _objectPrimitiveCounts.assign(objectCount, 0);
+  _objectActivePrimitiveCounts.assign(objectCount, 0);
   _anyMeshGroups = false;
   std::unordered_map<int, size_t> meshGroupLookup;
   meshGroupLookup.reserve(objectCount);
@@ -4512,6 +4513,15 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
   if (objectIndex >= _allSceneObjects.size())
     return 0;
 
+  if (objectIndex >= _objectActive.size())
+    _objectActive.resize(objectIndex + 1, false);
+  if (objectIndex >= _objectCooldown.size())
+    _objectCooldown.resize(objectIndex + 1, 0);
+  if (objectIndex >= _objectActivePrimitiveCounts.size())
+    _objectActivePrimitiveCounts.resize(objectIndex + 1, 0);
+
+  bool prevState = _objectActive[objectIndex];
+
   const SceneObject &obj = _allSceneObjects[objectIndex];
   size_t toggled = 0;
   size_t first = obj.firstPrimitive;
@@ -4520,20 +4530,13 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
     if (setPrimitiveActive(prim, active))
       ++toggled;
 
-  if (objectIndex >= _objectActive.size())
-    _objectActive.resize(objectIndex + 1, false);
-  if (objectIndex >= _objectCooldown.size())
-    _objectCooldown.resize(objectIndex + 1, 0);
+  size_t activeCount =
+      objectIndex < _objectActivePrimitiveCounts.size()
+          ? _objectActivePrimitiveCounts[objectIndex]
+          : size_t(0);
+  bool newState = activeCount > 0;
+  bool fullyInactive = activeCount == 0;
 
-  bool anyActive = false;
-  for (size_t prim = first; prim < last && prim < _activePrimitive.size(); ++prim) {
-    if (_activePrimitive[prim])
-      anyActive = true;
-  }
-
-  bool newState = anyActive;
-  bool fullyInactive = !anyActive;
-  bool prevState = _objectActive[objectIndex];
   _objectActive[objectIndex] = newState;
 
   if (prevState != newState) {
@@ -5702,19 +5705,17 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
         _objectActive.resize(objectIndex + 1, false);
       if (objectIndex >= _objectCooldown.size())
         _objectCooldown.resize(objectIndex + 1, 0);
+      if (objectIndex >= _objectActivePrimitiveCounts.size())
+        _objectActivePrimitiveCounts.resize(objectIndex + 1, 0);
 
-      const SceneObject &obj = _allSceneObjects[objectIndex];
-      size_t first = obj.firstPrimitive;
-      size_t last = first + obj.primitiveCount;
-      bool anyActive = false;
-      for (size_t prim = first; prim < last && prim < _activePrimitive.size();
-           ++prim) {
-        if (_activePrimitive[prim])
-          anyActive = true;
-      }
+      size_t &activeCount = _objectActivePrimitiveCounts[objectIndex];
+      if (active)
+        ++activeCount;
+      else if (activeCount > 0)
+        --activeCount;
 
-      bool newState = anyActive;
-      bool fullyInactive = !anyActive;
+      bool newState = activeCount > 0;
+      bool fullyInactive = activeCount == 0;
       bool prevState = _objectActive[objectIndex];
       _objectActive[objectIndex] = newState;
       if (prevState != newState || fullyInactive)

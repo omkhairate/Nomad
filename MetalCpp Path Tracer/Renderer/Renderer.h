@@ -346,6 +346,7 @@ private:
 
   std::vector<MeshGroupInfo> _meshGroups;
   std::vector<size_t> _objectPrimitiveCounts;
+  std::vector<size_t> _objectActivePrimitiveCounts;
   bool _anyMeshGroups = false;
 
   size_t _maxPrimitiveCount = 0;
