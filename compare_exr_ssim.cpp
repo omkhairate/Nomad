@@ -2,9 +2,13 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,6 +17,8 @@
 #include "MetalCpp Path Tracer/tinyexr.h"
 
 namespace {
+
+namespace fs = std::filesystem;
 
 struct Image {
     int width = 0;
@@ -26,12 +32,93 @@ struct Options {
     bool luminance = false;
     int window_size = 11;
     double sigma = 1.5;
+    fs::path excel_output = "ssim_scores.csv";
+};
+
+struct ReportRow {
+    std::string image_name;
+    double ssim = 0.0;
 };
 
 struct SSIMResult {
     double overall = 0.0;
     std::vector<double> per_channel;
 };
+
+bool has_exr_extension(const fs::path &path) {
+    const std::string extension = path.extension().string();
+    if (extension.empty()) {
+        return false;
+    }
+
+    std::string lower;
+    lower.reserve(extension.size());
+    for (char ch : extension) {
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return lower == ".exr";
+}
+
+std::vector<std::pair<fs::path, fs::path>> match_exr_files(const fs::path &reference_dir,
+                                                           const fs::path &test_dir) {
+    std::map<std::string, fs::path> reference_files;
+    std::map<std::string, fs::path> test_files;
+
+    for (const auto &entry : fs::directory_iterator(reference_dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+
+        const fs::path &path = entry.path();
+        if (!has_exr_extension(path)) {
+            continue;
+        }
+
+        const std::string filename = path.filename().string();
+        const auto insert_result = reference_files.emplace(filename, path);
+        if (!insert_result.second) {
+            throw std::runtime_error("Duplicate reference EXR filename: " + filename);
+        }
+    }
+
+    for (const auto &entry : fs::directory_iterator(test_dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+
+        const fs::path &path = entry.path();
+        if (!has_exr_extension(path)) {
+            continue;
+        }
+
+        const std::string filename = path.filename().string();
+        const auto insert_result = test_files.emplace(filename, path);
+        if (!insert_result.second) {
+            throw std::runtime_error("Duplicate test EXR filename: " + filename);
+        }
+    }
+
+    std::vector<std::pair<fs::path, fs::path>> pairs;
+    pairs.reserve(reference_files.size());
+
+    for (const auto &[filename, reference_path] : reference_files) {
+        const auto it = test_files.find(filename);
+        if (it == test_files.end()) {
+            std::cerr << "Warning: Missing test EXR for '" << filename << "'\n";
+            continue;
+        }
+
+        pairs.emplace_back(reference_path, it->second);
+    }
+
+    for (const auto &[filename, test_path] : test_files) {
+        if (reference_files.find(filename) == reference_files.end()) {
+            std::cerr << "Warning: Missing reference EXR for '" << filename << "'\n";
+        }
+    }
+
+    return pairs;
+}
 
 std::vector<double> make_gaussian_kernel(int size, double sigma) {
     if (size % 2 == 0 || size <= 0) {
@@ -246,6 +333,11 @@ Options parse_options(int argc, char **argv) {
                 throw std::runtime_error("Missing value for --sigma");
             }
             options.sigma = std::stod(argv[++i]);
+        } else if (arg == "--excel-out") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("Missing value for --excel-out");
+            }
+            options.excel_output = argv[++i];
         } else {
             throw std::runtime_error("Unknown option: " + arg);
         }
@@ -261,12 +353,59 @@ Options parse_options(int argc, char **argv) {
 }
 
 void print_usage(const char *program) {
-    std::cerr << "Usage: " << program << " <reference.exr> <test.exr> [options]\n"
+    std::cerr << "Usage: " << program << " <reference> <test> [options]\n"
+              << "Compare EXR files directly or directories containing EXR files.\n"
               << "Options:\n"
               << "  --include-alpha   Include alpha channel in SSIM computation (default: ignore)\n"
               << "  --luminance       Convert RGB to luminance before computing SSIM\n"
               << "  --window-size N   Gaussian kernel size (odd integer, default: 11)\n"
-              << "  --sigma S         Gaussian kernel sigma (default: 1.5)\n";
+              << "  --sigma S         Gaussian kernel sigma (default: 1.5)\n"
+              << "  --excel-out PATH  Write Excel-compatible CSV with per-file SSIM (default: ssim_scores.csv)\n";
+}
+
+std::string escape_csv_field(const std::string &value) {
+    bool needs_quotes = false;
+    for (char ch : value) {
+        if (ch == ',' || ch == '"' || ch == '\n' || ch == '\r') {
+            needs_quotes = true;
+            break;
+        }
+    }
+
+    if (!needs_quotes) {
+        return value;
+    }
+
+    std::string escaped = "\"";
+    for (char ch : value) {
+        if (ch == '"') {
+            escaped += '"';
+        }
+        escaped += ch;
+    }
+    escaped += '"';
+    return escaped;
+}
+
+void write_csv_report(const fs::path &output_path, const std::vector<ReportRow> &rows) {
+    if (rows.empty()) {
+        return;
+    }
+
+    std::ofstream file(output_path);
+    if (!file) {
+        throw std::runtime_error("Failed to open Excel output file: " + output_path.string());
+    }
+
+    file << "Image Name,SSIM\n";
+    file << std::fixed << std::setprecision(6);
+    for (const auto &row : rows) {
+        file << escape_csv_field(row.image_name) << ',' << row.ssim << "\n";
+    }
+
+    if (!file) {
+        throw std::runtime_error("Failed while writing Excel output file: " + output_path.string());
+    }
 }
 
 } // namespace
@@ -278,28 +417,88 @@ int main(int argc, char **argv) {
     }
 
     try {
-        const std::string reference_path(argv[1]);
-        const std::string test_path(argv[2]);
+        const fs::path reference_path(argv[1]);
+        const fs::path test_path(argv[2]);
         const Options options = parse_options(argc, argv);
 
-        Image reference = load_exr(reference_path, options.include_alpha);
-        Image test = load_exr(test_path, options.include_alpha);
-
-        if (options.luminance) {
-            reference = to_luminance(reference);
-            test = to_luminance(test);
-        }
-
         const std::vector<double> kernel = make_gaussian_kernel(options.window_size, options.sigma);
-        const SSIMResult result = compute_ssim(reference, test, kernel, options.window_size);
-
-        std::cout << std::fixed << std::setprecision(6);
-        std::cout << "Overall SSIM: " << result.overall << "\n";
-        for (size_t i = 0; i < result.per_channel.size(); ++i) {
-            std::cout << "Channel " << i << " SSIM: " << result.per_channel[i] << "\n";
+        if (!fs::exists(reference_path)) {
+            throw std::runtime_error("Reference path does not exist: " + reference_path.string());
+        }
+        if (!fs::exists(test_path)) {
+            throw std::runtime_error("Test path does not exist: " + test_path.string());
         }
 
-        return EXIT_SUCCESS;
+        std::vector<ReportRow> report_rows;
+
+        if (fs::is_regular_file(reference_path) && fs::is_regular_file(test_path)) {
+            Image reference = load_exr(reference_path.string(), options.include_alpha);
+            Image test = load_exr(test_path.string(), options.include_alpha);
+
+            if (options.luminance) {
+                reference = to_luminance(reference);
+                test = to_luminance(test);
+            }
+
+            const SSIMResult result = compute_ssim(reference, test, kernel, options.window_size);
+
+            std::cout << std::fixed << std::setprecision(6);
+            std::cout << "Overall SSIM: " << result.overall << "\n";
+            for (size_t i = 0; i < result.per_channel.size(); ++i) {
+                std::cout << "Channel " << i << " SSIM: " << result.per_channel[i] << "\n";
+            }
+
+            report_rows.push_back({reference_path.filename().string(), result.overall});
+            write_csv_report(options.excel_output, report_rows);
+            std::cout << "Wrote Excel report to: " << options.excel_output << "\n";
+            return EXIT_SUCCESS;
+        }
+
+        if (fs::is_directory(reference_path) && fs::is_directory(test_path)) {
+            const auto pairs = match_exr_files(reference_path, test_path);
+            if (pairs.empty()) {
+                throw std::runtime_error("No matching EXR files found between directories");
+            }
+
+            std::cout << std::fixed << std::setprecision(6);
+            double overall_sum = 0.0;
+            size_t compared = 0;
+
+            for (const auto &[ref_file, test_file] : pairs) {
+                Image reference = load_exr(ref_file.string(), options.include_alpha);
+                Image test = load_exr(test_file.string(), options.include_alpha);
+
+                if (options.luminance) {
+                    reference = to_luminance(reference);
+                    test = to_luminance(test);
+                }
+
+                const SSIMResult result = compute_ssim(reference, test, kernel, options.window_size);
+
+                std::cout << "File: " << ref_file.filename().string() << "\n";
+                std::cout << "  Overall SSIM: " << result.overall << "\n";
+                for (size_t i = 0; i < result.per_channel.size(); ++i) {
+                    std::cout << "  Channel " << i << " SSIM: " << result.per_channel[i] << "\n";
+                }
+                std::cout << '\n';
+
+                overall_sum += result.overall;
+                ++compared;
+
+                report_rows.push_back({ref_file.filename().string(), result.overall});
+            }
+
+            if (compared > 1) {
+                const double average = overall_sum / static_cast<double>(compared);
+                std::cout << "Average overall SSIM: " << average << "\n";
+            }
+
+            write_csv_report(options.excel_output, report_rows);
+            std::cout << "Wrote Excel report to: " << options.excel_output << "\n";
+            return EXIT_SUCCESS;
+        }
+
+        throw std::runtime_error("Both paths must be files or both must be directories");
     } catch (const std::exception &ex) {
         std::cerr << "Error: " << ex.what() << "\n";
         print_usage(argv[0]);
