@@ -2,8 +2,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -31,6 +32,12 @@ struct Options {
     bool luminance = false;
     int window_size = 11;
     double sigma = 1.5;
+    fs::path excel_output = "ssim_scores.csv";
+};
+
+struct ReportRow {
+    std::string image_name;
+    double ssim = 0.0;
 };
 
 struct SSIMResult {
@@ -326,6 +333,11 @@ Options parse_options(int argc, char **argv) {
                 throw std::runtime_error("Missing value for --sigma");
             }
             options.sigma = std::stod(argv[++i]);
+        } else if (arg == "--excel-out") {
+            if (i + 1 >= argc) {
+                throw std::runtime_error("Missing value for --excel-out");
+            }
+            options.excel_output = argv[++i];
         } else {
             throw std::runtime_error("Unknown option: " + arg);
         }
@@ -347,7 +359,53 @@ void print_usage(const char *program) {
               << "  --include-alpha   Include alpha channel in SSIM computation (default: ignore)\n"
               << "  --luminance       Convert RGB to luminance before computing SSIM\n"
               << "  --window-size N   Gaussian kernel size (odd integer, default: 11)\n"
-              << "  --sigma S         Gaussian kernel sigma (default: 1.5)\n";
+              << "  --sigma S         Gaussian kernel sigma (default: 1.5)\n"
+              << "  --excel-out PATH  Write Excel-compatible CSV with per-file SSIM (default: ssim_scores.csv)\n";
+}
+
+std::string escape_csv_field(const std::string &value) {
+    bool needs_quotes = false;
+    for (char ch : value) {
+        if (ch == ',' || ch == '"' || ch == '\n' || ch == '\r') {
+            needs_quotes = true;
+            break;
+        }
+    }
+
+    if (!needs_quotes) {
+        return value;
+    }
+
+    std::string escaped = "\"";
+    for (char ch : value) {
+        if (ch == '"') {
+            escaped += '"';
+        }
+        escaped += ch;
+    }
+    escaped += '"';
+    return escaped;
+}
+
+void write_csv_report(const fs::path &output_path, const std::vector<ReportRow> &rows) {
+    if (rows.empty()) {
+        return;
+    }
+
+    std::ofstream file(output_path);
+    if (!file) {
+        throw std::runtime_error("Failed to open Excel output file: " + output_path.string());
+    }
+
+    file << "Image Name,SSIM\n";
+    file << std::fixed << std::setprecision(6);
+    for (const auto &row : rows) {
+        file << escape_csv_field(row.image_name) << ',' << row.ssim << "\n";
+    }
+
+    if (!file) {
+        throw std::runtime_error("Failed while writing Excel output file: " + output_path.string());
+    }
 }
 
 } // namespace
@@ -371,6 +429,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Test path does not exist: " + test_path.string());
         }
 
+        std::vector<ReportRow> report_rows;
+
         if (fs::is_regular_file(reference_path) && fs::is_regular_file(test_path)) {
             Image reference = load_exr(reference_path.string(), options.include_alpha);
             Image test = load_exr(test_path.string(), options.include_alpha);
@@ -388,6 +448,9 @@ int main(int argc, char **argv) {
                 std::cout << "Channel " << i << " SSIM: " << result.per_channel[i] << "\n";
             }
 
+            report_rows.push_back({reference_path.filename().string(), result.overall});
+            write_csv_report(options.excel_output, report_rows);
+            std::cout << "Wrote Excel report to: " << options.excel_output << "\n";
             return EXIT_SUCCESS;
         }
 
@@ -421,6 +484,8 @@ int main(int argc, char **argv) {
 
                 overall_sum += result.overall;
                 ++compared;
+
+                report_rows.push_back({ref_file.filename().string(), result.overall});
             }
 
             if (compared > 1) {
@@ -428,6 +493,8 @@ int main(int argc, char **argv) {
                 std::cout << "Average overall SSIM: " << average << "\n";
             }
 
+            write_csv_report(options.excel_output, report_rows);
+            std::cout << "Wrote Excel report to: " << options.excel_output << "\n";
             return EXIT_SUCCESS;
         }
 
