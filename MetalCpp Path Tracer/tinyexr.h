@@ -698,7 +698,15 @@ extern int LoadEXRFromMemory(float **out_rgba, int *width, int *height,
 #endif
 
 #if defined(TINYEXR_USE_MINIZ) && (TINYEXR_USE_MINIZ==1)
+#if defined(__has_include)
+#if __has_include(<miniz.h>)
 #include <miniz.h>
+#else
+#include "miniz.h"
+#endif
+#else
+#include "miniz.h"
+#endif
 #else
 //  Issue #46. Please include your own zlib-compatible API header before
 //  including `tinyexr.h`
