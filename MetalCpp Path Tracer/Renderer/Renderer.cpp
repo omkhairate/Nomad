@@ -33,6 +33,7 @@
 #include <string>
 #include <utility>
 #include <unordered_map>
+#include <vector>
 
 #define TINYEXR_IMPLEMENTATION
 #include "../tinyexr.h"
@@ -97,6 +98,44 @@ bool ResidentObjectGpuResources::ensureResident(
 } // namespace MetalCppPathTracer
 
 using namespace MetalCppPathTracer;
+
+namespace {
+
+template <typename Func>
+void parallelFor(size_t count, Func &&func, size_t minChunkSize = 64) {
+  if (count == 0)
+    return;
+
+  const size_t hardwareThreads =
+      std::max<size_t>(1, std::thread::hardware_concurrency());
+  size_t chunkSize = (count + hardwareThreads - 1) / hardwareThreads;
+  if (chunkSize < minChunkSize)
+    chunkSize = minChunkSize;
+
+  size_t taskCount = (count + chunkSize - 1) / chunkSize;
+  if (taskCount <= 1) {
+    func(0, count);
+    return;
+  }
+
+  std::vector<std::thread> workers;
+  workers.reserve(taskCount - 1);
+
+  for (size_t task = 0; task + 1 < taskCount; ++task) {
+    size_t begin = task * chunkSize;
+    size_t end = std::min(begin + chunkSize, count);
+    workers.emplace_back([begin, end, &func]() { func(begin, end); });
+  }
+
+  size_t begin = (taskCount - 1) * chunkSize;
+  size_t end = std::min(begin + chunkSize, count);
+  func(begin, end);
+
+  for (auto &worker : workers)
+    worker.join();
+}
+
+} // namespace
 
 void Renderer::PendingBlasBuild::releaseResources() {
   if (vertexStaging) {
@@ -3080,85 +3119,104 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _cachedMaterialData.assign(totalPrimitiveCount * kMaterialFloat4Count,
                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
 
-    for (size_t i = 0; i < totalPrimitiveCount; ++i) {
-      const Primitive &p = _allPrimitives[i];
-      simd::float4 *primBase =
-          &_cachedPrimitiveData[kPrimitiveFloat4Count * i];
-      simd::float4 *matBase =
-          &_cachedMaterialData[kMaterialFloat4Count * i];
+    parallelFor(totalPrimitiveCount, [&](size_t begin, size_t end) {
+      for (size_t i = begin; i < end; ++i) {
+        const Primitive &p = _allPrimitives[i];
+        simd::float4 *primBase =
+            &_cachedPrimitiveData[kPrimitiveFloat4Count * i];
+        simd::float4 *matBase =
+            &_cachedMaterialData[kMaterialFloat4Count * i];
 
-      primBase[4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      primBase[5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      primBase[6] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[6] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
 
-      switch (p.type) {
-      case PrimitiveType::Sphere: {
-        primBase[0] =
-            simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(
-            simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
-        primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        primBase[6] = simd::make_float4(0.0f, 0.0f, 1.0f, 0.0f);
-        break;
-      }
-      case PrimitiveType::Rectangle: {
-        primBase[0] =
-            simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
-        primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
-        primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        primBase[4] = simd::make_float4(p.rectangle.tangent, 0.0f);
-        primBase[5] = simd::make_float4(p.rectangle.bitangent, 0.0f);
-        primBase[6] = simd::make_float4(p.rectangle.normal,
-                                        p.rectangle.supportsNormalMap ? 1.0f
-                                                                      : 0.0f);
-        break;
-      }
-      case PrimitiveType::Triangle: {
-        primBase[0] =
-            simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-        primBase[1] = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
-        primBase[2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
-        primBase[3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
-                                        p.triangle.uv2.x, p.triangle.uv2.y);
-        primBase[4] = simd::make_float4(p.triangle.tangent, 0.0f);
-        primBase[5] = simd::make_float4(p.triangle.bitangent, 0.0f);
-        primBase[6] = simd::make_float4(p.triangle.normal, 1.0f);
-        break;
-      }
-      }
+        switch (p.type) {
+        case PrimitiveType::Sphere: {
+          primBase[0] =
+              simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+          primBase[1] = simd::make_float4(
+              simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
+          primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          primBase[6] = simd::make_float4(0.0f, 0.0f, 1.0f, 0.0f);
+          break;
+        }
+        case PrimitiveType::Rectangle: {
+          primBase[0] =
+              simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+          primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
+          primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
+          primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          primBase[4] = simd::make_float4(p.rectangle.tangent, 0.0f);
+          primBase[5] = simd::make_float4(p.rectangle.bitangent, 0.0f);
+          primBase[6] = simd::make_float4(p.rectangle.normal,
+                                          p.rectangle.supportsNormalMap ? 1.0f
+                                                                        : 0.0f);
+          break;
+        }
+        case PrimitiveType::Triangle: {
+          primBase[0] =
+              simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+          primBase[1] = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
+          primBase[2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
+          primBase[3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
+                                          p.triangle.uv2.x, p.triangle.uv2.y);
+          primBase[4] = simd::make_float4(p.triangle.tangent, 0.0f);
+          primBase[5] = simd::make_float4(p.triangle.bitangent, 0.0f);
+          primBase[6] = simd::make_float4(p.triangle.normal, 1.0f);
+          break;
+        }
+        }
 
-      const Material &m = p.material;
-      auto packed = encodeMaterial(m);
-      for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
-        matBase[j] = packed[j];
+        const Material &m = p.material;
+        auto packed = encodeMaterial(m);
+        for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
+          matBase[j] = packed[j];
+        }
       }
-    }
+    });
 
     _cachedTextureInfos.clear();
     _cachedTextureData.clear();
-    size_t texelOffset = 0;
     if (_pScene) {
       const auto &sceneTextures = _pScene->getTextures();
-      for (const auto &tex : sceneTextures) {
-        TextureInfo info{};
-        info.offset = static_cast<uint32_t>(texelOffset);
-        info.width = tex.width;
-        info.height = tex.height;
-        _cachedTextureInfos.push_back(info);
-
-        size_t texelCount = static_cast<size_t>(tex.width) * tex.height;
-        for (size_t t = 0; t < texelCount; ++t) {
-          size_t idx = t * 4;
-          float r = (idx < tex.pixels.size()) ? tex.pixels[idx + 0] : 0.0f;
-          float g = (idx + 1 < tex.pixels.size()) ? tex.pixels[idx + 1] : 0.0f;
-          float b = (idx + 2 < tex.pixels.size()) ? tex.pixels[idx + 2] : 0.0f;
-          float a = (idx + 3 < tex.pixels.size()) ? tex.pixels[idx + 3] : 1.0f;
-          _cachedTextureData.push_back(simd::make_float4(r, g, b, a));
-        }
-        texelOffset += texelCount;
+      const size_t textureCount = sceneTextures.size();
+      std::vector<size_t> textureOffsets(textureCount, 0);
+      size_t totalTexelCount = 0;
+      for (size_t texIndex = 0; texIndex < textureCount; ++texIndex) {
+        textureOffsets[texIndex] = totalTexelCount;
+        totalTexelCount += static_cast<size_t>(sceneTextures[texIndex].width) *
+                           sceneTextures[texIndex].height;
       }
+
+      _cachedTextureInfos.resize(textureCount);
+      _cachedTextureData.resize(totalTexelCount);
+
+      parallelFor(textureCount, [&](size_t begin, size_t end) {
+        for (size_t texIndex = begin; texIndex < end; ++texIndex) {
+          const auto &tex = sceneTextures[texIndex];
+          TextureInfo info{};
+          info.offset = static_cast<uint32_t>(textureOffsets[texIndex]);
+          info.width = tex.width;
+          info.height = tex.height;
+          _cachedTextureInfos[texIndex] = info;
+
+          size_t texelCount =
+              static_cast<size_t>(tex.width) * static_cast<size_t>(tex.height);
+          size_t base = textureOffsets[texIndex];
+          simd::float4 *dst = _cachedTextureData.data() + base;
+
+          for (size_t t = 0; t < texelCount; ++t) {
+            size_t idx = t * 4;
+            float r = (idx < tex.pixels.size()) ? tex.pixels[idx + 0] : 0.0f;
+            float g = (idx + 1 < tex.pixels.size()) ? tex.pixels[idx + 1] : 0.0f;
+            float b = (idx + 2 < tex.pixels.size()) ? tex.pixels[idx + 2] : 0.0f;
+            float a = (idx + 3 < tex.pixels.size()) ? tex.pixels[idx + 3] : 1.0f;
+            dst[t] = simd::make_float4(r, g, b, a);
+          }
+        }
+      });
     }
 
     rebuildMaterialTextures();
