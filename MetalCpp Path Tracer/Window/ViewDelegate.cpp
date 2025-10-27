@@ -63,6 +63,8 @@ ViewDelegate::~ViewDelegate() {
     _gpuMemLog.close();
   if (_perfLog.is_open())
     _perfLog.close();
+  if (_pRenderer)
+    _pRenderer->flushPendingCaptures();
   delete _pRenderer;
 }
 
