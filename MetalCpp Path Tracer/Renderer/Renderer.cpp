@@ -3436,27 +3436,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _lightCount = _cachedLightIndices.size();
   }
 
-  std::vector<uint8_t> dirtyResidentLookup(sceneObjects.size(), 0);
-  for (size_t dirtyIndex : _dirtyResidentObjects) {
-    if (dirtyIndex < dirtyResidentLookup.size())
-      dirtyResidentLookup[dirtyIndex] = 1;
-  }
-
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
     auto &gpuResident = _residentObjectGpuResources[objectIndex];
     auto &instanceRecord = _instanceRecords[objectIndex];
 
     if (shouldBeResident) {
-      bool requiresRebuild = needFullUpload;
-      if (!requiresRebuild && dirtyResidentLookup[objectIndex])
-        requiresRebuild = true;
-      if (!requiresRebuild && !gpuResident.geometryValid)
-        requiresRebuild = true;
-
       bool built = gpuResident.ensureResident(
           *this, objectIndex, sceneObjects[objectIndex], instanceRecord,
-          requiresRebuild);
+          needFullUpload);
       if (!built) {
         shouldBeResident = false;
         objectShouldBeResident[objectIndex] = false;
