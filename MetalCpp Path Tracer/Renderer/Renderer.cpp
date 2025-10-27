@@ -85,21 +85,47 @@ bool ResidentObjectGpuResources::ensureResident(
   }
 
   transitionToStreaming();
+  geometryValid = false;
   bool built = renderer.buildObjectBlas(objectIndex, object, *this);
   if (!built) {
     transitionToCold(instanceRecord);
     return false;
   }
-
-  clearPendingCommand();
-  state = ResidencyState::Resident;
-  lastStateChange = std::chrono::steady_clock::now();
   return true;
 }
 
 } // namespace MetalCppPathTracer
 
 using namespace MetalCppPathTracer;
+
+void Renderer::PendingBlasBuild::releaseResources() {
+  if (vertexStaging) {
+    vertexStaging->release();
+    vertexStaging = nullptr;
+  }
+  if (indexStaging) {
+    indexStaging->release();
+    indexStaging = nullptr;
+  }
+  if (scratchBuffer) {
+    scratchBuffer->release();
+    scratchBuffer = nullptr;
+  }
+  if (geometryArray) {
+    geometryArray->release();
+    geometryArray = nullptr;
+  }
+  if (geometryDesc) {
+    geometryDesc->release();
+    geometryDesc = nullptr;
+  }
+  if (accelDesc) {
+    accelDesc->release();
+    accelDesc = nullptr;
+  }
+  accelerationStructure = nullptr;
+  commandBuffer = nullptr;
+}
 
 struct UniformsData {
   int primitiveIndex;
@@ -2028,25 +2054,105 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     return true;
   }
 
-  NS::UInteger vertexBytes =
-      static_cast<NS::UInteger>(vertices.size() * sizeof(simd::float3));
-  NS::UInteger indexBytes =
-      static_cast<NS::UInteger>(indices.size() * sizeof(uint32_t));
+  auto buildRequest = std::make_shared<PendingBlasBuild>();
+  if (!buildRequest) {
+    cleanupPool();
+    return false;
+  }
 
-  MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc =
-      MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
+  buildRequest->renderer = this;
+  buildRequest->resident = &resident;
+  buildRequest->objectIndex = objectIndex;
+  buildRequest->vertices = std::move(vertices);
+  buildRequest->indices = std::move(indices);
+  buildRequest->triangleCount = triangleCount;
+  buildRequest->vertexCount = buildRequest->vertices.size();
+
+  enqueueBlasBuild(buildRequest);
+
+  cleanupPool();
+  return true;
+}
+
+void Renderer::enqueueBlasBuild(
+    const std::shared_ptr<PendingBlasBuild> &buildRequest) {
+  if (!buildRequest)
+    return;
+
+  _pendingBlasBuilds.push_back(buildRequest);
+  processBlasBuildQueue();
+}
+
+void Renderer::processBlasBuildQueue() {
+  if (!_pDevice || !_pCommandQueue)
+    return;
+
+  while (!_pendingBlasBuilds.empty() &&
+         _activeBlasBuilds.size() < kMaxBlasBuildsInFlight) {
+    auto buildRequest = _pendingBlasBuilds.front();
+    if (!startBlasBuild(buildRequest)) {
+      _pendingBlasBuilds.pop_front();
+      if (buildRequest && buildRequest->resident &&
+          buildRequest->objectIndex < _instanceRecords.size()) {
+        buildRequest->resident->transitionToCold(
+            _instanceRecords[buildRequest->objectIndex]);
+      }
+      continue;
+    }
+
+    _pendingBlasBuilds.pop_front();
+    _activeBlasBuilds.push_back(buildRequest);
+  }
+}
+
+bool Renderer::startBlasBuild(
+    const std::shared_ptr<PendingBlasBuild> &buildRequest) {
+  if (!buildRequest || !buildRequest->resident || !_pDevice || !_pCommandQueue)
+    return false;
+
+  auto &resident = *buildRequest->resident;
+
+  NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
+  auto cleanupPool = [&]() {
+    if (pool) {
+      pool->release();
+      pool = nullptr;
+    }
+  };
+
+  const NS::UInteger vertexBytes = static_cast<NS::UInteger>(
+      buildRequest->vertices.size() * sizeof(simd::float3));
+  const NS::UInteger indexBytes = static_cast<NS::UInteger>(
+      buildRequest->indices.size() * sizeof(uint32_t));
+
+  std::string blasLabel = "ObjectBLAS_" + std::to_string(buildRequest->objectIndex);
+  std::string vertexLabel =
+      "ObjectVertices_" + std::to_string(buildRequest->objectIndex);
+  std::string indexLabel =
+      "ObjectIndices_" + std::to_string(buildRequest->objectIndex);
+
+  auto geometryDesc = MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()
+                          ->init();
+  if (!geometryDesc) {
+    cleanupPool();
+    return false;
+  }
   geometryDesc->setOpaque(true);
 
-  std::string blasLabel = "ObjectBLAS_" + std::to_string(objectIndex);
-  std::string vertexLabel = "ObjectVertices_" + std::to_string(objectIndex);
-  std::string indexLabel = "ObjectIndices_" + std::to_string(objectIndex);
-
   NS::Object *descriptorObjects[] = {geometryDesc};
-  NS::Array *geometryArray =
-      NS::Array::alloc()->init(descriptorObjects, 1);
-
-  MTL::PrimitiveAccelerationStructureDescriptor *accelDesc =
+  auto geometryArray = NS::Array::alloc()->init(descriptorObjects, 1);
+  auto accelDesc =
       MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
+  if (!geometryArray || !accelDesc) {
+    if (geometryArray)
+      geometryArray->release();
+    geometryDesc->release();
+    if (accelDesc)
+      accelDesc->release();
+    cleanupPool();
+    return false;
+  }
+
   accelDesc->setGeometryDescriptors(geometryArray);
 
   NS::UInteger alignedVertexSize =
@@ -2070,8 +2176,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   };
 
   if (!requestGeometryBuffers()) {
-    if (geometryArray)
-      geometryArray->release();
+    geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2087,7 +2192,8 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     geometryDesc->setIndexBuffer(indexBuffer);
     geometryDesc->setIndexBufferOffset(0);
     geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
-    geometryDesc->setTriangleCount(triangleCount);
+    geometryDesc->setTriangleCount(
+        static_cast<NS::UInteger>(buildRequest->triangleCount));
   };
 
   NS::UInteger totalHeapBytes = 0;
@@ -2115,8 +2221,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       resident.resources.ensureHeapCapacity(totalHeapBytes);
 
       if (!requestGeometryBuffers()) {
-        if (geometryArray)
-          geometryArray->release();
+        geometryArray->release();
         geometryDesc->release();
         accelDesc->release();
         cleanupPool();
@@ -2131,13 +2236,11 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
 
   configureGeometryDescriptor();
 
-  MTL::AccelerationStructure *accelerationStructure =
-      resident.resources.ensureAccelerationStructure(
-          sizes.accelerationStructureSize, blasLabel.c_str());
+  auto accelerationStructure = resident.resources.ensureAccelerationStructure(
+      sizes.accelerationStructureSize, blasLabel.c_str());
 
   if (!accelerationStructure) {
-    if (geometryArray)
-      geometryArray->release();
+    geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2150,7 +2253,8 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     vertexStaging =
         _pDevice->newBuffer(vertexBytes, MTL::ResourceStorageModeShared);
     if (vertexStaging) {
-      std::memcpy(vertexStaging->contents(), vertices.data(), vertexBytes);
+      std::memcpy(vertexStaging->contents(), buildRequest->vertices.data(),
+                  vertexBytes);
       markBufferModified(vertexStaging, NS::Range::Make(0, vertexBytes));
     }
   }
@@ -2158,7 +2262,8 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     indexStaging =
         _pDevice->newBuffer(indexBytes, MTL::ResourceStorageModeShared);
     if (indexStaging) {
-      std::memcpy(indexStaging->contents(), indices.data(), indexBytes);
+      std::memcpy(indexStaging->contents(), buildRequest->indices.data(),
+                  indexBytes);
       markBufferModified(indexStaging, NS::Range::Make(0, indexBytes));
     }
   }
@@ -2169,8 +2274,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       indexStaging->release();
     if (vertexStaging)
       vertexStaging->release();
-    if (geometryArray)
-      geometryArray->release();
+    geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2183,7 +2287,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     scratchBuffer =
         _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
 
-  MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
+  auto commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
     if (scratchBuffer)
       scratchBuffer->release();
@@ -2191,8 +2295,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       indexStaging->release();
     if (vertexStaging)
       vertexStaging->release();
-    if (geometryArray)
-      geometryArray->release();
+    geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2216,8 +2319,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   if (blitEncoder)
     blitEncoder->endEncoding();
 
-  MTL::AccelerationStructureCommandEncoder *asEncoder =
-      commandBuffer->accelerationStructureCommandEncoder();
+  auto asEncoder = commandBuffer->accelerationStructureCommandEncoder();
   if (!asEncoder) {
     if (scratchBuffer)
       scratchBuffer->release();
@@ -2225,8 +2327,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
       indexStaging->release();
     if (vertexStaging)
       vertexStaging->release();
-    if (geometryArray)
-      geometryArray->release();
+    geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2237,29 +2338,72 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
                                         scratchBuffer, 0);
   asEncoder->endEncoding();
 
+  buildRequest->geometryDesc = geometryDesc;
+  buildRequest->geometryArray = geometryArray;
+  buildRequest->accelDesc = accelDesc;
+  buildRequest->accelerationStructure = accelerationStructure;
+  buildRequest->vertexStaging = vertexStaging;
+  buildRequest->indexStaging = indexStaging;
+  buildRequest->scratchBuffer = scratchBuffer;
+  buildRequest->commandBuffer = commandBuffer;
+  buildRequest->totalHeapBytes = totalHeapBytes;
+
+  // Release CPU copies now that staging buffers are populated.
+  buildRequest->vertices.clear();
+  buildRequest->vertices.shrink_to_fit();
+  buildRequest->indices.clear();
+  buildRequest->indices.shrink_to_fit();
+
+  resident.transitionToStreaming(commandBuffer);
+
+  commandBuffer->addCompletedHandler([this, buildRequest](
+                                          MTL::CommandBuffer *cmd) {
+    bool success = cmd->status() == MTL::CommandBufferStatusCompleted;
+    auto retainedRequest = buildRequest;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      this->handleCompletedBlasBuild(retainedRequest, success);
+    });
+  });
+
   commandBuffer->commit();
-  commandBuffer->waitUntilCompleted();
-
-  if (scratchBuffer)
-    scratchBuffer->release();
-  if (indexStaging)
-    indexStaging->release();
-  if (vertexStaging)
-    vertexStaging->release();
-  if (geometryArray)
-    geometryArray->release();
-  geometryDesc->release();
-  accelDesc->release();
-
-  resident.byteSize = totalHeapBytes;
-  resident.triangleCount = triangleCount;
-  resident.vertexCount = vertices.size();
-  resident.vertexBufferOffset = 0;
-  resident.indexBufferOffset = 0;
-  resident.geometryValid = true;
 
   cleanupPool();
   return true;
+}
+
+void Renderer::handleCompletedBlasBuild(
+    const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success) {
+  if (!buildRequest || !buildRequest->resident)
+    return;
+
+  auto &resident = *buildRequest->resident;
+
+  if (resident.pendingCommand)
+    resident.clearPendingCommand();
+
+  if (success) {
+    resident.byteSize = buildRequest->totalHeapBytes;
+    resident.triangleCount = buildRequest->triangleCount;
+    resident.vertexCount = buildRequest->vertexCount;
+    resident.vertexBufferOffset = 0;
+    resident.indexBufferOffset = 0;
+    resident.geometryValid = buildRequest->triangleCount > 0;
+    resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
+    resident.lastStateChange = std::chrono::steady_clock::now();
+  } else if (buildRequest->objectIndex < _instanceRecords.size()) {
+    resident.transitionToCold(_instanceRecords[buildRequest->objectIndex]);
+  } else {
+    resident.geometryValid = false;
+  }
+
+  buildRequest->releaseResources();
+
+  auto it = std::find(_activeBlasBuilds.begin(), _activeBlasBuilds.end(),
+                      buildRequest);
+  if (it != _activeBlasBuilds.end())
+    _activeBlasBuilds.erase(it);
+
+  processBlasBuildQueue();
 }
 
 bool Renderer::ensureDummyBlas() {

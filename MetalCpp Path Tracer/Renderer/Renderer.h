@@ -156,6 +156,12 @@ private:
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
           &descriptors,
       const std::vector<MTL::AccelerationStructure *> &structures);
+  struct PendingBlasBuild;
+  void enqueueBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
+  void processBlasBuildQueue();
+  bool startBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
+  void handleCompletedBlasBuild(
+      const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
   void rebuildMaterialTextures();
@@ -232,6 +238,31 @@ private:
   ManagedTextureSlot _sampleImportanceSlot;
   ManagedTextureSlot _albedoSlot;
   ManagedTextureSlot _normalSlot;
+
+  struct PendingBlasBuild {
+    Renderer *renderer = nullptr;
+    ResidentObjectGpuResources *resident = nullptr;
+    size_t objectIndex = 0;
+    std::vector<simd::float3> vertices;
+    std::vector<uint32_t> indices;
+    size_t triangleCount = 0;
+    size_t vertexCount = 0;
+    NS::UInteger totalHeapBytes = 0;
+    MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc = nullptr;
+    MTL::PrimitiveAccelerationStructureDescriptor *accelDesc = nullptr;
+    NS::Array *geometryArray = nullptr;
+    MTL::AccelerationStructure *accelerationStructure = nullptr;
+    MTL::Buffer *vertexStaging = nullptr;
+    MTL::Buffer *indexStaging = nullptr;
+    MTL::Buffer *scratchBuffer = nullptr;
+    MTL::CommandBuffer *commandBuffer = nullptr;
+
+    void releaseResources();
+  };
+
+  static constexpr size_t kMaxBlasBuildsInFlight = 3;
+  std::deque<std::shared_ptr<PendingBlasBuild>> _pendingBlasBuilds;
+  std::deque<std::shared_ptr<PendingBlasBuild>> _activeBlasBuilds;
 
   struct BenchmarkSample {
     size_t frameIndex = 0;
