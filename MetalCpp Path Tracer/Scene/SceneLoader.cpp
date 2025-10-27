@@ -89,7 +89,8 @@ TextureCache& GetTextureCache() {
 static int ResolveTextureIndex(const std::string& texName,
                                const std::string& baseDir,
                                Scene* scene,
-                               TextureCache& cache) {
+                               TextureCache& cache,
+                               TextureUsage usage = TextureUsage::Color) {
     if (!scene || texName.empty()) {
         return -1;
     }
@@ -101,14 +102,18 @@ static int ResolveTextureIndex(const std::string& texName,
     resolved = resolved.lexically_normal();
 
     std::string key = resolved.string();
-    auto it = cache.find(key);
+    TextureColorSpace colorSpace = DetermineTextureColorSpace(key, usage);
+    std::string cacheKey = key;
+    cacheKey += (colorSpace == TextureColorSpace::Linear) ? "|linear" : "|srgb";
+
+    auto it = cache.find(cacheKey);
     if (it != cache.end()) {
         return it->second;
     }
 
     LoadedTextureImage image;
-    if (!LoadTextureImage(key, image)) {
-        cache.emplace(key, -1);
+    if (!LoadTextureImage(key, image, usage)) {
+        cache.emplace(cacheKey, -1);
         return -1;
     }
 
@@ -117,8 +122,8 @@ static int ResolveTextureIndex(const std::string& texName,
     texture.height = static_cast<uint32_t>(image.height);
     texture.pixels = std::move(image.pixels);
 
-    int index = scene->registerTexture(key, std::move(texture));
-    cache.emplace(key, index);
+    int index = scene->registerTexture(cacheKey, key, std::move(texture));
+    cache.emplace(cacheKey, index);
     return index;
 }
 
@@ -149,7 +154,8 @@ static Material ConvertTinyMaterial(const tinyobj::material_t& src,
 
     material.diffuseTextureIndex = ResolveTextureIndex(src.diffuse_texname,
                                                        baseDir, scene,
-                                                       textureCache);
+                                                       textureCache,
+                                                       TextureUsage::Color);
     if (material.diffuseTextureIndex >= 0) {
         constexpr float kMinDiffuseLuminance = 1.0e-4f;
         if (luminance(material.diffuseColor) <= kMinDiffuseLuminance) {
@@ -158,14 +164,66 @@ static Material ConvertTinyMaterial(const tinyobj::material_t& src,
     }
     material.specularTextureIndex = ResolveTextureIndex(src.specular_texname,
                                                         baseDir, scene,
-                                                        textureCache);
+                                                        textureCache,
+                                                        TextureUsage::Color);
     std::string normalTex = src.normal_texname.empty() ? src.bump_texname
                                                        : src.normal_texname;
     material.normalTextureIndex = ResolveTextureIndex(normalTex,
                                                       baseDir, scene,
-                                                      textureCache);
+                                                      textureCache,
+                                                      TextureUsage::NormalMap);
 
     return material;
+}
+
+static void ApplyTextureAttributes(const XMLElement* element,
+                                   const std::filesystem::path& baseDir,
+                                   Scene* scene,
+                                   Material& material,
+                                   TextureCache& textureCache) {
+    if (!element || !scene) {
+        return;
+    }
+
+    std::string baseDirStr = baseDir.string();
+
+    auto resolveTexture = [&](const char* attrValue, TextureUsage usage) {
+        if (!attrValue || !attrValue[0]) {
+            return -1;
+        }
+        return ResolveTextureIndex(attrValue, baseDirStr, scene, textureCache, usage);
+    };
+
+    const char* diffuseAttr = element->Attribute("diffuseTexture");
+    if (!diffuseAttr) {
+        diffuseAttr = element->Attribute("albedoTexture");
+    }
+    int diffuseIndex = resolveTexture(diffuseAttr, TextureUsage::Color);
+    if (diffuseIndex >= 0) {
+        material.diffuseTextureIndex = diffuseIndex;
+        constexpr float kMinDiffuseLuminance = 1.0e-4f;
+        if (luminance(material.diffuseColor) <= kMinDiffuseLuminance) {
+            material.diffuseColor = simd::make_float3(1.0f, 1.0f, 1.0f);
+        }
+    }
+
+    const char* specularAttr = element->Attribute("specularTexture");
+    int specularIndex = resolveTexture(specularAttr, TextureUsage::Color);
+    if (specularIndex >= 0) {
+        material.specularTextureIndex = specularIndex;
+    }
+
+    const char* normalAttr = element->Attribute("normalTexture");
+    if (!normalAttr) {
+        normalAttr = element->Attribute("normalMap");
+    }
+    if (!normalAttr) {
+        normalAttr = element->Attribute("bumpTexture");
+    }
+    int normalIndex = resolveTexture(normalAttr, TextureUsage::NormalMap);
+    if (normalIndex >= 0) {
+        material.normalTextureIndex = normalIndex;
+    }
 }
 
 static Material ParseMaterialAttributes(const XMLElement* element) {
@@ -541,6 +599,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     scene->screenSize.y = root->FloatAttribute("height", scene->screenSize.y);
     scene->maxRayDepth = root->UnsignedAttribute("maxRayDepth", scene->maxRayDepth);
 
+    TextureCache& textureCache = GetTextureCache();
+
     if (const char* residencyAttr = root->Attribute("residencyStrategy")) {
         std::string value = residencyAttr;
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -631,6 +691,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             p.sphere.radius = e->FloatAttribute("radius", 1.0f);
 
             p.material = ParseMaterialAttributes(e);
+            ApplyTextureAttributes(e, baseDir, scene, p.material, textureCache);
 
             scene->addPrimitive(p);
         }
@@ -648,6 +709,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             }
 
             p.material = ParseMaterialAttributes(e);
+            ApplyTextureAttributes(e, baseDir, scene, p.material, textureCache);
 
             scene->addPrimitive(p);
         }
@@ -699,6 +761,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             }
 
             Material overrideMaterial = ParseMaterialAttributes(e);
+            ApplyTextureAttributes(e, baseDir, scene, overrideMaterial, textureCache);
 
             size_t clusterMaxTriangles = static_cast<size_t>(
                 e->Unsigned64Attribute("clusterMaxTriangles", 0));

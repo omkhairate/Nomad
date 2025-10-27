@@ -12,7 +12,22 @@ struct LoadedTextureImage {
     std::vector<float> pixels; // RGBA, linear [0,1]
 };
 
-bool LoadTextureImage(const std::string &path, LoadedTextureImage &outImage);
+enum class TextureUsage {
+    Color,
+    NormalMap,
+    Data,
+};
+
+enum class TextureColorSpace {
+    sRGB,
+    Linear,
+};
+
+TextureColorSpace DetermineTextureColorSpace(const std::string &path,
+                                            TextureUsage usage);
+
+bool LoadTextureImage(const std::string &path, LoadedTextureImage &outImage,
+                      TextureUsage usage = TextureUsage::Color);
 
 } // namespace MetalCppPathTracer
 
