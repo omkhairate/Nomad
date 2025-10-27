@@ -747,6 +747,7 @@ Renderer::Renderer(MTL::Device *pDevice)
 
 Renderer::~Renderer() {
   processPendingCapturedFrames();
+  waitForPendingFrameCommands();
 
   if (_pSphereBuffer)
     _pSphereBuffer->release();
@@ -2419,6 +2420,7 @@ void Renderer::handleCompletedBlasBuild(
 
 void Renderer::transitionResidentToCold(ResidentObjectGpuResources &resident,
                                         BlasInstanceRecord &instanceRecord) {
+  waitForPendingFrameCommands();
   waitForPendingTlasBuild();
   resident.transitionToCold(instanceRecord);
 }
@@ -4885,6 +4887,7 @@ void Renderer::draw(MTK::View *pView) {
       if (drawable)
         presentCmd->presentDrawable(drawable);
       presentCmd->commit();
+      trackFrameCommandBuffer(presentCmd);
     } else {
       completeFrameMetrics(nullptr);
     }
@@ -5173,6 +5176,7 @@ void Renderer::draw(MTK::View *pView) {
   if (drawable)
     presentCmd->presentDrawable(drawable);
   presentCmd->commit();
+  trackFrameCommandBuffer(presentCmd);
 
   if (!_frameCaptureEnabled &&
       _captureOutputsPending.load(std::memory_order_acquire))
@@ -6788,6 +6792,72 @@ void Renderer::processRayHitCounters() {
       hitPtr[i] = 0;
     }
   });
+}
+
+void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
+  if (!commandBuffer)
+    return;
+
+  commandBuffer->retain();
+
+  MTL::CommandBuffer *previous = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+    previous = _lastFrameCommandBuffer;
+    _lastFrameCommandBuffer = commandBuffer;
+  }
+  if (previous)
+    previous->release();
+
+  commandBuffer->addCompletedHandler([this](MTL::CommandBuffer *completed) {
+    bool release = false;
+    {
+      std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+      if (_lastFrameCommandBuffer == completed) {
+        _lastFrameCommandBuffer = nullptr;
+        release = true;
+      }
+    }
+    if (release)
+      completed->release();
+  });
+}
+
+void Renderer::waitForPendingFrameCommands() {
+  MTL::CommandBuffer *buffer = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+    buffer = _lastFrameCommandBuffer;
+    if (buffer)
+      buffer->retain();
+  }
+
+  if (!buffer)
+    return;
+
+  auto status = buffer->status();
+  switch (status) {
+  case MTL::CommandBufferStatus::CommandBufferStatusNotEnqueued:
+  case MTL::CommandBufferStatus::CommandBufferStatusEnqueued:
+  case MTL::CommandBufferStatus::CommandBufferStatusCommitted:
+  case MTL::CommandBufferStatus::CommandBufferStatusScheduled:
+    buffer->waitUntilCompleted();
+    break;
+  case MTL::CommandBufferStatus::CommandBufferStatusCompleted:
+  case MTL::CommandBufferStatus::CommandBufferStatusError:
+  default:
+    break;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+    if (_lastFrameCommandBuffer == buffer) {
+      _lastFrameCommandBuffer->release();
+      _lastFrameCommandBuffer = nullptr;
+    }
+  }
+
+  buffer->release();
 }
 
 void Renderer::beginFrameMetrics() {

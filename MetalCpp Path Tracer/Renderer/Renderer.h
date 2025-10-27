@@ -147,6 +147,8 @@ private:
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
+  void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
+  void waitForPendingFrameCommands();
   bool flushRayHitCopy();
   bool rayHitCopyReady() const;
   void processRayHitCounters();
@@ -213,6 +215,8 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
+  MTL::CommandBuffer *_lastFrameCommandBuffer = nullptr;
+  std::mutex _frameCommandBufferMutex;
   MTL::CommandBuffer *_lastRayHitCommandBuffer = nullptr;
   bool _rayHitCopyError = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
