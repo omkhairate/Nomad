@@ -25,8 +25,11 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
-#include <iomanip>
+#include <condition_variable>
 #include <exception>
+#include <future>
+#include <iomanip>
+#include <mutex>
 #include <numeric>
 #include <simd/simd.h>
 #include <sstream>
@@ -37,6 +40,40 @@
 
 #define TINYEXR_IMPLEMENTATION
 #include "../tinyexr.h"
+
+namespace {
+class TaskLimiter {
+public:
+  explicit TaskLimiter(size_t maxTasks) : _maxTasks(maxTasks) {}
+
+  void acquire() {
+    std::unique_lock<std::mutex> lock(_mutex);
+    _cv.wait(lock, [&] { return _active < _maxTasks; });
+    ++_active;
+  }
+
+  void release() {
+    std::unique_lock<std::mutex> lock(_mutex);
+    if (_active > 0) {
+      --_active;
+      lock.unlock();
+      _cv.notify_one();
+    }
+  }
+
+private:
+  size_t _maxTasks = 0;
+  size_t _active = 0;
+  std::mutex _mutex;
+  std::condition_variable _cv;
+};
+
+TaskLimiter &sceneBvhTaskLimiter() {
+  constexpr size_t kMaxSceneBvhTasks = 2;
+  static TaskLimiter limiter(kMaxSceneBvhTasks);
+  return limiter;
+}
+} // namespace
 
 namespace MetalCppPathTracer {
 
@@ -1700,6 +1737,98 @@ void Renderer::buildShaders() {
   pLibrary->release();
 }
 
+Renderer::SceneAccelerationBuildResult
+Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
+                                           size_t primitiveHitBytes) {
+  SceneAccelerationBuildResult result{};
+
+  MTL::CommandBuffer *clearCmd = nullptr;
+  if (_pPrimitiveHitBufferGPU && primitiveHitBytes > 0 && _pCommandQueue) {
+    clearCmd = _pCommandQueue->commandBuffer();
+    if (clearCmd) {
+      MTL::BlitCommandEncoder *blit = clearCmd->blitCommandEncoder();
+      if (blit) {
+        blit->fillBuffer(_pPrimitiveHitBufferGPU,
+                         NS::Range::Make(0, primitiveHitBytes), 0);
+        blit->endEncoding();
+      }
+    }
+  }
+
+  std::future<SceneAccelerationBuildResult> resultFuture;
+  std::thread worker;
+  TaskLimiter *limiter = nullptr;
+
+  if (_pScene) {
+    TaskLimiter &limiterRef = sceneBvhTaskLimiter();
+    limiterRef.acquire();
+    limiter = &limiterRef;
+
+    std::promise<SceneAccelerationBuildResult> promise;
+    resultFuture = promise.get_future();
+    Scene *scene = _pScene;
+    size_t primitiveCountCopy = primitiveCount;
+
+    try {
+      worker = std::thread(
+          [scene, primitiveCountCopy, limiter, promise = std::move(promise)](
+              ) mutable {
+            struct LimiterGuard {
+              TaskLimiter *limiter;
+              ~LimiterGuard() {
+                if (limiter)
+                  limiter->release();
+              }
+            } guard{limiter};
+
+            SceneAccelerationBuildResult threadResult{};
+            try {
+              if (scene) {
+                scene->buildBVH();
+                threadResult.blasNodeCount = scene->getBVHNodeCount();
+                size_t tlasCount = 0;
+                if (primitiveCountCopy > 0) {
+                  simd::float4 *tmp = scene->createTLASBuffer(tlasCount);
+                  if (tmp)
+                    delete[] tmp;
+                }
+                threadResult.tlasNodeCount = tlasCount;
+              }
+              promise.set_value(threadResult);
+            } catch (...) {
+              try {
+                promise.set_exception(std::current_exception());
+              } catch (...) {
+              }
+            }
+          });
+    } catch (...) {
+      limiterRef.release();
+      throw;
+    }
+  }
+
+  if (clearCmd) {
+    clearCmd->commit();
+    clearCmd->waitUntilCompleted();
+  }
+
+  if (resultFuture.valid()) {
+    try {
+      result = resultFuture.get();
+    } catch (...) {
+      if (worker.joinable())
+        worker.join();
+      throw;
+    }
+  }
+
+  if (worker.joinable())
+    worker.join();
+
+  return result;
+}
+
 void Renderer::updateVisibleScene() {
   if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
@@ -1861,35 +1990,15 @@ void Renderer::updateVisibleScene() {
               : nullptr) {
     std::memset(hitPtr, 0, hitBytes);
   }
-  if (_pPrimitiveHitBufferGPU && hitBytes > 0) {
-    MTL::CommandBuffer *initCmd = _pCommandQueue->commandBuffer();
-    if (initCmd) {
-      MTL::BlitCommandEncoder *initBlit = initCmd->blitCommandEncoder();
-      if (initBlit) {
-        initBlit->fillBuffer(_pPrimitiveHitBufferGPU,
-                             NS::Range::Make(0, hitBytes), 0);
-        initBlit->endEncoding();
-      }
-      initCmd->commit();
-      initCmd->waitUntilCompleted();
-    }
-  }
+  SceneAccelerationBuildResult accelerationBuild =
+      buildSceneAccelerationStructures(primCount, hitBytes);
 
   _rayHitRebuildCooldown = 0;
 
-  _maxBlasNodeCount = 1;
-  _maxTlasNodeCount = 1;
-
-  _pScene->buildBVH();
-  size_t blasNodeCount = _pScene->getBVHNodeCount();
-  _maxBlasNodeCount = std::max<size_t>(blasNodeCount, _maxBlasNodeCount);
-
-  size_t fullTlasCount = 0;
-  if (primCount > 0) {
-    simd::float4 *tmp = _pScene->createTLASBuffer(fullTlasCount);
-    delete[] tmp;
-  }
-  _maxTlasNodeCount = std::max<size_t>(fullTlasCount, _maxTlasNodeCount);
+  _maxBlasNodeCount =
+      std::max<size_t>(accelerationBuild.blasNodeCount, size_t(1));
+  _maxTlasNodeCount =
+      std::max<size_t>(accelerationBuild.tlasNodeCount, size_t(1));
   _totalNodeCount = _maxBlasNodeCount + _maxTlasNodeCount;
 
   _allSceneObjects = _pScene->getObjects();

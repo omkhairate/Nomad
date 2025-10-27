@@ -159,6 +159,12 @@ private:
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
           &descriptors,
       const std::vector<MTL::AccelerationStructure *> &structures);
+  struct SceneAccelerationBuildResult {
+    size_t blasNodeCount = 0;
+    size_t tlasNodeCount = 0;
+  };
+  SceneAccelerationBuildResult buildSceneAccelerationStructures(
+      size_t primitiveCount, size_t primitiveHitBytes);
   void ensureTlasBuildEvent();
   void waitForPendingTlasBuild();
   bool hasPendingTlasBuild() const;
