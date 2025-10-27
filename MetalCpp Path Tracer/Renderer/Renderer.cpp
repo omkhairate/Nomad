@@ -88,7 +88,7 @@ bool ResidentObjectGpuResources::ensureResident(
   geometryValid = false;
   bool built = renderer.buildObjectBlas(objectIndex, object, *this);
   if (!built) {
-    transitionToCold(instanceRecord);
+    renderer.transitionResidentToCold(*this, instanceRecord);
     return false;
   }
   return true;
@@ -2103,7 +2103,8 @@ void Renderer::processBlasBuildQueue() {
       _pendingBlasBuilds.pop_front();
       if (buildRequest && buildRequest->resident &&
           buildRequest->objectIndex < _instanceRecords.size()) {
-        buildRequest->resident->transitionToCold(
+        transitionResidentToCold(
+            *buildRequest->resident,
             _instanceRecords[buildRequest->objectIndex]);
       }
       continue;
@@ -2400,7 +2401,8 @@ void Renderer::handleCompletedBlasBuild(
     resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
     resident.lastStateChange = std::chrono::steady_clock::now();
   } else if (buildRequest->objectIndex < _instanceRecords.size()) {
-    resident.transitionToCold(_instanceRecords[buildRequest->objectIndex]);
+    transitionResidentToCold(resident,
+                             _instanceRecords[buildRequest->objectIndex]);
   } else {
     resident.geometryValid = false;
   }
@@ -2413,6 +2415,12 @@ void Renderer::handleCompletedBlasBuild(
     _activeBlasBuilds.erase(it);
 
   processBlasBuildQueue();
+}
+
+void Renderer::transitionResidentToCold(ResidentObjectGpuResources &resident,
+                                        BlasInstanceRecord &instanceRecord) {
+  waitForPendingTlasBuild();
+  resident.transitionToCold(instanceRecord);
 }
 
 bool Renderer::submitAsyncCommandBuffer(
@@ -3810,7 +3818,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     if (!shouldBeResident) {
-      gpuResident.transitionToCold(instanceRecord);
+      transitionResidentToCold(gpuResident, instanceRecord);
     }
   }
 
@@ -6545,7 +6553,7 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
         resident.clearPendingCommand();
 
       if (!resident.isResident() && !pending) {
-        resident.transitionToCold(record);
+        transitionResidentToCold(resident, record);
       }
     }
     return;
