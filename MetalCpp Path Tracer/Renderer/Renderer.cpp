@@ -1303,8 +1303,8 @@ void Renderer::processPendingCapturedFrames() {
       std::printf("Applying offline EXR denoiser to frame %llu\n",
                  static_cast<unsigned long long>(capture->frameIndex));
 
-      const int radius = 2;
-      const float spatialSigma = 1.0f;
+      const int radius = 1;
+      const float spatialSigma = 0.75f;
       const float albedoSigma = 0.25f;
       const float normalSigma = 0.1f;
       std::vector<float> denoised(pixelCount * 3, 0.0f);
