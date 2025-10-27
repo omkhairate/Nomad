@@ -716,7 +716,7 @@ Renderer::Renderer(MTL::Device *pDevice)
 }
 
 Renderer::~Renderer() {
-  flushPendingCaptures();
+  processPendingCapturedFrames();
 
   if (_pSphereBuffer)
     _pSphereBuffer->release();
@@ -834,6 +834,8 @@ void Renderer::setFrameCaptureEnabled(bool enabled) {
   _frameCaptureEnabled = enabled;
   if (_frameCaptureEnabled)
     ensureFrameCaptureDirectory();
+  else if (_captureOutputsPending.load(std::memory_order_acquire))
+    processPendingCapturedFrames();
 }
 
 void Renderer::setFrameCaptureInterval(size_t interval) {
@@ -1474,10 +1476,6 @@ void Renderer::processPendingCapturedFrames() {
       releaseCaptureBuffers();
     }
   }
-}
-
-void Renderer::flushPendingCaptures() {
-  processPendingCapturedFrames();
 }
 
 void Renderer::setDeltaTime(double deltaSeconds) {
@@ -4432,6 +4430,8 @@ void Renderer::draw(MTK::View *pView) {
   updateResidency();
 
   Camera::applyState(viewCamera);
+  if (_captureOutputsPending.load(std::memory_order_acquire))
+    processPendingCapturedFrames();
 
   Camera::deltaTime =
       _observerActive ? 0.0f : static_cast<float>(_deltaTimeSeconds);
