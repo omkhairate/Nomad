@@ -3,6 +3,8 @@
 #include <Foundation/Foundation.hpp>
 #include <algorithm>
 
+#include "../Scene/Primitive.h"
+
 namespace MetalCppPathTracer {
 
 namespace {
@@ -287,6 +289,15 @@ void GpuHeapResources::tryDestroyHeap() {
   _heap->release();
   _heap = nullptr;
   _heapSize = 0;
+}
+
+NS::UInteger GpuHeapResources::primitiveDataSize(size_t primitiveCount) {
+  if (primitiveCount == 0)
+    return 0;
+  size_t float4Count = primitiveCount * kPrimitiveFloat4Count;
+  const size_t kFloat4Size = sizeof(float) * 4;
+  size_t byteCount = float4Count * kFloat4Size;
+  return static_cast<NS::UInteger>(byteCount);
 }
 
 } // namespace MetalCppPathTracer

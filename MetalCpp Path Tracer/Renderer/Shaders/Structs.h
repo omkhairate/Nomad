@@ -16,6 +16,8 @@ struct intersection
     float t = INFINITY;
     float3 point;
     float3 normal;
+    float3 tangent = float3(0.0f);
+    float3 bitangent = float3(0.0f);
     bool frontFace;
     int primitiveId = -1;
     int isTriangle = 0;

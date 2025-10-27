@@ -59,6 +59,8 @@ public:
     return _accelerationSize;
   }
 
+  static NS::UInteger primitiveDataSize(size_t primitiveCount);
+
 private:
   struct BufferInfo {
     MTL::Buffer *buffer = nullptr;
