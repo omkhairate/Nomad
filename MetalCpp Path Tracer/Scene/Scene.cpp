@@ -99,6 +99,13 @@ size_t Scene::addObjectInternal(const Primitive *prims, size_t count,
   size_t start = primitives.size();
   primitives.insert(primitives.end(), prims, prims + count);
 
+  for (size_t i = 0; i < count; ++i) {
+    Primitive &stored = primitives[start + i];
+    if (stored.type == PrimitiveType::Triangle) {
+      stored.triangle.computeFrame();
+    }
+  }
+
   SceneObject object;
   object.firstPrimitive = start;
   object.primitiveCount = count;
@@ -305,6 +312,10 @@ simd::float4 *Scene::createTransformsBuffer() const {
   for (size_t i = 0; i < primitives.size(); ++i) {
     const auto &p = primitives[i];
     size_t base = kPrimitiveFloat4Count * i;
+    buffer[base + 4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    buffer[base + 5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    buffer[base + 6] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+
     if (p.type == PrimitiveType::Sphere) {
       buffer[base + 0] =
           simd::make_float4(p.sphere.center, static_cast<float>(p.type));
@@ -325,6 +336,9 @@ simd::float4 *Scene::createTransformsBuffer() const {
       buffer[base + 2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
       buffer[base + 3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
                                            p.triangle.uv2.x, p.triangle.uv2.y);
+      buffer[base + 4] = simd::make_float4(p.triangle.tangent, 0.0f);
+      buffer[base + 5] = simd::make_float4(p.triangle.bitangent, 0.0f);
+      buffer[base + 6] = simd::make_float4(p.triangle.normal, 0.0f);
     }
   }
   return buffer;

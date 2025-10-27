@@ -2716,6 +2716,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       simd::float4 *matBase =
           &_cachedMaterialData[kMaterialFloat4Count * i];
 
+      primBase[4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      primBase[5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      primBase[6] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+
       switch (p.type) {
       case PrimitiveType::Sphere: {
         primBase[0] =
@@ -2741,6 +2745,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         primBase[2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
         primBase[3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
                                         p.triangle.uv2.x, p.triangle.uv2.y);
+        primBase[4] = simd::make_float4(p.triangle.tangent, 0.0f);
+        primBase[5] = simd::make_float4(p.triangle.bitangent, 0.0f);
+        primBase[6] = simd::make_float4(p.triangle.normal, 0.0f);
         break;
       }
       }
@@ -3067,6 +3074,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           simd::float4 prim1;
           simd::float4 prim2;
           simd::float4 prim3 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          simd::float4 prim4 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          simd::float4 prim5 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          simd::float4 prim6 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
           switch (p.type) {
           case PrimitiveType::Sphere: {
             prim0 =
@@ -3090,6 +3100,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             prim2 = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
             prim3 = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
                                       p.triangle.uv2.x, p.triangle.uv2.y);
+            prim4 = simd::make_float4(p.triangle.tangent, 0.0f);
+            prim5 = simd::make_float4(p.triangle.bitangent, 0.0f);
+            prim6 = simd::make_float4(p.triangle.normal, 0.0f);
             size_t baseVertex = compactTriangleVertices.size();
             compactTriangleVertices.push_back(p.triangle.v0);
             compactTriangleVertices.push_back(p.triangle.v1);
@@ -3106,6 +3119,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           compactPrimitiveData.push_back(prim1);
           compactPrimitiveData.push_back(prim2);
           compactPrimitiveData.push_back(prim3);
+          compactPrimitiveData.push_back(prim4);
+          compactPrimitiveData.push_back(prim5);
+          compactPrimitiveData.push_back(prim6);
 
           const Material &m = p.material;
           auto packedMaterial = encodeMaterial(m);
@@ -3284,6 +3300,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         simd::float4 prim1;
         simd::float4 prim2;
         simd::float4 prim3 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        simd::float4 prim4 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        simd::float4 prim5 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        simd::float4 prim6 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
         switch (p.type) {
         case PrimitiveType::Sphere: {
           prim0 = simd::make_float4(p.sphere.center, static_cast<float>(p.type));
@@ -3304,6 +3323,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           prim2 = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
           prim3 = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
                                     p.triangle.uv2.x, p.triangle.uv2.y);
+          prim4 = simd::make_float4(p.triangle.tangent, 0.0f);
+          prim5 = simd::make_float4(p.triangle.bitangent, 0.0f);
+          prim6 = simd::make_float4(p.triangle.normal, 0.0f);
           size_t baseVertex = compactTriangleVertices.size();
           compactTriangleVertices.push_back(p.triangle.v0);
           compactTriangleVertices.push_back(p.triangle.v1);
@@ -3320,6 +3342,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         compactPrimitiveData.push_back(prim1);
         compactPrimitiveData.push_back(prim2);
         compactPrimitiveData.push_back(prim3);
+        compactPrimitiveData.push_back(prim4);
+        compactPrimitiveData.push_back(prim5);
+        compactPrimitiveData.push_back(prim6);
 
         const Material &m = p.material;
         auto packedMaterial = encodeMaterial(m);
@@ -3491,20 +3516,29 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   if (uploadAll) {
     size_t primitiveFloat4Count = primitiveSource->size();
-    size_t primitiveBytes =
-        std::max<size_t>(primitiveFloat4Count, size_t(1)) *
-        sizeof(simd::float4);
+    size_t primitiveCount =
+        (kPrimitiveFloat4Count > 0)
+            ? ((primitiveFloat4Count + kPrimitiveFloat4Count - 1) /
+               kPrimitiveFloat4Count)
+            : 0;
+    size_t primitiveBytes = static_cast<size_t>(
+        GpuHeapResources::primitiveDataSize(primitiveCount));
+    if (primitiveBytes == 0)
+      primitiveBytes = sizeof(simd::float4);
     ensureBufferCapacity(_pSphereBuffer, primitiveBytes, _sphereBufferCapacity,
                          allowShrink);
     if (_pSphereBuffer) {
       simd::float4 *dst =
           static_cast<simd::float4 *>(_pSphereBuffer->contents());
+      size_t modifiedBytes = primitiveBytes;
       if (primitiveFloat4Count > 0)
         std::memcpy(dst, primitiveSource->data(),
                     primitiveFloat4Count * sizeof(simd::float4));
       else
         dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-      markBufferModified(_pSphereBuffer, NS::Range::Make(0, primitiveBytes));
+      if (primitiveFloat4Count > 0)
+        modifiedBytes = primitiveFloat4Count * sizeof(simd::float4);
+      markBufferModified(_pSphereBuffer, NS::Range::Make(0, modifiedBytes));
     }
 
     size_t materialFloat4Count = materialSource->size();
