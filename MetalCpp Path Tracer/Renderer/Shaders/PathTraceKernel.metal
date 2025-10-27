@@ -108,8 +108,10 @@ kernel void pathTraceKernel(
   float3 averaged = (totalSamples > 0.0f) ? combinedSum / totalSamples : float3(0.0f);
   averaged = clamp(averaged, 0.0f, 1.0f);
 
-  float3 previousAlbedo = float3(albedoAccum.read(pixel));
-  float3 previousNormal = float3(normalAccum.read(pixel));
+  float3 previousAlbedo =
+      float3(float4(albedoAccum.read(pixel)).xyz);
+  float3 previousNormal =
+      float3(float4(normalAccum.read(pixel)).xyz);
   float3 albedoSum = previousAlbedo * previousSampleCount + accumulatedAlbedo;
   float3 normalSum = previousNormal * previousSampleCount + accumulatedNormal;
   float3 averagedAlbedo =
