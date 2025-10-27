@@ -316,9 +316,9 @@ simd::float4 *Scene::createTransformsBuffer() const {
   for (size_t i = 0; i < primitives.size(); ++i) {
     const auto &p = primitives[i];
     size_t base = kPrimitiveFloat4Count * i;
-    buffer[base + 4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-    buffer[base + 5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-    buffer[base + 6] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+    buffer[base + 4] = simd::make_float4(simd::float3(0.0f), 0.0f);
+    buffer[base + 5] = simd::make_float4(simd::float3(0.0f), 0.0f);
+    buffer[base + 6] = simd::make_float4(simd::float3(0.0f), 0.0f);
 
     if (p.type == PrimitiveType::Sphere) {
       buffer[base + 0] =
