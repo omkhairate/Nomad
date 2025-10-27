@@ -716,6 +716,8 @@ Renderer::Renderer(MTL::Device *pDevice)
 }
 
 Renderer::~Renderer() {
+  processPendingCapturedFrames();
+
   if (_pSphereBuffer)
     _pSphereBuffer->release();
   if (_pSphereMaterialBuffer)
@@ -770,6 +772,8 @@ Renderer::~Renderer() {
     releaseTextureSlot(slot);
   releaseTextureSlot(_sampleCountSlot);
   releaseTextureSlot(_sampleImportanceSlot);
+  releaseTextureSlot(_albedoSlot);
+  releaseTextureSlot(_normalSlot);
 
   if (_pTextureClearBuffer)
     _pTextureClearBuffer->release();
@@ -830,6 +834,8 @@ void Renderer::setFrameCaptureEnabled(bool enabled) {
   _frameCaptureEnabled = enabled;
   if (_frameCaptureEnabled)
     ensureFrameCaptureDirectory();
+  else if (_captureOutputsPending.load(std::memory_order_acquire))
+    processPendingCapturedFrames();
 }
 
 void Renderer::setFrameCaptureInterval(size_t interval) {
@@ -1012,22 +1018,24 @@ void Renderer::ensureFrameCaptureDirectory() {
 }
 
 std::shared_ptr<Renderer::FrameCaptureRequest>
-Renderer::encodeFrameCapture(MTL::Texture *texture, uint64_t frameIndex,
+Renderer::encodeFrameCapture(MTL::Texture *colorTexture,
+                             MTL::Texture *albedoTexture,
+                             MTL::Texture *normalTexture, uint64_t frameIndex,
                              MTL::CommandBuffer *cmd,
                              MTL::BlitCommandEncoder *&blit) {
-  if (!texture || !cmd)
+  if (!colorTexture || !cmd)
     return nullptr;
 
   ensureFrameCaptureDirectory();
   if (_frameCaptureDirectory.empty())
     return nullptr;
 
-  NS::UInteger width = texture->width();
-  NS::UInteger height = texture->height();
+  NS::UInteger width = colorTexture->width();
+  NS::UInteger height = colorTexture->height();
   if (width == 0 || height == 0)
     return nullptr;
 
-  size_t pixelBytes = bytesPerPixel(texture->pixelFormat());
+  size_t pixelBytes = bytesPerPixel(colorTexture->pixelFormat());
   if (pixelBytes == 0)
     return nullptr;
 
@@ -1054,7 +1062,7 @@ Renderer::encodeFrameCapture(MTL::Texture *texture, uint64_t frameIndex,
       static_cast<NS::UInteger>(alignedRowBytes * static_cast<size_t>(height));
   MTL::Size size = MTL::Size::Make(width, height, 1);
   MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-  blit->copyFromTexture(texture, 0, 0, origin, size, readback, 0,
+  blit->copyFromTexture(colorTexture, 0, 0, origin, size, readback, 0,
                         static_cast<NS::UInteger>(alignedRowBytes),
                         bytesPerImage);
 
@@ -1078,7 +1086,60 @@ Renderer::encodeFrameCapture(MTL::Texture *texture, uint64_t frameIndex,
   capture->width = static_cast<size_t>(width);
   capture->height = static_cast<size_t>(height);
   capture->alignedRowBytes = alignedRowBytes;
-  capture->format = texture->pixelFormat();
+  capture->format = colorTexture->pixelFormat();
+
+  auto captureAuxiliaryTexture = [&](MTL::Texture *src, MTL::Buffer *&dstBuffer,
+                                     size_t &rowBytes, MTL::PixelFormat &format,
+                                     const std::string &pathSuffix) {
+    if (!src)
+      return;
+    if (src->width() != width || src->height() != height)
+      return;
+    size_t auxPixelBytes = bytesPerPixel(src->pixelFormat());
+    if (auxPixelBytes == 0)
+      return;
+    rowBytes =
+        alignTo(static_cast<size_t>(width) * auxPixelBytes, static_cast<size_t>(256));
+    size_t auxTotalBytes = rowBytes * static_cast<size_t>(height);
+    if (auxTotalBytes == 0)
+      return;
+    dstBuffer =
+        _pDevice->newBuffer(static_cast<NS::UInteger>(auxTotalBytes),
+                            MTL::ResourceStorageModeShared);
+    if (!dstBuffer) {
+      rowBytes = 0;
+      return;
+    }
+    if (!blit)
+      blit = cmd->blitCommandEncoder();
+    if (!blit) {
+      dstBuffer->release();
+      dstBuffer = nullptr;
+      rowBytes = 0;
+      return;
+    }
+    blit->copyFromTexture(src, 0, 0, origin, size, dstBuffer, 0,
+                          static_cast<NS::UInteger>(rowBytes), bytesPerImage);
+    format = src->pixelFormat();
+    try {
+      std::filesystem::path auxPath = outputPath;
+      auxPath.replace_filename(auxPath.stem().string() + pathSuffix +
+                               auxPath.extension().string());
+      if (pathSuffix == "_albedo")
+        capture->albedoPath = auxPath.string();
+      else if (pathSuffix == "_normal")
+        capture->normalPath = auxPath.string();
+    } catch (const std::exception &e) {
+      std::printf("Failed to build auxiliary capture path: %s\n", e.what());
+    }
+  };
+
+  captureAuxiliaryTexture(albedoTexture, capture->albedoBuffer,
+                          capture->albedoAlignedRowBytes, capture->albedoFormat,
+                          std::string("_albedo"));
+  captureAuxiliaryTexture(normalTexture, capture->normalBuffer,
+                          capture->normalAlignedRowBytes, capture->normalFormat,
+                          std::string("_normal"));
 
   std::printf("Queued frame %llu for EXR capture: %s\n",
               static_cast<unsigned long long>(frameIndex),
@@ -1091,61 +1152,250 @@ void Renderer::finalizeFrameCapture(
     const std::shared_ptr<FrameCaptureRequest> &capture) {
   if (!capture)
     return;
+
+  auto releaseCaptureBuffers = [&]() {
+    if (capture->buffer) {
+      capture->buffer->release();
+      capture->buffer = nullptr;
+    }
+    if (capture->albedoBuffer) {
+      capture->albedoBuffer->release();
+      capture->albedoBuffer = nullptr;
+    }
+    if (capture->normalBuffer) {
+      capture->normalBuffer->release();
+      capture->normalBuffer = nullptr;
+    }
+  };
+
   if (!capture->buffer) {
     std::printf("Frame capture buffer missing for frame %llu\n",
                static_cast<unsigned long long>(capture->frameIndex));
+    releaseCaptureBuffers();
     return;
   }
 
-  void *contents = capture->buffer->contents();
-  if (!contents) {
-    std::printf("Failed to map frame capture buffer for frame %llu\n",
-               static_cast<unsigned long long>(capture->frameIndex));
-    capture->buffer->release();
-    return;
+  {
+    std::lock_guard<std::mutex> lock(_captureMutex);
+    _completedCaptures.push_back(capture);
   }
+  _captureOutputsPending.store(true, std::memory_order_release);
 
-  size_t pixelCount = capture->width * capture->height;
-  if (pixelCount == 0) {
-    capture->buffer->release();
-    return;
-  }
+  std::printf("Frame %llu queued for offline EXR denoising: %s\n",
+             static_cast<unsigned long long>(capture->frameIndex),
+             capture->filePath.c_str());
+}
 
-  std::vector<float> rgba(pixelCount * 4, 0.0f);
-  bool supportedFormat = true;
+void Renderer::processPendingCapturedFrames() {
+  while (true) {
+    std::vector<std::shared_ptr<FrameCaptureRequest>> captures;
+    {
+      std::lock_guard<std::mutex> lock(_captureMutex);
+      if (_completedCaptures.empty()) {
+        _captureOutputsPending.store(false, std::memory_order_release);
+        break;
+      }
+      captures.swap(_completedCaptures);
+    }
 
-  if (capture->format == MTL::PixelFormat::PixelFormatRGBA16Float) {
-    for (size_t y = 0; y < capture->height; ++y) {
-      const uint8_t *rowBase =
-          static_cast<const uint8_t *>(contents) + y * capture->alignedRowBytes;
-      const uint16_t *row = reinterpret_cast<const uint16_t *>(rowBase);
-      float *dst = rgba.data() + y * capture->width * 4;
-      for (size_t x = 0; x < capture->width; ++x) {
-        for (size_t c = 0; c < 4; ++c) {
-            tinyexr::FP16 value{};
-          value.u = row[x * 4 + c];
-          dst[x * 4 + c] = half_to_float(value).f;
+    for (const auto &capture : captures) {
+      if (!capture)
+        continue;
+
+      auto releaseCaptureBuffers = [&]() {
+        if (capture->buffer) {
+          capture->buffer->release();
+          capture->buffer = nullptr;
         }
+        if (capture->albedoBuffer) {
+          capture->albedoBuffer->release();
+          capture->albedoBuffer = nullptr;
+        }
+        if (capture->normalBuffer) {
+          capture->normalBuffer->release();
+          capture->normalBuffer = nullptr;
+        }
+      };
+
+      if (!capture->buffer) {
+        std::printf("Frame capture buffer missing for frame %llu\n",
+                   static_cast<unsigned long long>(capture->frameIndex));
+        releaseCaptureBuffers();
+        continue;
+      }
+
+      void *contents = capture->buffer->contents();
+    if (!contents) {
+      std::printf("Failed to map frame capture buffer for frame %llu\n",
+                 static_cast<unsigned long long>(capture->frameIndex));
+      releaseCaptureBuffers();
+      continue;
+    }
+
+    size_t pixelCount = capture->width * capture->height;
+    if (pixelCount == 0) {
+      releaseCaptureBuffers();
+      continue;
+    }
+
+    auto convertBuffer = [&](const void *src, size_t rowBytes,
+                             MTL::PixelFormat format, std::vector<float> &dst) {
+      if (!src)
+        return false;
+      dst.assign(pixelCount * 4, 0.0f);
+      if (format == MTL::PixelFormat::PixelFormatRGBA16Float) {
+        for (size_t y = 0; y < capture->height; ++y) {
+          const uint8_t *rowBase = static_cast<const uint8_t *>(src) +
+                                   y * rowBytes;
+          const uint16_t *row = reinterpret_cast<const uint16_t *>(rowBase);
+          float *dstRow = dst.data() + y * capture->width * 4;
+          for (size_t x = 0; x < capture->width; ++x) {
+            for (size_t c = 0; c < 4; ++c) {
+              tinyexr::FP16 value{};
+              value.u = row[x * 4 + c];
+              dstRow[x * 4 + c] = half_to_float(value).f;
+            }
+          }
+        }
+        return true;
+      }
+      if (format == MTL::PixelFormat::PixelFormatRGBA32Float) {
+        for (size_t y = 0; y < capture->height; ++y) {
+          const uint8_t *rowBase = static_cast<const uint8_t *>(src) +
+                                   y * rowBytes;
+          const float *row = reinterpret_cast<const float *>(rowBase);
+          float *dstRow = dst.data() + y * capture->width * 4;
+          std::memcpy(dstRow, row, sizeof(float) * capture->width * 4);
+        }
+        return true;
+      }
+      return false;
+    };
+
+    std::vector<float> rgba;
+    if (!convertBuffer(contents, capture->alignedRowBytes, capture->format,
+                       rgba)) {
+      std::printf("Unsupported pixel format %u for frame capture.\n",
+                 static_cast<unsigned>(capture->format));
+      releaseCaptureBuffers();
+      continue;
+    }
+
+    std::vector<float> albedoData;
+    if (capture->albedoBuffer && capture->albedoAlignedRowBytes > 0) {
+      if (void *albedoContents = capture->albedoBuffer->contents()) {
+        if (!convertBuffer(albedoContents, capture->albedoAlignedRowBytes,
+                           capture->albedoFormat, albedoData))
+          albedoData.clear();
       }
     }
-  } else if (capture->format == MTL::PixelFormat::PixelFormatRGBA32Float) {
-    for (size_t y = 0; y < capture->height; ++y) {
-      const uint8_t *rowBase =
-          static_cast<const uint8_t *>(contents) + y * capture->alignedRowBytes;
-      const float *row = reinterpret_cast<const float *>(rowBase);
-      float *dst = rgba.data() + y * capture->width * 4;
-      std::memcpy(dst, row, sizeof(float) * capture->width * 4);
-    }
-  } else {
-    supportedFormat = false;
-  }
 
-  if (!supportedFormat) {
-    std::printf("Unsupported pixel format %u for frame capture.\n",
-               static_cast<unsigned>(capture->format));
-    capture->buffer->release();
-    return;
-  }
+    std::vector<float> normalData;
+    if (capture->normalBuffer && capture->normalAlignedRowBytes > 0) {
+      if (void *normalContents = capture->normalBuffer->contents()) {
+        if (!convertBuffer(normalContents, capture->normalAlignedRowBytes,
+                           capture->normalFormat, normalData))
+          normalData.clear();
+      }
+    }
+
+    if (!albedoData.empty() && !normalData.empty()) {
+      const int radius = 2;
+      const float spatialSigma = 1.0f;
+      const float albedoSigma = 0.25f;
+      const float normalSigma = 0.1f;
+      std::vector<float> denoised(pixelCount * 3, 0.0f);
+
+      auto normalizeVector = [](const float *v) {
+        std::array<float, 3> out{v[0], v[1], v[2]};
+        float len = std::sqrt(out[0] * out[0] + out[1] * out[1] +
+                              out[2] * out[2]);
+        if (len > 1e-6f) {
+          out[0] /= len;
+          out[1] /= len;
+          out[2] /= len;
+        }
+        return out;
+      };
+
+      for (size_t y = 0; y < capture->height; ++y) {
+        for (size_t x = 0; x < capture->width; ++x) {
+          size_t index = y * capture->width + x;
+          const float *baseColor = &rgba[index * 4];
+          const float *baseAlbedo = &albedoData[index * 4];
+          const float *baseNormalPtr = &normalData[index * 4];
+          auto baseNormal = normalizeVector(baseNormalPtr);
+
+          float accum[3] = {0.0f, 0.0f, 0.0f};
+          float totalWeight = 0.0f;
+
+          for (int dy = -radius; dy <= radius; ++dy) {
+            int ny = static_cast<int>(y) + dy;
+            if (ny < 0 || ny >= static_cast<int>(capture->height))
+              continue;
+            for (int dx = -radius; dx <= radius; ++dx) {
+              int nx = static_cast<int>(x) + dx;
+              if (nx < 0 || nx >= static_cast<int>(capture->width))
+                continue;
+              size_t neighborIndex = static_cast<size_t>(ny) * capture->width +
+                                     static_cast<size_t>(nx);
+              const float *neighborColor = &rgba[neighborIndex * 4];
+              const float *neighborAlbedo = &albedoData[neighborIndex * 4];
+              const float *neighborNormalPtr = &normalData[neighborIndex * 4];
+              auto neighborNormal = normalizeVector(neighborNormalPtr);
+
+              float spatialDist2 = static_cast<float>(dx * dx + dy * dy);
+              float spatialWeight = std::exp(
+                  -spatialDist2 / (2.0f * spatialSigma * spatialSigma));
+
+              float albedoDiff0 = neighborAlbedo[0] - baseAlbedo[0];
+              float albedoDiff1 = neighborAlbedo[1] - baseAlbedo[1];
+              float albedoDiff2 = neighborAlbedo[2] - baseAlbedo[2];
+              float albedoDist2 = albedoDiff0 * albedoDiff0 +
+                                  albedoDiff1 * albedoDiff1 +
+                                  albedoDiff2 * albedoDiff2;
+              float albedoWeight = std::exp(
+                  -albedoDist2 / (2.0f * albedoSigma * albedoSigma));
+
+              float dotVal = baseNormal[0] * neighborNormal[0] +
+                             baseNormal[1] * neighborNormal[1] +
+                             baseNormal[2] * neighborNormal[2];
+              dotVal = std::clamp(dotVal, -1.0f, 1.0f);
+              float normalDiff = std::max(0.0f, 1.0f - dotVal);
+              float normalWeight = std::exp(
+                  -normalDiff / (2.0f * normalSigma * normalSigma));
+
+              float weight = spatialWeight * albedoWeight * normalWeight;
+              accum[0] += neighborColor[0] * weight;
+              accum[1] += neighborColor[1] * weight;
+              accum[2] += neighborColor[2] * weight;
+              totalWeight += weight;
+            }
+          }
+
+          std::array<float, 3> filtered{baseColor[0], baseColor[1],
+                                         baseColor[2]};
+          if (totalWeight > 1e-6f) {
+            filtered[0] = accum[0] / totalWeight;
+            filtered[1] = accum[1] / totalWeight;
+            filtered[2] = accum[2] / totalWeight;
+          }
+          denoised[index * 3 + 0] = std::clamp(filtered[0], 0.0f, 1.0f);
+          denoised[index * 3 + 1] = std::clamp(filtered[1], 0.0f, 1.0f);
+          denoised[index * 3 + 2] = std::clamp(filtered[2], 0.0f, 1.0f);
+        }
+      }
+
+      for (size_t i = 0; i < pixelCount; ++i) {
+        rgba[i * 4 + 0] = denoised[i * 3 + 0];
+        rgba[i * 4 + 1] = denoised[i * 3 + 1];
+        rgba[i * 4 + 2] = denoised[i * 3 + 2];
+        rgba[i * 4 + 3] = 1.0f;
+      }
+    } else {
+      for (size_t i = 0; i < pixelCount; ++i)
+        rgba[i * 4 + 3] = 1.0f;
+    }
 
     const char *err = nullptr;
     int saveAsFp16 =
@@ -1153,22 +1403,76 @@ void Renderer::finalizeFrameCapture(
     int ret = SaveEXR(rgba.data(), static_cast<int>(capture->width),
                       static_cast<int>(capture->height), 4, saveAsFp16,
                       capture->filePath.c_str(), &err);
-  if (ret != TINYEXR_SUCCESS) {
-    if (err) {
-      std::printf("Failed to save EXR frame %llu: %s\n",
-                 static_cast<unsigned long long>(capture->frameIndex), err);
-      FreeEXRErrorMessage(err);
+    if (ret != TINYEXR_SUCCESS) {
+      if (err) {
+        std::printf("Failed to save EXR frame %llu: %s\n",
+                   static_cast<unsigned long long>(capture->frameIndex), err);
+        FreeEXRErrorMessage(err);
+      } else {
+        std::printf("Failed to save EXR frame %llu (error code %d)\n",
+                   static_cast<unsigned long long>(capture->frameIndex), ret);
+      }
     } else {
-      std::printf("Failed to save EXR frame %llu (error code %d)\n",
-                 static_cast<unsigned long long>(capture->frameIndex), ret);
+      std::printf("Saved EXR frame %llu to %s\n",
+                 static_cast<unsigned long long>(capture->frameIndex),
+                 capture->filePath.c_str());
     }
-  } else {
-    std::printf("Saved EXR frame %llu to %s\n",
-               static_cast<unsigned long long>(capture->frameIndex),
-               capture->filePath.c_str());
-  }
 
-  capture->buffer->release();
+    auto saveAuxiliaryExr = [&](const std::vector<float> &data,
+                                const std::string &path,
+                                MTL::PixelFormat format, const char *label) {
+      if (data.empty() || path.empty())
+        return;
+      std::vector<float> temp(data);
+      for (size_t i = 0; i < pixelCount; ++i)
+        temp[i * 4 + 3] = 1.0f;
+      int auxSaveAsFp16 =
+          format == MTL::PixelFormat::PixelFormatRGBA16Float ? 1 : 0;
+      const char *auxErr = nullptr;
+      int auxRet = SaveEXR(temp.data(), static_cast<int>(capture->width),
+                           static_cast<int>(capture->height), 4, auxSaveAsFp16,
+                           path.c_str(), &auxErr);
+      if (auxRet != TINYEXR_SUCCESS) {
+        if (auxErr) {
+          std::printf("Failed to save %s for frame %llu: %s\n", label,
+                     static_cast<unsigned long long>(capture->frameIndex),
+                     auxErr);
+          FreeEXRErrorMessage(auxErr);
+        } else {
+          std::printf("Failed to save %s for frame %llu (error %d)\n", label,
+                     static_cast<unsigned long long>(capture->frameIndex),
+                     auxRet);
+        }
+      } else {
+        std::printf("Saved %s for frame %llu to %s\n", label,
+                   static_cast<unsigned long long>(capture->frameIndex),
+                   path.c_str());
+      }
+    };
+
+    if (!albedoData.empty())
+      saveAuxiliaryExr(albedoData, capture->albedoPath, capture->albedoFormat,
+                       "albedo");
+
+    if (!normalData.empty()) {
+      for (size_t i = 0; i < pixelCount; ++i) {
+        float nx = normalData[i * 4 + 0];
+        float ny = normalData[i * 4 + 1];
+        float nz = normalData[i * 4 + 2];
+        float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+        if (len > 1e-6f) {
+          normalData[i * 4 + 0] = nx / len;
+          normalData[i * 4 + 1] = ny / len;
+          normalData[i * 4 + 2] = nz / len;
+        }
+      }
+      saveAuxiliaryExr(normalData, capture->normalPath, capture->normalFormat,
+                       "normal");
+    }
+
+      releaseCaptureBuffers();
+    }
+  }
 }
 
 void Renderer::setDeltaTime(double deltaSeconds) {
@@ -3491,6 +3795,10 @@ const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
     return "_sampleCountSlot";
   if (&slot == &_sampleImportanceSlot)
     return "_sampleImportanceSlot";
+  if (&slot == &_albedoSlot)
+    return "_albedoSlot";
+  if (&slot == &_normalSlot)
+    return "_normalSlot";
   return "<unknown texture slot>";
 }
 
@@ -3693,9 +4001,9 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
   if (!belowBudget && !overMemory)
     return;
 
-  std::array<ManagedTextureSlot *, 4> slots = {
+  std::array<ManagedTextureSlot *, 6> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot};
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot};
 
   MTL::BlitCommandEncoder *blit = nullptr;
   for (ManagedTextureSlot *slot : slots)
@@ -3812,6 +4120,10 @@ void Renderer::buildTextures() {
                        MTL::PixelFormat::PixelFormatR16Float, usage);
   configureTextureSlot(_sampleImportanceSlot, width, height,
                        MTL::PixelFormat::PixelFormatR16Float, usage);
+  configureTextureSlot(_albedoSlot, width, height,
+                       MTL::PixelFormat::PixelFormatRGBA16Float, usage);
+  configureTextureSlot(_normalSlot, width, height,
+                       MTL::PixelFormat::PixelFormatRGBA16Float, usage);
 
   _needsAccumulationReset = true;
   _accumulationTargetsNeedClear = true;
@@ -3821,9 +4133,9 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   if (!cmd)
     return false;
 
-  std::array<ManagedTextureSlot *, 4> slots = {
+  std::array<ManagedTextureSlot *, 6> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot};
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot};
 
   bool anyDescriptors = false;
   bool allResident = true;
@@ -4116,18 +4428,23 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *accum1 = _accumulationSlots[1].texture;
   MTL::Texture *sampleCount = _sampleCountSlot.texture;
   MTL::Texture *sampleImportance = _sampleImportanceSlot.texture;
+  MTL::Texture *albedoTexture = _albedoSlot.texture;
+  MTL::Texture *normalTexture = _normalSlot.texture;
   if (allowResidency) {
     accum0 = requestResidentTexture(_accumulationSlots[0], prepCmd, restoreBlit);
     accum1 = requestResidentTexture(_accumulationSlots[1], prepCmd, restoreBlit);
     sampleCount = requestResidentTexture(_sampleCountSlot, prepCmd, restoreBlit);
     sampleImportance =
         requestResidentTexture(_sampleImportanceSlot, prepCmd, restoreBlit);
+    albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
+    normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
   }
   if (restoreBlit)
     restoreBlit->endEncoding();
 
   bool haveAllTextures =
-      accum0 && accum1 && sampleCount && sampleImportance;
+      accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
+      normalTexture;
 
   if (_accumulationTargetsNeedClear && haveAllTextures) {
     if (resetAccumulationTargets(prepCmd)) {
@@ -4257,12 +4574,14 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setTexture(accum1, 1);
         pCompute->setTexture(sampleCount, 2);
         pCompute->setTexture(sampleImportance, 3);
+        pCompute->setTexture(albedoTexture, 4);
+        pCompute->setTexture(normalTexture, 5);
 
         for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
           MTL::Texture *materialTex =
               (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
                                                   : nullptr;
-          pCompute->setTexture(materialTex, 4 + texIdx);
+          pCompute->setTexture(materialTex, 6 + texIdx);
         }
 
         for (const TileDispatchRegion &tile : tiles) {
@@ -4371,8 +4690,8 @@ void Renderer::draw(MTK::View *pView) {
   bool performedRayHitReadback = false;
 
   if (captureThisFrame && accum1) {
-    if (auto capture =
-            encodeFrameCapture(accum1, frameIndex, presentCmd, pBlit))
+    if (auto capture = encodeFrameCapture(accum1, albedoTexture, normalTexture,
+                                          frameIndex, presentCmd, pBlit))
       captureList->push_back(capture);
   }
 
@@ -4399,6 +4718,10 @@ void Renderer::draw(MTK::View *pView) {
   if (drawable)
     presentCmd->presentDrawable(drawable);
   presentCmd->commit();
+
+  if (!_frameCaptureEnabled &&
+      _captureOutputsPending.load(std::memory_order_acquire))
+    processPendingCapturedFrames();
 
   if (performedRayHitReadback) {
     if (_lastRayHitCommandBuffer)

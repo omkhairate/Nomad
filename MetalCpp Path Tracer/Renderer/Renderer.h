@@ -4,14 +4,16 @@
 #include <Metal/Metal.hpp>
 #include <MetalKit/MetalKit.hpp>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <simd/simd.h>
 #include <string>
 #include <vector>
-#include <memory>
 
 #include "AlwaysResidentCache.h"
 #include "GpuHeapResources.h"
@@ -165,9 +167,11 @@ private:
   std::string residencyStrategyName(ResidencyStrategy strategy) const;
   void ensureFrameCaptureDirectory();
   std::shared_ptr<FrameCaptureRequest>
-  encodeFrameCapture(MTL::Texture *texture, uint64_t frameIndex,
+  encodeFrameCapture(MTL::Texture *colorTexture, MTL::Texture *albedoTexture,
+                     MTL::Texture *normalTexture, uint64_t frameIndex,
                      MTL::CommandBuffer *cmd, MTL::BlitCommandEncoder *&blit);
   void finalizeFrameCapture(const std::shared_ptr<FrameCaptureRequest> &capture);
+  void processPendingCapturedFrames();
   std::array<simd::float3, 8>
   buildFrustumCorners(const Camera::State &state, float nearDistance,
                       float farDistance) const;
@@ -226,6 +230,8 @@ private:
   ManagedTextureSlot _accumulationSlots[2];
   ManagedTextureSlot _sampleCountSlot;
   ManagedTextureSlot _sampleImportanceSlot;
+  ManagedTextureSlot _albedoSlot;
+  ManagedTextureSlot _normalSlot;
 
   struct BenchmarkSample {
     size_t frameIndex = 0;
@@ -264,12 +270,24 @@ private:
   struct FrameCaptureRequest {
     uint64_t frameIndex = 0;
     std::string filePath;
+    std::string albedoPath;
+    std::string normalPath;
     MTL::Buffer *buffer = nullptr;
+    MTL::Buffer *albedoBuffer = nullptr;
+    MTL::Buffer *normalBuffer = nullptr;
     size_t width = 0;
     size_t height = 0;
     size_t alignedRowBytes = 0;
+    size_t albedoAlignedRowBytes = 0;
+    size_t normalAlignedRowBytes = 0;
     MTL::PixelFormat format = MTL::PixelFormat::PixelFormatInvalid;
+    MTL::PixelFormat albedoFormat = MTL::PixelFormat::PixelFormatInvalid;
+    MTL::PixelFormat normalFormat = MTL::PixelFormat::PixelFormatInvalid;
   };
+
+  std::vector<std::shared_ptr<FrameCaptureRequest>> _completedCaptures;
+  std::mutex _captureMutex;
+  std::atomic<bool> _captureOutputsPending{false};
 
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
