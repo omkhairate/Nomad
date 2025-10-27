@@ -3092,18 +3092,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     auto &instanceRecord = _instanceRecords[objectIndex];
 
     if (shouldBeResident) {
-      bool requiresRebuild = needFullUpload;
-      if (!requiresRebuild) {
-        requiresRebuild =
-            std::binary_search(_dirtyResidentObjects.begin(),
-                                _dirtyResidentObjects.end(), objectIndex);
-      }
-      if (!requiresRebuild && !gpuResident.geometryValid)
-        requiresRebuild = true;
-
       bool built = gpuResident.ensureResident(
           *this, objectIndex, sceneObjects[objectIndex], instanceRecord,
-          requiresRebuild);
+          needFullUpload);
       if (!built) {
         shouldBeResident = false;
         objectShouldBeResident[objectIndex] = false;
