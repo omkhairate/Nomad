@@ -140,6 +140,10 @@ struct TileDispatchRegion {
 
 constexpr uint32_t kPathTraceTileWidth = 128;
 constexpr uint32_t kPathTraceTileHeight = 128;
+// Limit the amount of pixel/sample work recorded into a single command buffer to
+// reduce the chance of long-running kernels triggering GPU timeout errors when
+// high sample counts are requested.
+constexpr size_t kMaxTileSampleWorkPerCommand = 256 * 256 * 4;
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
 inline uint32_t bitm_random() {
@@ -4527,6 +4531,8 @@ void Renderer::draw(MTK::View *pView) {
     return;
   }
 
+  uint32_t minSamples = 1;
+  uint32_t maxSamples = 1;
   std::vector<TileDispatchRegion> tiles;
   if (_pPathTracePSO && accum1) {
     NS::UInteger width = accum1->width();
@@ -4537,8 +4543,8 @@ void Renderer::draw(MTK::View *pView) {
       NS::UInteger tileHeight =
           std::max<NS::UInteger>(kPathTraceTileHeight, 1);
 
-      uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
-      uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
+      minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
+      maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
       minSamples = std::max<uint32_t>(minSamples, 1);
       maxSamples = std::max<uint32_t>(maxSamples, minSamples);
 
@@ -4580,78 +4586,107 @@ void Renderer::draw(MTK::View *pView) {
     MTL::Size threadsPerThreadgroup =
         MTL::Size::Make(tgWidth, tgHeight, 1);
 
-    MTL::CommandBuffer *computeCmd = _pCommandQueue->commandBuffer();
-    if (computeCmd) {
-      MTL::ComputeCommandEncoder *pCompute = computeCmd->computeCommandEncoder();
-      if (pCompute) {
-        pCompute->setComputePipelineState(_pPathTracePSO);
+    size_t tileIndex = 0;
+    const size_t maxWorkPerCommand =
+        std::max<size_t>(kMaxTileSampleWorkPerCommand, 1);
+    const size_t effectiveMaxSamples = std::max<size_t>(maxSamples, 1);
 
-        bool useAccelerationStructureLayout =
-            _useAccelerationStructureBindings && _pTlasStructure &&
-            _pGeometryHandleBuffer;
+    while (tileIndex < tiles.size()) {
+      size_t batchStart = tileIndex;
+      size_t batchWork = 0;
 
-        if (useAccelerationStructureLayout) {
-          pCompute->setAccelerationStructure(_pTlasStructure, 0);
-          pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
-          pCompute->setBuffer(_pSphereBuffer, 0, 2);
-          pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
-          pCompute->setBuffer(_pUniformsBuffer, 0, 4);
-          pCompute->setBuffer(_pActiveBuffer, 0, 5);
-          pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
-          pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
-          pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
-          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
-          pCompute->setBuffer(_pInstanceBuffer, 0, 10);
-        } else {
-          pCompute->setBuffer(_pBVHBuffer, 0, 0);
-          pCompute->setBuffer(_pSphereBuffer, 0, 1);
-          pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
-          pCompute->setBuffer(_pUniformsBuffer, 0, 3);
-          pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
-          pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
-          pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
-          pCompute->setBuffer(_pTLASBuffer, 0, 7);
-          pCompute->setBuffer(_pActiveBuffer, 0, 8);
-          pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
-          pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
-          pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
-          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
-          pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        }
+      while (tileIndex < tiles.size()) {
+        const TileDispatchRegion &tile = tiles[tileIndex];
+        size_t tileWork = static_cast<size_t>(tile.width) * tile.height;
+        tileWork = std::max<size_t>(tileWork, 1);
+        tileWork *= effectiveMaxSamples;
 
-        pCompute->setTexture(accum0, 0);
-        pCompute->setTexture(accum1, 1);
-        pCompute->setTexture(sampleCount, 2);
-        pCompute->setTexture(sampleImportance, 3);
-        pCompute->setTexture(albedoTexture, 4);
-        pCompute->setTexture(normalTexture, 5);
+        if (tileIndex > batchStart && batchWork + tileWork > maxWorkPerCommand)
+          break;
 
-        for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
-          MTL::Texture *materialTex =
-              (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
-                                                  : nullptr;
-          pCompute->setTexture(materialTex, 6 + texIdx);
-        }
-
-        for (const TileDispatchRegion &tile : tiles) {
-          TileDispatchRegion tileParams = tile;
-          pCompute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);
-
-          NS::UInteger localWidth = static_cast<NS::UInteger>(tile.width);
-          NS::UInteger localHeight = static_cast<NS::UInteger>(tile.height);
-          MTL::Size threadgroups = MTL::Size::Make(
-              (localWidth + threadsPerThreadgroup.width - 1) /
-                  threadsPerThreadgroup.width,
-              (localHeight + threadsPerThreadgroup.height - 1) /
-                  threadsPerThreadgroup.height,
-              1);
-
-          pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-        }
-
-        pCompute->endEncoding();
+        batchWork += tileWork;
+        ++tileIndex;
       }
 
+      size_t batchEnd = std::max<size_t>(batchStart + 1, tileIndex);
+
+      MTL::CommandBuffer *computeCmd = _pCommandQueue->commandBuffer();
+      if (!computeCmd)
+        break;
+
+      MTL::ComputeCommandEncoder *pCompute = computeCmd->computeCommandEncoder();
+      if (!pCompute) {
+        computeCmd->commit();
+        break;
+      }
+
+      pCompute->setComputePipelineState(_pPathTracePSO);
+
+      bool useAccelerationStructureLayout =
+          _useAccelerationStructureBindings && _pTlasStructure &&
+          _pGeometryHandleBuffer;
+
+      if (useAccelerationStructureLayout) {
+        pCompute->setAccelerationStructure(_pTlasStructure, 0);
+        pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
+        pCompute->setBuffer(_pSphereBuffer, 0, 2);
+        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
+        pCompute->setBuffer(_pUniformsBuffer, 0, 4);
+        pCompute->setBuffer(_pActiveBuffer, 0, 5);
+        pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
+        pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
+        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
+        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
+        pCompute->setBuffer(_pInstanceBuffer, 0, 10);
+      } else {
+        pCompute->setBuffer(_pBVHBuffer, 0, 0);
+        pCompute->setBuffer(_pSphereBuffer, 0, 1);
+        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
+        pCompute->setBuffer(_pUniformsBuffer, 0, 3);
+        pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
+        pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
+        pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
+        pCompute->setBuffer(_pTLASBuffer, 0, 7);
+        pCompute->setBuffer(_pActiveBuffer, 0, 8);
+        pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
+        pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
+        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
+        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+        pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+      }
+
+      pCompute->setTexture(accum0, 0);
+      pCompute->setTexture(accum1, 1);
+      pCompute->setTexture(sampleCount, 2);
+      pCompute->setTexture(sampleImportance, 3);
+      pCompute->setTexture(albedoTexture, 4);
+      pCompute->setTexture(normalTexture, 5);
+
+      for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
+        MTL::Texture *materialTex =
+            (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
+                                                : nullptr;
+        pCompute->setTexture(materialTex, 6 + texIdx);
+      }
+
+      for (size_t batchIdx = batchStart; batchIdx < batchEnd; ++batchIdx) {
+        const TileDispatchRegion &tile = tiles[batchIdx];
+        TileDispatchRegion tileParams = tile;
+        pCompute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);
+
+        NS::UInteger localWidth = static_cast<NS::UInteger>(tile.width);
+        NS::UInteger localHeight = static_cast<NS::UInteger>(tile.height);
+        MTL::Size threadgroups = MTL::Size::Make(
+            (localWidth + threadsPerThreadgroup.width - 1) /
+                threadsPerThreadgroup.width,
+            (localHeight + threadsPerThreadgroup.height - 1) /
+                threadsPerThreadgroup.height,
+            1);
+
+        pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+      }
+
+      pCompute->endEncoding();
       computeCmd->commit();
     }
   }
