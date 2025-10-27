@@ -103,6 +103,10 @@ size_t Scene::addObjectInternal(const Primitive *prims, size_t count,
     Primitive &stored = primitives[start + i];
     if (stored.type == PrimitiveType::Triangle) {
       stored.triangle.computeFrame();
+    } else if (stored.type == PrimitiveType::Rectangle) {
+      stored.rectangle.computeFrame();
+    } else if (stored.type == PrimitiveType::Sphere) {
+      stored.sphere.supportsNormalMap = 0;
     }
   }
 
@@ -323,12 +327,19 @@ simd::float4 *Scene::createTransformsBuffer() const {
           simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
       buffer[base + 2] = simd::make_float4(simd::float3(0), 0);
       buffer[base + 3] = simd::make_float4(simd::float3(0), 0);
+      buffer[base + 6] =
+          simd::make_float4(simd::float3(0.0f, 0.0f, 1.0f), 0.0f);
     } else if (p.type == PrimitiveType::Rectangle) {
       buffer[base + 0] =
           simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
       buffer[base + 1] = simd::make_float4(p.rectangle.u, 0);
       buffer[base + 2] = simd::make_float4(p.rectangle.v, 0);
       buffer[base + 3] = simd::make_float4(simd::float3(0), 0);
+      buffer[base + 4] = simd::make_float4(p.rectangle.tangent, 0.0f);
+      buffer[base + 5] = simd::make_float4(p.rectangle.bitangent, 0.0f);
+      buffer[base + 6] =
+          simd::make_float4(p.rectangle.normal,
+                            p.rectangle.supportsNormalMap ? 1.0f : 0.0f);
     } else {
       buffer[base + 0] =
           simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
@@ -338,7 +349,8 @@ simd::float4 *Scene::createTransformsBuffer() const {
                                            p.triangle.uv2.x, p.triangle.uv2.y);
       buffer[base + 4] = simd::make_float4(p.triangle.tangent, 0.0f);
       buffer[base + 5] = simd::make_float4(p.triangle.bitangent, 0.0f);
-      buffer[base + 6] = simd::make_float4(p.triangle.normal, 0.0f);
+      buffer[base + 6] =
+          simd::make_float4(p.triangle.normal, 1.0f);
     }
   }
   return buffer;

@@ -18,6 +18,7 @@ struct intersection
     float3 normal;
     float3 tangent = float3(0.0f);
     float3 bitangent = float3(0.0f);
+    int supportsNormalMap = 0;
     bool frontFace;
     int primitiveId = -1;
     int isTriangle = 0;

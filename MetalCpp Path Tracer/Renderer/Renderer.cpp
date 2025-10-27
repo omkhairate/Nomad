@@ -2728,6 +2728,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
         primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
         primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[6] = simd::make_float4(0.0f, 0.0f, 1.0f, 0.0f);
         break;
       }
       case PrimitiveType::Rectangle: {
@@ -2736,6 +2737,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
         primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
         primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[4] = simd::make_float4(p.rectangle.tangent, 0.0f);
+        primBase[5] = simd::make_float4(p.rectangle.bitangent, 0.0f);
+        primBase[6] = simd::make_float4(p.rectangle.normal,
+                                        p.rectangle.supportsNormalMap ? 1.0f
+                                                                      : 0.0f);
         break;
       }
       case PrimitiveType::Triangle: {
@@ -2747,7 +2753,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                                         p.triangle.uv2.x, p.triangle.uv2.y);
         primBase[4] = simd::make_float4(p.triangle.tangent, 0.0f);
         primBase[5] = simd::make_float4(p.triangle.bitangent, 0.0f);
-        primBase[6] = simd::make_float4(p.triangle.normal, 0.0f);
+        primBase[6] = simd::make_float4(p.triangle.normal, 1.0f);
         break;
       }
       }
@@ -3084,6 +3090,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             prim1 = simd::make_float4(
                 simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
             prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+            prim6 = simd::make_float4(0.0f, 0.0f, 1.0f, 0.0f);
             break;
           }
           case PrimitiveType::Rectangle: {
@@ -3091,6 +3098,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                                       static_cast<float>(p.type));
             prim1 = simd::make_float4(p.rectangle.u, 0.0f);
             prim2 = simd::make_float4(p.rectangle.v, 0.0f);
+            prim4 = simd::make_float4(p.rectangle.tangent, 0.0f);
+            prim5 = simd::make_float4(p.rectangle.bitangent, 0.0f);
+            prim6 = simd::make_float4(p.rectangle.normal,
+                                      p.rectangle.supportsNormalMap ? 1.0f
+                                                                    : 0.0f);
             break;
           }
           case PrimitiveType::Triangle: {
@@ -3102,7 +3114,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                                       p.triangle.uv2.x, p.triangle.uv2.y);
             prim4 = simd::make_float4(p.triangle.tangent, 0.0f);
             prim5 = simd::make_float4(p.triangle.bitangent, 0.0f);
-            prim6 = simd::make_float4(p.triangle.normal, 0.0f);
+            prim6 = simd::make_float4(p.triangle.normal, 1.0f);
             size_t baseVertex = compactTriangleVertices.size();
             compactTriangleVertices.push_back(p.triangle.v0);
             compactTriangleVertices.push_back(p.triangle.v1);
@@ -3309,12 +3321,18 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           prim1 = simd::make_float4(
               simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
           prim2 = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+          prim6 = simd::make_float4(0.0f, 0.0f, 1.0f, 0.0f);
           break;
         }
         case PrimitiveType::Rectangle: {
           prim0 = simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
           prim1 = simd::make_float4(p.rectangle.u, 0.0f);
           prim2 = simd::make_float4(p.rectangle.v, 0.0f);
+          prim4 = simd::make_float4(p.rectangle.tangent, 0.0f);
+          prim5 = simd::make_float4(p.rectangle.bitangent, 0.0f);
+          prim6 = simd::make_float4(p.rectangle.normal,
+                                    p.rectangle.supportsNormalMap ? 1.0f
+                                                                  : 0.0f);
           break;
         }
         case PrimitiveType::Triangle: {
@@ -3325,7 +3343,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                                     p.triangle.uv2.x, p.triangle.uv2.y);
           prim4 = simd::make_float4(p.triangle.tangent, 0.0f);
           prim5 = simd::make_float4(p.triangle.bitangent, 0.0f);
-          prim6 = simd::make_float4(p.triangle.normal, 0.0f);
+          prim6 = simd::make_float4(p.triangle.normal, 1.0f);
           size_t baseVertex = compactTriangleVertices.size();
           compactTriangleVertices.push_back(p.triangle.v0);
           compactTriangleVertices.push_back(p.triangle.v1);

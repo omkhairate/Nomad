@@ -278,6 +278,16 @@ inline intersection firstHitBVH(thread const Ray &r,
         float3 candidateTangent = float3(0.0f);
         float3 candidateBitangent = float3(0.0f);
 
+        float4 packedTangent = primitives[base + 4];
+        float4 packedBitangent = primitives[base + 5];
+        float4 packedNormal = primitives[base + 6];
+
+        float3 storedTangent = packedTangent.xyz;
+        float3 storedBitangent = packedBitangent.xyz;
+        float3 storedNormal = packedNormal.xyz;
+        int storedSupportsNormalMap = (packedNormal.w > 0.5f) ? 1 : 0;
+        int candidateSupportsNormalMap = 0;
+
         if (primitiveType == 0) {
           float3 center = p0.xyz;
           float radius = p1.x;
@@ -295,6 +305,7 @@ inline intersection firstHitBVH(thread const Ray &r,
               hit = r.origin + tHit * r.direction;
               n = normalize(hit - center);
               hitThis = true;
+              candidateSupportsNormalMap = storedSupportsNormalMap;
             }
           }
         } else if (primitiveType == 1) {
@@ -304,9 +315,6 @@ inline intersection firstHitBVH(thread const Ray &r,
 
           float3 edge1 = v1 - v0;
           float3 edge2 = v2 - v0;
-          float3 storedTangent = primitives[base + 4].xyz;
-          float3 storedBitangent = primitives[base + 5].xyz;
-          float3 storedNormal = primitives[base + 6].xyz;
 
           float3 fallbackNormal = cross(edge1, edge2);
           float fallbackLenSq = dot(fallbackNormal, fallbackNormal);
@@ -337,10 +345,14 @@ inline intersection firstHitBVH(thread const Ray &r,
                   if (!all(isfinite(n)) || dot(n, n) <= 1e-6f)
                     n = fallbackNormal;
                   float tanLenSq = dot(storedTangent, storedTangent);
-                  if (tanLenSq > 1e-6f && all(isfinite(storedTangent)))
+                  bool tangentValid =
+                      tanLenSq > 1e-6f && all(isfinite(storedTangent));
+                  if (tangentValid)
                     candidateTangent = normalize(storedTangent);
                   float bitLenSq = dot(storedBitangent, storedBitangent);
-                  if (bitLenSq > 1e-6f && all(isfinite(storedBitangent)))
+                  bool bitangentValid =
+                      bitLenSq > 1e-6f && all(isfinite(storedBitangent));
+                  if (bitangentValid)
                     candidateBitangent = normalize(storedBitangent);
                   if (dot(candidateTangent, candidateTangent) <= 1e-6f ||
                       !all(isfinite(candidateTangent))) {
@@ -361,6 +373,12 @@ inline intersection firstHitBVH(thread const Ray &r,
                         all(isfinite(orthBitangent)))
                       candidateBitangent = normalize(orthBitangent);
                   }
+                  candidateSupportsNormalMap =
+                      (storedSupportsNormalMap && tangentValid &&
+                       bitangentValid &&
+                       (dot(n, n) > 1e-6f))
+                          ? 1
+                          : 0;
                   hitThis = true;
                   in.isTriangle = 1;
                   bary = float2(u, v);
@@ -372,10 +390,20 @@ inline intersection firstHitBVH(thread const Ray &r,
           float3 center = p0.xyz;
           float3 e1 = p1.xyz;
           float3 e2 = p2.xyz;
-          float3 normal = normalize(cross(e1, e2));
-          float denom = dot(normal, r.direction);
+          float3 fallbackNormal = cross(e1, e2);
+          float fallbackLenSq = dot(fallbackNormal, fallbackNormal);
+          if (fallbackLenSq > 1e-6f && all(isfinite(fallbackNormal)))
+            fallbackNormal = normalize(fallbackNormal);
+          else
+            fallbackNormal = float3(0.0f, 1.0f, 0.0f);
+          float3 normalCandidate = fallbackNormal;
+          float normalLenSq = dot(storedNormal, storedNormal);
+          bool normalValid = normalLenSq > 1e-6f && all(isfinite(storedNormal));
+          if (normalValid)
+            normalCandidate = normalize(storedNormal);
+          float denom = dot(normalCandidate, r.direction);
           if (fabs(denom) > 1e-5) {
-            float tt = dot(center - r.origin, normal) / denom;
+            float tt = dot(center - r.origin, normalCandidate) / denom;
             if (tt > 0.0001 && tt < in.t) {
               float3 hitPoint = r.origin + tt * r.direction;
               float3 rel = hitPoint - center;
@@ -384,7 +412,40 @@ inline intersection firstHitBVH(thread const Ray &r,
               if (fabs(u) <= 1.0 && fabs(v) <= 1.0) {
                 tHit = tt;
                 hit = hitPoint;
-                n = normal;
+                n = normalCandidate;
+                bool tangentValid =
+                    dot(storedTangent, storedTangent) > 1e-6f &&
+                    all(isfinite(storedTangent));
+                bool bitangentValid =
+                    dot(storedBitangent, storedBitangent) > 1e-6f &&
+                    all(isfinite(storedBitangent));
+                if (tangentValid)
+                  candidateTangent = normalize(storedTangent);
+                if (bitangentValid)
+                  candidateBitangent = normalize(storedBitangent);
+                if (dot(candidateTangent, candidateTangent) <= 1e-6f ||
+                    !all(isfinite(candidateTangent))) {
+                  float3 refAxis = (abs(fallbackNormal.y) < 0.999f)
+                                       ? float3(0.0f, 1.0f, 0.0f)
+                                       : float3(1.0f, 0.0f, 0.0f);
+                  candidateTangent = normalize(cross(refAxis, fallbackNormal));
+                }
+                if (dot(candidateBitangent, candidateBitangent) <= 1e-6f ||
+                    !all(isfinite(candidateBitangent)))
+                  candidateBitangent = normalize(
+                      cross(fallbackNormal, candidateTangent));
+                if (dot(candidateTangent, candidateTangent) > 1e-6f &&
+                    all(isfinite(candidateTangent))) {
+                  float3 orthBitangent = cross(n, candidateTangent);
+                  if (dot(orthBitangent, orthBitangent) > 1e-6f &&
+                      all(isfinite(orthBitangent)))
+                    candidateBitangent = normalize(orthBitangent);
+                }
+                candidateSupportsNormalMap =
+                    (storedSupportsNormalMap && normalValid && tangentValid &&
+                     bitangentValid)
+                        ? 1
+                        : 0;
                 hitThis = true;
                 localUV = float2(0.5f * (u + 1.0f), 0.5f * (v + 1.0f));
               }
@@ -403,6 +464,7 @@ inline intersection firstHitBVH(thread const Ray &r,
           in.uv = localUV;
           in.tangent = candidateTangent;
           in.bitangent = candidateBitangent;
+          in.supportsNormalMap = candidateSupportsNormalMap;
         }
       }
     } else {
@@ -624,6 +686,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
       break;
 
     MaterialPayload material = decodeMaterial(matBase, materials, lodAtten);
+    if (!bestHit.supportsNormalMap)
+      material.normalTextureIndex = -1;
 
     float2 surfaceUV = float2(0.0f);
     bool haveUV = false;
