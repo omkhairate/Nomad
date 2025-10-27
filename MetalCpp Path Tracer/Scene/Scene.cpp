@@ -316,25 +316,25 @@ simd::float4 *Scene::createTransformsBuffer() const {
   for (size_t i = 0; i < primitives.size(); ++i) {
     const auto &p = primitives[i];
     size_t base = kPrimitiveFloat4Count * i;
-    buffer[base + 4] = simd::make_float4(simd::float3(0.0f), 0.0f);
-    buffer[base + 5] = simd::make_float4(simd::float3(0.0f), 0.0f);
-    buffer[base + 6] = simd::make_float4(simd::float3(0.0f), 0.0f);
+    buffer[base + 4] = simd::make_float4(simd::make_float3(0.0f), 0.0f);
+    buffer[base + 5] = simd::make_float4(simd::make_float3(0.0f), 0.0f);
+    buffer[base + 6] = simd::make_float4(simd::make_float3(0.0f), 0.0f);
 
     if (p.type == PrimitiveType::Sphere) {
       buffer[base + 0] =
           simd::make_float4(p.sphere.center, static_cast<float>(p.type));
       buffer[base + 1] =
           simd::make_float4(simd::make_float3(p.sphere.radius, 0, 0), 0);
-      buffer[base + 2] = simd::make_float4(simd::float3(0), 0);
-      buffer[base + 3] = simd::make_float4(simd::float3(0), 0);
+      buffer[base + 2] = simd::make_float4(simd::make_float3(0), 0);
+      buffer[base + 3] = simd::make_float4(simd::make_float3(0), 0);
       buffer[base + 6] =
-          simd::make_float4(simd::float3(0.0f, 0.0f, 1.0f), 0.0f);
+          simd::make_float4(simd::make_float3(0.0f, 0.0f, 1.0f), 0.0f);
     } else if (p.type == PrimitiveType::Rectangle) {
       buffer[base + 0] =
           simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
       buffer[base + 1] = simd::make_float4(p.rectangle.u, 0);
       buffer[base + 2] = simd::make_float4(p.rectangle.v, 0);
-      buffer[base + 3] = simd::make_float4(simd::float3(0), 0);
+      buffer[base + 3] = simd::make_float4(simd::make_float3(0), 0);
       buffer[base + 4] = simd::make_float4(p.rectangle.tangent, 0.0f);
       buffer[base + 5] = simd::make_float4(p.rectangle.bitangent, 0.0f);
       buffer[base + 6] =
