@@ -2356,16 +2356,16 @@ bool Renderer::startBlasBuild(
 
   resident.transitionToStreaming(commandBuffer);
 
-  commandBuffer->addCompletedHandler([this, buildRequest](
-                                          MTL::CommandBuffer *cmd) {
-    bool success = cmd->status() == MTL::CommandBufferStatusCompleted;
-    auto retainedRequest = buildRequest;
-    dispatch_async(dispatch_get_main_queue(), ^{
-      this->handleCompletedBlasBuild(retainedRequest, success);
-    });
-  });
+  auto completion = [this, buildRequest](bool success) {
+    this->handleCompletedBlasBuild(buildRequest, success);
+  };
 
-  commandBuffer->commit();
+  if (!submitAsyncCommandBuffer(commandBuffer, completion)) {
+    resident.clearPendingCommand();
+    buildRequest->releaseResources();
+    cleanupPool();
+    return false;
+  }
 
   cleanupPool();
   return true;
@@ -2406,11 +2406,37 @@ void Renderer::handleCompletedBlasBuild(
   processBlasBuildQueue();
 }
 
+bool Renderer::submitAsyncCommandBuffer(
+    MTL::CommandBuffer *commandBuffer,
+    std::function<void(bool)> completion) {
+  if (!commandBuffer)
+    return false;
+
+  if (completion) {
+    commandBuffer->addCompletedHandler(
+        [completion = std::move(completion)](MTL::CommandBuffer *cmd) {
+          bool success =
+              cmd->status() == MTL::CommandBufferStatusCompleted;
+          auto completionCopy = completion;
+          dispatch_async(dispatch_get_main_queue(), ^{
+            if (completionCopy)
+              completionCopy(success);
+          });
+        });
+  }
+
+  commandBuffer->commit();
+  return true;
+}
+
 bool Renderer::ensureDummyBlas() {
   if (_pDummyBlas)
     return true;
 
   if (!_pDevice || !_pCommandQueue)
+    return false;
+
+  if (_dummyBlasBuildInFlight)
     return false;
 
   _dummyBlasResources.initialize(_pDevice);
@@ -2445,6 +2471,15 @@ bool Renderer::ensureDummyBlas() {
     NS::UInteger size = 0;
   };
 
+  auto releaseZeroRequest = [](ZeroRequest &request) {
+    if (request.staging) {
+      request.staging->release();
+      request.staging = nullptr;
+    }
+    request.target = nullptr;
+    request.size = 0;
+  };
+
   ZeroRequest vertexZeroRequest;
   ZeroRequest indexZeroRequest;
 
@@ -2476,10 +2511,8 @@ bool Renderer::ensureDummyBlas() {
   if (!prepareZeroRequest(dummyVertexBuffer, dummyVertexSize,
                           vertexZeroRequest) ||
       !prepareZeroRequest(dummyIndexBuffer, dummyIndexSize, indexZeroRequest)) {
-    if (vertexZeroRequest.staging)
-      vertexZeroRequest.staging->release();
-    if (indexZeroRequest.staging)
-      indexZeroRequest.staging->release();
+    releaseZeroRequest(vertexZeroRequest);
+    releaseZeroRequest(indexZeroRequest);
     geometryDesc->release();
     return false;
   }
@@ -2491,21 +2524,54 @@ bool Renderer::ensureDummyBlas() {
       MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
   accelDesc->setGeometryDescriptors(geometryArray);
 
+  auto releaseDescriptors = [&]() {
+    if (geometryArray) {
+      geometryArray->release();
+      geometryArray = nullptr;
+    }
+    if (geometryDesc) {
+      geometryDesc->release();
+      geometryDesc = nullptr;
+    }
+    if (accelDesc) {
+      accelDesc->release();
+      accelDesc = nullptr;
+    }
+  };
+
   MTL::AccelerationStructureSizes sizes =
       _pDevice->accelerationStructureSizes(accelDesc);
+
+  NS::UInteger alignedAccelerationSize =
+      _dummyBlasResources.alignedHeapSize(sizes.accelerationStructureSize);
+  NS::UInteger totalRequestedBytes =
+      alignedAccelerationSize + dummyVertexSize + dummyIndexSize;
+  constexpr NS::UInteger kDummyBlasMemoryBudgetBytes = 1024ull * 1024ull;
+  static bool loggedDummyUsage = false;
+  if (totalRequestedBytes > kDummyBlasMemoryBudgetBytes) {
+    std::printf(
+        "Dummy BLAS placeholder exceeded memory budget: %llu bytes used (limit %llu bytes).\n",
+        static_cast<unsigned long long>(totalRequestedBytes),
+        static_cast<unsigned long long>(kDummyBlasMemoryBudgetBytes));
+  } else if (!loggedDummyUsage &&
+             totalRequestedBytes > kDummyBlasMemoryBudgetBytes / 2) {
+    std::printf(
+        "Dummy BLAS placeholder using %llu / %llu bytes of budget.\n",
+        static_cast<unsigned long long>(totalRequestedBytes),
+        static_cast<unsigned long long>(kDummyBlasMemoryBudgetBytes));
+    loggedDummyUsage = true;
+  }
+  assert(totalRequestedBytes <= kDummyBlasMemoryBudgetBytes &&
+         "Dummy BLAS memory usage exceeds placeholder budget");
 
   MTL::AccelerationStructure *structure =
       _dummyBlasResources.ensureAccelerationStructure(
           sizes.accelerationStructureSize, "DummyBLAS");
 
   if (!structure) {
-    if (vertexZeroRequest.staging)
-      vertexZeroRequest.staging->release();
-    if (indexZeroRequest.staging)
-      indexZeroRequest.staging->release();
-    geometryArray->release();
-    geometryDesc->release();
-    accelDesc->release();
+    releaseZeroRequest(vertexZeroRequest);
+    releaseZeroRequest(indexZeroRequest);
+    releaseDescriptors();
     return false;
   }
 
@@ -2519,13 +2585,9 @@ bool Renderer::ensureDummyBlas() {
   if (!commandBuffer) {
     if (scratchBuffer)
       scratchBuffer->release();
-    if (vertexZeroRequest.staging)
-      vertexZeroRequest.staging->release();
-    if (indexZeroRequest.staging)
-      indexZeroRequest.staging->release();
-    geometryArray->release();
-    geometryDesc->release();
-    accelDesc->release();
+    releaseZeroRequest(vertexZeroRequest);
+    releaseZeroRequest(indexZeroRequest);
+    releaseDescriptors();
     return false;
   }
 
@@ -2534,13 +2596,9 @@ bool Renderer::ensureDummyBlas() {
     if (!blitEncoder) {
       if (scratchBuffer)
         scratchBuffer->release();
-      if (vertexZeroRequest.staging)
-        vertexZeroRequest.staging->release();
-      if (indexZeroRequest.staging)
-        indexZeroRequest.staging->release();
-      geometryArray->release();
-      geometryDesc->release();
-      accelDesc->release();
+      releaseZeroRequest(vertexZeroRequest);
+      releaseZeroRequest(indexZeroRequest);
+      releaseDescriptors();
       return false;
     }
     if (vertexZeroRequest.staging) {
@@ -2561,34 +2619,82 @@ bool Renderer::ensureDummyBlas() {
   if (!encoder) {
     if (scratchBuffer)
       scratchBuffer->release();
-    if (vertexZeroRequest.staging)
-      vertexZeroRequest.staging->release();
-    if (indexZeroRequest.staging)
-      indexZeroRequest.staging->release();
-    geometryArray->release();
-    geometryDesc->release();
-    accelDesc->release();
+    releaseZeroRequest(vertexZeroRequest);
+    releaseZeroRequest(indexZeroRequest);
+    releaseDescriptors();
     return false;
   }
 
   encoder->buildAccelerationStructure(structure, accelDesc, scratchBuffer, 0);
   encoder->endEncoding();
 
-  commandBuffer->commit();
-  commandBuffer->waitUntilCompleted();
+  struct DummyBlasBuildContext {
+    MTL::Buffer *vertexStaging = nullptr;
+    MTL::Buffer *indexStaging = nullptr;
+    MTL::Buffer *scratchBuffer = nullptr;
+  };
 
-  if (vertexZeroRequest.staging)
-    vertexZeroRequest.staging->release();
-  if (indexZeroRequest.staging)
-    indexZeroRequest.staging->release();
-  if (scratchBuffer)
-    scratchBuffer->release();
-  geometryArray->release();
-  geometryDesc->release();
-  accelDesc->release();
+  auto buildContext = std::make_shared<DummyBlasBuildContext>();
+  buildContext->vertexStaging = vertexZeroRequest.staging;
+  buildContext->indexStaging = indexZeroRequest.staging;
+  buildContext->scratchBuffer = scratchBuffer;
 
-  _pDummyBlas = structure;
-  return true;
+  vertexZeroRequest.staging = nullptr;
+  indexZeroRequest.staging = nullptr;
+  scratchBuffer = nullptr;
+
+  _dummyBlasBuildInFlight = true;
+
+  auto completion = [this, context = buildContext, structure,
+                     totalRequestedBytes](bool success) {
+    if (context->vertexStaging) {
+      context->vertexStaging->release();
+      context->vertexStaging = nullptr;
+    }
+    if (context->indexStaging) {
+      context->indexStaging->release();
+      context->indexStaging = nullptr;
+    }
+    if (context->scratchBuffer) {
+      context->scratchBuffer->release();
+      context->scratchBuffer = nullptr;
+    }
+
+    if (success) {
+      _pDummyBlas = structure;
+      std::printf("Dummy BLAS placeholder ready (%llu bytes).\n",
+                  static_cast<unsigned long long>(totalRequestedBytes));
+    } else {
+      std::printf(
+          "Dummy BLAS build failed; releasing placeholder resources.\n");
+      _dummyBlasResources.ensureAccelerationStructure(0, nullptr);
+    }
+
+    _dummyBlasBuildInFlight = false;
+  };
+
+  bool submitted = submitAsyncCommandBuffer(commandBuffer, completion);
+
+  releaseDescriptors();
+
+  if (!submitted) {
+    _dummyBlasBuildInFlight = false;
+    if (buildContext->vertexStaging) {
+      buildContext->vertexStaging->release();
+      buildContext->vertexStaging = nullptr;
+    }
+    if (buildContext->indexStaging) {
+      buildContext->indexStaging->release();
+      buildContext->indexStaging = nullptr;
+    }
+    if (buildContext->scratchBuffer) {
+      buildContext->scratchBuffer->release();
+      buildContext->scratchBuffer = nullptr;
+    }
+    return false;
+  }
+
+  return false;
 }
 
 void Renderer::updateTopLevelAccelerationStructure(
