@@ -157,6 +157,9 @@ private:
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
           &descriptors,
       const std::vector<MTL::AccelerationStructure *> &structures);
+  void ensureTlasBuildEvent();
+  void waitForPendingTlasBuild();
+  bool hasPendingTlasBuild() const;
   struct PendingBlasBuild;
   void enqueueBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void processBlasBuildQueue();
@@ -216,6 +219,8 @@ private:
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
   MTL::Buffer *_pFrustumVertexBuffer = nullptr;
+  MTL::Buffer *_pTlasScratchBuffer = nullptr;
+  NS::UInteger _tlasScratchCapacity = 0;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -366,6 +371,9 @@ private:
   std::vector<MTL::AccelerationStructure *> _cachedInstancedAccelerationStructures;
   MTL::Buffer *_pTlasDescriptorStaging = nullptr;
   size_t _tlasDescriptorStagingCapacity = 0;
+  MTL::SharedEvent *_pTlasBuildEvent = nullptr;
+  uint64_t _tlasBuildEventValue = 0;
+  std::atomic<uint64_t> _tlasCompletedEventValue{0};
 
   uint32_t _rayHitRebuildCooldown = 0;
 

@@ -781,10 +781,19 @@ Renderer::~Renderer() {
     _pInstanceBuffer->release();
   if (_pGeometryHandleBuffer)
     _pGeometryHandleBuffer->release();
+  if (_pTlasScratchBuffer)
+    _pTlasScratchBuffer->release();
+  if (_pTlasBuildEvent)
+    _pTlasBuildEvent->release();
   if (_pTlasDescriptorStaging)
     _pTlasDescriptorStaging->release();
   _pTlasDescriptorStaging = nullptr;
   _tlasDescriptorStagingCapacity = 0;
+  _pTlasScratchBuffer = nullptr;
+  _tlasScratchCapacity = 0;
+  _pTlasBuildEvent = nullptr;
+  _tlasBuildEventValue = 0;
+  _tlasCompletedEventValue.store(0, std::memory_order_relaxed);
   if (_pFrustumVertexBuffer)
     _pFrustumVertexBuffer->release();
   clearMaterialTextures();
@@ -2697,6 +2706,78 @@ bool Renderer::ensureDummyBlas() {
   return false;
 }
 
+void Renderer::ensureTlasBuildEvent() {
+  if (_pTlasBuildEvent || !_pDevice)
+    return;
+
+  _pTlasBuildEvent = _pDevice->newSharedEvent();
+  if (_pTlasBuildEvent) {
+    _pTlasBuildEvent->setLabel(
+        NS::String::string("RendererTLASFence", NS::UTF8StringEncoding));
+    uint64_t initialValue = _pTlasBuildEvent->signaledValue();
+    _tlasCompletedEventValue.store(initialValue, std::memory_order_relaxed);
+  }
+}
+
+bool Renderer::hasPendingTlasBuild() const {
+  if (!_pTlasBuildEvent || _tlasBuildEventValue == 0)
+    return false;
+
+  return _tlasCompletedEventValue.load(std::memory_order_acquire) <
+         _tlasBuildEventValue;
+}
+
+void Renderer::waitForPendingTlasBuild() {
+  if (!hasPendingTlasBuild())
+    return;
+
+  uint64_t targetValue = _tlasBuildEventValue;
+  uint64_t completedValue =
+      _tlasCompletedEventValue.load(std::memory_order_acquire);
+  if (completedValue >= targetValue)
+    return;
+
+  uint64_t signaled = _pTlasBuildEvent->signaledValue();
+  if (signaled >= targetValue) {
+    _tlasCompletedEventValue.store(signaled, std::memory_order_release);
+    return;
+  }
+
+  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+  if (!semaphore) {
+    while (_pTlasBuildEvent->signaledValue() < targetValue)
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    _tlasCompletedEventValue.store(targetValue, std::memory_order_release);
+    return;
+  }
+
+  MTL::SharedEventListener *listener =
+      MTL::SharedEventListener::alloc()->init(
+          dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
+
+  if (!listener) {
+    dispatch_release(semaphore);
+    while (_pTlasBuildEvent->signaledValue() < targetValue)
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    _tlasCompletedEventValue.store(targetValue, std::memory_order_release);
+    return;
+  }
+
+  _pTlasBuildEvent->notifyListener(
+      listener, targetValue,
+      ^(MTL::SharedEvent *, uint64_t) { dispatch_semaphore_signal(semaphore); });
+
+  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+
+  listener->release();
+  dispatch_release(semaphore);
+
+  uint64_t latest = _pTlasBuildEvent->signaledValue();
+  if (latest < targetValue)
+    latest = targetValue;
+  _tlasCompletedEventValue.store(latest, std::memory_order_release);
+}
+
 void Renderer::updateTopLevelAccelerationStructure(
     const std::vector<MTL::AccelerationStructureInstanceDescriptor> &descriptors,
     const std::vector<MTL::AccelerationStructure *> &structures) {
@@ -2843,14 +2924,24 @@ void Renderer::updateTopLevelAccelerationStructure(
   NS::UInteger scratchSize = needsRebuild ? sizes.buildScratchBufferSize
                                           : sizes.refitScratchBufferSize;
   MTL::Buffer *scratchBuffer = nullptr;
-  if (scratchSize > 0)
-    scratchBuffer =
-        _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
+  if (scratchSize > 0) {
+    if (!_pTlasScratchBuffer || _tlasScratchCapacity < scratchSize) {
+      if (_pTlasScratchBuffer)
+        _pTlasScratchBuffer->release();
+      _pTlasScratchBuffer =
+          _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
+      _tlasScratchCapacity =
+          _pTlasScratchBuffer ? scratchSize : static_cast<NS::UInteger>(0);
+    }
+    scratchBuffer = _pTlasScratchBuffer;
+    if (!scratchBuffer) {
+      instanceDesc->release();
+      return;
+    }
+  }
 
   MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
-    if (scratchBuffer)
-      scratchBuffer->release();
     instanceDesc->release();
     return;
   }
@@ -2865,8 +2956,6 @@ void Renderer::updateTopLevelAccelerationStructure(
   if (stagingBuffer && !descriptorRanges.empty()) {
     MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
     if (!enc) {
-      if (scratchBuffer)
-        scratchBuffer->release();
       instanceDesc->release();
       return;
     }
@@ -2881,8 +2970,6 @@ void Renderer::updateTopLevelAccelerationStructure(
              instanceBuffer->length() > 0) {
     MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
     if (!enc) {
-      if (scratchBuffer)
-        scratchBuffer->release();
       instanceDesc->release();
       return;
     }
@@ -2896,8 +2983,6 @@ void Renderer::updateTopLevelAccelerationStructure(
   MTL::AccelerationStructureCommandEncoder *encoder =
       commandBuffer->accelerationStructureCommandEncoder();
   if (!encoder) {
-    if (scratchBuffer)
-      scratchBuffer->release();
     instanceDesc->release();
     return;
   }
@@ -2911,11 +2996,30 @@ void Renderer::updateTopLevelAccelerationStructure(
   }
   encoder->endEncoding();
 
-  commandBuffer->commit();
-  commandBuffer->waitUntilCompleted();
+  ensureTlasBuildEvent();
+  uint64_t signalValue = 0;
+  if (_pTlasBuildEvent) {
+    signalValue = ++_tlasBuildEventValue;
+    commandBuffer->encodeSignalEvent(_pTlasBuildEvent, signalValue);
+  }
 
-  if (scratchBuffer)
-    scratchBuffer->release();
+  if (signalValue > 0) {
+    commandBuffer->addCompletedHandler(
+        [this, signalValue](MTL::CommandBuffer *cmd) {
+          (void)cmd;
+          this->_tlasCompletedEventValue.store(signalValue,
+                                               std::memory_order_release);
+        });
+  }
+
+  commandBuffer->commit();
+
+  if (!_pTlasBuildEvent) {
+    commandBuffer->waitUntilCompleted();
+    _tlasCompletedEventValue.store(_tlasBuildEventValue,
+                                   std::memory_order_release);
+  }
+
   instanceDesc->release();
 
   _cachedInstanceDescriptors = descriptors;
@@ -4827,6 +4931,10 @@ void Renderer::draw(MTK::View *pView) {
   }
 
   if (_pPathTracePSO && !tiles.empty()) {
+    if (_useAccelerationStructureBindings && _pTlasStructure &&
+        _pGeometryHandleBuffer)
+      waitForPendingTlasBuild();
+
     NS::UInteger tgWidth =
         std::max<NS::UInteger>(1, _pPathTracePSO->threadExecutionWidth());
     NS::UInteger maxThreads = std::max<NS::UInteger>(
@@ -4863,6 +4971,11 @@ void Renderer::draw(MTK::View *pView) {
       MTL::CommandBuffer *computeCmd = _pCommandQueue->commandBuffer();
       if (!computeCmd)
         break;
+
+      if (_useAccelerationStructureBindings && _pTlasStructure &&
+          _pGeometryHandleBuffer && _pTlasBuildEvent &&
+          _tlasBuildEventValue > 0)
+        computeCmd->encodeWait(_pTlasBuildEvent, _tlasBuildEventValue);
 
       MTL::ComputeCommandEncoder *pCompute = computeCmd->computeCommandEncoder();
       if (!pCompute) {
