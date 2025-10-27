@@ -166,6 +166,8 @@ private:
   bool startBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void handleCompletedBlasBuild(
       const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success);
+  void transitionResidentToCold(ResidentObjectGpuResources &resident,
+                                BlasInstanceRecord &instanceRecord);
   bool submitAsyncCommandBuffer(MTL::CommandBuffer *commandBuffer,
                                std::function<void(bool)> completion);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
