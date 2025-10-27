@@ -1300,6 +1300,9 @@ void Renderer::processPendingCapturedFrames() {
     }
 
     if (!albedoData.empty() && !normalData.empty()) {
+      std::printf("Applying offline EXR denoiser to frame %llu\n",
+                 static_cast<unsigned long long>(capture->frameIndex));
+
       const int radius = 2;
       const float spatialSigma = 1.0f;
       const float albedoSigma = 0.25f;
@@ -4427,6 +4430,9 @@ void Renderer::updateUniforms(bool cameraChanged) {
 }
 
 void Renderer::draw(MTK::View *pView) {
+  if (_captureOutputsPending.load(std::memory_order_acquire))
+    processPendingCapturedFrames();
+
   processRayHitCounters();
   bool cameraChanged = updateCameraStates();
   Camera::State viewCamera =
