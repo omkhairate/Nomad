@@ -72,7 +72,7 @@ kernel void pathTraceKernel(
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
 
-  for (uint sample = 0; sample < samplesThisFrame; ++sample) {
+  for (uint sampleIdx = 0; sampleIdx < samplesThisFrame; ++sampleIdx) {
     float xOff = (randomFloat(seed) - 0.5f) / screenSize.x;
     seed = random(seed);
     float yOff = (randomFloat(seed) - 0.5f) / screenSize.y;
