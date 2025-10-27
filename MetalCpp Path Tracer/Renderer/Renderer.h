@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <simd/simd.h>
@@ -162,6 +163,8 @@ private:
   bool startBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void handleCompletedBlasBuild(
       const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success);
+  bool submitAsyncCommandBuffer(MTL::CommandBuffer *commandBuffer,
+                               std::function<void(bool)> completion);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
   void rebuildMaterialTextures();
@@ -357,6 +360,7 @@ private:
   GpuHeapResources _dummyBlasResources;
   MTL::AccelerationStructure *_pTlasStructure = nullptr;
   MTL::AccelerationStructure *_pDummyBlas = nullptr;
+  bool _dummyBlasBuildInFlight = false;
   std::vector<MTL::AccelerationStructureInstanceDescriptor>
       _cachedInstanceDescriptors;
   std::vector<MTL::AccelerationStructure *> _cachedInstancedAccelerationStructures;
