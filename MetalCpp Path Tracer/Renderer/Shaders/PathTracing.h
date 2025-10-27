@@ -743,7 +743,40 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                material.emissionPower;
     }
 
-    float3 offsetNormal = bestHit.normal;
+    float3 shadingNormal = bestHit.normal;
+    if (haveUV && material.normalTextureIndex >= 0 &&
+        bestHit.supportsNormalMap) {
+      float4 normalSample =
+          samplePackedTexture(material.normalTextureIndex, surfaceUV, textures,
+                              textureCount);
+      float3 sampledNormal = normalSample.xyz;
+      float3 localNormal = sampledNormal * 2.0f - float3(1.0f);
+
+      float3 geomNormal = bestHit.normal;
+      float3 tangent = bestHit.tangent;
+      float3 bitangent = bestHit.bitangent;
+
+      bool validFrame =
+          dot(tangent, tangent) > 1e-6f && dot(bitangent, bitangent) > 1e-6f &&
+          dot(geomNormal, geomNormal) > 1e-6f && all(isfinite(tangent)) &&
+          all(isfinite(bitangent)) && all(isfinite(geomNormal));
+
+      if (validFrame && all(isfinite(localNormal))) {
+        float3 t = normalize(tangent);
+        float3 b = normalize(bitangent);
+        float3 n = normalize(geomNormal);
+        float3 worldNormal = localNormal.x * t + localNormal.y * b +
+                             localNormal.z * n;
+        if (dot(worldNormal, worldNormal) > 1e-6f &&
+            all(isfinite(worldNormal))) {
+          shadingNormal = normalize(worldNormal);
+          if (dot(shadingNormal, n) < 0.0f)
+            shadingNormal = -shadingNormal;
+        }
+      }
+    }
+
+    float3 offsetNormal = shadingNormal;
     if (!recordedFirstHit) {
       sampleResult.albedo = material.diffuseColor;
       sampleResult.normal = offsetNormal;
@@ -774,7 +807,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             if (dist2 > 1e-6f) {
               float dist = sqrt(dist2);
               float3 wi = toLight / dist;
-              float cosTheta = max(dot(bestHit.normal, wi), 0.0f);
+              float cosTheta = max(dot(offsetNormal, wi), 0.0f);
               float cosLight = max(dot(lightNormal, -wi), 0.0f);
               if (cosTheta > 0.0f && cosLight > 0.0f) {
                 float currentCdf = lightCdf[selectedOffset];
@@ -856,7 +889,9 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
 
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
-    float3 scatterWeight = scatter(r, bestHit, material, seed);
+    intersection shadingHit = bestHit;
+    shadingHit.normal = shadingNormal;
+    float3 scatterWeight = scatter(r, shadingHit, material, seed);
     seed = random(seed);
     float3 biasNormal =
         (dot(r.direction, offsetNormal) < 0.0f) ? -offsetNormal : offsetNormal;
