@@ -556,8 +556,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
       light += absorption * float4(skyColor, 1.0);
       break;
     }
-    if (primitiveCount > 0 && bestHit.primitiveId >= 0 &&
-        primitiveHitCounts != nullptr) {
+    if (primitiveCount > 0 && bestHit.primitiveId >= 0) {
       uint localIndex = static_cast<uint>(bestHit.primitiveId);
       if (localIndex < primitiveCount) {
         uint globalId = primitiveRemap[localIndex];

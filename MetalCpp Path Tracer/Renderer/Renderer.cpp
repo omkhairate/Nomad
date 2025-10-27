@@ -161,15 +161,6 @@ size_t alignTo(size_t value, size_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
-bool strategyRequiresPrimitiveHitStats(ResidencyStrategy strategy) {
-  switch (strategy) {
-  case ResidencyStrategy::RayHitBudget:
-    return true;
-  default:
-    return false;
-  }
-}
-
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
 constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
 constexpr float kFrustumDebugNear = 0.1f;
@@ -1773,53 +1764,33 @@ void Renderer::updateVisibleScene() {
     _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
   }
 
+  size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
+  size_t hitBytes = hitCount * sizeof(uint32_t);
   flushRayHitCopy();
-  bool collectHitStats =
-      strategyRequiresPrimitiveHitStats(_pScene->getResidencyStrategy());
-  if (collectHitStats) {
-    size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
-    size_t hitBytes = hitCount * sizeof(uint32_t);
-    ensureBufferCapacity(_pPrimitiveHitBufferGPU, hitBytes,
-                         _primitiveHitBufferCapacity, false,
-                         MTL::ResourceStorageModePrivate);
-    ensureBufferCapacity(_pPrimitiveHitReadback, hitBytes,
-                         _primitiveHitReadbackCapacity, false,
-                         MTL::ResourceStorageModeShared);
-    if (uint32_t *hitPtr =
-            _pPrimitiveHitReadback
-                ? static_cast<uint32_t *>(_pPrimitiveHitReadback->contents())
-                : nullptr) {
-      std::memset(hitPtr, 0, hitBytes);
-    }
-    if (_pPrimitiveHitBufferGPU && hitBytes > 0) {
-      MTL::CommandBuffer *initCmd = _pCommandQueue->commandBuffer();
-      if (initCmd) {
-        MTL::BlitCommandEncoder *initBlit = initCmd->blitCommandEncoder();
-        if (initBlit) {
-          initBlit->fillBuffer(_pPrimitiveHitBufferGPU,
-                               NS::Range::Make(0, hitBytes), 0);
-          initBlit->endEncoding();
-        }
-        initCmd->commit();
-        initCmd->waitUntilCompleted();
+  ensureBufferCapacity(_pPrimitiveHitBufferGPU, hitBytes,
+                       _primitiveHitBufferCapacity, false,
+                       MTL::ResourceStorageModePrivate);
+  ensureBufferCapacity(_pPrimitiveHitReadback, hitBytes,
+                       _primitiveHitReadbackCapacity, false,
+                       MTL::ResourceStorageModeShared);
+  if (uint32_t *hitPtr =
+          _pPrimitiveHitReadback
+              ? static_cast<uint32_t *>(_pPrimitiveHitReadback->contents())
+              : nullptr) {
+    std::memset(hitPtr, 0, hitBytes);
+  }
+  if (_pPrimitiveHitBufferGPU && hitBytes > 0) {
+    MTL::CommandBuffer *initCmd = _pCommandQueue->commandBuffer();
+    if (initCmd) {
+      MTL::BlitCommandEncoder *initBlit = initCmd->blitCommandEncoder();
+      if (initBlit) {
+        initBlit->fillBuffer(_pPrimitiveHitBufferGPU,
+                             NS::Range::Make(0, hitBytes), 0);
+        initBlit->endEncoding();
       }
+      initCmd->commit();
+      initCmd->waitUntilCompleted();
     }
-  } else {
-    if (_pPrimitiveHitBufferGPU) {
-      _pPrimitiveHitBufferGPU->release();
-      _pPrimitiveHitBufferGPU = nullptr;
-    }
-    if (_pPrimitiveHitReadback) {
-      _pPrimitiveHitReadback->release();
-      _pPrimitiveHitReadback = nullptr;
-    }
-    _primitiveHitBufferCapacity = 0;
-    _primitiveHitReadbackCapacity = 0;
-    if (_lastRayHitCommandBuffer) {
-      _lastRayHitCommandBuffer->release();
-      _lastRayHitCommandBuffer = nullptr;
-    }
-    _rayHitCopyError = false;
   }
 
   _rayHitRebuildCooldown = 0;
@@ -4570,11 +4541,6 @@ void Renderer::draw(MTK::View *pView) {
             _useAccelerationStructureBindings && _pTlasStructure &&
             _pGeometryHandleBuffer;
 
-        bool collectPrimitiveHitStats =
-            strategyRequiresPrimitiveHitStats(_frameStrategy);
-        MTL::Buffer *hitCounterBuffer =
-            collectPrimitiveHitStats ? _pPrimitiveHitBufferGPU : nullptr;
-
         if (useAccelerationStructureLayout) {
           pCompute->setAccelerationStructure(_pTlasStructure, 0);
           pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
@@ -4585,7 +4551,7 @@ void Renderer::draw(MTK::View *pView) {
           pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
           pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
           pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
-          pCompute->setBuffer(hitCounterBuffer, 0, 9);
+          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
           pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         } else {
           pCompute->setBuffer(_pBVHBuffer, 0, 0);
@@ -4600,7 +4566,7 @@ void Renderer::draw(MTK::View *pView) {
           pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
           pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
           pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
-          pCompute->setBuffer(hitCounterBuffer, 0, 12);
+          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
           pCompute->setBuffer(_pInstanceBuffer, 0, 13);
         }
 
@@ -4729,10 +4695,7 @@ void Renderer::draw(MTK::View *pView) {
       captureList->push_back(capture);
   }
 
-  bool collectPrimitiveHitStats =
-      strategyRequiresPrimitiveHitStats(_frameStrategy);
-  if (collectPrimitiveHitStats && _pPrimitiveHitBufferGPU &&
-      _pPrimitiveHitReadback) {
+  if (_pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
     if (!pBlit)
       pBlit = presentCmd->blitCommandEncoder();
     if (pBlit) {
