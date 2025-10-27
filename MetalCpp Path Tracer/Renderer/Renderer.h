@@ -95,7 +95,6 @@ public:
   bool benchmarkModeEnabled() const { return _benchmarkEnabled; }
   void setFrameCaptureEnabled(bool enabled);
   void setFrameCaptureInterval(size_t interval);
-  void flushPendingCaptures();
 
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);
