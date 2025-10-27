@@ -14,6 +14,12 @@ constant uint kMaxMaterialTextures = 64;
 
 constexpr sampler kMaterialTextureSampler(address::repeat, filter::linear);
 
+struct PathTraceSample {
+  float3 radiance;
+  float3 albedo;
+  float3 normal;
+};
+
 struct Ray {
   float3 origin;
   float3 direction;
@@ -481,23 +487,30 @@ inline intersection firstHitTLAS(
 }
 
 template <typename TextureArray>
-inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
-                       device const float4 *tlasNodes,
-                       uint tlasNodeCount, device const float4 *bvhNodes,
-                       device const float4 *primitives,
-                       device const float4 *materials, uint primitiveCount,
-                       device const int *primitiveIndices,
-                       device const uchar *activeMask,
-                       device const InstanceRecord *instanceRecords,
-                       device const uint *lightIndices,
-                       device const float *lightCdf,
-                       device const uint *primitiveRemap,
-                       device atomic_uint *primitiveHitCounts,
-                       thread uint32_t &seed, uint maxRayDepth,
-                       uint debugAS, uint blasNodeCount, uint lightCount,
-                       float lightTotalWeight, uint totalPrimitiveCount,
-                       thread const TextureArray &textures,
-                       uint textureCount) {
+inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
+                                device const float4 *tlasNodes,
+                                uint tlasNodeCount, device const float4 *bvhNodes,
+                                device const float4 *primitives,
+                                device const float4 *materials,
+                                uint primitiveCount,
+                                device const int *primitiveIndices,
+                                device const uchar *activeMask,
+                                device const InstanceRecord *instanceRecords,
+                                device const uint *lightIndices,
+                                device const float *lightCdf,
+                                device const uint *primitiveRemap,
+                                device atomic_uint *primitiveHitCounts,
+                                thread uint32_t &seed, uint maxRayDepth,
+                                uint debugAS, uint blasNodeCount, uint lightCount,
+                                float lightTotalWeight, uint totalPrimitiveCount,
+                                thread const TextureArray &textures,
+                                uint textureCount) {
+  PathTraceSample sampleResult;
+  sampleResult.radiance = float3(0.0f);
+  sampleResult.albedo = float3(0.0f);
+  sampleResult.normal = float3(0.0f);
+  bool recordedFirstHit = false;
+
   float footprint = length(cross(rayDx, rayDy));
   float lodAtten = 1.0 / (1.0 + footprint);
   if (debugAS == 1) {
@@ -506,10 +519,11 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
       float3 bmax = tlasNodes[2 * i + 1].xyz;
       if (intersectAABB(r, bmin, bmax, 0.0001, INFINITY)) {
         float t = (tlasNodeCount > 1) ? float(i) / float(tlasNodeCount - 1) : 0.0;
-        return float4(t, 1.0 - t, 0.0, 1.0);
+        sampleResult.radiance = float3(t, 1.0 - t, 0.0);
+        return sampleResult;
       }
     }
-    return float4(0.0, 0.0, 0.0, 1.0);
+    return sampleResult;
   } else if (debugAS == 2) {
     intersection bestHit = firstHitTLAS(r, tlasNodes, tlasNodeCount, bvhNodes,
                                         primitives, primitiveIndices,
@@ -518,9 +532,10 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
       float t = (blasNodeCount > 1)
                     ? float(bestHit.nodeIndex) / float(blasNodeCount - 1)
                     : 0.0;
-      return float4(t, 0.0, 1.0 - t, 1.0);
+      sampleResult.radiance = float3(t, 0.0, 1.0 - t);
+      return sampleResult;
     }
-    return float4(0.0, 0.0, 0.0, 1.0);
+    return sampleResult;
   }
 
   float4 absorption = float4(1.0);
@@ -612,6 +627,11 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
     }
 
     float3 offsetNormal = bestHit.normal;
+    if (!recordedFirstHit) {
+      sampleResult.albedo = material.diffuseColor;
+      sampleResult.normal = offsetNormal;
+      recordedFirstHit = true;
+    }
 
     float3 diffuseColor = material.diffuseColor * material.opacity;
     float diffuseLum = luminance(diffuseColor);
@@ -737,7 +757,8 @@ inline float4 rayColor(Ray r, float3 rayDx, float3 rayDy,
     }
   }
 
-  return clamp(light, 0.0, 1.0);
+  sampleResult.radiance = clamp(light.xyz, 0.0, 1.0);
+  return sampleResult;
 }
 
 #endif

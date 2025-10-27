@@ -23,8 +23,10 @@ kernel void pathTraceKernel(
     texture2d<half, access::write> currentFrame [[texture(1)]],
     texture2d<half, access::read_write> sampleCount [[texture(2)]],
     texture2d<half, access::read> sampleImportance [[texture(3)]],
+    texture2d<half, access::read_write> albedoAccum [[texture(4)]],
+    texture2d<half, access::read_write> normalAccum [[texture(5)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
-        materialTextures [[texture(4)]],
+        materialTextures [[texture(6)]],
     constant TileRegion &tile [[buffer(16)]],
     uint2 gid [[thread_position_in_grid]]) {
   if (!uniforms)
@@ -63,7 +65,9 @@ kernel void pathTraceKernel(
   float previousSampleCount = float(sampleCount.read(pixel).x);
   float4 previousColor = float4(lastFrame.read(pixel));
 
-  float4 accumulatedColor = float4(0.0);
+  float3 accumulatedColor = float3(0.0);
+  float3 accumulatedAlbedo = float3(0.0);
+  float3 accumulatedNormal = float3(0.0);
 
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
@@ -84,22 +88,40 @@ kernel void pathTraceKernel(
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
 
-    accumulatedColor += rayColor(r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes,
-                                 primitives, materials, u.primitiveCount, primitiveIndices,
-                                 activeMask, instanceRecords, lightIndices, lightCdf,
-                                 primitiveRemap, primitiveHitCounts, seed, u.maxRayDepth,
-                                 u.debugAS, u.blasNodeCount, u.lightCount,
-                                 u.lightTotalWeight, static_cast<uint>(u.totalPrimitiveCount),
-                                 materialTextures, u.textureCount);
+    PathTraceSample sample = rayColor(r, rayDx, rayDy, tlasNodes, u.tlasNodeCount,
+                                      bvhNodes, primitives, materials,
+                                      u.primitiveCount, primitiveIndices,
+                                      activeMask, instanceRecords, lightIndices,
+                                      lightCdf, primitiveRemap, primitiveHitCounts,
+                                      seed, u.maxRayDepth, u.debugAS, u.blasNodeCount,
+                                      u.lightCount, u.lightTotalWeight,
+                                      static_cast<uint>(u.totalPrimitiveCount),
+                                      materialTextures, u.textureCount);
+    accumulatedColor += sample.radiance;
+    accumulatedAlbedo += sample.albedo;
+    accumulatedNormal += sample.normal;
   }
 
   float totalSamples = previousSampleCount + float(samplesThisFrame);
   float3 previousSum = previousColor.xyz * previousSampleCount;
-  float3 combinedSum = previousSum + accumulatedColor.xyz;
+  float3 combinedSum = previousSum + accumulatedColor;
   float3 averaged = (totalSamples > 0.0f) ? combinedSum / totalSamples : float3(0.0f);
   averaged = clamp(averaged, 0.0f, 1.0f);
 
+  float3 previousAlbedo = float3(albedoAccum.read(pixel));
+  float3 previousNormal = float3(normalAccum.read(pixel));
+  float3 albedoSum = previousAlbedo * previousSampleCount + accumulatedAlbedo;
+  float3 normalSum = previousNormal * previousSampleCount + accumulatedNormal;
+  float3 averagedAlbedo =
+      (totalSamples > 0.0f) ? albedoSum / totalSamples : float3(0.0f);
+  averagedAlbedo = clamp(averagedAlbedo, 0.0f, 1.0f);
+  float3 averagedNormal =
+      (totalSamples > 0.0f) ? normalSum / totalSamples : float3(0.0f);
+  averagedNormal = clamp(averagedNormal, -1.0f, 1.0f);
+
   float4 result = float4(averaged, 1.0f);
   currentFrame.write(half4(result), pixel);
+  albedoAccum.write(half4(float4(averagedAlbedo, 1.0f)), pixel);
+  normalAccum.write(half4(float4(averagedNormal, 1.0f)), pixel);
   sampleCount.write(half4(totalSamples, half(0.0f), half(0.0f), half(0.0f)), pixel);
 }
