@@ -113,7 +113,8 @@ public:
 
   const std::vector<Texture> &getTextures() const;
   const std::vector<std::string> &getTexturePaths() const;
-  int registerTexture(const std::string &path, Texture texture);
+  int registerTexture(const std::string &cacheKey, const std::string &displayPath,
+                      Texture texture);
 
   ResidencyStrategy getResidencyStrategy() const;
   void setResidencyStrategy(ResidencyStrategy strategy);

@@ -1,6 +1,9 @@
 <Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="distance"
        textureResidencyMemoryCapMB="16"
        lodEnterDistance="50" lodExitDistance="75" residencyCooldown="1" lodToggleBudget="10000">
+    <!-- Materials support texture paths via diffuseTexture/albedoTexture, specularTexture, and normalTexture. -->
+    <!-- Normal maps flagged this way are imported in linear color space so tangent data is preserved. -->
+    <!-- Example: <Mesh file="assets/statue.obj" normalTexture="assets/statue_normal.png" /> -->
     <CameraPath>
         <!-- Default regression path: retreat over a bridge of geometry so far clusters are unloaded -->
         <Keyframe frame="0" position="0,8,15" lookAt="0,5,-25" />

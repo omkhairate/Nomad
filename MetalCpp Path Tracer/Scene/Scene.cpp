@@ -175,15 +175,16 @@ const std::vector<std::string> &Scene::getTexturePaths() const {
   return texturePaths;
 }
 
-int Scene::registerTexture(const std::string &path, Texture texture) {
-  auto it = textureLookup.find(path);
+int Scene::registerTexture(const std::string &cacheKey,
+                           const std::string &displayPath, Texture texture) {
+  auto it = textureLookup.find(cacheKey);
   if (it != textureLookup.end())
     return it->second;
 
   int index = static_cast<int>(textures.size());
   textures.push_back(std::move(texture));
-  texturePaths.push_back(path);
-  textureLookup.emplace(path, index);
+  texturePaths.push_back(displayPath);
+  textureLookup.emplace(cacheKey, index);
   return index;
 }
 
