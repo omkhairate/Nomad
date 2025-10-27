@@ -4430,9 +4430,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
 }
 
 void Renderer::draw(MTK::View *pView) {
-  if (_captureOutputsPending.load(std::memory_order_acquire))
-    processPendingCapturedFrames();
-
   processRayHitCounters();
   bool cameraChanged = updateCameraStates();
   Camera::State viewCamera =
@@ -4442,6 +4439,9 @@ void Renderer::draw(MTK::View *pView) {
   updateResidency();
 
   Camera::applyState(viewCamera);
+  if (_captureOutputsPending.load(std::memory_order_acquire))
+    processPendingCapturedFrames();
+
   Camera::deltaTime =
       _observerActive ? 0.0f : static_cast<float>(_deltaTimeSeconds);
   updateUniforms(cameraChanged);
