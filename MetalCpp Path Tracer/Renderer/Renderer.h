@@ -119,7 +119,6 @@ public:
   double lastCPUTime() const;
   double lastGPUTime() const;
   double lastRaysPerSecond() const;
-  double lastCommandSubmissionTime() const;
   size_t activeNodeCount() const;
   size_t residentNodeCount() const;
   size_t totalNodeCount() const;
@@ -321,7 +320,6 @@ private:
     double deltaTimeSeconds = 0.0;
     double wallSeconds = 0.0;
     double cpuTimeSeconds = 0.0;
-    double commandSubmissionSeconds = 0.0;
     double gpuTimeSeconds = 0.0;
     double raysPerSecond = 0.0;
     ResidencyStrategy strategy = ResidencyStrategy::DistanceLOD;
@@ -469,7 +467,6 @@ private:
   double _lastCPUTime = 0.0;
   double _lastGPUTime = 0.0;
   double _lastRaysPerSecond = 0.0;
-  double _lastCommandSubmissionSeconds = 0.0;
   size_t _lastRayCount = 0;
 
   double _deltaTimeSeconds = 0.0;
@@ -521,8 +518,6 @@ private:
                         MTL::BlitCommandEncoder *&blit);
   void releaseTextureSlot(ManagedTextureSlot &slot);
   const char *textureSlotLabel(const ManagedTextureSlot &slot) const;
-  size_t maxTileSampleWorkPerCommand(uint32_t effectiveMaxSamples,
-                                     size_t framePixelCount) const;
   void updateTextureResidency(MTL::CommandBuffer *cmd);
 };
 
