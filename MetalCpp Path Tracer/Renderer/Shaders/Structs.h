@@ -77,6 +77,7 @@ struct UniformsData
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
     uint textureCount;
+    uint maxSamplesPerDispatch;
 };
 
 struct TileRegion
