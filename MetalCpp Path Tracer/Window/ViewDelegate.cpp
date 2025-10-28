@@ -27,7 +27,7 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
     _perfLog.open(perf);
     if (_perfLog.is_open())
       _perfLog <<
-          "frame,fps,cpu_ms,command_submit_ms,gpu_ms,rays_per_second,active_nodes,resident_nodes,offloaded_nodes,total_nodes,history_enabled\n";
+          "frame,fps,cpu_ms,command_submit_ms,gpu_ms,rays_per_second,active_nodes,resident_nodes,offloaded_nodes,total_nodes\n";
 
     std::filesystem::path gpu = base / "gpu_mem.csv";
     _gpuMemLog.open(gpu);
@@ -47,10 +47,6 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
 
   bool captureEnabled = parseBoolEnv(std::getenv("MPT_CAPTURE_EXR"));
 
-  bool historySampling = true;
-  if (const char *historyEnv = std::getenv("MPT_HISTORY_SAMPLING"))
-    historySampling = parseBoolEnv(historyEnv);
-
   size_t captureInterval = 4;
   if (const char *intervalEnv = std::getenv("MPT_CAPTURE_INTERVAL")) {
     unsigned long parsed = std::strtoul(intervalEnv, nullptr, 10);
@@ -60,7 +56,6 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
 
   _pRenderer->setFrameCaptureEnabled(captureEnabled);
   _pRenderer->setFrameCaptureInterval(captureInterval);
-  _pRenderer->setHistorySamplingEnabled(historySampling);
 }
 
 ViewDelegate::~ViewDelegate() {
@@ -94,8 +89,8 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
     size_t offloaded = total > resident ? total - resident : 0;
     _perfLog << _frameCount << "," << fps << "," << cpu_ms << ","
              << submit_ms << "," << gpu_ms << "," << rays << "," << active
-             << "," << resident << "," << offloaded << "," << total << ","
-             << (_pRenderer->historySamplingEnabled() ? 1 : 0) << "\n";
+             << "," << resident
+             << "," << offloaded << "," << total << "\n";
     _perfLog.flush();
   }
   if (_gpuMemLog.is_open()) {
