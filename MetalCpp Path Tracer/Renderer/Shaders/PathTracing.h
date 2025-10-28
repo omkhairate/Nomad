@@ -8,6 +8,7 @@
 
 using namespace metal;
 
+constant uint kMaterialFloat4Count = 5;
 constant uint kPrimitiveFloat4Count = 7;
 constant uint kMaxMaterialTextures = 64;
 
@@ -64,22 +65,32 @@ inline float3 randomInUnitSphere(thread uint32_t &seed) {
   }
 }
 
-inline MaterialPayload decodeMaterial(const PackedMaterial &m,
+inline int decodeTextureIndex(float value) {
+  return (value >= -0.5f) ? int(floor(value + 0.5f)) : -1;
+}
+
+inline MaterialPayload decodeMaterial(int baseIndex,
+                                      device const float4 *materials,
                                       float lodAttenuation) {
   MaterialPayload payload;
-  payload.diffuseColor =
-      max(m.diffuseColor * lodAttenuation, float3(0.0f));
-  payload.opacity = clamp(m.opacity, 0.0f, 1.0f);
-  payload.specularColor = max(m.specularColor, float3(0.0f));
-  payload.shininess = max(m.shininess, 1.0f);
-  payload.emissionColor = max(m.emissionColor, float3(0.0f));
-  payload.emissionPower = max(m.emissionPower, 0.0f);
-  payload.transmissionColor = max(m.transmissionColor, float3(0.0f));
-  payload.indexOfRefraction = max(m.indexOfRefraction, 1e-3f);
-  payload.roughness = clamp(m.roughness, 0.0f, 1.0f);
-  payload.diffuseTextureIndex = m.diffuseTextureIndex;
-  payload.specularTextureIndex = m.specularTextureIndex;
-  payload.normalTextureIndex = m.normalTextureIndex;
+  float4 m0 = materials[baseIndex + 0];
+  float4 m1 = materials[baseIndex + 1];
+  float4 m2 = materials[baseIndex + 2];
+  float4 m3 = materials[baseIndex + 3];
+  float4 m4 = materials[baseIndex + 4];
+
+  payload.diffuseColor = max(m0.xyz * lodAttenuation, float3(0.0f));
+  payload.opacity = clamp(m0.w, 0.0f, 1.0f);
+  payload.specularColor = max(m1.xyz, float3(0.0f));
+  payload.shininess = max(m1.w, 1.0f);
+  payload.emissionColor = max(m2.xyz, float3(0.0f));
+  payload.emissionPower = max(m2.w, 0.0f);
+  payload.transmissionColor = max(m3.xyz, float3(0.0f));
+  payload.indexOfRefraction = max(m3.w, 1e-3f);
+  payload.roughness = clamp(m4.w, 0.0f, 1.0f);
+  payload.diffuseTextureIndex = decodeTextureIndex(m4.x);
+  payload.specularTextureIndex = decodeTextureIndex(m4.y);
+  payload.normalTextureIndex = decodeTextureIndex(m4.z);
   payload.pad0 = 0.0f;
   payload.pad1 = 0;
 
@@ -110,6 +121,24 @@ inline float4 samplePackedTexture(int index, float2 uv,
 
   float2 coord = float2(uv.x - floor(uv.x), uv.y - floor(uv.y));
   return tex.sample(kMaterialTextureSampler, coord, level(0.0f));
+}
+
+inline uint selectLightOffset(float xi, device const float *lightCdf,
+                              uint lightCount, float totalWeight) {
+  if (lightCount == 0 || totalWeight <= 0.0f)
+    return lightCount;
+
+  float target = xi * totalWeight;
+  uint low = 0;
+  uint high = lightCount;
+  while (low < high) {
+    uint mid = (low + high) / 2;
+    if (lightCdf[mid] < target)
+      low = mid + 1;
+    else
+      high = mid;
+  }
+  return min(low, lightCount - 1);
 }
 
 inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,
@@ -577,18 +606,18 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 device const float4 *tlasNodes,
                                 uint tlasNodeCount, device const float4 *bvhNodes,
                                 device const float4 *primitives,
-                                device const PackedMaterial *materials,
+                                device const float4 *materials,
                                 uint primitiveCount,
                                 device const int *primitiveIndices,
                                 device const uchar *activeMask,
                                 device const InstanceRecord *instanceRecords,
-                                device const PackedLight *lights,
-                                device const LightAliasEntry *lightAlias,
+                                device const uint *lightIndices,
+                                device const float *lightCdf,
                                 device const uint *primitiveRemap,
                                 device atomic_uint *primitiveHitCounts,
                                 thread uint32_t &seed, uint maxRayDepth,
                                 uint debugAS, uint blasNodeCount, uint lightCount,
-                                uint totalPrimitiveCount,
+                                float lightTotalWeight, uint totalPrimitiveCount,
                                 thread const TextureArray &textures,
                                 uint textureCount) {
   PathTraceSample sampleResult;
@@ -651,16 +680,12 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                     memory_order_relaxed);
       }
     }
-    if (bestHit.primitiveId < 0)
-      break;
-    uint materialIndex = static_cast<uint>(bestHit.primitiveId);
-    if (materialIndex >= primitiveCount)
+    int matBase = bestHit.primitiveId * int(kMaterialFloat4Count);
+    int totalEntries = int(primitiveCount) * int(kMaterialFloat4Count);
+    if (matBase + int(kMaterialFloat4Count) > totalEntries)
       break;
 
-    PackedMaterial packedMaterial = materials[materialIndex];
-    MaterialPayload material = decodeMaterial(packedMaterial, lodAtten);
-    if ((packedMaterial.flags & kPackedMaterialFlagHasNormalMap) == 0)
-      material.normalTextureIndex = -1;
+    MaterialPayload material = decodeMaterial(matBase, materials, lodAtten);
     if (!bestHit.supportsNormalMap)
       material.normalTextureIndex = -1;
 
@@ -718,15 +743,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                material.emissionPower;
     }
 
-    float3 fallbackNormal = packedMaterial.normal;
-    if (!(all(isfinite(fallbackNormal)) &&
-          dot(fallbackNormal, fallbackNormal) > 1e-6f))
-      fallbackNormal = float3(0.0f, 1.0f, 0.0f);
-
     float3 shadingNormal = bestHit.normal;
-    if (!(all(isfinite(shadingNormal)) &&
-          dot(shadingNormal, shadingNormal) > 1e-6f))
-      shadingNormal = normalize(fallbackNormal);
     if (haveUV && material.normalTextureIndex >= 0 &&
         bestHit.supportsNormalMap) {
       float4 normalSample =
@@ -768,33 +785,23 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
 
     float3 diffuseColor = material.diffuseColor * material.opacity;
     float diffuseLum = luminance(diffuseColor);
-    if (diffuseLum > 0.0f && lightCount > 0) {
+    if (diffuseLum > 0.0f && lightCount > 0 && lightTotalWeight > 0.0f) {
       float lightXi = randomFloat(seed);
       seed = random(seed);
-      float scaled = lightXi * float(lightCount);
-      uint bucket = min(uint(scaled), lightCount - 1);
-      float frac = scaled - float(bucket);
-      LightAliasEntry aliasEntry = lightAlias[bucket];
-      float threshold = clamp(aliasEntry.probability, 0.0f, 1.0f);
-      uint aliasIndex = min(aliasEntry.alias, lightCount - 1);
-      uint selectedOffset = (frac < threshold) ? bucket : aliasIndex;
+      uint selectedOffset =
+          selectLightOffset(lightXi, lightCdf, lightCount, lightTotalWeight);
       if (selectedOffset < lightCount) {
-        PackedLight selectedLight = lights[selectedOffset];
-        uint lightPrimIndex = selectedLight.primitiveIndex;
-        if (int(lightPrimIndex) != bestHit.primitiveId &&
-            lightPrimIndex < primitiveCount &&
-            selectedLight.selectionPdf > 0.0f &&
-            selectedLight.inverseArea > 0.0f) {
+        uint lightPrimIndex = lightIndices[selectedOffset];
+        if (int(lightPrimIndex) != bestHit.primitiveId) {
           int base = int(lightPrimIndex) * int(kPrimitiveFloat4Count);
           float4 lp0 = primitives[base + 0];
           float4 lp1 = primitives[base + 1];
           float4 lp2 = primitives[base + 2];
           float3 lightPoint;
           float3 lightNormal;
-          float sampledArea = 0.0f;
+          float area = 0.0f;
           if (sampleLightPoint(int(lp0.w), lp0, lp1, lp2, seed, lightPoint,
-                               lightNormal, sampledArea)) {
-            (void)sampledArea;
+                               lightNormal, area) && area > 0.0f) {
             float3 toLight = lightPoint - bestHit.point;
             float dist2 = dot(toLight, toLight);
             if (dist2 > 1e-6f) {
@@ -803,57 +810,74 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
               float cosTheta = max(dot(offsetNormal, wi), 0.0f);
               float cosLight = max(dot(lightNormal, -wi), 0.0f);
               if (cosTheta > 0.0f && cosLight > 0.0f) {
-                float pdfArea = selectedLight.inverseArea;
-                float pdfSolid = pdfArea * dist2 / cosLight;
-                float totalPdf = selectedLight.selectionPdf * pdfSolid;
-                if (totalPdf > 0.0f) {
-                  Ray shadowRay;
-                  shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
-                  shadowRay.direction = wi;
-                  shadowRay.minDistance = 0.0001f;
-                  shadowRay.maxDistance = dist - 0.0001f;
-                  if (shadowRay.maxDistance < shadowRay.minDistance)
-                    shadowRay.maxDistance = shadowRay.minDistance;
-                  intersection shadowHit;
-                  bool usedCache = false;
-                  if (bounceCache.valid) {
-                    bool intersectsCached = intersectAABB(
-                        shadowRay, bounceCache.boundsMin, bounceCache.boundsMax,
-                        shadowRay.minDistance, shadowRay.maxDistance);
-                    if (intersectsCached && bounceCache.blasRootIndex >= 0) {
-                      intersection cachedHit = firstHitBVH(
-                          shadowRay, bvhNodes, primitives, primitiveIndices,
-                          activeMask, bounceCache.blasRootIndex);
-                      if (cachedHit.primitiveId != -1 &&
-                          cachedHit.primitiveId != int(lightPrimIndex) &&
-                          cachedHit.t <= shadowRay.maxDistance) {
-                        shadowHit = cachedHit;
-                        usedCache = true;
+                float currentCdf = lightCdf[selectedOffset];
+                float prevCdf =
+                    (selectedOffset > 0) ? lightCdf[selectedOffset - 1] : 0.0f;
+                float weight = currentCdf - prevCdf;
+                float lightPdf =
+                    (lightTotalWeight > 0.0f && weight > 0.0f)
+                        ? weight / lightTotalWeight
+                    : 0.0f;
+                if (lightPdf > 0.0f) {
+                  float pdfArea = 1.0f / area;
+                  float pdfSolid = pdfArea * dist2 / cosLight;
+                  float totalPdf = lightPdf * pdfSolid;
+                  if (totalPdf > 0.0f) {
+                    Ray shadowRay;
+                    shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
+                    shadowRay.direction = wi;
+                    shadowRay.minDistance = 0.0001f;
+                    shadowRay.maxDistance = dist - 0.0001f;
+                    if (shadowRay.maxDistance < shadowRay.minDistance)
+                      shadowRay.maxDistance = shadowRay.minDistance;
+                    intersection shadowHit;
+                    bool usedCache = false;
+                    if (bounceCache.valid) {
+                      bool intersectsCached = intersectAABB(
+                          shadowRay, bounceCache.boundsMin,
+                          bounceCache.boundsMax, shadowRay.minDistance,
+                          shadowRay.maxDistance);
+                      if (intersectsCached && bounceCache.blasRootIndex >= 0) {
+                        intersection cachedHit = firstHitBVH(
+                            shadowRay, bvhNodes, primitives, primitiveIndices,
+                            activeMask, bounceCache.blasRootIndex);
+                        if (cachedHit.primitiveId != -1 &&
+                            cachedHit.primitiveId != int(lightPrimIndex) &&
+                            cachedHit.t <= shadowRay.maxDistance) {
+                          shadowHit = cachedHit;
+                          usedCache = true;
+                        }
                       }
                     }
-                  }
-                  if (!usedCache) {
-                    shadowHit = firstHitTLAS(
-                        shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
-                        primitives, primitiveIndices, activeMask,
-                        instanceRecords, nullptr);
-                  }
-                  bool visible = false;
-                  if (shadowHit.primitiveId == -1) {
-                    visible = true;
-                  } else if (shadowHit.primitiveId == int(lightPrimIndex) &&
-                             shadowHit.t >= dist - 0.001f) {
-                    visible = true;
-                  }
-                  if (visible) {
-                    PackedMaterial lightPacked = materials[lightPrimIndex];
-                    float3 lightRadiance =
-                        lightPacked.emissionColor * lightPacked.emissionPower;
-                    float3 throughput =
-                        absorption.xyz * (diffuseColor / M_PI);
-                    float3 contribution =
-                        throughput * lightRadiance * (cosTheta / totalPdf);
-                    light.xyz += contribution;
+                    if (!usedCache) {
+                      shadowHit = firstHitTLAS(
+                          shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
+                          primitives, primitiveIndices, activeMask,
+                          instanceRecords, nullptr);
+                    }
+                    bool visible = false;
+                    if (shadowHit.primitiveId == -1) {
+                      visible = true;
+                    } else if (shadowHit.primitiveId == int(lightPrimIndex) &&
+                               shadowHit.t >= dist - 0.001f) {
+                      visible = true;
+                    }
+                    if (visible) {
+                      int lightMatIndex = int(lightPrimIndex) *
+                                          int(kMaterialFloat4Count);
+                      if (lightMatIndex + int(kMaterialFloat4Count) <=
+                          int(primitiveCount) * int(kMaterialFloat4Count)) {
+                        MaterialPayload lightMaterial =
+                            decodeMaterial(lightMatIndex, materials, 1.0f);
+                        float3 lightRadiance = lightMaterial.emissionColor *
+                                              lightMaterial.emissionPower;
+                        float3 throughput =
+                            absorption.xyz * (diffuseColor / M_PI);
+                        float3 contribution =
+                            throughput * lightRadiance * (cosTheta / totalPdf);
+                        light.xyz += contribution;
+                      }
+                    }
                   }
                 }
               }

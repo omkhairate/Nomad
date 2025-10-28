@@ -48,18 +48,6 @@ struct TextureInfo {
   uint32_t flags = 0;
 };
 
-struct PackedLight {
-  uint32_t primitiveIndex = 0;
-  float area = 0.0f;
-  float inverseArea = 0.0f;
-  float selectionPdf = 0.0f;
-};
-
-struct LightAliasEntry {
-  float probability = 1.0f;
-  uint32_t alias = 0;
-};
-
 class Renderer;
 
 struct ResidentObjectGpuResources {
@@ -238,8 +226,8 @@ private:
   std::mutex _frameCommandBufferMutex;
   MTL::CommandBuffer *_lastRayHitCommandBuffer = nullptr;
   bool _rayHitCopyError = false;
-  MTL::Buffer *_pLightDataBuffer = nullptr;
-  MTL::Buffer *_pLightAliasBuffer = nullptr;
+  MTL::Buffer *_pLightIndexBuffer = nullptr;
+  MTL::Buffer *_pLightCdfBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
@@ -408,7 +396,7 @@ private:
   size_t _activePrimitiveCount = 0;
   size_t _activeTriangleCount = 0;
   size_t _lightCount = 0;
-  
+  float _lightTotalWeight = 0.0f;
 
   bool _residentBuffersInitialized = false;
   bool _residentCompacted = false;
@@ -416,7 +404,7 @@ private:
   uint32_t _compactionCooldown = 0;
   std::vector<uint8_t> _cpuActiveMask;
   std::vector<simd::float4> _cachedPrimitiveData;
-  std::vector<PackedMaterial> _cachedMaterialData;
+  std::vector<simd::float4> _cachedMaterialData;
   std::vector<int> _cachedPrimitiveIndices;
   std::vector<simd::float4> _cachedBVHNodes;
   std::vector<simd::float4> _cachedTLASNodes;
@@ -426,8 +414,7 @@ private:
   std::vector<simd::float4> _cachedTextureData;
   std::vector<MTL::Texture *> _materialTextures;
   std::vector<uint32_t> _cachedLightIndices;
-  std::vector<PackedLight> _cachedLightData;
-  std::vector<LightAliasEntry> _cachedLightAlias;
+  std::vector<float> _cachedLightCdf;
 
   struct MeshGroupInfo {
     int meshGroupId = -1;
@@ -454,8 +441,8 @@ private:
   size_t _tlasBufferCapacity = 0;
   size_t _primitiveIndexBufferCapacity = 0;
   size_t _activeBufferCapacity = 0;
-  size_t _lightDataBufferCapacity = 0;
-  size_t _lightAliasBufferCapacity = 0;
+  size_t _lightIndexBufferCapacity = 0;
+  size_t _lightCdfBufferCapacity = 0;
   size_t _primitiveRemapBufferCapacity = 0;
   size_t _primitiveHitBufferCapacity = 0;
   size_t _instanceBufferCapacity = 0;
