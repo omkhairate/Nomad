@@ -97,23 +97,13 @@ kernel void adaptiveSamplingMain(
     uint sampleWidth = sampleCountTexture.get_width();
     uint sampleHeight = sampleCountTexture.get_height();
     float4 sampleState = safeFetchSampleState(sampleCountTexture, sampleWidth, sampleHeight, gid);
-    float totalSamples = max(sampleState.x, 0.0f);
+    float totalSamples = sampleState.x;
     float runningMean = sampleState.y;
-    float m2 = max(sampleState.z, 0.0f);
-    float variance = max(sampleState.w, 0.0f);
-
-    float accumulationDecay = clamp(uniforms.accumulationDecay, 0.0f, 1.0f);
-    if (accumulationDecay < 1.0f)
-    {
-        totalSamples *= accumulationDecay;
-        m2 *= accumulationDecay;
-        variance *= accumulationDecay;
-    }
-
+    float variance = sampleState.w;
     if (totalSamples > 1.0f && variance <= 0.0f)
     {
         float denom = max(totalSamples - 1.0f, 1.0f);
-        variance = max(m2 / denom, 0.0f);
+        variance = max(sampleState.z / denom, 0.0f);
     }
 
     float minSamples = float(max(uniforms.minSamplesPerPixel, 1u));
