@@ -86,7 +86,7 @@ kernel void pathTraceKernel(
     previousMean = 0.0f;
     previousM2 = 0.0f;
   }
-  float3 previousColor = float3(lastFrame.read(pixel));
+  float3 previousColor = float4(lastFrame.read(pixel)).xyz;
 
   float3 accumulatedColor = float3(0.0);
   float3 accumulatedAlbedo = float3(0.0);
