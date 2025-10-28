@@ -77,9 +77,6 @@ struct UniformsData
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
     uint textureCount;
-    float accumulationDecay;
-    float motionIntensity;
-    float2 padding;
 };
 
 struct TileRegion
