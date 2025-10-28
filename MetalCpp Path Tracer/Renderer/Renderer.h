@@ -146,7 +146,6 @@ private:
   bool updateAlwaysResident(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
-  void updateDispatchSampleBudget();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
   void waitForPendingFrameCommands();
@@ -457,8 +456,6 @@ private:
   size_t _lastRayCount = 0;
 
   double _deltaTimeSeconds = 0.0;
-  double _targetFrameTimeSeconds = 1.0 / 60.0;
-  double _smoothedCpuFrameTimeSeconds = 0.0;
 
   size_t _animationFrame = 0;
 
@@ -486,7 +483,6 @@ private:
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
-  uint32_t _maxSamplesPerDispatchBudget = 4;
   bool _needsAccumulationReset = true;
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;

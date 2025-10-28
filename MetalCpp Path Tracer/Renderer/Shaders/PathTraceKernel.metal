@@ -58,31 +58,11 @@ kernel void pathTraceKernel(
   if (!isfinite(desiredSamples))
     desiredSamples = float(u.minSamplesPerPixel);
 
-  desiredSamples = clamp(desiredSamples, float(u.minSamplesPerPixel),
-                         float(u.maxSamplesPerPixel));
+  uint samplesThisFrame = uint(round(desiredSamples));
+  samplesThisFrame = clamp(samplesThisFrame, u.minSamplesPerPixel, u.maxSamplesPerPixel);
+  samplesThisFrame = max(samplesThisFrame, 1u);
 
-  uint requestedSamples = uint(round(desiredSamples));
-  requestedSamples = clamp(requestedSamples, u.minSamplesPerPixel,
-                           u.maxSamplesPerPixel);
-
-  float storedSampleCount = float(sampleCount.read(pixel).x);
-  uint previousSamples = uint(round(storedSampleCount));
-  uint targetSamples = max(u.maxSamplesPerPixel, u.minSamplesPerPixel);
-  previousSamples = min(previousSamples, targetSamples);
-  uint remainingTargetSamples = 0u;
-  if (previousSamples < targetSamples)
-    remainingTargetSamples = targetSamples - previousSamples;
-
-  uint dispatchBudget = max(u.maxSamplesPerDispatch, 1u);
-  uint samplesThisFrame = requestedSamples;
-  samplesThisFrame = min(samplesThisFrame, remainingTargetSamples);
-  samplesThisFrame = min(samplesThisFrame, dispatchBudget);
-
-  if (samplesThisFrame == 0u && remainingTargetSamples > 0u &&
-      dispatchBudget > 0u)
-    samplesThisFrame = min(remainingTargetSamples, dispatchBudget);
-
-  float previousSampleCount = float(previousSamples);
+  float previousSampleCount = float(sampleCount.read(pixel).x);
   float4 previousColor = float4(lastFrame.read(pixel));
 
   float3 accumulatedColor = float3(0.0);
