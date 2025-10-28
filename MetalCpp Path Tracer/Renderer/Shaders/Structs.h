@@ -114,7 +114,6 @@ struct UniformsData
     uint textureCount;
     uint maxSamplesPerDispatch;
     uint debugOutputMode;
-    uint historyAccumulationEnabled;
     float importanceVisualizationScale;
 };
 
