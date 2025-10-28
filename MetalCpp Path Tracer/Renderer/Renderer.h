@@ -483,6 +483,9 @@ private:
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
+  simd::float4x4 _previousViewProjection{};
+  bool _previousViewProjectionValid = false;
+  float _motionDecayFactor = 0.25f;
   bool _needsAccumulationReset = true;
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;

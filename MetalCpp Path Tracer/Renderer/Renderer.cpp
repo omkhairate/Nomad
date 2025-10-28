@@ -231,6 +231,9 @@ struct UniformsData {
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
   uint32_t textureCount = 0;
+  float accumulationDecay = 1.0f;
+  float motionIntensity = 0.0f;
+  simd::float2 padding = {0.0f, 0.0f};
 };
 
 struct TileDispatchRegion {
@@ -271,6 +274,7 @@ constexpr size_t kTextureResidencyPrimitiveBudget = 1;
 constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
 constexpr float kFrustumDebugNear = 0.1f;
 constexpr float kFrustumDebugFarMultiplier = 5.0f;
+constexpr float kViewProjectionMotionThreshold = 1e-4f;
 
 struct OverlayUniforms {
   simd::float4x4 viewProjection;
@@ -4892,8 +4896,52 @@ bool Renderer::updateCameraStates() {
 void Renderer::updateUniforms(bool cameraChanged) {
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
-  if (cameraChanged)
-    _needsAccumulationReset = true;
+  float accumulationDecay = 1.0f;
+  float motionIntensity = 0.0f;
+
+  const Camera::State &activeCamera =
+      _observerActive ? _observerCameraState : _primaryCameraState;
+  bool validScreen = Camera::screenSize.x > 0.0f && Camera::screenSize.y > 0.0f;
+  if (validScreen) {
+    float aspect = Camera::screenSize.y > 0.0f
+                       ? Camera::screenSize.x / Camera::screenSize.y
+                       : 1.0f;
+    float nearPlane = kFrustumDebugNear;
+    float baseDistance = std::max(activeCamera.focalLength, 1.0f);
+    float farPlane =
+        std::max(baseDistance * kFrustumDebugFarMultiplier, nearPlane * 2.0f);
+    simd::float4x4 currentViewProjection =
+        simd_mul(makePerspectiveMatrix(activeCamera.verticalFov, aspect,
+                                       nearPlane, farPlane),
+                 makeViewMatrix(activeCamera));
+
+    if (_previousViewProjectionValid) {
+      float maxDelta = 0.0f;
+      for (int column = 0; column < 4; ++column) {
+        simd::float4 currentCol = currentViewProjection.columns[column];
+        simd::float4 previousCol = _previousViewProjection.columns[column];
+        for (int row = 0; row < 4; ++row) {
+          float delta = std::fabs(currentCol[row] - previousCol[row]);
+          if (delta > maxDelta)
+            maxDelta = delta;
+        }
+      }
+      motionIntensity = maxDelta;
+      if (maxDelta > kViewProjectionMotionThreshold)
+        accumulationDecay = _motionDecayFactor;
+    } else if (cameraChanged) {
+      accumulationDecay = _motionDecayFactor;
+    }
+
+    _previousViewProjection = currentViewProjection;
+    _previousViewProjectionValid = true;
+  } else {
+    _previousViewProjectionValid = false;
+    if (cameraChanged)
+      accumulationDecay = _motionDecayFactor;
+  }
+
+  accumulationDecay = std::clamp(accumulationDecay, 0.0f, 1.0f);
 
   if (_needsAccumulationReset) {
     if (!_accumulationTargetsNeedClear) {
@@ -4902,8 +4950,17 @@ void Renderer::updateUniforms(bool cameraChanged) {
     }
     u.frameCount = 0;
   } else {
+    if (accumulationDecay < 1.0f) {
+      double scaledFrameCount =
+          static_cast<double>(u.frameCount) * accumulationDecay;
+      u.frameCount = static_cast<uint64_t>(scaledFrameCount);
+      u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
+    }
     u.frameCount++;
   }
+
+  u.accumulationDecay = accumulationDecay;
+  u.motionIntensity = motionIntensity;
 
   uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
   uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);

@@ -62,7 +62,8 @@ kernel void pathTraceKernel(
   samplesThisFrame = clamp(samplesThisFrame, u.minSamplesPerPixel, u.maxSamplesPerPixel);
   samplesThisFrame = max(samplesThisFrame, 1u);
 
-  float previousSampleCount = float(sampleCount.read(pixel).x);
+  float decay = clamp(u.accumulationDecay, 0.0f, 1.0f);
+  float previousSampleCount = float(sampleCount.read(pixel).x) * decay;
   float4 previousColor = float4(lastFrame.read(pixel));
 
   float3 accumulatedColor = float3(0.0);
