@@ -51,6 +51,8 @@ void Scene::clear() {
   textures.clear();
   texturePaths.clear();
   textureLookup.clear();
+  environment = EnvironmentSettings{};
+  environment.brightness = 1.0f;
   cameraPath.clear();
   screenSize = {1280.f, 720.f};
   maxRayDepth = 32;
@@ -186,6 +188,26 @@ int Scene::registerTexture(const std::string &cacheKey,
   texturePaths.push_back(displayPath);
   textureLookup.emplace(cacheKey, index);
   return index;
+}
+
+const EnvironmentSettings &Scene::getEnvironment() const { return environment; }
+
+const std::string &Scene::getEnvironmentTexturePath() const {
+  return environment.texturePath;
+}
+
+float Scene::getEnvironmentBrightness() const { return environment.brightness; }
+
+void Scene::setEnvironmentTexturePath(const std::string &path) {
+  environment.texturePath = path;
+}
+
+void Scene::setEnvironmentBrightness(float brightness) {
+  environment.brightness = std::max(brightness, 0.0f);
+}
+
+bool Scene::hasEnvironmentTexture() const {
+  return !environment.texturePath.empty();
 }
 
 ResidencyStrategy Scene::getResidencyStrategy() const {

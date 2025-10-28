@@ -85,6 +85,11 @@ struct Texture {
   std::vector<float> pixels; // RGBA
 };
 
+struct EnvironmentSettings {
+  std::string texturePath;
+  float brightness = 1.0f;
+};
+
 class Scene {
   struct SAHSplitResult {
     int axis = -1;
@@ -115,6 +120,13 @@ public:
   const std::vector<std::string> &getTexturePaths() const;
   int registerTexture(const std::string &cacheKey, const std::string &displayPath,
                       Texture texture);
+
+  const EnvironmentSettings &getEnvironment() const;
+  const std::string &getEnvironmentTexturePath() const;
+  float getEnvironmentBrightness() const;
+  void setEnvironmentTexturePath(const std::string &path);
+  void setEnvironmentBrightness(float brightness);
+  bool hasEnvironmentTexture() const;
 
   ResidencyStrategy getResidencyStrategy() const;
   void setResidencyStrategy(ResidencyStrategy strategy);
@@ -184,6 +196,7 @@ private:
   std::vector<Texture> textures;
   std::vector<std::string> texturePaths;
   std::unordered_map<std::string, int> textureLookup;
+  EnvironmentSettings environment;
   ResidencyStrategy residencyStrategy;
   ResidencyParameters residencyParams;
   bool startCompacted;

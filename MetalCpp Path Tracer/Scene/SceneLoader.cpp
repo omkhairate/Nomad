@@ -680,6 +680,20 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "textureResidencyMemoryCapMB", scene->getTextureResidencyMemoryCapMB());
     scene->setTextureResidencyMemoryCapMB(textureCap);
 
+    const char *environmentAttr = root->Attribute("environmentTexture");
+    if (environmentAttr && environmentAttr[0]) {
+        std::filesystem::path envPath(environmentAttr);
+        if (envPath.is_relative())
+            envPath = baseDir / envPath;
+        envPath = envPath.lexically_normal();
+        scene->setEnvironmentTexturePath(envPath.string());
+    } else {
+        scene->setEnvironmentTexturePath("");
+    }
+    float envBrightness = root->FloatAttribute(
+        "environmentBrightness", scene->getEnvironmentBrightness());
+    scene->setEnvironmentBrightness(envBrightness);
+
     int nextMeshGroupId = 0;
 
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {

@@ -77,6 +77,10 @@ struct UniformsData
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
     uint textureCount;
+    uint environmentMapEnabled;
+    float environmentMapIntensity;
+    float environmentPadding0;
+    float environmentPadding1;
 };
 
 struct TileRegion
