@@ -37,16 +37,16 @@
             emissionPower="2.0" />
 
     <Sphere position="0,-1000,0" radius="1000" albedo="0.75,0.78,0.82"
-            emission="0.08,0.08,0.1" materialType="0" emissionPower="1.5" />
+            emission="0.08,0.08,0.1" materialType="0" emissionPower="2.2" />
 
     <Rectangle position="0,0,0" u="20,0,0" v="0,0,-20" albedo="0.32,0.31,0.3"
                emission="0,0,0" materialType="0" emissionPower="0" />
 
-    <Rectangle position="0,12,0" u="6,0,0" v="0,0,6" rotation="180,0,0"
-               albedo="1,1,1" emission="1.0,0.92,0.82" materialType="-1" emissionPower="18" />
+    <Rectangle position="-3,12,-3" u="12,0,0" v="0,0,12" rotation="180,0,0"
+               albedo="1,1,1" emission="1.0,0.92,0.82" materialType="-1" emissionPower="4.5" />
 
-    <Rectangle position="-18,18,12" u="4,0,0" v="0,0,-8" rotation="140,35,0"
-               albedo="1,1,1" emission="1.0,0.95,0.85" materialType="-1" emissionPower="30" />
+    <Rectangle position="-20,18,16" u="8,0,0" v="0,0,-16" rotation="140,35,0"
+               albedo="1,1,1" emission="1.0,0.95,0.85" materialType="-1" emissionPower="7.5" />
 
     <Mesh file="assets/casa.obj" position="0,0,0" scale="10"
           rotation="0,45,0" albedo="0.82,0.78,0.74" emission="0,0,0"

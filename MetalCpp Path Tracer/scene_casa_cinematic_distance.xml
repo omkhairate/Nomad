@@ -41,19 +41,19 @@
             emissionPower="2.0" />
 
     <Sphere position="0,-1000,0" radius="1000" albedo="0.74,0.76,0.78"
-            emission="0.05,0.05,0.06" materialType="0" emissionPower="1.2" />
+            emission="0.05,0.05,0.06" materialType="0" emissionPower="2.2" />
 
 <Rectangle position="0,0,0" u="28,0,0" v="0,0,-28" albedo="0.34,0.33,0.32"
            emission="0,0,0" materialType="0" emissionPower="0" />
 
-<Rectangle position="0,12,0" u="10,0,0" v="0,0,10" rotation="180,0,0"
-           albedo="1,1,1" emission="1.0,0.94,0.84" materialType="-1" emissionPower="26" />
+<Rectangle position="-5,12,-5" u="20,0,0" v="0,0,20" rotation="180,0,0"
+           albedo="1,1,1" emission="1.0,0.94,0.84" materialType="-1" emissionPower="6.5" />
 
-<Rectangle position="-20,18,12" u="6,0,0" v="0,0,-10" rotation="140,25,0"
-           albedo="1,1,1" emission="1.0,0.97,0.9" materialType="-1" emissionPower="34" />
+<Rectangle position="-23,18,17" u="12,0,0" v="0,0,-20" rotation="140,25,0"
+           albedo="1,1,1" emission="1.0,0.97,0.9" materialType="-1" emissionPower="8.5" />
 
-<Rectangle position="6,9,-18" u="8,0,0" v="0,0,6" rotation="160,-10,0"
-           albedo="1,1,1" emission="0.85,0.9,1.0" materialType="-1" emissionPower="18" />
+<Rectangle position="2,9,-21" u="16,0,0" v="0,0,12" rotation="160,-10,0"
+           albedo="1,1,1" emission="0.85,0.9,1.0" materialType="-1" emissionPower="4.5" />
 
 <Rectangle position="0,0,12" u="8,0,0" v="0,0,12" albedo="0.37,0.36,0.34"
            emission="0,0,0" materialType="0" emissionPower="0" />
