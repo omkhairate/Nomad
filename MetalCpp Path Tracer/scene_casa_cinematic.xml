@@ -4,13 +4,13 @@
     <ObserverCamera position="18,12,18" lookAt="0,4,0" verticalFov="45" />
 
     <CameraPath>
-        <Keyframe frame="0" position="16,6,22" lookAt="0,4,0" />
-        <Keyframe frame="80" position="8,4,8" lookAt="0,3,0" />
-        <Keyframe frame="160" position="-6,3,10" lookAt="-2,1.5,8" />
-        <Keyframe frame="240" position="-16,5,18" lookAt="-14,3,20" />
-        <Keyframe frame="320" position="-20,5,-4" lookAt="-18,3,-8" />
-        <Keyframe frame="400" position="18,4,2" lookAt="18,3,10" />
-        <Keyframe frame="480" position="10,5,-14" lookAt="0,3,0" />
+        <Keyframe frame="0" position="16,6,24" lookAt="0,4,0" />
+        <Keyframe frame="120" position="9,4,10" lookAt="2.5,3.5,4" />
+        <Keyframe frame="240" position="-4,3,12" lookAt="-6,3,10" />
+        <Keyframe frame="360" position="-14,5,20" lookAt="-18,4,24" />
+        <Keyframe frame="480" position="-18,5,-2" lookAt="-16,3,-10" />
+        <Keyframe frame="600" position="18,4,-2" lookAt="24,3,12" />
+        <Keyframe frame="720" position="8,5,-18" lookAt="0,3,-12" />
     </CameraPath>
 
     <!-- Camera-adjacent fill lights to reduce path tracing noise -->
@@ -48,21 +48,58 @@
     <Rectangle position="-20,18,16" u="8,0,0" v="0,0,-16" rotation="140,35,0"
                albedo="1,1,1" emission="1.0,0.95,0.85" materialType="-1" emissionPower="7.5" />
 
-    <Mesh file="assets/casa.obj" position="0,0,0" scale="10"
-          rotation="0,45,0" albedo="0.82,0.78,0.74" emission="0,0,0"
-          materialType="0" emissionPower="0" />
+    <!-- Zone 1: Foreground plaza kept mostly clear so the fly-through opens up -->
+    <Mesh file="assets/casa.obj" position="0,0,0" scale="9.5"
+          rotation="0,45,0" clusterMaxTriangles="4096" clusterMaxExtent="28"
+          albedo="0.82,0.78,0.74" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-    <Mesh file="assets/Tree.obj" position="-14,0,20" scale="6"
-          rotation="0,-25,0" albedo="0.9,0.9,0.9" emission="0,0,0"
-          materialType="0" emissionPower="0" />
+    <!-- Zone 2: Mid-ground grove that slides into view as the camera rounds the house -->
+    <Mesh file="assets/Tree.obj" position="18,0,26" scale="6.3"
+          rotation="0,12,0" clusterMaxTriangles="528" clusterMaxExtent="18"
+          albedo="0.88,0.9,0.86" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-    <Mesh file="assets/Tree.obj" position="18,0,8" scale="5.5"
-          rotation="0,20,0" albedo="0.9,0.9,0.9" emission="0,0,0"
-          materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="-24,0,22" scale="6.1"
+          rotation="0,-32,0" clusterMaxTriangles="528" clusterMaxExtent="18"
+          albedo="0.86,0.88,0.9" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-    <Mesh file="assets/Tree.obj" position="-18,0,-6" scale="5.8"
-          rotation="0,-35,0" albedo="0.9,0.9,0.9" emission="0,0,0"
-          materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="-20,0,-20" scale="5.9"
+          rotation="0,-118,0" clusterMaxTriangles="528" clusterMaxExtent="18"
+          albedo="0.88,0.86,0.9" emission="0,0,0" materialType="0"
+          emissionPower="0" />
+
+    <Mesh file="assets/Tree.obj" position="22,0,-18" scale="6.2"
+          rotation="0,128,0" clusterMaxTriangles="528" clusterMaxExtent="18"
+          albedo="0.9,0.88,0.84" emission="0,0,0" materialType="0"
+          emissionPower="0" />
+
+    <!-- Zone 3: Distant villas form a high-contrast ring for the closing shots -->
+    <Mesh file="assets/casa.obj" position="44,0,40" scale="7.6"
+          rotation="0,20,0" clusterMaxTriangles="5120" clusterMaxExtent="46"
+          albedo="0.8,0.77,0.73" emission="0,0,0" materialType="0"
+          emissionPower="0" />
+
+    <Mesh file="assets/casa.obj" position="-48,0,28" scale="8.1"
+          rotation="0,-60,0" clusterMaxTriangles="5120" clusterMaxExtent="46"
+          albedo="0.79,0.76,0.72" emission="0,0,0" materialType="0"
+          emissionPower="0" />
+
+    <Mesh file="assets/casa.obj" position="-36,0,-46" scale="7.8"
+          rotation="0,95,0" clusterMaxTriangles="5120" clusterMaxExtent="46"
+          albedo="0.78,0.75,0.71" emission="0,0,0" materialType="0"
+          emissionPower="0" />
+
+    <Mesh file="assets/Tree.obj" position="36,0,-38" scale="6.5"
+          rotation="0,146,0" clusterMaxTriangles="600" clusterMaxExtent="20"
+          albedo="0.87,0.89,0.85" emission="0,0,0" materialType="0"
+          emissionPower="0" />
+
+    <Mesh file="assets/Tree.obj" position="34,0,30" scale="6.4"
+          rotation="0,32,0" clusterMaxTriangles="600" clusterMaxExtent="20"
+          albedo="0.9,0.88,0.86" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
     <Mesh file="assets/bunny.obj" position="-2,0.1,8" scale="0.8"
           rotation="0,5,0" albedo="0.98,0.99,1.0" emission="0,0,0" opacity="1"

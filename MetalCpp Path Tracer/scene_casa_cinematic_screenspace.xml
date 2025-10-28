@@ -5,13 +5,13 @@
 
 <CameraPath>
     <Keyframe frame="0" position="24,7,28" lookAt="0,4,0" />
-    <Keyframe frame="120" position="14,5,16" lookAt="0,3,0" />
-    <Keyframe frame="240" position="-4,4,14" lookAt="-2,3,6" />
-    <Keyframe frame="360" position="-18,5,18" lookAt="-12,4,20" />
-    <Keyframe frame="480" position="-26,6,6" lookAt="-12,3,4" />
-    <Keyframe frame="600" position="-24,6,-10" lookAt="-8,3,-6" />
-    <Keyframe frame="720" position="16,5,-14" lookAt="6,3,-4" />
-    <Keyframe frame="840" position="26,6,4" lookAt="4,4,6" />
+    <Keyframe frame="140" position="12,5,16" lookAt="3,3,6" />
+    <Keyframe frame="280" position="-2,4,14" lookAt="-6,3,10" />
+    <Keyframe frame="420" position="-18,5,22" lookAt="-24,4,30" />
+    <Keyframe frame="560" position="-26,6,4" lookAt="-20,4,2" />
+    <Keyframe frame="700" position="-18,6,-14" lookAt="-10,4,-10" />
+    <Keyframe frame="840" position="16,5,-18" lookAt="6,3,-8" />
+    <Keyframe frame="980" position="28,6,6" lookAt="18,4,18" />
 </CameraPath>
 
     <!-- Camera-adjacent fill lights to reduce path tracing noise -->
@@ -57,110 +57,78 @@
 <Rectangle position="0,0,12" u="8,0,0" v="0,0,12" albedo="0.37,0.36,0.34"
            emission="0,0,0" materialType="0" emissionPower="0" />
 
-<Mesh file="assets/casa.obj" position="0,0,0" scale="10"
-      rotation="0,45,0" clusterMaxTriangles="4096" clusterMaxExtent="32"
-      albedo="0.82,0.78,0.74" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <!-- Zone 1: Foreground runway left open for screenspace sweeps -->
+    <Mesh file="assets/casa.obj" position="0,0,0" scale="9.4"
+          rotation="0,45,0" clusterMaxTriangles="4096" clusterMaxExtent="26"
+          albedo="0.82,0.78,0.74" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/casa.obj" position="32,0,32" scale="8"
-      rotation="0,-20,0" clusterMaxTriangles="4096" clusterMaxExtent="32"
-      albedo="0.78,0.76,0.72" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <!-- Zone 2: Broad tree arcs that glide across the frame -->
+    <Mesh file="assets/Tree.obj" position="20,0,26" scale="6.6"
+          rotation="0,24,0" clusterMaxTriangles="512" clusterMaxExtent="22"
+          albedo="0.9,0.88,0.84" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/casa.obj" position="-42,0,-28" scale="9"
-      rotation="0,120,0" clusterMaxTriangles="4096" clusterMaxExtent="32"
-      albedo="0.79,0.75,0.7" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="0,0,28" scale="6.4"
+          rotation="0,0,0" clusterMaxTriangles="512" clusterMaxExtent="22"
+          albedo="0.88,0.9,0.86" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="-22,0,24" scale="6.4"
-      rotation="0,-20,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.88,0.9,0.86" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="-22,0,24" scale="6.7"
+          rotation="0,-32,0" clusterMaxTriangles="512" clusterMaxExtent="22"
+          albedo="0.86,0.9,0.88" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="-8,0,28" scale="5.8"
-      rotation="0,10,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.86,0.9,0.88" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="-24,0,-20" scale="6.5"
+          rotation="0,-118,0" clusterMaxTriangles="512" clusterMaxExtent="22"
+          albedo="0.88,0.86,0.9" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="10,0,28" scale="6.0"
-      rotation="0,-5,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.9,0.9,0.86" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="22,0,-22" scale="6.4"
+          rotation="0,140,0" clusterMaxTriangles="512" clusterMaxExtent="22"
+          albedo="0.9,0.88,0.86" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="24,0,20" scale="6.8"
-      rotation="0,35,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.9,0.88,0.84" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <!-- Zone 3: Oversized villa belt to fill late frame coverage -->
+    <Mesh file="assets/casa.obj" position="48,0,40" scale="7.8"
+          rotation="0,18,0" clusterMaxTriangles="5632" clusterMaxExtent="54"
+          albedo="0.8,0.77,0.73" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="28,0,6" scale="6.5"
-      rotation="0,60,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.92,0.9,0.86" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/casa.obj" position="-50,0,38" scale="8.0"
+          rotation="0,-64,0" clusterMaxTriangles="5632" clusterMaxExtent="54"
+          albedo="0.79,0.76,0.72" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="28,0,-10" scale="6.3"
-      rotation="0,100,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.9,0.92,0.88" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/casa.obj" position="-36,0,-48" scale="7.4"
+          rotation="0,110,0" clusterMaxTriangles="5632" clusterMaxExtent="54"
+          albedo="0.78,0.75,0.71" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="20,0,-26" scale="6.7"
-      rotation="0,130,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.88,0.9,0.92" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/casa.obj" position="40,0,-50" scale="7.2"
+          rotation="0,150,0" clusterMaxTriangles="5632" clusterMaxExtent="54"
+          albedo="0.81,0.78,0.74" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="8,0,-28" scale="6.0"
-      rotation="0,160,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.9,0.88,0.9" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="32,0,34" scale="6.5"
+          rotation="0,30,0" clusterMaxTriangles="560" clusterMaxExtent="20"
+          albedo="0.88,0.9,0.84" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="-10,0,-26" scale="6.2"
-      rotation="0,-140,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.88,0.9,0.9" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="-32,0,32" scale="6.4"
+          rotation="0,-44,0" clusterMaxTriangles="560" clusterMaxExtent="20"
+          albedo="0.86,0.9,0.88" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="-24,0,-18" scale="6.6"
-      rotation="0,-110,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.9,0.86,0.88" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="-30,0,-36" scale="6.3"
+          rotation="0,118,0" clusterMaxTriangles="560" clusterMaxExtent="20"
+          albedo="0.9,0.88,0.86" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
-<Mesh file="assets/Tree.obj" position="-30,0,-2" scale="6.7"
-      rotation="0,-80,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.9,0.88,0.84" emission="0,0,0"
-      materialType="0" emissionPower="0" />
-
-<Mesh file="assets/Tree.obj" position="-26,0,14" scale="6.3"
-      rotation="0,-50,0" clusterMaxTriangles="640" clusterMaxExtent="20"
-      albedo="0.88,0.86,0.9" emission="0,0,0"
-      materialType="0" emissionPower="0" />
-
-<Mesh file="assets/Tree.obj" position="14,0,14" scale="4.5"
-      rotation="0,15,0" clusterMaxTriangles="512" clusterMaxExtent="16"
-      albedo="0.84,0.88,0.9" emission="0,0,0"
-      materialType="0" emissionPower="0" />
-
-<Mesh file="assets/Tree.obj" position="-12,0,14" scale="4.7"
-      rotation="0,-25,0" clusterMaxTriangles="512" clusterMaxExtent="16"
-      albedo="0.86,0.84,0.9" emission="0,0,0"
-      materialType="0" emissionPower="0" />
-
-<Mesh file="assets/Tree.obj" position="16,0,-6" scale="4.2"
-      rotation="0,45,0" clusterMaxTriangles="512" clusterMaxExtent="16"
-      albedo="0.9,0.86,0.84" emission="0,0,0"
-      materialType="0" emissionPower="0" />
-
-<Mesh file="assets/Tree.obj" position="-14,0,-4" scale="4.4"
-      rotation="0,-65,0" clusterMaxTriangles="512" clusterMaxExtent="16"
-      albedo="0.86,0.88,0.84" emission="0,0,0"
-      materialType="0" emissionPower="0" />
-
-<Mesh file="assets/Tree.obj" position="4,0,20" scale="4.3"
-      rotation="0,0,0" clusterMaxTriangles="512" clusterMaxExtent="16"
-      albedo="0.88,0.86,0.86" emission="0,0,0"
-      materialType="0" emissionPower="0" />
-
-<Mesh file="assets/Tree.obj" position="-4,0,20" scale="4.1"
-      rotation="0,0,0" clusterMaxTriangles="512" clusterMaxExtent="16"
-      albedo="0.86,0.88,0.86" emission="0,0,0"
-      materialType="0" emissionPower="0" />
+    <Mesh file="assets/Tree.obj" position="30,0,-32" scale="6.2"
+          rotation="0,146,0" clusterMaxTriangles="560" clusterMaxExtent="20"
+          albedo="0.88,0.86,0.9" emission="0,0,0" materialType="0"
+          emissionPower="0" />
 
 <Mesh file="assets/bunny.obj" position="-2,0.1,8" scale="0.85"
       rotation="0,5,0" clusterMaxTriangles="384" clusterMaxExtent="6"
