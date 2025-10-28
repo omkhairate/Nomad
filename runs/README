@@ -1,0 +1,18 @@
+# Runs Configuration Notes
+
+## History sampling toggle
+
+Set the `MPT_HISTORY_SAMPLING` environment variable to control whether the
+renderer reuses history buffers between frames. The flag accepts any truthy
+value (e.g. `1`, `true`, `yes`) to enable sampling and falsy values (`0`,
+`false`, `no`) to disable it. When disabled the path tracer skips all history
+reads and writes the current frame only to the accumulation, normal, albedo and
+sample-count targets. Denoiser history blending is also disabled and per-frame
+metrics/logs (stdout and `perf.csv`) report the toggle state in a
+`history_enabled` column.
+
+Example:
+
+```
+MPT_HISTORY_SAMPLING=0 ./MetalCpp\ Path\ Tracer
+```

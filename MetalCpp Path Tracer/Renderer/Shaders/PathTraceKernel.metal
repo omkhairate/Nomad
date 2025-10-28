@@ -51,6 +51,7 @@ kernel void pathTraceKernel(
   if (screenSize.x <= 0.0f || screenSize.y <= 0.0f)
     return;
 
+  bool historyEnabled = (u.historyAccumulationEnabled != 0u);
   float2 uv = (float2(pixel) + 0.5f) / screenSize;
   uint32_t seed = random(uv, u.randomSeed.xyz) * ((uint32_t)-1);
 
@@ -65,8 +66,12 @@ kernel void pathTraceKernel(
   requestedSamples = clamp(requestedSamples, u.minSamplesPerPixel,
                            u.maxSamplesPerPixel);
 
-  float storedSampleCount = float(sampleCount.read(pixel).x);
-  uint previousSamples = uint(round(storedSampleCount));
+  float storedSampleCount = 0.0f;
+  if (historyEnabled)
+    storedSampleCount = float(sampleCount.read(pixel).x);
+  uint previousSamples = 0u;
+  if (historyEnabled)
+    previousSamples = uint(round(storedSampleCount));
   uint targetSamples = max(u.maxSamplesPerPixel, u.minSamplesPerPixel);
   previousSamples = min(previousSamples, targetSamples);
   uint remainingTargetSamples = 0u;
@@ -83,7 +88,9 @@ kernel void pathTraceKernel(
     samplesThisFrame = min(remainingTargetSamples, dispatchBudget);
 
   float previousSampleCount = float(previousSamples);
-  float4 previousColor = float4(lastFrame.read(pixel));
+  float4 previousColor = float4(0.0f);
+  if (historyEnabled)
+    previousColor = float4(lastFrame.read(pixel));
 
   float3 accumulatedColor = float3(0.0);
   float3 accumulatedAlbedo = float3(0.0);
@@ -128,10 +135,12 @@ kernel void pathTraceKernel(
   float3 averaged = (totalSamples > 0.0f) ? combinedSum / totalSamples : float3(0.0f);
   averaged = clamp(averaged, 0.0f, 1.0f);
 
-  float3 previousAlbedo =
-      float3(float4(albedoAccum.read(pixel)).xyz);
-  float3 previousNormal =
-      float3(float4(normalAccum.read(pixel)).xyz);
+  float3 previousAlbedo = float3(0.0f);
+  float3 previousNormal = float3(0.0f);
+  if (historyEnabled) {
+    previousAlbedo = float3(float4(albedoAccum.read(pixel)).xyz);
+    previousNormal = float3(float4(normalAccum.read(pixel)).xyz);
+  }
   float3 albedoSum = previousAlbedo * previousSampleCount + accumulatedAlbedo;
   float3 normalSum = previousNormal * previousSampleCount + accumulatedNormal;
   float3 averagedAlbedo =

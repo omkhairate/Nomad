@@ -108,6 +108,8 @@ public:
   bool benchmarkModeEnabled() const { return _benchmarkEnabled; }
   void setFrameCaptureEnabled(bool enabled);
   void setFrameCaptureInterval(size_t interval);
+  void setHistorySamplingEnabled(bool enabled);
+  bool historySamplingEnabled() const { return _historySamplingEnabled; }
 
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);
@@ -507,6 +509,7 @@ private:
   uint32_t _maxSamplesPerDispatchBudget = 4;
   size_t _framesSinceAccumulationReset = 0;
   float _importanceVisualizationScale = 1.5f;
+  bool _historySamplingEnabled = true;
   bool _needsAccumulationReset = true;
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;

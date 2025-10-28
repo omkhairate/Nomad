@@ -246,6 +246,7 @@ struct UniformsData {
   uint32_t textureCount = 0;
   uint32_t maxSamplesPerDispatch = 1;
   uint32_t debugOutputMode = 0;
+  uint32_t historyAccumulationEnabled = 1;
   float importanceVisualizationScale = 1.0f;
 };
 
@@ -988,6 +989,14 @@ void Renderer::setFrameCaptureInterval(size_t interval) {
   if (interval == 0)
     interval = 1;
   _frameCaptureInterval = interval;
+}
+
+void Renderer::setHistorySamplingEnabled(bool enabled) {
+  if (_historySamplingEnabled == enabled)
+    return;
+
+  _historySamplingEnabled = enabled;
+  _needsAccumulationReset = true;
 }
 
 void Renderer::initializeBenchmarking() {
@@ -5114,6 +5123,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.debugAS = InputSystem::debugAS;
   u.lightCount = static_cast<uint32_t>(_lightCount);
   u.debugOutputMode = InputSystem::importanceDebugMode;
+  u.historyAccumulationEnabled = _historySamplingEnabled ? 1u : 0u;
   u.importanceVisualizationScale = _importanceVisualizationScale;
 
   markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
@@ -5546,8 +5556,10 @@ void Renderer::draw(MTK::View *pView) {
       if (denoiseEncoder) {
         denoiseEncoder->setComputePipelineState(_pDenoiserPSO);
 
-        MTL::Texture *historyTexture =
-            denoisedHistory ? denoisedHistory : accum1;
+        MTL::Texture *historyTexture = nullptr;
+        if (_historySamplingEnabled) {
+          historyTexture = denoisedHistory ? denoisedHistory : accum1;
+        }
         denoiseEncoder->setTexture(accum1, 0);
         denoiseEncoder->setTexture(historyTexture, 1);
         denoiseEncoder->setTexture(albedoTexture, 2);
@@ -5557,8 +5569,8 @@ void Renderer::draw(MTK::View *pView) {
 
         DenoiserUniforms params{};
         params.historyValid =
-            (historyTexture && historyTexture != accum1 &&
-             _framesSinceAccumulationReset > 0)
+            (_historySamplingEnabled && historyTexture &&
+             historyTexture != accum1 && _framesSinceAccumulationReset > 0)
                 ? 1u
                 : 0u;
         params.radius = 2u;
@@ -7528,10 +7540,10 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
                          _totalNodeCount - _residentNodeCount :
                          0;
   printf(
-      "Resident nodes: %zu offloaded: %zu CPU: %.3f ms Submit: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+      "Resident nodes: %zu offloaded: %zu CPU: %.3f ms Submit: %.3f ms GPU: %.3f ms Rays/s: %.2f History:%s\n",
       _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
       _lastCommandSubmissionSeconds * 1000.0, _lastGPUTime * 1000.0,
-      _lastRaysPerSecond);
+      _lastRaysPerSecond, _historySamplingEnabled ? "on" : "off");
 
   if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty()) {
     BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
