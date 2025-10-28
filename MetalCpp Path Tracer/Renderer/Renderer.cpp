@@ -7131,9 +7131,13 @@ void Renderer::updateDispatchSampleBudget() {
     uint32_t reduction = static_cast<uint32_t>(
         std::ceil(double(_maxSamplesPerDispatchBudget) * (overRatio - 1.0) * 0.5));
     reduction = std::max<uint32_t>(reduction, 1u);
-    if (_maxSamplesPerDispatchBudget > 1u)
-      _maxSamplesPerDispatchBudget =
-          std::max<uint32_t>(1u, _maxSamplesPerDispatchBudget - reduction);
+    if (_maxSamplesPerDispatchBudget > 1u) {
+      uint32_t newBudget =
+          reduction >= _maxSamplesPerDispatchBudget
+              ? 1u
+              : _maxSamplesPerDispatchBudget - reduction;
+      _maxSamplesPerDispatchBudget = std::max<uint32_t>(newBudget, 1u);
+    }
   } else if (smoothed < target - tolerance) {
     double underRatio = std::min(target / std::max(smoothed, 1e-6), 4.0);
     uint32_t increase = static_cast<uint32_t>(
