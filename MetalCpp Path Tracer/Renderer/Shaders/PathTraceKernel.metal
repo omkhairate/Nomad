@@ -64,21 +64,29 @@ kernel void pathTraceKernel(
 
   float decay = clamp(u.accumulationDecay, 0.0f, 1.0f);
   float4 sampleState = sampleCount.read(pixel);
-  float previousSampleCount = max(sampleState.x, 0.0f) * decay;
+  float historicalSampleCount = max(sampleState.x, 0.0f);
+  if (!isfinite(historicalSampleCount))
+    historicalSampleCount = 0.0f;
+  float effectiveSampleCount = historicalSampleCount;
+  if (decay < 1.0f)
+    effectiveSampleCount *= decay;
+  if (!isfinite(effectiveSampleCount))
+    effectiveSampleCount = 0.0f;
   float previousMean = max(sampleState.y, 0.0f);
-  float previousM2 = max(sampleState.z, 0.0f) * decay;
-  if (!isfinite(previousSampleCount))
-    previousSampleCount = 0.0f;
-  if (!isfinite(previousMean) || previousSampleCount <= 0.0f)
+  float previousM2 = max(sampleState.z, 0.0f);
+  if (decay < 1.0f)
+    previousM2 *= decay;
+  if (!isfinite(previousMean) || effectiveSampleCount <= 0.0f)
     previousMean = 0.0f;
-  if (!isfinite(previousM2) || previousSampleCount <= 0.0f)
+  if (!isfinite(previousM2) || effectiveSampleCount <= 0.0f)
     previousM2 = 0.0f;
-  if (previousSampleCount < 1e-3f) {
-    previousSampleCount = 0.0f;
+  if (effectiveSampleCount < 1e-3f) {
+    effectiveSampleCount = 0.0f;
+    historicalSampleCount = 0.0f;
     previousMean = 0.0f;
     previousM2 = 0.0f;
   }
-  float4 previousColor = float4(lastFrame.read(pixel));
+  float3 previousColor = float3(lastFrame.read(pixel));
 
   float3 accumulatedColor = float3(0.0);
   float3 accumulatedAlbedo = float3(0.0);
@@ -87,7 +95,7 @@ kernel void pathTraceKernel(
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
 
-  float runningSamples = previousSampleCount;
+  float runningSamples = effectiveSampleCount;
   float runningMean = previousMean;
   float runningM2 = previousM2;
 
@@ -134,7 +142,7 @@ kernel void pathTraceKernel(
   }
 
   float totalSamples = runningSamples;
-  float3 previousSum = previousColor.xyz * previousSampleCount;
+  float3 previousSum = previousColor * historicalSampleCount;
   float3 combinedSum = previousSum + accumulatedColor;
   float3 averaged = (totalSamples > 0.0f) ? combinedSum / totalSamples : float3(0.0f);
   averaged = clamp(averaged, 0.0f, 1.0f);
@@ -143,8 +151,8 @@ kernel void pathTraceKernel(
       float3(float4(albedoAccum.read(pixel)).xyz);
   float3 previousNormal =
       float3(float4(normalAccum.read(pixel)).xyz);
-  float3 albedoSum = previousAlbedo * previousSampleCount + accumulatedAlbedo;
-  float3 normalSum = previousNormal * previousSampleCount + accumulatedNormal;
+  float3 albedoSum = previousAlbedo * historicalSampleCount + accumulatedAlbedo;
+  float3 normalSum = previousNormal * historicalSampleCount + accumulatedNormal;
   float3 averagedAlbedo =
       (totalSamples > 0.0f) ? albedoSum / totalSamples : float3(0.0f);
   averagedAlbedo = clamp(averagedAlbedo, 0.0f, 1.0f);
@@ -169,4 +177,35 @@ kernel void pathTraceKernel(
   if (!isfinite(variance))
     variance = 0.0f;
   sampleCount.write(float4(totalSamples, runningMean, runningM2, variance), pixel);
+}
+
+kernel void decayAccumulationKernel(
+    texture2d<half, access::read_write> radiance [[texture(0)]],
+    texture2d<half, access::read_write> albedo [[texture(1)]],
+    texture2d<half, access::read_write> normal [[texture(2)]],
+    constant float &decay [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]]) {
+  if (radiance.get_width() == 0 || radiance.get_height() == 0)
+    return;
+
+  if (gid.x >= radiance.get_width() || gid.y >= radiance.get_height())
+    return;
+
+  float factor = clamp(decay, 0.0f, 1.0f);
+
+  float4 radianceValue = float4(radiance.read(gid));
+  radianceValue *= factor;
+  radiance.write(half4(radianceValue), gid);
+
+  if (gid.x < albedo.get_width() && gid.y < albedo.get_height()) {
+    float4 albedoValue = float4(albedo.read(gid));
+    albedoValue *= factor;
+    albedo.write(half4(albedoValue), gid);
+  }
+
+  if (gid.x < normal.get_width() && gid.y < normal.get_height()) {
+    float4 normalValue = float4(normal.read(gid));
+    normalValue *= factor;
+    normal.write(half4(normalValue), gid);
+  }
 }
