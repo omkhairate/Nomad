@@ -27,6 +27,9 @@ kernel void pathTraceKernel(
     texture2d<half, access::read_write> normalAccum [[texture(5)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
         materialTextures [[texture(6)]],
+    texture2d<float, access::sample> environmentMap
+        [[texture(6 + kMaxMaterialTextures)]],
+    sampler environmentSampler [[sampler(0)]],
     constant TileRegion &tile [[buffer(16)]],
     uint2 gid [[thread_position_in_grid]]) {
   if (!uniforms)
@@ -96,7 +99,10 @@ kernel void pathTraceKernel(
                                       seed, u.maxRayDepth, u.debugAS, u.blasNodeCount,
                                       u.lightCount, u.lightTotalWeight,
                                       static_cast<uint>(u.totalPrimitiveCount),
-                                      materialTextures, u.textureCount);
+                                      materialTextures, u.textureCount,
+                                      environmentMap, environmentSampler,
+                                      u.environmentMapEnabled,
+                                      u.environmentMapIntensity);
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;

@@ -619,7 +619,11 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 uint debugAS, uint blasNodeCount, uint lightCount,
                                 float lightTotalWeight, uint totalPrimitiveCount,
                                 thread const TextureArray &textures,
-                                uint textureCount) {
+                                uint textureCount,
+                                texture2d<float, access::sample> environmentMap,
+                                sampler environmentSampler,
+                                uint environmentEnabled,
+                                float environmentIntensity) {
   PathTraceSample sampleResult;
   sampleResult.radiance = float3(0.0f);
   sampleResult.albedo = float3(0.0f);
@@ -666,6 +670,22 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
 
     if (bestHit.primitiveId == -1) {
       float3 unitDir = normalize(r.direction);
+      if (environmentEnabled > 0 && environmentIntensity > 0.0f) {
+        uint envWidth = environmentMap.get_width();
+        uint envHeight = environmentMap.get_height();
+        if (envWidth > 0 && envHeight > 0) {
+          float cappedY = clamp(unitDir.y, -1.0f, 1.0f);
+          float azimuth = atan2(unitDir.z, unitDir.x);
+          float elevation = asin(cappedY);
+          float uCoord = 0.5f + azimuth / (2.0f * M_PI);
+          float vCoord = 0.5f - elevation / M_PI;
+          float2 envUV = float2(uCoord, vCoord);
+          float4 envSample = environmentMap.sample(environmentSampler, envUV);
+          float3 envColor = envSample.xyz * environmentIntensity;
+          light += absorption * float4(envColor, 1.0f);
+          break;
+        }
+      }
       float t = 0.5 * (unitDir.y + 1.0);
       float3 skyColor = mix(float3(1.0), float3(0.6, 0.7, 1.0), t);
       light += absorption * float4(skyColor, 1.0);

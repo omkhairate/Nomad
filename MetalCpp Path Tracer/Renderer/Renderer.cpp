@@ -41,6 +41,7 @@
 
 #define TINYEXR_IMPLEMENTATION
 #include "../tinyexr.h"
+#include "../Textures/EnvironmentTexture.h"
 
 namespace {
 class TaskLimiter {
@@ -232,6 +233,10 @@ struct UniformsData {
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
   uint32_t textureCount = 0;
+  uint32_t environmentMapEnabled = 0;
+  float environmentMapIntensity = 1.0f;
+  float environmentPadding0 = 0.0f;
+  float environmentPadding1 = 0.0f;
 };
 
 struct TileDispatchRegion {
@@ -819,6 +824,7 @@ Renderer::Renderer(MTL::Device *pDevice)
   updateVisibleScene();
   buildShaders();
   buildTextures();
+  rebuildEnvironmentTexture();
 
   recalculateViewport();
   initializeBenchmarking();
@@ -876,6 +882,10 @@ Renderer::~Renderer() {
   _tlasCompletedEventValue.store(0, std::memory_order_relaxed);
   if (_pFrustumVertexBuffer)
     _pFrustumVertexBuffer->release();
+  releaseEnvironmentTexture();
+  if (_environmentSampler)
+    _environmentSampler->release();
+  _environmentSampler = nullptr;
   clearMaterialTextures();
 
   _cachedInstanceDescriptors.clear();
@@ -2092,6 +2102,7 @@ void Renderer::updateVisibleScene() {
   }
 
   updateResidency(true, true);
+  rebuildEnvironmentTexture();
 }
 
 
@@ -3348,6 +3359,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     rebuildMaterialTextures();
+    rebuildEnvironmentTexture();
 
     _pScene->createTriangleBuffers(_cachedTriangleVertices,
                                    _cachedTriangleIndices);
@@ -4620,6 +4632,55 @@ void Renderer::clearMaterialTextures() {
   _materialTextures.clear();
 }
 
+void Renderer::releaseEnvironmentTexture() {
+  if (_environmentTexture) {
+    _environmentTexture->release();
+    _environmentTexture = nullptr;
+  }
+  _environmentTexturePath.clear();
+}
+
+void Renderer::rebuildEnvironmentTexture() {
+  std::string desiredPath;
+  float desiredBrightness = 1.0f;
+  if (_pScene) {
+    desiredPath = _pScene->getEnvironmentTexturePath();
+    desiredBrightness = _pScene->getEnvironmentBrightness();
+  }
+
+  _environmentBrightness = std::max(desiredBrightness, 0.0f);
+
+  if (!_environmentSampler && _pDevice)
+    _environmentSampler = CreateEnvironmentSampler(_pDevice);
+
+  if (desiredPath.empty()) {
+    releaseEnvironmentTexture();
+    return;
+  }
+
+  if (!_environmentSampler)
+    return;
+
+  if (_environmentTexture && desiredPath == _environmentTexturePath)
+    return;
+
+  releaseEnvironmentTexture();
+
+  EnvironmentTextureData data;
+  if (!LoadEnvironmentTextureData(desiredPath, data))
+    return;
+
+  MTL::Texture *texture = CreateEnvironmentTexture(_pDevice, data);
+  if (!texture) {
+    std::printf("[Renderer] Failed to allocate environment texture for %s\n",
+               desiredPath.c_str());
+    return;
+  }
+
+  _environmentTexture = texture;
+  _environmentTexturePath = desiredPath;
+}
+
 void Renderer::rebuildMaterialTextures() {
   clearMaterialTextures();
 
@@ -4936,6 +4997,11 @@ void Renderer::updateUniforms(bool cameraChanged) {
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
+  u.environmentMapEnabled =
+      (_environmentTexture && _environmentSampler) ? 1u : 0u;
+  u.environmentMapIntensity = _environmentBrightness;
+  u.environmentPadding0 = 0.0f;
+  u.environmentPadding1 = 0.0f;
 
   uint64_t residentPrimitiveCount = _residentPrimitiveCount;
   uint64_t residentTriangleCount = _residentTriangleCount;
@@ -5228,6 +5294,11 @@ void Renderer::draw(MTK::View *pView) {
                                                 : nullptr;
         pCompute->setTexture(materialTex, 6 + texIdx);
       }
+
+      pCompute->setTexture(_environmentTexture,
+                            6 + kMaxMaterialTextureSlots);
+      if (_environmentSampler)
+        pCompute->setSamplerState(_environmentSampler, 0);
 
       for (size_t batchIdx = batchStart; batchIdx < batchEnd; ++batchIdx) {
         const TileDispatchRegion &tile = tiles[batchIdx];

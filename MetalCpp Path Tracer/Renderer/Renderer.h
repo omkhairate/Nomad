@@ -132,6 +132,8 @@ private:
                             bool allowShrink = false,
                             MTL::ResourceOptions storageMode =
                                 MTL::ResourceStorageModeManaged);
+  void rebuildEnvironmentTexture();
+  void releaseEnvironmentTexture();
   struct BoundingSphere {
     simd::float3 center;
     float radius;
@@ -412,6 +414,10 @@ private:
   std::vector<TextureInfo> _cachedTextureInfos;
   std::vector<simd::float4> _cachedTextureData;
   std::vector<MTL::Texture *> _materialTextures;
+  MTL::Texture *_environmentTexture = nullptr;
+  MTL::SamplerState *_environmentSampler = nullptr;
+  std::string _environmentTexturePath;
+  float _environmentBrightness = 1.0f;
   std::vector<uint32_t> _cachedLightIndices;
   std::vector<float> _cachedLightCdf;
 
