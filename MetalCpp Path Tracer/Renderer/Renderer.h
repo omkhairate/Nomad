@@ -487,6 +487,7 @@ private:
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
   uint32_t _maxSamplesPerDispatchBudget = 4;
+  float _importanceVisualizationScale = 1.5f;
   bool _needsAccumulationReset = true;
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
