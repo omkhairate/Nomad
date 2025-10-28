@@ -14,8 +14,33 @@
     <Keyframe frame="840" position="26,6,4" lookAt="4,4,6" />
 </CameraPath>
 
-<Sphere position="0,-1000,0" radius="1000" albedo="0.74,0.76,0.78"
-        emission="0.05,0.05,0.06" materialType="0" emissionPower="1.2" />
+    <!-- Camera-adjacent fill lights to reduce path tracing noise -->
+    <Sphere position="23.481081,6.935135,27.394595" radius="0.20"
+            albedo="0,0,0" emission="12,11.5,11" materialType="0"
+            emissionPower="1.0" />
+    <Sphere position="13.475512,4.925073,15.400585" radius="0.20"
+            albedo="0,0,0" emission="12,11.5,11" materialType="0"
+            emissionPower="1.0" />
+    <Sphere position="-3.807383,3.903691,13.229531" radius="0.20"
+            albedo="0,0,0" emission="12,11.5,11" materialType="0"
+            emissionPower="1.0" />
+    <Sphere position="-17.250366,4.875061,18.249878" radius="0.20"
+            albedo="0,0,0" emission="12,11.5,11" materialType="0"
+            emissionPower="1.0" />
+    <Sphere position="-25.225280,5.833989,5.889326" radius="0.20"
+            albedo="0,0,0" emission="12,11.5,11" materialType="0"
+            emissionPower="1.0" />
+    <Sphere position="-23.236416,5.856828,-9.809104" radius="0.20"
+            albedo="0,0,0" emission="12,11.5,11" materialType="0"
+            emissionPower="1.0" />
+    <Sphere position="15.439888,4.887978,-13.439888" radius="0.20"
+            albedo="0,0,0" emission="12,11.5,11" materialType="0"
+            emissionPower="1.0" />
+    <Sphere position="25.206531,5.927866,4.072134" radius="0.20"
+            albedo="0,0,0" emission="12,11.5,11" materialType="0"
+            emissionPower="1.0" />
+    <Sphere position="0,-1000,0" radius="1000" albedo="0.74,0.76,0.78"
+            emission="0.05,0.05,0.06" materialType="0" emissionPower="1.2" />
 
 <Rectangle position="0,0,0" u="28,0,0" v="0,0,-28" albedo="0.34,0.33,0.32"
            emission="0,0,0" materialType="0" emissionPower="0" />
