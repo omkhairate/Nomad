@@ -245,8 +245,10 @@ constexpr uint32_t kPathTraceTileWidth = 128;
 constexpr uint32_t kPathTraceTileHeight = 128;
 // Limit the amount of pixel/sample work recorded into a single command buffer to
 // reduce the chance of long-running kernels triggering GPU timeout errors when
-// high sample counts are requested.
-constexpr size_t kMaxTileSampleWorkPerCommand = 256 * 256 * 4;
+// high sample counts are requested. With the always-resident residency strategy
+// scenes keep significantly more geometry active, so reduce the per-command
+// budget to lower kernel runtimes and avoid tripping the macOS GPU watchdog.
+constexpr size_t kMaxTileSampleWorkPerCommand = 128 * 128 * 4;
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
 inline uint32_t bitm_random() {
