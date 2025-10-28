@@ -30,36 +30,32 @@ inline float safeFetchLuminance(texture2d<half, access::read> source,
     return fetchLuminance(source, width, height, coord);
 }
 
-inline float4 safeFetchSampleState(texture2d<float, access::read> source,
-                                   uint width,
-                                   uint height,
-                                   uint2 coord)
+inline float safeFetchValue(texture2d<half, access::read> source,
+                            uint width,
+                            uint height,
+                            uint2 coord)
 {
     if (width == 0 || height == 0)
     {
-        return float4(0.0f);
+        return 0.0f;
     }
 
     uint clampedX = min(coord.x, width - 1);
     uint clampedY = min(coord.y, height - 1);
 
-    float4 value = source.read(uint2(clampedX, clampedY));
-    if (!(isfinite(value.x) && isfinite(value.y) && isfinite(value.z) && isfinite(value.w)))
+    half4 value = source.read(uint2(clampedX, clampedY));
+    float result = float(value.x);
+    if (!isfinite(result))
     {
-        return float4(0.0f);
+        return 0.0f;
     }
-
-    value.x = max(value.x, 0.0f);
-    value.y = max(value.y, 0.0f);
-    value.z = max(value.z, 0.0f);
-    value.w = max(value.w, 0.0f);
-    return value;
+    return max(result, 0.0f);
 }
 
 kernel void adaptiveSamplingMain(
     texture2d<half, access::read> accumulation [[texture(0)]],
     texture2d<half, access::write> importance [[texture(1)]],
-    texture2d<float, access::read> sampleCountTexture [[texture(2)]],
+    texture2d<half, access::read> sampleCountTexture [[texture(2)]],
     texture2d<half, access::read> historyTexture [[texture(3)]],
     constant UniformsData& uniforms [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
@@ -96,58 +92,20 @@ kernel void adaptiveSamplingMain(
 
     uint sampleWidth = sampleCountTexture.get_width();
     uint sampleHeight = sampleCountTexture.get_height();
-    float4 sampleState = safeFetchSampleState(sampleCountTexture, sampleWidth, sampleHeight, gid);
-    float totalSamples = sampleState.x;
-    float runningMean = sampleState.y;
-    float variance = sampleState.w;
-    if (totalSamples > 1.0f && variance <= 0.0f)
-    {
-        float denom = max(totalSamples - 1.0f, 1.0f);
-        variance = max(sampleState.z / denom, 0.0f);
-    }
+    float totalSamples = safeFetchValue(sampleCountTexture, sampleWidth, sampleHeight, gid);
+
+    float frameCount = float(uniforms.frameCount);
+    frameCount = max(frameCount, 1.0f);
 
     float minSamples = float(max(uniforms.minSamplesPerPixel, 1u));
     float maxSamples = float(max(uniforms.maxSamplesPerPixel, uniforms.minSamplesPerPixel));
 
+    float completionDenominator = maxSamples * frameCount;
     float completion = 0.0f;
-    float sampleCompletion = 0.0f;
-    if (maxSamples > 0.0f)
+    if (completionDenominator > 0.0f)
     {
-        sampleCompletion = clamp(totalSamples / maxSamples, 0.0f, 1.0f);
+        completion = clamp(totalSamples / completionDenominator, 0.0f, 1.0f);
     }
-
-    constexpr float kAbsoluteErrorThreshold = 1.0f / 512.0f;
-    constexpr float kRelativeErrorThreshold = 0.02f;
-    if (totalSamples >= 2.0f && kAbsoluteErrorThreshold > 0.0f && kRelativeErrorThreshold > 0.0f)
-    {
-        variance = max(variance, 0.0f);
-        float error = sqrt(variance);
-        if (isfinite(error))
-        {
-            float normalizedAbsolute = error / kAbsoluteErrorThreshold;
-            float safeMean = max(runningMean, 1e-4f);
-            float normalizedRelative = error / (safeMean * kRelativeErrorThreshold);
-            float absoluteCompletion = 1.0f - normalizedAbsolute;
-            float relativeCompletion = 1.0f - normalizedRelative;
-            if (!isfinite(absoluteCompletion))
-            {
-                absoluteCompletion = 0.0f;
-            }
-            if (!isfinite(relativeCompletion))
-            {
-                relativeCompletion = 0.0f;
-            }
-            completion = max(absoluteCompletion, relativeCompletion);
-        }
-    }
-
-    if (totalSamples < 2.0f && minSamples > 0.0f)
-    {
-        completion = max(completion, clamp(totalSamples / minSamples, 0.0f, 1.0f));
-    }
-
-    completion = max(completion, sampleCompletion);
-    completion = clamp(completion, 0.0f, 1.0f);
 
     uint historyWidth = historyTexture.get_width();
     uint historyHeight = historyTexture.get_height();
