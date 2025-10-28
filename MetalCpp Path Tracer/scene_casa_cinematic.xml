@@ -65,17 +65,17 @@
           materialType="0" emissionPower="0" />
 
     <Mesh file="assets/bunny.obj" position="-2,0.1,8" scale="0.8"
-          rotation="0,5,0" albedo="0.98,0.99,1.0" emission="0,0,0"
-          materialType="1.48" transmission="1,1,1" roughness="0.05"
+          rotation="0,5,0" albedo="0.98,0.99,1.0" emission="0,0,0" opacity="1"
+          materialType="0" transmission="1,1,1" roughness="0.25"
           emissionPower="0" />
 
     <Mesh file="assets/bunny.obj" position="3.5,0.1,2.5" scale="0.65"
-          rotation="0,-15,0" albedo="0.98,0.99,1.0" emission="0,0,0"
-          materialType="1.48" transmission="1,1,1" roughness="0.08"
+          rotation="0,-15,0" albedo="0.98,0.99,1.0" emission="0,0,0" opacity="1"
+          materialType="0" transmission="1,1,1" roughness="0.28"
           emissionPower="0" />
 
     <Mesh file="assets/bunny.obj" position="-6,0.1,4" scale="0.7"
-          rotation="0,35,0" albedo="0.98,0.99,1.0" emission="0,0,0"
-          materialType="1.48" transmission="1,1,1" roughness="0.06"
+          rotation="0,35,0" albedo="0.98,0.99,1.0" emission="0,0,0" opacity="1"
+          materialType="0" transmission="1,1,1" roughness="0.26"
           emissionPower="0" />
 </Scene>
