@@ -902,10 +902,6 @@ Renderer::~Renderer() {
     _pPathTracePSO->release();
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
-  if (_pAccumulationDecayPSO) {
-    _pAccumulationDecayPSO->release();
-    _pAccumulationDecayPSO = nullptr;
-  }
   if (_pOverlayPSO)
     _pOverlayPSO->release();
 
@@ -1629,10 +1625,6 @@ void Renderer::buildShaders() {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
   }
-  if (_pAccumulationDecayPSO) {
-    _pAccumulationDecayPSO->release();
-    _pAccumulationDecayPSO = nullptr;
-  }
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
@@ -1741,18 +1733,6 @@ void Renderer::buildShaders() {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
     pAdaptiveFn->release();
-  }
-
-  pError = nullptr;
-  MTL::Function *pDecayFn = pLibrary->newFunction(
-      NS::String::string("decayAccumulationKernel", UTF8StringEncoding));
-  if (pDecayFn) {
-    _pAccumulationDecayPSO =
-        _pDevice->newComputePipelineState(pDecayFn, &pError);
-    if (!_pAccumulationDecayPSO && pError) {
-      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
-    }
-    pDecayFn->release();
   }
 
   pVertexFn->release();
@@ -4796,44 +4776,6 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   return allResident;
 }
 
-bool Renderer::applyAccumulationDecay(MTL::CommandBuffer *pCmd,
-                                      float decayFactor,
-                                      MTL::Texture *radianceHistory,
-                                      MTL::Texture *albedoHistory,
-                                      MTL::Texture *normalHistory) {
-  if (!pCmd || !_pAccumulationDecayPSO || !radianceHistory || !albedoHistory ||
-      !normalHistory)
-    return false;
-
-  NS::UInteger width = radianceHistory->width();
-  NS::UInteger height = radianceHistory->height();
-  if (width == 0 || height == 0)
-    return true;
-
-  MTL::ComputeCommandEncoder *pCompute = pCmd->computeCommandEncoder();
-  if (!pCompute)
-    return false;
-
-  float clampedDecay = std::clamp(decayFactor, 0.0f, 1.0f);
-  pCompute->setComputePipelineState(_pAccumulationDecayPSO);
-  pCompute->setTexture(radianceHistory, 0);
-  pCompute->setTexture(albedoHistory, 1);
-  pCompute->setTexture(normalHistory, 2);
-  pCompute->setBytes(&clampedDecay, sizeof(float), 0);
-
-  const NS::UInteger threadWidth = 8;
-  const NS::UInteger threadHeight = 8;
-  MTL::Size threadsPerThreadgroup =
-      MTL::Size::Make(threadWidth, threadHeight, 1);
-  MTL::Size threadgroups = MTL::Size::Make(
-      (width + threadWidth - 1) / threadWidth,
-      (height + threadHeight - 1) / threadHeight, 1);
-
-  pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-  pCompute->endEncoding();
-  return true;
-}
-
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
   if (!_pAdaptiveSamplingPSO || !pCmd)
     return;
@@ -5030,15 +4972,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.accumulationDecay = accumulationDecay;
   u.motionIntensity = motionIntensity;
 
-  if (_needsAccumulationReset || _accumulationTargetsNeedClear ||
-      accumulationDecay >= 1.0f) {
-    _pendingTextureDecay = false;
-    _pendingTextureDecayFactor = 1.0f;
-  } else {
-    _pendingTextureDecay = true;
-    _pendingTextureDecayFactor = accumulationDecay;
-  }
-
   uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
   uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
   minSamples = std::max<uint32_t>(minSamples, 1);
@@ -5168,14 +5101,6 @@ void Renderer::draw(MTK::View *pView) {
     if (resetAccumulationTargets(prepCmd)) {
       _accumulationTargetsNeedClear = false;
       _needsAccumulationReset = false;
-    }
-  }
-
-  if (_pendingTextureDecay && haveAllTextures) {
-    if (applyAccumulationDecay(prepCmd, _pendingTextureDecayFactor, accum0,
-                               albedoTexture, normalTexture)) {
-      _pendingTextureDecay = false;
-      _pendingTextureDecayFactor = 1.0f;
     }
   }
 
