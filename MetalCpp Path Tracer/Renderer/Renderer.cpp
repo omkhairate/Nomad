@@ -43,19 +43,6 @@
 #include "../tinyexr.h"
 
 namespace {
-struct DenoiserUniforms {
-  uint32_t radius = 2;
-  uint32_t historyValid = 0;
-  float temporalBlendBase = 0.85f;
-  float sampleCountForStableHistory = 4.0f;
-  float normalSigma = 0.3f;
-  float albedoSigma = 0.25f;
-  float luminanceSigma = 0.15f;
-  float spatialSigma = 1.5f;
-};
-static_assert(sizeof(DenoiserUniforms) % 16 == 0,
-              "DenoiserUniforms must align to 16 bytes for Metal");
-
 class TaskLimiter {
 public:
   explicit TaskLimiter(size_t maxTasks) : _maxTasks(maxTasks) {}
@@ -912,8 +899,6 @@ Renderer::~Renderer() {
 
   for (auto &slot : _accumulationSlots)
     releaseTextureSlot(slot);
-  for (auto &slot : _denoisedSlots)
-    releaseTextureSlot(slot);
   releaseTextureSlot(_sampleCountSlot);
   releaseTextureSlot(_sampleImportanceSlot);
   releaseTextureSlot(_albedoSlot);
@@ -926,8 +911,6 @@ Renderer::~Renderer() {
     _pPathTracePSO->release();
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
-  if (_pDenoiserPSO)
-    _pDenoiserPSO->release();
   if (_pOverlayPSO)
     _pOverlayPSO->release();
 
@@ -1652,10 +1635,6 @@ void Renderer::buildShaders() {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
   }
-  if (_pDenoiserPSO) {
-    _pDenoiserPSO->release();
-    _pDenoiserPSO = nullptr;
-  }
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
@@ -1764,17 +1743,6 @@ void Renderer::buildShaders() {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
     pAdaptiveFn->release();
-  }
-
-  pError = nullptr;
-  MTL::Function *pDenoiserFn =
-      pLibrary->newFunction(NS::String::string("denoiseMain", UTF8StringEncoding));
-  if (pDenoiserFn) {
-    _pDenoiserPSO = _pDevice->newComputePipelineState(pDenoiserFn, &pError);
-    if (!_pDenoiserPSO && pError) {
-      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
-    }
-    pDenoiserFn->release();
   }
 
   pVertexFn->release();
@@ -4507,10 +4475,6 @@ const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
     return "_albedoSlot";
   if (&slot == &_normalSlot)
     return "_normalSlot";
-  if (&slot == &_denoisedSlots[0])
-    return "_denoisedSlots[0]";
-  if (&slot == &_denoisedSlots[1])
-    return "_denoisedSlots[1]";
   return "<unknown texture slot>";
 }
 
@@ -4729,10 +4693,9 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
   if (!belowBudget && !overMemory)
     return;
 
-  std::array<ManagedTextureSlot *, 8> slots = {
+  std::array<ManagedTextureSlot *, 6> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot,
-      &_denoisedSlots[0], &_denoisedSlots[1]};
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot};
 
   MTL::BlitCommandEncoder *blit = nullptr;
   for (ManagedTextureSlot *slot : slots)
@@ -4845,9 +4808,6 @@ void Renderer::buildTextures() {
   for (auto &slot : _accumulationSlots)
     configureTextureSlot(slot, width, height,
                          MTL::PixelFormat::PixelFormatRGBA16Float, usage);
-  for (auto &slot : _denoisedSlots)
-    configureTextureSlot(slot, width, height,
-                         MTL::PixelFormat::PixelFormatRGBA16Float, usage);
   configureTextureSlot(_sampleCountSlot, width, height,
                        MTL::PixelFormat::PixelFormatR16Float, usage);
   configureTextureSlot(_sampleImportanceSlot, width, height,
@@ -4865,10 +4825,9 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   if (!cmd)
     return false;
 
-  std::array<ManagedTextureSlot *, 8> slots = {
+  std::array<ManagedTextureSlot *, 6> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot,
-      &_denoisedSlots[0], &_denoisedSlots[1]};
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot};
 
   bool anyDescriptors = false;
   bool allResident = true;
@@ -5055,10 +5014,8 @@ void Renderer::updateUniforms(bool cameraChanged) {
       u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
     }
     u.frameCount = 0;
-    _framesSinceAccumulationReset = 0;
   } else {
     u.frameCount++;
-    ++_framesSinceAccumulationReset;
   }
 
   uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
@@ -5137,7 +5094,6 @@ void Renderer::draw(MTK::View *pView) {
   updateUniforms(cameraChanged);
   beginFrameMetrics();
   std::swap(_accumulationSlots[0], _accumulationSlots[1]);
-  std::swap(_denoisedSlots[0], _denoisedSlots[1]);
 
   uint64_t frameIndex = _renderedFrameCount;
   bool captureThisFrame = _frameCaptureEnabled && _frameCaptureInterval > 0 &&
@@ -5179,8 +5135,6 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *sampleImportance = _sampleImportanceSlot.texture;
   MTL::Texture *albedoTexture = _albedoSlot.texture;
   MTL::Texture *normalTexture = _normalSlot.texture;
-  MTL::Texture *denoisedHistory = _denoisedSlots[0].texture;
-  MTL::Texture *denoisedOutput = _denoisedSlots[1].texture;
   if (allowResidency) {
     accum0 = requestResidentTexture(_accumulationSlots[0], prepCmd, restoreBlit);
     accum1 = requestResidentTexture(_accumulationSlots[1], prepCmd, restoreBlit);
@@ -5189,16 +5143,13 @@ void Renderer::draw(MTK::View *pView) {
         requestResidentTexture(_sampleImportanceSlot, prepCmd, restoreBlit);
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
     normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
-    denoisedHistory =
-        requestResidentTexture(_denoisedSlots[0], prepCmd, restoreBlit);
-    denoisedOutput =
-        requestResidentTexture(_denoisedSlots[1], prepCmd, restoreBlit);
   }
   if (restoreBlit)
     restoreBlit->endEncoding();
 
-  bool haveAllTextures = accum0 && accum1 && sampleCount && sampleImportance &&
-                         albedoTexture && normalTexture && denoisedOutput;
+  bool haveAllTextures =
+      accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
+      normalTexture;
 
   if (_accumulationTargetsNeedClear && haveAllTextures) {
     if (resetAccumulationTargets(prepCmd)) {
@@ -5535,64 +5486,6 @@ void Renderer::draw(MTK::View *pView) {
   _lastCommandSubmissionSeconds =
       measuredSubmission ? commandSubmissionSeconds : 0.0;
 
-  bool denoiserRan = false;
-
-  if (_pDenoiserPSO && denoisedOutput && accum1 && albedoTexture &&
-      normalTexture && sampleCount) {
-    MTL::CommandBuffer *denoiseCmd = _pCommandQueue->commandBuffer();
-    if (denoiseCmd) {
-      MTL::ComputeCommandEncoder *denoiseEncoder =
-          denoiseCmd->computeCommandEncoder();
-      if (denoiseEncoder) {
-        denoiseEncoder->setComputePipelineState(_pDenoiserPSO);
-
-        MTL::Texture *historyTexture =
-            denoisedHistory ? denoisedHistory : accum1;
-        denoiseEncoder->setTexture(accum1, 0);
-        denoiseEncoder->setTexture(historyTexture, 1);
-        denoiseEncoder->setTexture(albedoTexture, 2);
-        denoiseEncoder->setTexture(normalTexture, 3);
-        denoiseEncoder->setTexture(sampleCount, 4);
-        denoiseEncoder->setTexture(denoisedOutput, 5);
-
-        DenoiserUniforms params{};
-        params.historyValid =
-            (historyTexture && historyTexture != accum1 &&
-             _framesSinceAccumulationReset > 0)
-                ? 1u
-                : 0u;
-        params.radius = 2u;
-        params.temporalBlendBase = 0.85f;
-        params.sampleCountForStableHistory = 4.0f;
-        params.normalSigma = 0.3f;
-        params.albedoSigma = 0.25f;
-        params.luminanceSigma = 0.15f;
-        params.spatialSigma = 1.5f;
-        denoiseEncoder->setBytes(&params, sizeof(params), 0);
-
-        NS::UInteger width = denoisedOutput->width();
-        NS::UInteger height = denoisedOutput->height();
-        if (width > 0 && height > 0) {
-          NS::UInteger tgWidth =
-              std::max<NS::UInteger>(1, _pDenoiserPSO->threadExecutionWidth());
-          NS::UInteger maxThreads = std::max<NS::UInteger>(
-              tgWidth, _pDenoiserPSO->maxTotalThreadsPerThreadgroup());
-          NS::UInteger tgHeight =
-              std::max<NS::UInteger>(1, maxThreads / tgWidth);
-          MTL::Size threadsPerGroup = MTL::Size::Make(tgWidth, tgHeight, 1);
-          MTL::Size threadgroups = MTL::Size::Make(
-              (width + threadsPerGroup.width - 1) / threadsPerGroup.width,
-              (height + threadsPerGroup.height - 1) / threadsPerGroup.height, 1);
-          denoiseEncoder->dispatchThreadgroups(threadgroups, threadsPerGroup);
-          denoiserRan = true;
-        }
-
-        denoiseEncoder->endEncoding();
-      }
-      denoiseCmd->commit();
-    }
-  }
-
   MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
   if (!presentCmd) {
     completeFrameMetrics(nullptr);
@@ -5611,9 +5504,7 @@ void Renderer::draw(MTK::View *pView) {
   MTL::RenderCommandEncoder *pEnc = presentCmd->renderCommandEncoder(pRpd);
 
   pEnc->setRenderPipelineState(_pPSO);
-  MTL::Texture *presentTexture =
-      (denoiserRan && denoisedOutput) ? denoisedOutput : accum1;
-  pEnc->setFragmentTexture(presentTexture, 0);
+  pEnc->setFragmentTexture(accum1, 0);
   pEnc->setFragmentTexture(sampleImportance, 1);
   if (_pUniformsBuffer)
     pEnc->setFragmentBuffer(_pUniformsBuffer, 0, 0);
@@ -5671,7 +5562,7 @@ void Renderer::draw(MTK::View *pView) {
                            NS::UInteger(vertexCount));
 
       pEnc->setRenderPipelineState(_pPSO);
-      pEnc->setFragmentTexture(presentTexture, 0);
+      pEnc->setFragmentTexture(accum1, 0);
       pEnc->setFragmentTexture(sampleImportance, 1);
       if (_pUniformsBuffer)
         pEnc->setFragmentBuffer(_pUniformsBuffer, 0, 0);
@@ -5683,11 +5574,9 @@ void Renderer::draw(MTK::View *pView) {
   MTL::BlitCommandEncoder *pBlit = nullptr;
   bool performedRayHitReadback = false;
 
-  if (captureThisFrame && (presentTexture || accum1)) {
-    MTL::Texture *captureTexture = presentTexture ? presentTexture : accum1;
-    if (auto capture =
-            encodeFrameCapture(captureTexture, albedoTexture, normalTexture,
-                               frameIndex, presentCmd, pBlit))
+  if (captureThisFrame && accum1) {
+    if (auto capture = encodeFrameCapture(accum1, albedoTexture, normalTexture,
+                                          frameIndex, presentCmd, pBlit))
       captureList->push_back(capture);
   }
 
@@ -7493,17 +7382,6 @@ void Renderer::updateDispatchSampleBudget() {
     increase = std::max<uint32_t>(increase, 1u);
     _maxSamplesPerDispatchBudget = std::min<uint32_t>(
         _maxSamplesPerDispatchBudget + increase, maxSamples);
-  }
-
-  if (_pDenoiserPSO && _framesSinceAccumulationReset >= 6) {
-    uint32_t lowTarget = std::max<uint32_t>(_minSamplesPerPixel, 2u);
-    lowTarget = std::min<uint32_t>(lowTarget, maxSamples);
-    if (_maxSamplesPerDispatchBudget > lowTarget) {
-      uint32_t relaxed = static_cast<uint32_t>(
-          std::ceil(static_cast<double>(_maxSamplesPerDispatchBudget) * 0.85));
-      _maxSamplesPerDispatchBudget =
-          std::max<uint32_t>(std::max(lowTarget, relaxed), 1u);
-    }
   }
 
   _maxSamplesPerDispatchBudget =
