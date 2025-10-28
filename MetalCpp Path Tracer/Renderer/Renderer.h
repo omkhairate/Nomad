@@ -179,10 +179,6 @@ private:
   bool submitAsyncCommandBuffer(MTL::CommandBuffer *commandBuffer,
                                std::function<void(bool)> completion);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
-  bool applyAccumulationDecay(MTL::CommandBuffer *pCmd, float decayFactor,
-                              MTL::Texture *radianceHistory,
-                              MTL::Texture *albedoHistory,
-                              MTL::Texture *normalHistory);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
   void rebuildMaterialTextures();
   void clearMaterialTextures();
@@ -494,9 +490,6 @@ private:
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
-  bool _pendingTextureDecay = false;
-  float _pendingTextureDecayFactor = 1.0f;
-  MTL::ComputePipelineState *_pAccumulationDecayPSO = nullptr;
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
