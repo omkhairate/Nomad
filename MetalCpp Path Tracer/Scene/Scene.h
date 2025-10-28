@@ -141,9 +141,9 @@ public:
   uint32_t maxRayDepth;
 
   simd::float4 *createTransformsBuffer() const;
-  simd::float4 *createMaterialsBuffer() const;
+  PackedMaterial *createMaterialsBuffer() const;
   simd::float4 *createSphereBuffer();
-  simd::float4 *createSphereMaterialsBuffer();
+  PackedMaterial *createSphereMaterialsBuffer();
   simd::float4 *createBVHBuffer() const;
   simd::float4 *createBVHBuffer(const std::vector<Primitive> &subset,
                                 std::vector<int> &primitiveIndices,
