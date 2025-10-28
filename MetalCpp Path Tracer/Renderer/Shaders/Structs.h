@@ -35,6 +35,42 @@ struct InstanceRecord
     uint primitiveIndexBase;
 };
 
+constant int kPackedMaterialFlagHasNormalMap = 1 << 0;
+constant int kPackedMaterialFlagPrimitiveShift = 1;
+constant int kPackedMaterialFlagPrimitiveMask = 0x6;
+
+struct PackedMaterial
+{
+    float3 diffuseColor;
+    float opacity;
+    float3 emissionColor;
+    float emissionPower;
+    float3 specularColor;
+    float shininess;
+    float3 transmissionColor;
+    float indexOfRefraction;
+    float3 normal;
+    float roughness;
+    int diffuseTextureIndex;
+    int specularTextureIndex;
+    int normalTextureIndex;
+    int flags;
+};
+
+struct PackedLight
+{
+    uint primitiveIndex;
+    float area;
+    float inverseArea;
+    float selectionPdf;
+};
+
+struct LightAliasEntry
+{
+    float probability;
+    uint alias;
+};
+
 struct GeometryHandle
 {
     uint64_t vertexBufferAddress = 0;
@@ -71,7 +107,6 @@ struct UniformsData
     uint maxRayDepth;
     uint debugAS;
     uint lightCount;
-    float lightTotalWeight;
     uint sampleCountTextureIndex;
     uint sampleImportanceTextureIndex;
     uint minSamplesPerPixel;

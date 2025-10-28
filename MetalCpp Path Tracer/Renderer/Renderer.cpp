@@ -5,6 +5,7 @@
 #include "InputSystem.h"
 #include "Scene.h"
 #include "SceneLoader.h"
+#include "MaterialPacking.h"
 #include <Metal/MTLArgument.hpp>
 #include <Metal/MTLComputePipeline.hpp>
 #include <algorithm>
@@ -225,7 +226,6 @@ struct UniformsData {
   uint32_t maxRayDepth;
   uint32_t debugAS;
   uint32_t lightCount;
-  float lightTotalWeight;
   uint32_t sampleCountTextureIndex = 0;
   uint32_t sampleImportanceTextureIndex = 0;
   uint32_t minSamplesPerPixel = 1;
@@ -854,10 +854,10 @@ Renderer::~Renderer() {
     _pPrimitiveHitBufferGPU->release();
   if (_pPrimitiveHitReadback)
     _pPrimitiveHitReadback->release();
-  if (_pLightIndexBuffer)
-    _pLightIndexBuffer->release();
-  if (_pLightCdfBuffer)
-    _pLightCdfBuffer->release();
+  if (_pLightDataBuffer)
+    _pLightDataBuffer->release();
+  if (_pLightAliasBuffer)
+    _pLightAliasBuffer->release();
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
   if (_pGeometryHandleBuffer)
@@ -1950,7 +1950,8 @@ void Renderer::updateVisibleScene() {
   _cachedTriangleVertices.clear();
   _cachedTriangleIndices.clear();
   _cachedLightIndices.clear();
-  _cachedLightCdf.clear();
+  _cachedLightData.clear();
+  _cachedLightAlias.clear();
   _cpuActiveMask.clear();
 
   size_t totalTriangleCount = _pScene->getTriangleCount();
@@ -3229,16 +3230,13 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   if (needFullUpload) {
     _cachedPrimitiveData.assign(totalPrimitiveCount * kPrimitiveFloat4Count,
                                 simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-    _cachedMaterialData.assign(totalPrimitiveCount * kMaterialFloat4Count,
-                               simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+    _cachedMaterialData.assign(totalPrimitiveCount, PackedMaterial{});
 
     parallelFor(totalPrimitiveCount, [&](size_t begin, size_t end) {
       for (size_t i = begin; i < end; ++i) {
         const Primitive &p = _allPrimitives[i];
         simd::float4 *primBase =
             &_cachedPrimitiveData[kPrimitiveFloat4Count * i];
-        simd::float4 *matBase =
-            &_cachedMaterialData[kMaterialFloat4Count * i];
 
         primBase[4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
         primBase[5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
@@ -3282,11 +3280,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         }
         }
 
-        const Material &m = p.material;
-        auto packed = encodeMaterial(m);
-        for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
-          matBase[j] = packed[j];
-        }
+        _cachedMaterialData[i] = packPrimitiveMaterial(p);
       }
     });
 
@@ -3395,7 +3389,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   }
 
   _cachedLightIndices.clear();
-  _cachedLightCdf.clear();
+  _cachedLightData.clear();
+  _cachedLightAlias.clear();
+  struct LightInfo {
+    uint32_t index;
+    float area;
+    float inverseArea;
+    float weight;
+  };
+  std::vector<LightInfo> lightInfos;
   float totalLightWeight = 0.0f;
   std::vector<size_t> activeIndices;
   activeIndices.reserve(totalPrimitiveCount);
@@ -3416,8 +3418,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           float weight = area * emissionStrength;
           if (weight > 0.0f) {
             totalLightWeight += weight;
-            _cachedLightIndices.push_back(static_cast<uint32_t>(i));
-            _cachedLightCdf.push_back(totalLightWeight);
+            float invArea = (area > 0.0f) ? (1.0f / area) : 0.0f;
+            lightInfos.push_back(
+                LightInfo{static_cast<uint32_t>(i), area, invArea, weight});
           }
         }
       }
@@ -3429,8 +3432,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   _activePrimitiveCount = activeIndices.size();
   _activeTriangleCount = activeTriangleCount;
-  _lightCount = _cachedLightIndices.size();
-  _lightTotalWeight = totalLightWeight;
+  _lightCount = lightInfos.size();
 
   constexpr float kCompactionEnterRatio = 0.45f;
   constexpr float kCompactionExitRatio = 0.7f;
@@ -3466,14 +3468,14 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   std::vector<uint32_t> remapUpload;
   std::vector<uint8_t> compactActiveMask;
   std::vector<simd::float4> compactPrimitiveData;
-  std::vector<simd::float4> compactMaterialData;
+  std::vector<PackedMaterial> compactMaterialData;
   std::vector<int> compactPrimitiveIndices;
   std::vector<simd::float4> compactBVHNodes;
   std::vector<simd::float3> compactTriangleVertices;
   std::vector<simd::uint3> compactTriangleIndices;
 
   const std::vector<simd::float4> *primitiveSource = &_cachedPrimitiveData;
-  const std::vector<simd::float4> *materialSource = &_cachedMaterialData;
+  const std::vector<PackedMaterial> *materialSource = &_cachedMaterialData;
   const std::vector<int> *primitiveIndexSource = &_cachedPrimitiveIndices;
   const std::vector<simd::float4> *bvhSource = &_cachedBVHNodes;
   const std::vector<simd::float4> *tlasSource = &_cachedTLASNodes;
@@ -3559,7 +3561,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
     compactPrimitiveData.reserve(_activePrimitiveCount *
                                  kPrimitiveFloat4Count);
-    compactMaterialData.reserve(_activePrimitiveCount * kMaterialFloat4Count);
+    compactMaterialData.reserve(_activePrimitiveCount);
     compactPrimitiveIndices.reserve(_activePrimitiveCount);
     compactActiveMask.reserve(_activePrimitiveCount);
 
@@ -3677,11 +3679,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           compactPrimitiveData.push_back(prim5);
           compactPrimitiveData.push_back(prim6);
 
-          const Material &m = p.material;
-          auto packedMaterial = encodeMaterial(m);
-          for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
-            compactMaterialData.push_back(packedMaterial[j]);
-          }
+          compactMaterialData.push_back(packPrimitiveMaterial(p));
           compactActiveMask.push_back(1);
           compactPrimitiveIndices.push_back(
               static_cast<int>(record.primitiveBase + activeCount));
@@ -3906,11 +3904,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         compactPrimitiveData.push_back(prim5);
         compactPrimitiveData.push_back(prim6);
 
-        const Material &m = p.material;
-        auto packedMaterial = encodeMaterial(m);
-        for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
-          compactMaterialData.push_back(packedMaterial[j]);
-        }
+        compactMaterialData.push_back(packPrimitiveMaterial(p));
         compactActiveMask.push_back(1);
       }
 
@@ -3962,18 +3956,97 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _blasNodeCount = compactBVHNodes.size() / 2;
     _tlasNodeCount = _cachedTLASNodes.size() / 2;
 
-    std::vector<uint32_t> remappedLights;
-    remappedLights.reserve(_cachedLightIndices.size());
-    for (uint32_t globalIndex : _cachedLightIndices) {
-      if (globalIndex < _primitiveToResidentIndex.size()) {
-        int32_t local = _primitiveToResidentIndex[globalIndex];
-        if (local >= 0)
-          remappedLights.push_back(static_cast<uint32_t>(local));
+    std::vector<LightInfo> remappedInfos;
+    remappedInfos.reserve(lightInfos.size());
+    for (const auto &info : lightInfos) {
+      if (info.index < _primitiveToResidentIndex.size()) {
+        int32_t local = _primitiveToResidentIndex[info.index];
+        if (local >= 0) {
+          LightInfo remapped = info;
+          remapped.index = static_cast<uint32_t>(local);
+          remappedInfos.push_back(remapped);
+        }
       }
     }
-    _cachedLightIndices.swap(remappedLights);
-    _lightCount = _cachedLightIndices.size();
+    lightInfos.swap(remappedInfos);
+    _lightCount = lightInfos.size();
   }
+
+  _cachedLightIndices.clear();
+  _cachedLightData.clear();
+  _cachedLightAlias.clear();
+  if (!lightInfos.empty()) {
+    float normalizedTotal = 0.0f;
+    for (const auto &info : lightInfos)
+      normalizedTotal += info.weight;
+
+    if (normalizedTotal <= 0.0f) {
+      normalizedTotal = static_cast<float>(lightInfos.size());
+      for (auto &info : lightInfos)
+        info.weight = 1.0f;
+    }
+
+    _cachedLightIndices.reserve(lightInfos.size());
+    _cachedLightData.reserve(lightInfos.size());
+    std::vector<float> scaled(lightInfos.size(), 0.0f);
+    _cachedLightAlias.resize(lightInfos.size());
+    std::vector<uint32_t> small;
+    std::vector<uint32_t> large;
+    small.reserve(lightInfos.size());
+    large.reserve(lightInfos.size());
+
+    for (size_t i = 0; i < lightInfos.size(); ++i) {
+      const auto &info = lightInfos[i];
+      float probability = info.weight / normalizedTotal;
+      PackedLight packed{};
+      packed.primitiveIndex = info.index;
+      packed.area = info.area;
+      packed.inverseArea = info.inverseArea;
+      packed.selectionPdf = probability;
+      _cachedLightIndices.push_back(info.index);
+      _cachedLightData.push_back(packed);
+
+      float scaledProb = probability * static_cast<float>(lightInfos.size());
+      scaled[i] = scaledProb;
+      if (scaledProb < 1.0f)
+        small.push_back(static_cast<uint32_t>(i));
+      else
+        large.push_back(static_cast<uint32_t>(i));
+    }
+
+    while (!small.empty() && !large.empty()) {
+      uint32_t s = small.back();
+      small.pop_back();
+      uint32_t l = large.back();
+      large.pop_back();
+      _cachedLightAlias[s].probability = scaled[s];
+      _cachedLightAlias[s].alias = l;
+      scaled[l] = (scaled[l] + scaled[s]) - 1.0f;
+      if (scaled[l] < 1.0f)
+        small.push_back(l);
+      else
+        large.push_back(l);
+    }
+
+    for (uint32_t idx : large) {
+      _cachedLightAlias[idx].probability = 1.0f;
+      _cachedLightAlias[idx].alias = idx;
+    }
+    for (uint32_t idx : small) {
+      _cachedLightAlias[idx].probability = 1.0f;
+      _cachedLightAlias[idx].alias = idx;
+    }
+  } else {
+    _cachedLightIndices.push_back(0);
+    PackedLight defaultLight{};
+    defaultLight.primitiveIndex = 0;
+    defaultLight.area = 1.0f;
+    defaultLight.inverseArea = 1.0f;
+    defaultLight.selectionPdf = 0.0f;
+    _cachedLightData.push_back(defaultLight);
+    _cachedLightAlias.push_back(LightAliasEntry{1.0f, 0});
+  }
+  _lightCount = lightInfos.empty() ? 0 : _cachedLightData.size();
 
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
@@ -4092,25 +4165,25 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       markBufferModified(_pSphereBuffer, NS::Range::Make(0, modifiedBytes));
     }
 
-    size_t materialFloat4Count = materialSource->size();
+    size_t materialCount = materialSource->size();
     size_t materialBytes =
-        std::max<size_t>(materialFloat4Count, size_t(1)) *
-        sizeof(simd::float4);
+        std::max<size_t>(materialCount, size_t(1)) * sizeof(PackedMaterial);
     ensureBufferCapacity(_pSphereMaterialBuffer, materialBytes,
                          _sphereMaterialBufferCapacity, allowShrink);
     if (_pSphereMaterialBuffer) {
-      simd::float4 *dst = static_cast<simd::float4 *>(
+      auto *dst = static_cast<PackedMaterial *>(
           _pSphereMaterialBuffer->contents());
-      if (materialFloat4Count > 0)
+      size_t modifiedBytes = materialBytes;
+      if (materialCount > 0) {
         std::memcpy(dst, materialSource->data(),
-                    materialFloat4Count * sizeof(simd::float4));
-      else {
-        dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        if (materialBytes >= 2 * sizeof(simd::float4))
-          dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+                    materialCount * sizeof(PackedMaterial));
+        modifiedBytes = materialCount * sizeof(PackedMaterial);
+      } else {
+        dst[0] = PackedMaterial{};
+        modifiedBytes = sizeof(PackedMaterial);
       }
       markBufferModified(_pSphereMaterialBuffer,
-                         NS::Range::Make(0, materialBytes));
+                         NS::Range::Make(0, modifiedBytes));
     }
 
     size_t primitiveIndexCount = primitiveIndexSource->size();
@@ -4300,34 +4373,42 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
   }
 
-  size_t lightIndexBytes =
-      std::max<size_t>(_cachedLightIndices.size(), size_t(1)) *
-      sizeof(uint32_t);
-  ensureBufferCapacity(_pLightIndexBuffer, lightIndexBytes,
-                       _lightIndexBufferCapacity, allowShrink);
-  if (_pLightIndexBuffer) {
-    uint32_t *dst = static_cast<uint32_t *>(_pLightIndexBuffer->contents());
-    if (_cachedLightIndices.empty())
-      dst[0] = 0;
-    else
-      std::memcpy(dst, _cachedLightIndices.data(),
-                  _cachedLightIndices.size() * sizeof(uint32_t));
-    markBufferModified(_pLightIndexBuffer,
-                       NS::Range::Make(0, lightIndexBytes));
+  size_t lightDataCount = _cachedLightData.size();
+  size_t lightDataBytes =
+      std::max<size_t>(lightDataCount, size_t(1)) * sizeof(PackedLight);
+  ensureBufferCapacity(_pLightDataBuffer, lightDataBytes,
+                       _lightDataBufferCapacity, allowShrink);
+  if (_pLightDataBuffer) {
+    auto *dst = static_cast<PackedLight *>(_pLightDataBuffer->contents());
+    size_t modified = lightDataBytes;
+    if (lightDataCount > 0) {
+      std::memcpy(dst, _cachedLightData.data(),
+                  lightDataCount * sizeof(PackedLight));
+      modified = lightDataCount * sizeof(PackedLight);
+    } else {
+      dst[0] = PackedLight{};
+      modified = sizeof(PackedLight);
+    }
+    markBufferModified(_pLightDataBuffer, NS::Range::Make(0, modified));
   }
 
-  size_t lightCdfBytes =
-      std::max<size_t>(_cachedLightCdf.size(), size_t(1)) * sizeof(float);
-  ensureBufferCapacity(_pLightCdfBuffer, lightCdfBytes, _lightCdfBufferCapacity,
+  size_t aliasCount = _cachedLightAlias.size();
+  size_t aliasBytes =
+      std::max<size_t>(aliasCount, size_t(1)) * sizeof(LightAliasEntry);
+  ensureBufferCapacity(_pLightAliasBuffer, aliasBytes, _lightAliasBufferCapacity,
                        allowShrink);
-  if (_pLightCdfBuffer) {
-    float *dst = static_cast<float *>(_pLightCdfBuffer->contents());
-    if (_cachedLightCdf.empty())
-      dst[0] = 0.0f;
-    else
-      std::memcpy(dst, _cachedLightCdf.data(),
-                  _cachedLightCdf.size() * sizeof(float));
-    markBufferModified(_pLightCdfBuffer, NS::Range::Make(0, lightCdfBytes));
+  if (_pLightAliasBuffer) {
+    auto *dst = static_cast<LightAliasEntry *>(_pLightAliasBuffer->contents());
+    size_t modified = aliasBytes;
+    if (aliasCount > 0) {
+      std::memcpy(dst, _cachedLightAlias.data(),
+                  aliasCount * sizeof(LightAliasEntry));
+      modified = aliasCount * sizeof(LightAliasEntry);
+    } else {
+      dst[0] = LightAliasEntry{1.0f, 0};
+      modified = sizeof(LightAliasEntry);
+    }
+    markBufferModified(_pLightAliasBuffer, NS::Range::Make(0, modified));
   }
 
   _residentNodeCount = _blasNodeCount + _tlasNodeCount;
@@ -4963,7 +5044,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.maxRayDepth = _pScene->maxRayDepth;
   u.debugAS = InputSystem::debugAS;
   u.lightCount = static_cast<uint32_t>(_lightCount);
-  u.lightTotalWeight = _lightTotalWeight;
   u.debugOutputMode = InputSystem::importanceDebugMode;
   u.importanceVisualizationScale = _importanceVisualizationScale;
 
@@ -5192,8 +5272,8 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
         pCompute->setBuffer(_pUniformsBuffer, 0, 4);
         pCompute->setBuffer(_pActiveBuffer, 0, 5);
-        pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
-        pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
+        pCompute->setBuffer(_pLightDataBuffer, 0, 6);
+        pCompute->setBuffer(_pLightAliasBuffer, 0, 7);
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
@@ -5207,8 +5287,8 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
         pCompute->setBuffer(_pTLASBuffer, 0, 7);
         pCompute->setBuffer(_pActiveBuffer, 0, 8);
-        pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
-        pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
+        pCompute->setBuffer(_pLightDataBuffer, 0, 9);
+        pCompute->setBuffer(_pLightAliasBuffer, 0, 10);
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
