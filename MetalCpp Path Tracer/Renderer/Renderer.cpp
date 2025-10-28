@@ -5,6 +5,7 @@
 #include "InputSystem.h"
 #include "Scene.h"
 #include "SceneLoader.h"
+#include "../offline/denoiser_settings.h"
 #include <Metal/MTLArgument.hpp>
 #include <Metal/MTLComputePipeline.hpp>
 #include <algorithm>
@@ -1420,9 +1421,12 @@ void Renderer::processPendingCapturedFrames() {
                  static_cast<unsigned long long>(capture->frameIndex));
 
       const int radius = 1;
-      const float spatialSigma = 0.75f;
-      const float albedoSigma = 0.25f;
-      const float normalSigma = 0.1f;
+      const float spatialSigma =
+          MetalCppPathTracer::DenoiserSettings::kSharpenedSpatialSigma;
+      const float albedoSigma =
+          MetalCppPathTracer::DenoiserSettings::kSharpenedAlbedoSigma;
+      const float normalSigma =
+          MetalCppPathTracer::DenoiserSettings::kSharpenedNormalSigma;
       std::vector<float> denoised(pixelCount * 3, 0.0f);
 
       auto normalizeVector = [](const float *v) {
@@ -1499,9 +1503,22 @@ void Renderer::processPendingCapturedFrames() {
             filtered[1] = accum[1] / totalWeight;
             filtered[2] = accum[2] / totalWeight;
           }
-          denoised[index * 3 + 0] = std::clamp(filtered[0], 0.0f, 1.0f);
-          denoised[index * 3 + 1] = std::clamp(filtered[1], 0.0f, 1.0f);
-          denoised[index * 3 + 2] = std::clamp(filtered[2], 0.0f, 1.0f);
+          const float strength =
+              MetalCppPathTracer::DenoiserSettings::kSharpenedDenoiseStrength;
+          std::array<float, 3> blended{
+              baseColor[0] + (filtered[0] - baseColor[0]) * strength,
+              baseColor[1] + (filtered[1] - baseColor[1]) * strength,
+              baseColor[2] + (filtered[2] - baseColor[2]) * strength,
+          };
+          if (MetalCppPathTracer::DenoiserSettings::kSharpenedClampOutput) {
+            denoised[index * 3 + 0] = std::clamp(blended[0], 0.0f, 1.0f);
+            denoised[index * 3 + 1] = std::clamp(blended[1], 0.0f, 1.0f);
+            denoised[index * 3 + 2] = std::clamp(blended[2], 0.0f, 1.0f);
+          } else {
+            denoised[index * 3 + 0] = blended[0];
+            denoised[index * 3 + 1] = blended[1];
+            denoised[index * 3 + 2] = blended[2];
+          }
         }
       }
 
