@@ -4781,8 +4781,16 @@ void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
     return;
   MTL::Texture *importance = _sampleImportanceSlot.texture;
   MTL::Texture *accumulation = _accumulationSlots[0].texture;
+  MTL::Texture *sampleCount = _sampleCountSlot.texture;
+  MTL::Texture *history = _accumulationSlots[1].texture;
+
   if (!importance || !accumulation || !_pUniformsBuffer)
     return;
+
+  if (!sampleCount)
+    return;
+  if (!history)
+    history = accumulation;
 
   NS::UInteger width = importance->width();
   NS::UInteger height = importance->height();
@@ -4796,6 +4804,8 @@ void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
   pCompute->setComputePipelineState(_pAdaptiveSamplingPSO);
   pCompute->setTexture(accumulation, 0);
   pCompute->setTexture(importance, 1);
+  pCompute->setTexture(sampleCount, 2);
+  pCompute->setTexture(history, 3);
   pCompute->setBuffer(_pUniformsBuffer, 0, 0);
 
   const NS::UInteger threadWidth = 8;
