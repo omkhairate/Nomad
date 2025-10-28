@@ -264,10 +264,6 @@ constexpr uint32_t kPathTraceTileHeight = 128;
 constexpr size_t kBaseTileSampleWorkPerCommand = 256 * 256 * 4;
 constexpr size_t kCommandSubmissionWorkMultiplier = 8;
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
-constexpr float kCameraMotionMatrixThreshold = 1e-4f;
-constexpr float kCameraMotionSmoothing = 0.9f;
-constexpr float kAccumulationMotionDecayFactor = 0.25f;
-constexpr float kPendingDecayEpsilon = 1e-3f;
 
 inline uint32_t bitm_random() {
   static uint32_t current_seed = 92407235;
@@ -294,18 +290,6 @@ size_t saturatingMul(size_t a, size_t b) {
   if (a > std::numeric_limits<size_t>::max() / b)
     return std::numeric_limits<size_t>::max();
   return a * b;
-}
-
-float maxAbsDifference(const simd::float4x4 &a, const simd::float4x4 &b) {
-  float result = 0.0f;
-  for (int column = 0; column < 4; ++column) {
-    const simd::float4 delta = a.columns[column] - b.columns[column];
-    result = std::max(result, std::fabs(delta.x));
-    result = std::max(result, std::fabs(delta.y));
-    result = std::max(result, std::fabs(delta.z));
-    result = std::max(result, std::fabs(delta.w));
-  }
-  return result;
 }
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
@@ -942,8 +926,6 @@ Renderer::~Renderer() {
     _pPathTracePSO->release();
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
-  if (_pAccumulationDecayPSO)
-    _pAccumulationDecayPSO->release();
   if (_pDenoiserPSO)
     _pDenoiserPSO->release();
   if (_pOverlayPSO)
@@ -1670,10 +1652,6 @@ void Renderer::buildShaders() {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
   }
-  if (_pAccumulationDecayPSO) {
-    _pAccumulationDecayPSO->release();
-    _pAccumulationDecayPSO = nullptr;
-  }
   if (_pDenoiserPSO) {
     _pDenoiserPSO->release();
     _pDenoiserPSO = nullptr;
@@ -1786,18 +1764,6 @@ void Renderer::buildShaders() {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
     pAdaptiveFn->release();
-  }
-
-  pError = nullptr;
-  MTL::Function *pDecayFn = pLibrary->newFunction(
-      NS::String::string("accumulationDecayMain", UTF8StringEncoding));
-  if (pDecayFn) {
-    _pAccumulationDecayPSO =
-        _pDevice->newComputePipelineState(pDecayFn, &pError);
-    if (!_pAccumulationDecayPSO && pError) {
-      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
-    }
-    pDecayFn->release();
   }
 
   pError = nullptr;
@@ -4958,82 +4924,6 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   return allResident;
 }
 
-void Renderer::requestAccumulationDecay(float factor) {
-  if (!(factor < 1.0f))
-    return;
-  factor = std::clamp(factor, 0.0f, 1.0f);
-  if (factor >= 1.0f)
-    return;
-  _pendingGpuDecayFactor = std::clamp(_pendingGpuDecayFactor * factor, 0.0f, 1.0f);
-}
-
-bool Renderer::applyAccumulationDecay(MTL::CommandBuffer *cmd, float factor) {
-  if (!cmd || !_pAccumulationDecayPSO)
-    return false;
-
-  factor = std::clamp(factor, 0.0f, 1.0f);
-  if (factor >= 1.0f - kPendingDecayEpsilon)
-    return false;
-
-  MTL::Texture *accum0 = _accumulationSlots[0].texture;
-  MTL::Texture *accum1 = _accumulationSlots[1].texture;
-  MTL::Texture *sampleCount = _sampleCountSlot.texture;
-  MTL::Texture *albedo = _albedoSlot.texture;
-  MTL::Texture *normal = _normalSlot.texture;
-  MTL::Texture *importance = _sampleImportanceSlot.texture;
-  if (!accum0 || !accum1 || !sampleCount || !albedo || !normal || !importance)
-    return false;
-
-  NS::UInteger width = accum0->width();
-  NS::UInteger height = accum0->height();
-  if (width == 0 || height == 0)
-    return false;
-
-  MTL::ComputeCommandEncoder *encoder = cmd->computeCommandEncoder();
-  if (!encoder)
-    return false;
-
-  encoder->setComputePipelineState(_pAccumulationDecayPSO);
-  encoder->setTexture(accum0, 0);
-  encoder->setTexture(accum1, 1);
-  encoder->setTexture(sampleCount, 2);
-  encoder->setTexture(albedo, 3);
-  encoder->setTexture(normal, 4);
-  encoder->setTexture(importance, 5);
-
-  MTL::Texture *denoisedHistory = _denoisedSlots[0].texture;
-  MTL::Texture *denoisedOutput = _denoisedSlots[1].texture;
-  encoder->setTexture(denoisedHistory, 6);
-  encoder->setTexture(denoisedOutput, 7);
-
-  struct AccumulationDecayUniforms {
-    float factor;
-    uint32_t hasHistory;
-    uint32_t hasOutput;
-    uint32_t padding;
-  } uniforms{factor, denoisedHistory ? 1u : 0u, denoisedOutput ? 1u : 0u, 0u};
-
-  encoder->setBytes(&uniforms, sizeof(uniforms), 0);
-
-  NS::UInteger threadWidth =
-      std::max<NS::UInteger>(1, _pAccumulationDecayPSO->threadExecutionWidth());
-  NS::UInteger maxThreads = std::max<NS::UInteger>(
-      threadWidth, _pAccumulationDecayPSO->maxTotalThreadsPerThreadgroup());
-  NS::UInteger threadHeight =
-      std::max<NS::UInteger>(1, maxThreads / threadWidth);
-
-  MTL::Size threadsPerThreadgroup =
-      MTL::Size::Make(threadWidth, threadHeight, 1);
-  MTL::Size threadgroups = MTL::Size::Make(
-      (width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-      (height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
-      1);
-
-  encoder->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-  encoder->endEncoding();
-  return true;
-}
-
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
   if (!_pAdaptiveSamplingPSO || !pCmd)
     return;
@@ -5156,70 +5046,8 @@ bool Renderer::updateCameraStates() {
 void Renderer::updateUniforms(bool cameraChanged) {
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
-  Camera::State activeCamera{};
-  activeCamera.position = Camera::position;
-  activeCamera.forward = Camera::forward;
-  activeCamera.up = Camera::up;
-  activeCamera.verticalFov = Camera::verticalFov;
-  activeCamera.focalLength = Camera::focalLength;
-
-  float aspect =
-      (Camera::screenSize.y > 0.0f)
-          ? (Camera::screenSize.x / std::max(Camera::screenSize.y, 1e-6f))
-          : 1.0f;
-  constexpr float kViewProjectionNear = 0.1f;
-  constexpr float kViewProjectionFar = 1000.0f;
-  simd::float4x4 viewMatrix = makeViewMatrix(activeCamera);
-  simd::float4x4 projectionMatrix =
-      makePerspectiveMatrix(activeCamera.verticalFov, aspect,
-                            kViewProjectionNear, kViewProjectionFar);
-  simd::float4x4 viewProjection = simd_mul(projectionMatrix, viewMatrix);
-
-  float diffMagnitude = 0.0f;
-  if (_hasPreviousViewProjection) {
-    diffMagnitude =
-        maxAbsDifference(viewProjection, _previousViewProjectionMatrix);
-    float smoothingComplement = std::max(0.0f, 1.0f - kCameraMotionSmoothing);
-    _smoothedCameraMotionMagnitude =
-        _smoothedCameraMotionMagnitude * kCameraMotionSmoothing +
-        diffMagnitude * smoothingComplement;
-  } else {
-    _smoothedCameraMotionMagnitude = 0.0f;
-  }
-
-  bool matrixMotion = _hasPreviousViewProjection &&
-                      (diffMagnitude > kCameraMotionMatrixThreshold ||
-                       _smoothedCameraMotionMagnitude >
-                           kCameraMotionMatrixThreshold);
-  bool motionDetected = cameraChanged || matrixMotion;
-
-  _previousViewProjectionMatrix = viewProjection;
-  _hasPreviousViewProjection = true;
-
-  if (!_needsAccumulationReset && motionDetected) {
-    float decayFactor =
-        std::clamp(kAccumulationMotionDecayFactor, 0.0f, 1.0f);
-    if (decayFactor < 1.0f) {
-      requestAccumulationDecay(decayFactor);
-
-      auto decayCounter = [](auto value, float factor) {
-        using ValueType = decltype(value);
-        if (factor >= 1.0f)
-          return value;
-        double scaled = static_cast<double>(value) * factor;
-        scaled = std::max(0.0, scaled);
-        ValueType decayed = static_cast<ValueType>(std::floor(scaled));
-        if (value > 0 && decayed >= value)
-          decayed = static_cast<ValueType>(value - 1);
-        return decayed;
-      };
-
-      u.frameCount = decayCounter(u.frameCount, decayFactor);
-      _framesSinceAccumulationReset =
-          decayCounter(_framesSinceAccumulationReset, decayFactor);
-      u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
-    }
-  }
+  if (cameraChanged)
+    _needsAccumulationReset = true;
 
   if (_needsAccumulationReset) {
     if (!_accumulationTargetsNeedClear) {
@@ -5371,11 +5199,6 @@ void Renderer::draw(MTK::View *pView) {
 
   bool haveAllTextures = accum0 && accum1 && sampleCount && sampleImportance &&
                          albedoTexture && normalTexture && denoisedOutput;
-
-  if (_pendingGpuDecayFactor < (1.0f - kPendingDecayEpsilon)) {
-    if (applyAccumulationDecay(prepCmd, _pendingGpuDecayFactor))
-      _pendingGpuDecayFactor = 1.0f;
-  }
 
   if (_accumulationTargetsNeedClear && haveAllTextures) {
     if (resetAccumulationTargets(prepCmd)) {

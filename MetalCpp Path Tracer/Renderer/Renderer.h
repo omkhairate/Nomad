@@ -194,8 +194,6 @@ private:
                                std::function<void(bool)> completion);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
-  bool applyAccumulationDecay(MTL::CommandBuffer *cmd, float factor);
-  void requestAccumulationDecay(float factor);
   void rebuildMaterialTextures();
   void clearMaterialTextures();
   void initializeBenchmarking();
@@ -220,7 +218,6 @@ private:
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
-  MTL::ComputePipelineState *_pAccumulationDecayPSO = nullptr;
   MTL::ComputePipelineState *_pDenoiserPSO = nullptr;
 
   // Core scene and geometry data
@@ -512,10 +509,6 @@ private:
   float _importanceVisualizationScale = 1.5f;
   bool _needsAccumulationReset = true;
   bool _accumulationTargetsNeedClear = false;
-  float _pendingGpuDecayFactor = 1.0f;
-  simd::float4x4 _previousViewProjectionMatrix{};
-  bool _hasPreviousViewProjection = false;
-  float _smoothedCameraMotionMagnitude = 0.0f;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
 
