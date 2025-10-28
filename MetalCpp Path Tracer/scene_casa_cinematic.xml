@@ -14,27 +14,27 @@
     </CameraPath>
 
     <!-- Camera-adjacent fill lights to reduce path tracing noise -->
-    <Sphere position="15.530729,5.941341,21.354753" radius="0.20"
+    <Sphere position="16.293294,6.036662,22.40328" radius="0.20"
             albedo="0,0,0" emission="12,11.5,11" materialType="0"
-            emissionPower="1.0" />
-    <Sphere position="7.436511,3.929564,7.436511" radius="0.20"
+            emissionPower="2.0" />
+    <Sphere position="8.35218,4.044023,8.35218" radius="0.20"
             albedo="0,0,0" emission="12,11.5,11" materialType="0"
-            emissionPower="1.0" />
-    <Sphere position="-5.321601,2.745601,9.660801" radius="0.20"
+            emissionPower="2.0" />
+    <Sphere position="-6.423999,3.159,10.212" radius="0.20"
             albedo="0,0,0" emission="12,11.5,11" materialType="0"
-            emissionPower="1.0" />
-    <Sphere position="-15.538120,4.538120,18.461880" radius="0.20"
+            emissionPower="2.0" />
+    <Sphere position="-16.288675,5.288675,17.711325" radius="0.20"
             albedo="0,0,0" emission="12,11.5,11" materialType="0"
-            emissionPower="1.0" />
-    <Sphere position="-19.673401,4.673401,-4.653197" radius="0.20"
+            emissionPower="2.0" />
+    <Sphere position="-20.204124,5.204124,-3.591752" radius="0.20"
             albedo="0,0,0" emission="12,11.5,11" materialType="0"
-            emissionPower="1.0" />
-    <Sphere position="18.000000,3.900772,2.793822" radius="0.20"
+            emissionPower="2.0" />
+    <Sphere position="18.0,4.062017,1.503861" radius="0.20"
             albedo="0,0,0" emission="12,11.5,11" materialType="0"
-            emissionPower="1.0" />
-    <Sphere position="9.538120,4.907624,-13.353368" radius="0.20"
+            emissionPower="2.0" />
+    <Sphere position="10.288675,5.057735,-14.404145" radius="0.20"
             albedo="0,0,0" emission="12,11.5,11" materialType="0"
-            emissionPower="1.0" />
+            emissionPower="2.0" />
 
     <Sphere position="0,-1000,0" radius="1000" albedo="0.75,0.78,0.82"
             emission="0.08,0.08,0.1" materialType="0" emissionPower="1.5" />
