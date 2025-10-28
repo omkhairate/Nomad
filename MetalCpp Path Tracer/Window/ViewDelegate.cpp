@@ -27,7 +27,7 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
     _perfLog.open(perf);
     if (_perfLog.is_open())
       _perfLog <<
-          "frame,fps,cpu_ms,command_submit_ms,gpu_ms,rays_per_second,active_nodes,resident_nodes,offloaded_nodes,total_nodes\n";
+          "frame,fps,cpu_ms,gpu_ms,rays_per_second,active_nodes,resident_nodes,offloaded_nodes,total_nodes\n";
 
     std::filesystem::path gpu = base / "gpu_mem.csv";
     _gpuMemLog.open(gpu);
@@ -80,7 +80,6 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
   _pRenderer->draw(pView);
   if (_perfLog.is_open()) {
     double cpu_ms = _pRenderer->lastCPUTime() * 1000.0;
-    double submit_ms = _pRenderer->lastCommandSubmissionTime() * 1000.0;
     double gpu_ms = _pRenderer->lastGPUTime() * 1000.0;
     double rays = _pRenderer->lastRaysPerSecond();
     size_t active = _pRenderer->activeNodeCount();
@@ -88,8 +87,7 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
     size_t total = _pRenderer->totalNodeCount();
     size_t offloaded = total > resident ? total - resident : 0;
     _perfLog << _frameCount << "," << fps << "," << cpu_ms << ","
-             << submit_ms << "," << gpu_ms << "," << rays << "," << active
-             << "," << resident
+             << gpu_ms << "," << rays << "," << active << "," << resident
              << "," << offloaded << "," << total << "\n";
     _perfLog.flush();
   }

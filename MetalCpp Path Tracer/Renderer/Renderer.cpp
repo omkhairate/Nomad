@@ -245,11 +245,10 @@ struct TileDispatchRegion {
 
 constexpr uint32_t kPathTraceTileWidth = 128;
 constexpr uint32_t kPathTraceTileHeight = 128;
-// Baseline amount of pixel/sample work recorded into a single command buffer.
-// The effective budget is scaled dynamically based on the per-dispatch sample
-// count to balance GPU watchdog safety against CPU submission overhead.
-constexpr size_t kBaseTileSampleWorkPerCommand = 256 * 256 * 4;
-constexpr size_t kCommandSubmissionWorkMultiplier = 8;
+// Limit the amount of pixel/sample work recorded into a single command buffer to
+// reduce the chance of long-running kernels triggering GPU timeout errors when
+// high sample counts are requested.
+constexpr size_t kMaxTileSampleWorkPerCommand = 256 * 256 * 4;
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
 inline uint32_t bitm_random() {
@@ -269,14 +268,6 @@ size_t alignTo(size_t value, size_t alignment) {
   if (alignment == 0)
     return value;
   return (value + alignment - 1) & ~(alignment - 1);
-}
-
-size_t saturatingMul(size_t a, size_t b) {
-  if (a == 0 || b == 0)
-    return 0;
-  if (a > std::numeric_limits<size_t>::max() / b)
-    return std::numeric_limits<size_t>::max();
-  return a * b;
 }
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
@@ -1029,7 +1020,7 @@ void Renderer::writeBenchmarkHeader() {
     return;
 
   _benchmarkStream
-      << "frame,wall_seconds,cpu_ms,command_submission_ms,gpu_ms,rays_per_second,rays_cast,strategy,"
+      << "frame,wall_seconds,cpu_ms,gpu_ms,rays_per_second,rays_cast,strategy,"
          "strategy_id,delta_time_seconds,min_samples_per_pixel,max_samples_per_pixel,"
          "primitive_activations,primitive_deactivations,object_activations,"
          "object_deactivations,active_primitives,resident_primitives,total_primitives,"
@@ -1061,7 +1052,6 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
   std::ostringstream row;
   row << sample.frameIndex << ',' << formatFixed(sample.wallSeconds, 6) << ','
       << formatFixed(sample.cpuTimeSeconds * 1000.0, 3) << ','
-      << formatFixed(sample.commandSubmissionSeconds * 1000.0, 3) << ','
       << formatFixed(sample.gpuTimeSeconds * 1000.0, 3) << ','
       << formatFixed(sample.raysPerSecond, 2) << ',' << sample.rayCount << ','
       << '"' << sample.strategyName << "\"," << static_cast<int>(sample.strategy)
@@ -4501,22 +4491,6 @@ void Renderer::configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width
   slot.stagingValid = false;
 }
 
-size_t Renderer::maxTileSampleWorkPerCommand(uint32_t effectiveMaxSamples,
-                                             size_t framePixelCount) const {
-  size_t sampleMultiplier = std::max<size_t>(effectiveMaxSamples, size_t(1));
-  size_t baseWork =
-      saturatingMul(kBaseTileSampleWorkPerCommand, sampleMultiplier);
-  size_t scaledWork =
-      saturatingMul(baseWork, kCommandSubmissionWorkMultiplier);
-  size_t frameWork = saturatingMul(framePixelCount, sampleMultiplier);
-  size_t maxBudget = scaledWork;
-  if (frameWork > 0)
-    maxBudget = std::min(maxBudget, frameWork);
-  if (maxBudget < baseWork)
-    maxBudget = baseWork;
-  return std::max<size_t>(maxBudget, size_t(1));
-}
-
 size_t Renderer::textureByteSize(const ManagedTextureSlot &slot) const {
   if (!slot.descriptorValid || slot.width == 0 || slot.height == 0)
     return 0;
@@ -5162,8 +5136,6 @@ void Renderer::draw(MTK::View *pView) {
 
   prepCmd->commit();
 
-  _lastCommandSubmissionSeconds = 0.0;
-
   if (!haveAllTextures) {
     MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
     if (presentCmd) {
@@ -5188,18 +5160,14 @@ void Renderer::draw(MTK::View *pView) {
 
   uint32_t minSamples = 1;
   uint32_t maxSamples = 1;
-  uint32_t effectiveMaxSamples = 1;
-  size_t tileCommandWorkBudget = kBaseTileSampleWorkPerCommand;
-  size_t framePixelCount = 0;
   std::vector<TileDispatchRegion> tiles;
   if (_pPathTracePSO && accum1) {
     NS::UInteger width = accum1->width();
     NS::UInteger height = accum1->height();
-    framePixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     if (width > 0 && height > 0) {
-      NS::UInteger baseTileWidth =
+      NS::UInteger tileWidth =
           std::max<NS::UInteger>(kPathTraceTileWidth, 1);
-      NS::UInteger baseTileHeight =
+      NS::UInteger tileHeight =
           std::max<NS::UInteger>(kPathTraceTileHeight, 1);
 
       minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
@@ -5207,149 +5175,33 @@ void Renderer::draw(MTK::View *pView) {
       minSamples = std::max<uint32_t>(minSamples, 1);
       maxSamples = std::max<uint32_t>(maxSamples, minSamples);
 
-      effectiveMaxSamples = std::max<uint32_t>(
-          std::min<uint32_t>(maxSamples, _maxSamplesPerDispatchBudget), 1u);
+      if (maxSamples > 1) {
+        double sampleScale =
+            std::max<double>(1.0, std::sqrt(static_cast<double>(maxSamples)));
+        double scaledWidth =
+            std::floor(static_cast<double>(tileWidth) / sampleScale);
+        double scaledHeight =
+            std::floor(static_cast<double>(tileHeight) / sampleScale);
 
-      tileCommandWorkBudget =
-          maxTileSampleWorkPerCommand(effectiveMaxSamples, framePixelCount);
-
-      size_t baseTilePixels = std::max<size_t>(
-          static_cast<size_t>(baseTileWidth) * static_cast<size_t>(baseTileHeight),
-          size_t(1));
-      size_t sampleMultiplier =
-          std::max<size_t>(effectiveMaxSamples, size_t(1));
-      size_t tilePixelBudget = tileCommandWorkBudget / sampleMultiplier;
-      tilePixelBudget = std::max<size_t>(tilePixelBudget, baseTilePixels);
-      if (framePixelCount > 0)
-        tilePixelBudget =
-            std::min<size_t>(tilePixelBudget, framePixelCount);
-
-      if (tilePixelBudget >= framePixelCount && framePixelCount > 0) {
-        TileDispatchRegion region{};
-        region.originX = 0;
-        region.originY = 0;
-        region.width = static_cast<uint32_t>(width);
-        region.height = static_cast<uint32_t>(height);
-        tiles.push_back(region);
-      } else {
-        NS::UInteger tileWidth = baseTileWidth;
-        NS::UInteger tileHeight = baseTileHeight;
-
-        if (tilePixelBudget > baseTilePixels) {
-          double basePixels = static_cast<double>(baseTilePixels);
-          double scale = std::sqrt(static_cast<double>(tilePixelBudget) /
-                                   std::max(basePixels, 1.0));
-          scale = std::max(scale, 1.0);
-
-          double desiredWidth = static_cast<double>(tileWidth) * scale;
-          double desiredHeight = static_cast<double>(tileHeight) * scale;
-
-          tileWidth = static_cast<NS::UInteger>(std::floor(
-              std::min(desiredWidth, static_cast<double>(width))));
-          tileHeight = static_cast<NS::UInteger>(std::floor(
-              std::min(desiredHeight, static_cast<double>(height))));
-
-          tileWidth =
-              std::max<NS::UInteger>(tileWidth, baseTileWidth);
-          tileHeight =
-              std::max<NS::UInteger>(tileHeight, baseTileHeight);
-        }
-
-        tileWidth = std::max<NS::UInteger>(1, std::min(tileWidth, width));
-        tileHeight = std::max<NS::UInteger>(1, std::min(tileHeight, height));
-
-        size_t tilePixels = std::max<size_t>(
-            static_cast<size_t>(tileWidth) * static_cast<size_t>(tileHeight),
-            size_t(1));
-
-        if (tilePixels > tilePixelBudget) {
-          size_t maxHeight = std::max<size_t>(
-              static_cast<size_t>(baseTileHeight),
-              std::min<size_t>(tilePixelBudget /
-                                   std::max<size_t>(tileWidth, size_t(1)),
-                               static_cast<size_t>(height)));
-          tileHeight = static_cast<NS::UInteger>(
-              std::max<size_t>(1, maxHeight));
-          tilePixels = std::max<size_t>(
-              static_cast<size_t>(tileWidth) * static_cast<size_t>(tileHeight),
-              size_t(1));
-        }
-
-        if (tilePixels > tilePixelBudget) {
-          size_t maxWidth = std::max<size_t>(
-              static_cast<size_t>(baseTileWidth),
-              std::min<size_t>(tilePixelBudget /
-                                   std::max<size_t>(tileHeight, size_t(1)),
-                               static_cast<size_t>(width)));
-          tileWidth = static_cast<NS::UInteger>(
-              std::max<size_t>(1, maxWidth));
-          tilePixels = std::max<size_t>(
-              static_cast<size_t>(tileWidth) * static_cast<size_t>(tileHeight),
-              size_t(1));
-        }
-
-        if (tilePixels < tilePixelBudget) {
-          size_t remaining = tilePixelBudget - tilePixels;
-          if (tileWidth < width && tileHeight > 0) {
-            size_t grow = std::min<size_t>(
-                width - tileWidth,
-                remaining / std::max<size_t>(tileHeight, size_t(1)));
-            tileWidth += static_cast<NS::UInteger>(grow);
-            tilePixels = std::max<size_t>(
-                static_cast<size_t>(tileWidth) * static_cast<size_t>(tileHeight),
-                size_t(1));
-            remaining = tilePixelBudget > tilePixels
-                            ? tilePixelBudget - tilePixels
-                            : 0;
-          }
-          if (remaining > 0 && tileHeight < height && tileWidth > 0) {
-            size_t grow = std::min<size_t>(
-                height - tileHeight,
-                remaining / std::max<size_t>(tileWidth, size_t(1)));
-            tileHeight += static_cast<NS::UInteger>(grow);
-            tilePixels = std::max<size_t>(
-                static_cast<size_t>(tileWidth) * static_cast<size_t>(tileHeight),
-                size_t(1));
-          }
-        }
-
-        tileWidth = std::max<NS::UInteger>(1, std::min(tileWidth, width));
-        tileHeight = std::max<NS::UInteger>(1, std::min(tileHeight, height));
-
-        while (static_cast<size_t>(tileWidth) *
-                   static_cast<size_t>(tileHeight) >
-               tilePixelBudget) {
-          if (tileWidth > baseTileWidth && tileWidth >= tileHeight) {
-            --tileWidth;
-          } else if (tileHeight > baseTileHeight) {
-            --tileHeight;
-          } else if (tileWidth > 1) {
-            --tileWidth;
-          } else if (tileHeight > 1) {
-            --tileHeight;
-          } else {
-            break;
-          }
-        }
-
-        for (NS::UInteger y = 0; y < height; y += tileHeight) {
-          NS::UInteger actualHeight = std::min(tileHeight, height - y);
-          for (NS::UInteger x = 0; x < width; x += tileWidth) {
-            NS::UInteger actualWidth = std::min(tileWidth, width - x);
-            TileDispatchRegion region{};
-            region.originX = static_cast<uint32_t>(x);
-            region.originY = static_cast<uint32_t>(y);
-            region.width = static_cast<uint32_t>(actualWidth);
-            region.height = static_cast<uint32_t>(actualHeight);
-            tiles.push_back(region);
-          }
+        tileWidth = std::max<NS::UInteger>(
+            1, static_cast<NS::UInteger>(std::max(1.0, scaledWidth)));
+        tileHeight = std::max<NS::UInteger>(
+            1, static_cast<NS::UInteger>(std::max(1.0, scaledHeight)));
+      }
+      for (NS::UInteger y = 0; y < height; y += tileHeight) {
+        NS::UInteger actualHeight = std::min(tileHeight, height - y);
+        for (NS::UInteger x = 0; x < width; x += tileWidth) {
+          NS::UInteger actualWidth = std::min(tileWidth, width - x);
+          TileDispatchRegion region{};
+          region.originX = static_cast<uint32_t>(x);
+          region.originY = static_cast<uint32_t>(y);
+          region.width = static_cast<uint32_t>(actualWidth);
+          region.height = static_cast<uint32_t>(actualHeight);
+          tiles.push_back(region);
         }
       }
     }
   }
-
-  double commandSubmissionSeconds = 0.0;
-  bool measuredSubmission = false;
 
   if (_pPathTracePSO && !tiles.empty()) {
     if (_useAccelerationStructureBindings && _pTlasStructure &&
@@ -5367,12 +5219,11 @@ void Renderer::draw(MTK::View *pView) {
 
     size_t tileIndex = 0;
     const size_t maxWorkPerCommand =
-        std::max<size_t>(tileCommandWorkBudget, size_t(1));
-    const size_t effectiveSampleWork =
-        std::max<size_t>(effectiveMaxSamples, size_t(1));
-
-    measuredSubmission = true;
-    auto submissionStart = std::chrono::high_resolution_clock::now();
+        std::max<size_t>(kMaxTileSampleWorkPerCommand, 1);
+    const size_t effectiveMaxSamples = std::max<size_t>(
+        std::min<size_t>(maxSamples,
+                          static_cast<size_t>(_maxSamplesPerDispatchBudget)),
+        size_t(1));
 
     while (tileIndex < tiles.size()) {
       size_t batchStart = tileIndex;
@@ -5382,7 +5233,7 @@ void Renderer::draw(MTK::View *pView) {
         const TileDispatchRegion &tile = tiles[tileIndex];
         size_t tileWork = static_cast<size_t>(tile.width) * tile.height;
         tileWork = std::max<size_t>(tileWork, 1);
-        tileWork *= effectiveSampleWork;
+        tileWork *= effectiveMaxSamples;
 
         if (tileIndex > batchStart && batchWork + tileWork > maxWorkPerCommand)
           break;
@@ -5477,14 +5328,7 @@ void Renderer::draw(MTK::View *pView) {
       pCompute->endEncoding();
       computeCmd->commit();
     }
-
-    auto submissionEnd = std::chrono::high_resolution_clock::now();
-    commandSubmissionSeconds =
-        std::chrono::duration<double>(submissionEnd - submissionStart).count();
   }
-
-  _lastCommandSubmissionSeconds =
-      measuredSubmission ? commandSubmissionSeconds : 0.0;
 
   MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
   if (!presentCmd) {
@@ -7290,7 +7134,6 @@ void Renderer::waitForPendingFrameCommands() {
 void Renderer::beginFrameMetrics() {
   _cpuStart = std::chrono::high_resolution_clock::now();
   _lastRayCount = static_cast<size_t>(Camera::screenSize.x * Camera::screenSize.y);
-  _lastCommandSubmissionSeconds = 0.0;
 
   if (_benchmarkEnabled) {
     ensureBenchmarkStream();
@@ -7405,17 +7248,14 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
-  printf(
-      "Resident nodes: %zu offloaded: %zu CPU: %.3f ms Submit: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
-      _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
-      _lastCommandSubmissionSeconds * 1000.0, _lastGPUTime * 1000.0,
-      _lastRaysPerSecond);
+  printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+         _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
+         _lastGPUTime * 1000.0, _lastRaysPerSecond);
 
   if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty()) {
     BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
     _pendingBenchmarkSamples.pop_front();
     sample.cpuTimeSeconds = _lastCPUTime;
-    sample.commandSubmissionSeconds = _lastCommandSubmissionSeconds;
     sample.gpuTimeSeconds = _lastGPUTime;
     sample.raysPerSecond = _lastRaysPerSecond;
     sample.rayCount = _lastRayCount;
@@ -7429,9 +7269,6 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
 double Renderer::lastCPUTime() const { return _lastCPUTime; }
 double Renderer::lastGPUTime() const { return _lastGPUTime; }
 double Renderer::lastRaysPerSecond() const { return _lastRaysPerSecond; }
-double Renderer::lastCommandSubmissionTime() const {
-  return _lastCommandSubmissionSeconds;
-}
 size_t Renderer::activeNodeCount() const { return _activeNodeCount; }
 size_t Renderer::residentNodeCount() const { return _residentNodeCount; }
 size_t Renderer::totalNodeCount() const { return _totalNodeCount; }
