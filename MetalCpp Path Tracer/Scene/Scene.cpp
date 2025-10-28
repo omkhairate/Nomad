@@ -1,6 +1,5 @@
 #include "Scene.h"
 #include "SceneLoader.h"
-#include "MaterialPacking.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -358,10 +357,15 @@ simd::float4 *Scene::createTransformsBuffer() const {
   return buffer;
 }
 
-PackedMaterial *Scene::createMaterialsBuffer() const {
-  auto *buffer = new PackedMaterial[primitives.size()];
+simd::float4 *Scene::createMaterialsBuffer() const {
+  simd::float4 *buffer =
+      new simd::float4[kMaterialFloat4Count * primitives.size()];
   for (size_t i = 0; i < primitives.size(); ++i) {
-    buffer[i] = packPrimitiveMaterial(primitives[i]);
+    const auto &m = primitives[i].material;
+    auto packed = encodeMaterial(m);
+    for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
+      buffer[kMaterialFloat4Count * i + j] = packed[j];
+    }
   }
   return buffer;
 }
@@ -380,19 +384,20 @@ simd::float4 *Scene::createSphereBuffer() {
   return buffer;
 }
 
-PackedMaterial *Scene::createSphereMaterialsBuffer() {
+simd::float4 *Scene::createSphereMaterialsBuffer() {
   size_t sphereCount = getSphereCount();
-  auto *buffer = new PackedMaterial[sphereCount > 0 ? sphereCount : 1];
+  simd::float4 *buffer = new simd::float4[kMaterialFloat4Count * sphereCount];
 
   size_t index = 0;
   for (const auto &p : primitives) {
     if (p.type == PrimitiveType::Sphere) {
-      buffer[index++] = packPrimitiveMaterial(p);
+      auto packed = encodeMaterial(p.material);
+      for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
+        buffer[kMaterialFloat4Count * index + j] = packed[j];
+      }
+      index++;
     }
   }
-
-  if (sphereCount == 0)
-    buffer[0] = PackedMaterial{};
 
   return buffer;
 }
