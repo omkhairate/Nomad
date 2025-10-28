@@ -64,7 +64,7 @@ inline float3 randomInUnitSphere(thread uint32_t &seed) {
   }
 }
 
-inline MaterialPayload decodeMaterial(const PackedMaterial &m,
+inline MaterialPayload decodeMaterial(thread const PackedMaterial &m,
                                       float lodAttenuation) {
   MaterialPayload payload;
   payload.diffuseColor =
