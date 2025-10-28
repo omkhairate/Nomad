@@ -231,7 +231,6 @@ struct UniformsData {
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
   uint32_t textureCount = 0;
-  uint32_t maxSamplesPerDispatch = 1;
 };
 
 struct TileDispatchRegion {
@@ -820,7 +819,6 @@ Renderer::Renderer(MTL::Device *pDevice)
 
   recalculateViewport();
   initializeBenchmarking();
-  _maxSamplesPerDispatchBudget = std::max(_maxSamplesPerPixel, 1u);
 }
 
 Renderer::~Renderer() {
@@ -4916,13 +4914,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.sampleImportanceTextureIndex = 3;
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
-  if (_maxSamplesPerDispatchBudget == 0)
-    _maxSamplesPerDispatchBudget = maxSamples;
-  uint32_t dispatchBudget =
-      std::max<uint32_t>(_maxSamplesPerDispatchBudget, 1);
-  dispatchBudget = std::min(dispatchBudget, maxSamples);
-  _maxSamplesPerDispatchBudget = dispatchBudget;
-  u.maxSamplesPerDispatch = dispatchBudget;
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
@@ -5134,10 +5125,7 @@ void Renderer::draw(MTK::View *pView) {
     size_t tileIndex = 0;
     const size_t maxWorkPerCommand =
         std::max<size_t>(kMaxTileSampleWorkPerCommand, 1);
-    const size_t effectiveMaxSamples = std::max<size_t>(
-        std::min<size_t>(maxSamples,
-                          static_cast<size_t>(_maxSamplesPerDispatchBudget)),
-        size_t(1));
+    const size_t effectiveMaxSamples = std::max<size_t>(maxSamples, 1);
 
     while (tileIndex < tiles.size()) {
       size_t batchStart = tileIndex;
@@ -7088,53 +7076,6 @@ void Renderer::beginFrameMetrics() {
   }
 }
 
-void Renderer::updateDispatchSampleBudget() {
-  uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
-  maxSamples = std::max<uint32_t>(maxSamples, 1u);
-
-  if (_maxSamplesPerDispatchBudget == 0)
-    _maxSamplesPerDispatchBudget = maxSamples;
-
-  if (_targetFrameTimeSeconds <= 0.0)
-    _targetFrameTimeSeconds = 1.0 / 60.0;
-
-  double measured = _lastCPUTime;
-  if (measured <= 0.0)
-    return;
-
-  constexpr double smoothing = 0.1;
-  if (_smoothedCpuFrameTimeSeconds <= 0.0) {
-    _smoothedCpuFrameTimeSeconds = measured;
-  } else {
-    _smoothedCpuFrameTimeSeconds =
-        _smoothedCpuFrameTimeSeconds * (1.0 - smoothing) + measured * smoothing;
-  }
-
-  double target = _targetFrameTimeSeconds;
-  double tolerance = target * 0.05;
-  double smoothed = _smoothedCpuFrameTimeSeconds;
-
-  if (smoothed > target + tolerance) {
-    double overRatio = std::min(smoothed / target, 4.0);
-    uint32_t reduction = static_cast<uint32_t>(
-        std::ceil(double(_maxSamplesPerDispatchBudget) * (overRatio - 1.0) * 0.5));
-    reduction = std::max<uint32_t>(reduction, 1u);
-    if (_maxSamplesPerDispatchBudget > 1u)
-      _maxSamplesPerDispatchBudget =
-          std::max<uint32_t>(1u, _maxSamplesPerDispatchBudget - reduction);
-  } else if (smoothed < target - tolerance) {
-    double underRatio = std::min(target / std::max(smoothed, 1e-6), 4.0);
-    uint32_t increase = static_cast<uint32_t>(
-        std::ceil(double(_maxSamplesPerDispatchBudget) * (underRatio - 1.0) * 0.5));
-    increase = std::max<uint32_t>(increase, 1u);
-    _maxSamplesPerDispatchBudget = std::min<uint32_t>(
-        _maxSamplesPerDispatchBudget + increase, maxSamples);
-  }
-
-  _maxSamplesPerDispatchBudget =
-      std::clamp(_maxSamplesPerDispatchBudget, 1u, maxSamples);
-}
-
 void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   auto cpuEnd = std::chrono::high_resolution_clock::now();
   _lastCPUTime = std::chrono::duration<double>(cpuEnd - _cpuStart).count();
@@ -7148,7 +7089,6 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   } else {
     _lastRaysPerSecond = 0.0;
   }
-  updateDispatchSampleBudget();
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
