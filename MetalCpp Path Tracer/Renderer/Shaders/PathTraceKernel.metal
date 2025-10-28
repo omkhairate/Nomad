@@ -21,7 +21,7 @@ kernel void pathTraceKernel(
     device const InstanceRecord *instanceRecords [[buffer(13)]],
     texture2d<half, access::read> lastFrame [[texture(0)]],
     texture2d<half, access::write> currentFrame [[texture(1)]],
-    texture2d<half, access::read_write> sampleCount [[texture(2)]],
+    texture2d<float, access::read_write> sampleCount [[texture(2)]],
     texture2d<half, access::read> sampleImportance [[texture(3)]],
     texture2d<half, access::read_write> albedoAccum [[texture(4)]],
     texture2d<half, access::read_write> normalAccum [[texture(5)]],
@@ -63,7 +63,21 @@ kernel void pathTraceKernel(
   samplesThisFrame = max(samplesThisFrame, 1u);
 
   float decay = clamp(u.accumulationDecay, 0.0f, 1.0f);
-  float previousSampleCount = float(sampleCount.read(pixel).x) * decay;
+  float4 sampleState = sampleCount.read(pixel);
+  float previousSampleCount = max(sampleState.x, 0.0f) * decay;
+  float previousMean = max(sampleState.y, 0.0f);
+  float previousM2 = max(sampleState.z, 0.0f) * decay;
+  if (!isfinite(previousSampleCount))
+    previousSampleCount = 0.0f;
+  if (!isfinite(previousMean) || previousSampleCount <= 0.0f)
+    previousMean = 0.0f;
+  if (!isfinite(previousM2) || previousSampleCount <= 0.0f)
+    previousM2 = 0.0f;
+  if (previousSampleCount < 1e-3f) {
+    previousSampleCount = 0.0f;
+    previousMean = 0.0f;
+    previousM2 = 0.0f;
+  }
   float4 previousColor = float4(lastFrame.read(pixel));
 
   float3 accumulatedColor = float3(0.0);
@@ -72,6 +86,10 @@ kernel void pathTraceKernel(
 
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
+
+  float runningSamples = previousSampleCount;
+  float runningMean = previousMean;
+  float runningM2 = previousM2;
 
   for (uint sampleIdx = 0; sampleIdx < samplesThisFrame; ++sampleIdx) {
     float xOff = (randomFloat(seed) - 0.5f) / screenSize.x;
@@ -101,9 +119,21 @@ kernel void pathTraceKernel(
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;
+
+    float sampleLum = luminance(sample.radiance);
+    if (!isfinite(sampleLum))
+      sampleLum = 0.0f;
+    sampleLum = clamp(sampleLum, 0.0f, 1e6f);
+
+    float delta = sampleLum - runningMean;
+    runningSamples += 1.0f;
+    float invSamples = runningSamples > 0.0f ? 1.0f / runningSamples : 0.0f;
+    runningMean += delta * invSamples;
+    float delta2 = sampleLum - runningMean;
+    runningM2 = max(runningM2 + delta * delta2, 0.0f);
   }
 
-  float totalSamples = previousSampleCount + float(samplesThisFrame);
+  float totalSamples = runningSamples;
   float3 previousSum = previousColor.xyz * previousSampleCount;
   float3 combinedSum = previousSum + accumulatedColor;
   float3 averaged = (totalSamples > 0.0f) ? combinedSum / totalSamples : float3(0.0f);
@@ -126,5 +156,17 @@ kernel void pathTraceKernel(
   currentFrame.write(half4(result), pixel);
   albedoAccum.write(half4(float4(averagedAlbedo, 1.0f)), pixel);
   normalAccum.write(half4(float4(averagedNormal, 1.0f)), pixel);
-  sampleCount.write(half4(totalSamples, half(0.0f), half(0.0f), half(0.0f)), pixel);
+  if (!isfinite(runningMean) || runningMean < 0.0f)
+    runningMean = 0.0f;
+  if (!isfinite(runningM2) || runningM2 < 0.0f)
+    runningM2 = 0.0f;
+
+  float variance = 0.0f;
+  if (runningSamples > 1.0f) {
+    float denom = max(runningSamples - 1.0f, 1.0f);
+    variance = max(runningM2 / denom, 0.0f);
+  }
+  if (!isfinite(variance))
+    variance = 0.0f;
+  sampleCount.write(float4(totalSamples, runningMean, runningM2, variance), pixel);
 }
