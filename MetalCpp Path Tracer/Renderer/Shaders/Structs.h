@@ -78,8 +78,6 @@ struct UniformsData
     uint maxSamplesPerPixel;
     uint textureCount;
     uint maxSamplesPerDispatch;
-    uint debugOutputMode;
-    float importanceVisualizationScale;
 };
 
 struct TileRegion

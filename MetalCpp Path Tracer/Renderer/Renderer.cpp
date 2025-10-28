@@ -232,8 +232,6 @@ struct UniformsData {
   uint32_t maxSamplesPerPixel = 1;
   uint32_t textureCount = 0;
   uint32_t maxSamplesPerDispatch = 1;
-  uint32_t debugOutputMode = 0;
-  float importanceVisualizationScale = 1.0f;
 };
 
 struct TileDispatchRegion {
@@ -4704,7 +4702,7 @@ void Renderer::buildTextures() {
   configureTextureSlot(_sampleCountSlot, width, height,
                        MTL::PixelFormat::PixelFormatR16Float, usage);
   configureTextureSlot(_sampleImportanceSlot, width, height,
-                       MTL::PixelFormat::PixelFormatRGBA16Float, usage);
+                       MTL::PixelFormat::PixelFormatR16Float, usage);
   configureTextureSlot(_albedoSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA16Float, usage);
   configureTextureSlot(_normalSlot, width, height,
@@ -4781,8 +4779,7 @@ void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
     return;
   MTL::Texture *importance = _sampleImportanceSlot.texture;
   MTL::Texture *accumulation = _accumulationSlots[0].texture;
-  MTL::Texture *sampleCount = _sampleCountSlot.texture;
-  if (!importance || !accumulation || !sampleCount || !_pUniformsBuffer)
+  if (!importance || !accumulation || !_pUniformsBuffer)
     return;
 
   NS::UInteger width = importance->width();
@@ -4797,7 +4794,6 @@ void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
   pCompute->setComputePipelineState(_pAdaptiveSamplingPSO);
   pCompute->setTexture(accumulation, 0);
   pCompute->setTexture(importance, 1);
-  pCompute->setTexture(sampleCount, 2);
   pCompute->setBuffer(_pUniformsBuffer, 0, 0);
 
   const NS::UInteger threadWidth = 8;
@@ -4964,8 +4960,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.debugAS = InputSystem::debugAS;
   u.lightCount = static_cast<uint32_t>(_lightCount);
   u.lightTotalWeight = _lightTotalWeight;
-  u.debugOutputMode = InputSystem::importanceDebugMode;
-  u.importanceVisualizationScale = _importanceVisualizationScale;
 
   markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
 }
@@ -5269,9 +5263,6 @@ void Renderer::draw(MTK::View *pView) {
 
   pEnc->setRenderPipelineState(_pPSO);
   pEnc->setFragmentTexture(accum1, 0);
-  pEnc->setFragmentTexture(sampleImportance, 1);
-  if (_pUniformsBuffer)
-    pEnc->setFragmentBuffer(_pUniformsBuffer, 0, 0);
 
   pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
                        NS::UInteger(0), NS::UInteger(6));
@@ -5327,9 +5318,6 @@ void Renderer::draw(MTK::View *pView) {
 
       pEnc->setRenderPipelineState(_pPSO);
       pEnc->setFragmentTexture(accum1, 0);
-      pEnc->setFragmentTexture(sampleImportance, 1);
-      if (_pUniformsBuffer)
-        pEnc->setFragmentBuffer(_pUniformsBuffer, 0, 0);
     }
   }
 

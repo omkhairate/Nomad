@@ -95,10 +95,6 @@ MTK::View *MetalCppPathTracer::ControllerView::get(CGRect frame) {
     if(event.keyCode == 31) { // o - toggle observer camera
         MetalCppPathTracer::InputSystem::observerToggleRequest = true;
     }
-    if(event.keyCode == 34) { // i - toggle adaptive importance visualization
-        MetalCppPathTracer::InputSystem::importanceDebugMode =
-            (MetalCppPathTracer::InputSystem::importanceDebugMode + 1) % 2;
-    }
 }
 
 - (void)keyUp:(NSEvent *)event {
