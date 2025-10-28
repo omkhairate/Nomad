@@ -218,6 +218,7 @@ private:
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
+  MTL::ComputePipelineState *_pDenoiserPSO = nullptr;
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
@@ -272,6 +273,7 @@ private:
   ManagedTextureSlot _sampleImportanceSlot;
   ManagedTextureSlot _albedoSlot;
   ManagedTextureSlot _normalSlot;
+  ManagedTextureSlot _denoisedSlots[2];
 
   struct PendingBlasBuild {
     Renderer *renderer = nullptr;
@@ -503,6 +505,7 @@ private:
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
   uint32_t _maxSamplesPerDispatchBudget = 4;
+  size_t _framesSinceAccumulationReset = 0;
   float _importanceVisualizationScale = 1.5f;
   bool _needsAccumulationReset = true;
   bool _accumulationTargetsNeedClear = false;
