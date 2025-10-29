@@ -19,6 +19,7 @@
 
 #include "AlwaysResidentCache.h"
 #include "GpuHeapResources.h"
+#include "ResidencyBudget.h"
 #include "TlasScratchTracker.h"
 #include "Camera.h"
 #include "Scene.h"
@@ -208,6 +209,9 @@ private:
                                        bool &reused);
   void recycleBlasScratchBuffer(MTL::Buffer *buffer, NS::UInteger size);
   void releaseBlasScratchPool();
+  void updateBlasScratchResidencyBudget();
+  double scratchMemoryMB() const;
+  double residencyMemoryMB() const;
   
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
@@ -246,6 +250,7 @@ private:
   NS::UInteger _tlasScratchCapacity = 0;
   size_t _tlasScratchResidentBytes = 0;
   TlasScratchTracker _tlasScratchTracker;
+  ResidencyBudget _residencyBudget;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -322,6 +327,8 @@ private:
     size_t activeObjectCount = 0;
     size_t residentObjectCount = 0;
     double gpuMemoryMB = 0.0;
+    double scratchMemoryMB = 0.0;
+    double residencyMemoryMB = 0.0;
     double textureMemoryCapMB = 0.0;
     double deltaTimeSeconds = 0.0;
     double wallSeconds = 0.0;
