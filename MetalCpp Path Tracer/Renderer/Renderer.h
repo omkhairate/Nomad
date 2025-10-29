@@ -278,6 +278,7 @@ private:
     MTL::Buffer *indexStaging = nullptr;
     MTL::Buffer *scratchBuffer = nullptr;
     MTL::CommandBuffer *commandBuffer = nullptr;
+    bool useRefit = false;
 
     void releaseResources();
   };

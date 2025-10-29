@@ -221,6 +221,7 @@ void Renderer::PendingBlasBuild::releaseResources() {
   }
   accelerationStructure = nullptr;
   commandBuffer = nullptr;
+  useRefit = false;
 }
 
 MTL::Buffer *Renderer::acquireBlasBuffer(
@@ -2476,6 +2477,11 @@ bool Renderer::startBlasBuild(
     return false;
 
   auto &resident = *buildRequest->resident;
+  const bool geometryTopologyUnchanged =
+      resident.geometryValid &&
+      resident.triangleCount == buildRequest->triangleCount &&
+      resident.vertexCount == buildRequest->vertexCount &&
+      resident.resources.accelerationStructure() != nullptr;
 
   NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
   auto cleanupPool = [&]() {
@@ -2565,6 +2571,7 @@ bool Renderer::startBlasBuild(
   NS::UInteger alignedAccelerationSize = 0;
   MTL::AccelerationStructureSizes sizes{};
   MTL::SizeAndAlign heapAlign{};
+  bool useRefit = false;
 
   while (true) {
     configureGeometryDescriptor();
@@ -2577,6 +2584,10 @@ bool Renderer::startBlasBuild(
                 static_cast<size_t>(heapAlign.align)));
     alignedAccelerationSize =
         resident.resources.alignedHeapSize(alignedAccelerationSize);
+
+    useRefit = geometryTopologyUnchanged &&
+               resident.resources.accelerationStructureCapacity() >=
+                   alignedAccelerationSize;
 
     NS::UInteger requiredTotal = alignedAccelerationSize + alignedVertexSize +
                                  alignedIndexSize;
@@ -2612,6 +2623,11 @@ bool Renderer::startBlasBuild(
     return false;
   }
 
+  if (useRefit && accelerationStructure !=
+                      resident.resources.accelerationStructure()) {
+    useRefit = false;
+  }
+
   MTL::Buffer *vertexStaging = nullptr;
   MTL::Buffer *indexStaging = nullptr;
   if (vertexBytes > 0) {
@@ -2642,7 +2658,8 @@ bool Renderer::startBlasBuild(
     return false;
   }
 
-  NS::UInteger scratchSize = sizes.buildScratchBufferSize;
+  NS::UInteger scratchSize =
+      useRefit ? sizes.refitScratchBufferSize : sizes.buildScratchBufferSize;
   MTL::Buffer *scratchBuffer = nullptr;
   if (scratchSize > 0)
     scratchBuffer = acquireBlasScratchBuffer(scratchSize);
@@ -2688,8 +2705,14 @@ bool Renderer::startBlasBuild(
     return false;
   }
 
-  asEncoder->buildAccelerationStructure(accelerationStructure, accelDesc,
-                                        scratchBuffer, 0);
+  if (useRefit) {
+    asEncoder->refitAccelerationStructure(accelerationStructure, accelDesc,
+                                          accelerationStructure, scratchBuffer,
+                                          0);
+  } else {
+    asEncoder->buildAccelerationStructure(accelerationStructure, accelDesc,
+                                          scratchBuffer, 0);
+  }
   asEncoder->endEncoding();
 
   buildRequest->geometryDesc = geometryDesc;
@@ -2701,6 +2724,7 @@ bool Renderer::startBlasBuild(
   buildRequest->scratchBuffer = scratchBuffer;
   buildRequest->commandBuffer = commandBuffer;
   buildRequest->totalHeapBytes = totalHeapBytes;
+  buildRequest->useRefit = useRefit;
 
   // Release CPU copies now that staging buffers are populated.
   buildRequest->vertices.clear();
@@ -2745,9 +2769,17 @@ void Renderer::handleCompletedBlasBuild(
     resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
     resident.lastStateChange = std::chrono::steady_clock::now();
   } else if (buildRequest->objectIndex < _instanceRecords.size()) {
+    if (buildRequest->useRefit) {
+      printf("BLAS refit failed for object %zu, scheduling full rebuild.\n",
+             buildRequest->objectIndex);
+    }
     transitionResidentToCold(resident,
                              _instanceRecords[buildRequest->objectIndex]);
   } else {
+    if (buildRequest->useRefit) {
+      printf("BLAS refit failed for object %zu, scheduling full rebuild.\n",
+             buildRequest->objectIndex);
+    }
     resident.geometryValid = false;
   }
 
