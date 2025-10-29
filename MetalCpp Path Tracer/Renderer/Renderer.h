@@ -10,6 +10,7 @@
 #include <deque>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <simd/simd.h>
@@ -202,7 +203,12 @@ private:
   std::array<simd::float3, 8>
   buildFrustumCorners(const Camera::State &state, float nearDistance,
                       float farDistance) const;
-
+  MTL::Buffer *acquireBlasScratchBuffer(NS::UInteger requestedSize,
+                                       NS::UInteger &allocatedSize,
+                                       bool &reused);
+  void recycleBlasScratchBuffer(MTL::Buffer *buffer, NS::UInteger size);
+  void releaseBlasScratchPool();
+  
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
@@ -282,6 +288,7 @@ private:
     MTL::Buffer *vertexStaging = nullptr;
     MTL::Buffer *indexStaging = nullptr;
     MTL::Buffer *scratchBuffer = nullptr;
+    NS::UInteger scratchSize = 0;
     MTL::CommandBuffer *commandBuffer = nullptr;
 
     void releaseResources();
@@ -290,6 +297,11 @@ private:
   static constexpr size_t kMaxBlasBuildsInFlight = 3;
   std::deque<std::shared_ptr<PendingBlasBuild>> _pendingBlasBuilds;
   std::deque<std::shared_ptr<PendingBlasBuild>> _activeBlasBuilds;
+  std::map<NS::UInteger, std::vector<MTL::Buffer *>> _blasScratchPool;
+  size_t _blasScratchPoolAvailableBytes = 0;
+  size_t _blasScratchPoolInUseBytes = 0;
+  size_t _blasScratchPoolCreatedCount = 0;
+  size_t _blasScratchPoolReusedCount = 0;
 
   struct BenchmarkSample {
     size_t frameIndex = 0;
