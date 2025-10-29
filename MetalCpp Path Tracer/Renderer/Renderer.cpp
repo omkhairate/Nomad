@@ -4391,8 +4391,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       auto decodeNode = [](const simd::float4 &minVec,
                            const simd::float4 &maxVec, int &leftFirst,
                            int &count) {
-        std::memcpy(&leftFirst, &minVec.w, sizeof(int));
-        std::memcpy(&count, &maxVec.w, sizeof(int));
+        const auto *minWords = reinterpret_cast<const int *>(&minVec);
+        const auto *maxWords = reinterpret_cast<const int *>(&maxVec);
+        leftFirst = minWords[3];
+        count = maxWords[3];
       };
 
       while (!stack.empty()) {
@@ -4482,8 +4484,12 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
       int leftChild = 0;
       int rightChild = 0;
-      std::memcpy(&leftChild, &tlasNodes[2 * nodeIdx].w, sizeof(int));
-      std::memcpy(&rightChild, &tlasNodes[2 * nodeIdx + 1].w, sizeof(int));
+      const auto *leftWords =
+          reinterpret_cast<const int *>(&tlasNodes[2 * nodeIdx]);
+      const auto *rightWords =
+          reinterpret_cast<const int *>(&tlasNodes[2 * nodeIdx + 1]);
+      leftChild = leftWords[3];
+      rightChild = rightWords[3];
 
       if (leftChild < 0) {
         size_t objectIndex = static_cast<size_t>(-leftChild - 1);
