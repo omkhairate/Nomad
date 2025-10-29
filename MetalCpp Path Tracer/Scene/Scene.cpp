@@ -206,7 +206,9 @@ void Scene::setEnvironmentBrightness(float brightness) {
   environment.brightness = std::max(brightness, 0.0f);
 }
 
-bool Scene::hasEnvironmentTexture() const { return !environment.texturePath.empty(); }
+bool Scene::hasEnvironmentTexture() const {
+  return !environment.texturePath.empty();
+}
 
 ResidencyStrategy Scene::getResidencyStrategy() const {
   return residencyStrategy;
