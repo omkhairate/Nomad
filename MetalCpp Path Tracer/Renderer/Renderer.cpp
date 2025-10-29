@@ -5,6 +5,7 @@
 #include "InputSystem.h"
 #include "Scene.h"
 #include "SceneLoader.h"
+#include "../Textures/EnvironmentTexture.h"
 #include "../offline/denoiser_settings.h"
 #include <Metal/MTLArgument.hpp>
 #include <Metal/MTLComputePipeline.hpp>
@@ -26,76 +27,22 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
-#include <condition_variable>
-#include <exception>
-#include <future>
 #include <iomanip>
-#include <mutex>
+#include <exception>
 #include <numeric>
 #include <simd/simd.h>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <unordered_map>
-#include <vector>
 
 #define TINYEXR_IMPLEMENTATION
 #include "../tinyexr.h"
-#include "../Textures/EnvironmentTexture.h"
-
-namespace {
-class TaskLimiter {
-public:
-  explicit TaskLimiter(size_t maxTasks) : _maxTasks(maxTasks) {}
-
-  void acquire() {
-    std::unique_lock<std::mutex> lock(_mutex);
-    _cv.wait(lock, [&] { return _active < _maxTasks; });
-    ++_active;
-  }
-
-  void release() {
-    std::unique_lock<std::mutex> lock(_mutex);
-    if (_active > 0) {
-      --_active;
-      lock.unlock();
-      _cv.notify_one();
-    }
-  }
-
-private:
-  size_t _maxTasks = 0;
-  size_t _active = 0;
-  std::mutex _mutex;
-  std::condition_variable _cv;
-};
-
-TaskLimiter &sceneBvhTaskLimiter() {
-  constexpr size_t kMaxSceneBvhTasks = 2;
-  static TaskLimiter limiter(kMaxSceneBvhTasks);
-  return limiter;
-}
-} // namespace
 
 namespace MetalCppPathTracer {
 
 void ResidentObjectGpuResources::clearPendingCommand() {
-  if (!pendingCommand)
-    return;
-
-  using Status = MTL::CommandBufferStatus;
-  auto status = pendingCommand->status();
-
-  if (status == Status::CommandBufferStatusNotEnqueued ||
-      status == Status::CommandBufferStatusEnqueued ||
-      status == Status::CommandBufferStatusCommitted ||
-      status == Status::CommandBufferStatusScheduled) {
-    pendingCommand->waitUntilCompleted();
-    status = pendingCommand->status();
-  }
-
-  if (status == Status::CommandBufferStatusCompleted ||
-      status == Status::CommandBufferStatusError) {
+  if (pendingCommand) {
     pendingCommand->release();
     pendingCommand = nullptr;
   }
@@ -140,85 +87,21 @@ bool ResidentObjectGpuResources::ensureResident(
   }
 
   transitionToStreaming();
-  geometryValid = false;
   bool built = renderer.buildObjectBlas(objectIndex, object, *this);
   if (!built) {
-    renderer.transitionResidentToCold(*this, instanceRecord);
+    transitionToCold(instanceRecord);
     return false;
   }
+
+  clearPendingCommand();
+  state = ResidencyState::Resident;
+  lastStateChange = std::chrono::steady_clock::now();
   return true;
 }
 
 } // namespace MetalCppPathTracer
 
 using namespace MetalCppPathTracer;
-
-namespace {
-
-template <typename Func>
-void parallelFor(size_t count, Func &&func, size_t minChunkSize = 64) {
-  if (count == 0)
-    return;
-
-  const size_t hardwareThreads =
-      std::max<size_t>(1, std::thread::hardware_concurrency());
-  size_t chunkSize = (count + hardwareThreads - 1) / hardwareThreads;
-  if (chunkSize < minChunkSize)
-    chunkSize = minChunkSize;
-
-  size_t taskCount = (count + chunkSize - 1) / chunkSize;
-  if (taskCount <= 1) {
-    func(0, count);
-    return;
-  }
-
-  std::vector<std::thread> workers;
-  workers.reserve(taskCount - 1);
-
-  for (size_t task = 0; task + 1 < taskCount; ++task) {
-    size_t begin = task * chunkSize;
-    size_t end = std::min(begin + chunkSize, count);
-    workers.emplace_back([begin, end, &func]() { func(begin, end); });
-  }
-
-  size_t begin = (taskCount - 1) * chunkSize;
-  size_t end = std::min(begin + chunkSize, count);
-  func(begin, end);
-
-  for (auto &worker : workers)
-    worker.join();
-}
-
-} // namespace
-
-void Renderer::PendingBlasBuild::releaseResources() {
-  if (vertexStaging) {
-    vertexStaging->release();
-    vertexStaging = nullptr;
-  }
-  if (indexStaging) {
-    indexStaging->release();
-    indexStaging = nullptr;
-  }
-  if (scratchBuffer) {
-    scratchBuffer->release();
-    scratchBuffer = nullptr;
-  }
-  if (geometryArray) {
-    geometryArray->release();
-    geometryArray = nullptr;
-  }
-  if (geometryDesc) {
-    geometryDesc->release();
-    geometryDesc = nullptr;
-  }
-  if (accelDesc) {
-    accelDesc->release();
-    accelDesc = nullptr;
-  }
-  accelerationStructure = nullptr;
-  commandBuffer = nullptr;
-}
 
 struct UniformsData {
   int primitiveIndex;
@@ -249,7 +132,7 @@ struct UniformsData {
   uint32_t maxSamplesPerPixel = 1;
   uint32_t textureCount = 0;
   uint32_t environmentMapEnabled = 0;
-  float environmentMapIntensity = 1.0f;
+  float environmentMapIntensity = 0.0f;
   float environmentPadding0 = 0.0f;
   float environmentPadding1 = 0.0f;
 };
@@ -263,12 +146,6 @@ struct TileDispatchRegion {
 
 constexpr uint32_t kPathTraceTileWidth = 128;
 constexpr uint32_t kPathTraceTileHeight = 128;
-// Limit the amount of pixel/sample work recorded into a single command buffer to
-// reduce the chance of long-running kernels triggering GPU timeout errors when
-// high sample counts are requested. With the always-resident residency strategy
-// scenes keep significantly more geometry active, so reduce the per-command
-// budget to lower kernel runtimes and avoid tripping the macOS GPU watchdog.
-constexpr size_t kMaxTileSampleWorkPerCommand = 128 * 128 * 4;
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
 inline uint32_t bitm_random() {
@@ -847,7 +724,7 @@ Renderer::Renderer(MTL::Device *pDevice)
 
 Renderer::~Renderer() {
   processPendingCapturedFrames();
-  waitForPendingFrameCommands();
+  releaseEnvironmentTexture();
 
   if (_pSphereBuffer)
     _pSphereBuffer->release();
@@ -882,22 +759,12 @@ Renderer::~Renderer() {
     _pInstanceBuffer->release();
   if (_pGeometryHandleBuffer)
     _pGeometryHandleBuffer->release();
-  if (_pTlasScratchBuffer)
-    _pTlasScratchBuffer->release();
-  if (_pTlasBuildEvent)
-    _pTlasBuildEvent->release();
   if (_pTlasDescriptorStaging)
     _pTlasDescriptorStaging->release();
   _pTlasDescriptorStaging = nullptr;
   _tlasDescriptorStagingCapacity = 0;
-  _pTlasScratchBuffer = nullptr;
-  _tlasScratchCapacity = 0;
-  _pTlasBuildEvent = nullptr;
-  _tlasBuildEventValue = 0;
-  _tlasCompletedEventValue.store(0, std::memory_order_relaxed);
   if (_pFrustumVertexBuffer)
     _pFrustumVertexBuffer->release();
-  releaseEnvironmentTexture();
   if (_environmentSampler)
     _environmentSampler->release();
   _environmentSampler = nullptr;
@@ -1054,8 +921,7 @@ void Renderer::writeBenchmarkHeader() {
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
-         "lod_enter_distance,lod_exit_distance,lod_enter_view_margin,"
-         "lod_exit_view_margin,energy_target_fraction,"
+         "lod_enter_distance,lod_exit_distance,energy_target_fraction,"
          "energy_min_active,energy_visibility_boost,screen_target_fraction,"
          "screen_min_pixels,screen_min_active";
   _benchmarkStream << '\n';
@@ -1106,8 +972,6 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << _residencyConfig.rayHitRebuildCooldownFrames << ','
       << formatFixed(_residencyConfig.lodEnterDistance, 3) << ','
       << formatFixed(_residencyConfig.lodExitDistance, 3) << ','
-      << formatFixed(_residencyConfig.lodEnterViewDegrees, 3) << ','
-      << formatFixed(_residencyConfig.lodExitViewDegrees, 3) << ','
       << formatFixed(_residencyConfig.energyTargetFraction, 3) << ','
       << _residencyConfig.energyMinActivePrimitives << ','
       << formatFixed(_residencyConfig.energyVisibilityBoost, 3) << ','
@@ -1533,22 +1397,9 @@ void Renderer::processPendingCapturedFrames() {
             filtered[1] = accum[1] / totalWeight;
             filtered[2] = accum[2] / totalWeight;
           }
-          const float strength =
-              MetalCppPathTracer::DenoiserSettings::kSharpenedDenoiseStrength;
-          std::array<float, 3> blended{
-              baseColor[0] + (filtered[0] - baseColor[0]) * strength,
-              baseColor[1] + (filtered[1] - baseColor[1]) * strength,
-              baseColor[2] + (filtered[2] - baseColor[2]) * strength,
-          };
-          if (MetalCppPathTracer::DenoiserSettings::kSharpenedClampOutput) {
-            denoised[index * 3 + 0] = std::clamp(blended[0], 0.0f, 1.0f);
-            denoised[index * 3 + 1] = std::clamp(blended[1], 0.0f, 1.0f);
-            denoised[index * 3 + 2] = std::clamp(blended[2], 0.0f, 1.0f);
-          } else {
-            denoised[index * 3 + 0] = blended[0];
-            denoised[index * 3 + 1] = blended[1];
-            denoised[index * 3 + 2] = blended[2];
-          }
+          denoised[index * 3 + 0] = std::clamp(filtered[0], 0.0f, 1.0f);
+          denoised[index * 3 + 1] = std::clamp(filtered[1], 0.0f, 1.0f);
+          denoised[index * 3 + 2] = std::clamp(filtered[2], 0.0f, 1.0f);
         }
       }
 
@@ -1784,98 +1635,6 @@ void Renderer::buildShaders() {
   pLibrary->release();
 }
 
-Renderer::SceneAccelerationBuildResult
-Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
-                                           size_t primitiveHitBytes) {
-  SceneAccelerationBuildResult result{};
-
-  MTL::CommandBuffer *clearCmd = nullptr;
-  if (_pPrimitiveHitBufferGPU && primitiveHitBytes > 0 && _pCommandQueue) {
-    clearCmd = _pCommandQueue->commandBuffer();
-    if (clearCmd) {
-      MTL::BlitCommandEncoder *blit = clearCmd->blitCommandEncoder();
-      if (blit) {
-        blit->fillBuffer(_pPrimitiveHitBufferGPU,
-                         NS::Range::Make(0, primitiveHitBytes), 0);
-        blit->endEncoding();
-      }
-    }
-  }
-
-  std::future<SceneAccelerationBuildResult> resultFuture;
-  std::thread worker;
-  TaskLimiter *limiter = nullptr;
-
-  if (_pScene) {
-    TaskLimiter &limiterRef = sceneBvhTaskLimiter();
-    limiterRef.acquire();
-    limiter = &limiterRef;
-
-    std::promise<SceneAccelerationBuildResult> promise;
-    resultFuture = promise.get_future();
-    Scene *scene = _pScene;
-    size_t primitiveCountCopy = primitiveCount;
-
-    try {
-      worker = std::thread(
-          [scene, primitiveCountCopy, limiter, promise = std::move(promise)](
-              ) mutable {
-            struct LimiterGuard {
-              TaskLimiter *limiter;
-              ~LimiterGuard() {
-                if (limiter)
-                  limiter->release();
-              }
-            } guard{limiter};
-
-            SceneAccelerationBuildResult threadResult{};
-            try {
-              if (scene) {
-                scene->buildBVH();
-                threadResult.blasNodeCount = scene->getBVHNodeCount();
-                size_t tlasCount = 0;
-                if (primitiveCountCopy > 0) {
-                  simd::float4 *tmp = scene->createTLASBuffer(tlasCount);
-                  if (tmp)
-                    delete[] tmp;
-                }
-                threadResult.tlasNodeCount = tlasCount;
-              }
-              promise.set_value(threadResult);
-            } catch (...) {
-              try {
-                promise.set_exception(std::current_exception());
-              } catch (...) {
-              }
-            }
-          });
-    } catch (...) {
-      limiterRef.release();
-      throw;
-    }
-  }
-
-  if (clearCmd) {
-    clearCmd->commit();
-    clearCmd->waitUntilCompleted();
-  }
-
-  if (resultFuture.valid()) {
-    try {
-      result = resultFuture.get();
-    } catch (...) {
-      if (worker.joinable())
-        worker.join();
-      throw;
-    }
-  }
-
-  if (worker.joinable())
-    worker.join();
-
-  return result;
-}
-
 void Renderer::updateVisibleScene() {
   if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
@@ -2037,15 +1796,35 @@ void Renderer::updateVisibleScene() {
               : nullptr) {
     std::memset(hitPtr, 0, hitBytes);
   }
-  SceneAccelerationBuildResult accelerationBuild =
-      buildSceneAccelerationStructures(primCount, hitBytes);
+  if (_pPrimitiveHitBufferGPU && hitBytes > 0) {
+    MTL::CommandBuffer *initCmd = _pCommandQueue->commandBuffer();
+    if (initCmd) {
+      MTL::BlitCommandEncoder *initBlit = initCmd->blitCommandEncoder();
+      if (initBlit) {
+        initBlit->fillBuffer(_pPrimitiveHitBufferGPU,
+                             NS::Range::Make(0, hitBytes), 0);
+        initBlit->endEncoding();
+      }
+      initCmd->commit();
+      initCmd->waitUntilCompleted();
+    }
+  }
 
   _rayHitRebuildCooldown = 0;
 
-  _maxBlasNodeCount =
-      std::max<size_t>(accelerationBuild.blasNodeCount, size_t(1));
-  _maxTlasNodeCount =
-      std::max<size_t>(accelerationBuild.tlasNodeCount, size_t(1));
+  _maxBlasNodeCount = 1;
+  _maxTlasNodeCount = 1;
+
+  _pScene->buildBVH();
+  size_t blasNodeCount = _pScene->getBVHNodeCount();
+  _maxBlasNodeCount = std::max<size_t>(blasNodeCount, _maxBlasNodeCount);
+
+  size_t fullTlasCount = 0;
+  if (primCount > 0) {
+    simd::float4 *tmp = _pScene->createTLASBuffer(fullTlasCount);
+    delete[] tmp;
+  }
+  _maxTlasNodeCount = std::max<size_t>(fullTlasCount, _maxTlasNodeCount);
   _totalNodeCount = _maxBlasNodeCount + _maxTlasNodeCount;
 
   _allSceneObjects = _pScene->getObjects();
@@ -2260,106 +2039,25 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     return true;
   }
 
-  auto buildRequest = std::make_shared<PendingBlasBuild>();
-  if (!buildRequest) {
-    cleanupPool();
-    return false;
-  }
+  NS::UInteger vertexBytes =
+      static_cast<NS::UInteger>(vertices.size() * sizeof(simd::float3));
+  NS::UInteger indexBytes =
+      static_cast<NS::UInteger>(indices.size() * sizeof(uint32_t));
 
-  buildRequest->renderer = this;
-  buildRequest->resident = &resident;
-  buildRequest->objectIndex = objectIndex;
-  buildRequest->vertices = std::move(vertices);
-  buildRequest->indices = std::move(indices);
-  buildRequest->triangleCount = triangleCount;
-  buildRequest->vertexCount = buildRequest->vertices.size();
-
-  enqueueBlasBuild(buildRequest);
-
-  cleanupPool();
-  return true;
-}
-
-void Renderer::enqueueBlasBuild(
-    const std::shared_ptr<PendingBlasBuild> &buildRequest) {
-  if (!buildRequest)
-    return;
-
-  _pendingBlasBuilds.push_back(buildRequest);
-  processBlasBuildQueue();
-}
-
-void Renderer::processBlasBuildQueue() {
-  if (!_pDevice || !_pCommandQueue)
-    return;
-
-  while (!_pendingBlasBuilds.empty() &&
-         _activeBlasBuilds.size() < kMaxBlasBuildsInFlight) {
-    auto buildRequest = _pendingBlasBuilds.front();
-    if (!startBlasBuild(buildRequest)) {
-      _pendingBlasBuilds.pop_front();
-      if (buildRequest && buildRequest->resident &&
-          buildRequest->objectIndex < _instanceRecords.size()) {
-        transitionResidentToCold(
-            *buildRequest->resident,
-            _instanceRecords[buildRequest->objectIndex]);
-      }
-      continue;
-    }
-
-    _pendingBlasBuilds.pop_front();
-    _activeBlasBuilds.push_back(buildRequest);
-  }
-}
-
-bool Renderer::startBlasBuild(
-    const std::shared_ptr<PendingBlasBuild> &buildRequest) {
-  if (!buildRequest || !buildRequest->resident || !_pDevice || !_pCommandQueue)
-    return false;
-
-  auto &resident = *buildRequest->resident;
-
-  NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
-  auto cleanupPool = [&]() {
-    if (pool) {
-      pool->release();
-      pool = nullptr;
-    }
-  };
-
-  const NS::UInteger vertexBytes = static_cast<NS::UInteger>(
-      buildRequest->vertices.size() * sizeof(simd::float3));
-  const NS::UInteger indexBytes = static_cast<NS::UInteger>(
-      buildRequest->indices.size() * sizeof(uint32_t));
-
-  std::string blasLabel = "ObjectBLAS_" + std::to_string(buildRequest->objectIndex);
-  std::string vertexLabel =
-      "ObjectVertices_" + std::to_string(buildRequest->objectIndex);
-  std::string indexLabel =
-      "ObjectIndices_" + std::to_string(buildRequest->objectIndex);
-
-  auto geometryDesc = MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()
-                          ->init();
-  if (!geometryDesc) {
-    cleanupPool();
-    return false;
-  }
+  MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc =
+      MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
   geometryDesc->setOpaque(true);
 
-  NS::Object *descriptorObjects[] = {geometryDesc};
-  auto geometryArray = NS::Array::alloc()->init(descriptorObjects, 1);
-  auto accelDesc =
-      MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
-  if (!geometryArray || !accelDesc) {
-    if (geometryArray)
-      geometryArray->release();
-    geometryDesc->release();
-    if (accelDesc)
-      accelDesc->release();
-    cleanupPool();
-    return false;
-  }
+  std::string blasLabel = "ObjectBLAS_" + std::to_string(objectIndex);
+  std::string vertexLabel = "ObjectVertices_" + std::to_string(objectIndex);
+  std::string indexLabel = "ObjectIndices_" + std::to_string(objectIndex);
 
+  NS::Object *descriptorObjects[] = {geometryDesc};
+  NS::Array *geometryArray =
+      NS::Array::alloc()->init(descriptorObjects, 1);
+
+  MTL::PrimitiveAccelerationStructureDescriptor *accelDesc =
+      MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
   accelDesc->setGeometryDescriptors(geometryArray);
 
   NS::UInteger alignedVertexSize =
@@ -2383,7 +2081,8 @@ bool Renderer::startBlasBuild(
   };
 
   if (!requestGeometryBuffers()) {
-    geometryArray->release();
+    if (geometryArray)
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2399,8 +2098,7 @@ bool Renderer::startBlasBuild(
     geometryDesc->setIndexBuffer(indexBuffer);
     geometryDesc->setIndexBufferOffset(0);
     geometryDesc->setIndexType(MTL::IndexType::IndexTypeUInt32);
-    geometryDesc->setTriangleCount(
-        static_cast<NS::UInteger>(buildRequest->triangleCount));
+    geometryDesc->setTriangleCount(triangleCount);
   };
 
   NS::UInteger totalHeapBytes = 0;
@@ -2428,7 +2126,8 @@ bool Renderer::startBlasBuild(
       resident.resources.ensureHeapCapacity(totalHeapBytes);
 
       if (!requestGeometryBuffers()) {
-        geometryArray->release();
+        if (geometryArray)
+          geometryArray->release();
         geometryDesc->release();
         accelDesc->release();
         cleanupPool();
@@ -2443,11 +2142,13 @@ bool Renderer::startBlasBuild(
 
   configureGeometryDescriptor();
 
-  auto accelerationStructure = resident.resources.ensureAccelerationStructure(
-      sizes.accelerationStructureSize, blasLabel.c_str());
+  MTL::AccelerationStructure *accelerationStructure =
+      resident.resources.ensureAccelerationStructure(
+          sizes.accelerationStructureSize, blasLabel.c_str());
 
   if (!accelerationStructure) {
-    geometryArray->release();
+    if (geometryArray)
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2460,8 +2161,7 @@ bool Renderer::startBlasBuild(
     vertexStaging =
         _pDevice->newBuffer(vertexBytes, MTL::ResourceStorageModeShared);
     if (vertexStaging) {
-      std::memcpy(vertexStaging->contents(), buildRequest->vertices.data(),
-                  vertexBytes);
+      std::memcpy(vertexStaging->contents(), vertices.data(), vertexBytes);
       markBufferModified(vertexStaging, NS::Range::Make(0, vertexBytes));
     }
   }
@@ -2469,8 +2169,7 @@ bool Renderer::startBlasBuild(
     indexStaging =
         _pDevice->newBuffer(indexBytes, MTL::ResourceStorageModeShared);
     if (indexStaging) {
-      std::memcpy(indexStaging->contents(), buildRequest->indices.data(),
-                  indexBytes);
+      std::memcpy(indexStaging->contents(), indices.data(), indexBytes);
       markBufferModified(indexStaging, NS::Range::Make(0, indexBytes));
     }
   }
@@ -2481,7 +2180,8 @@ bool Renderer::startBlasBuild(
       indexStaging->release();
     if (vertexStaging)
       vertexStaging->release();
-    geometryArray->release();
+    if (geometryArray)
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2494,7 +2194,7 @@ bool Renderer::startBlasBuild(
     scratchBuffer =
         _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
 
-  auto commandBuffer = _pCommandQueue->commandBuffer();
+  MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
     if (scratchBuffer)
       scratchBuffer->release();
@@ -2502,7 +2202,8 @@ bool Renderer::startBlasBuild(
       indexStaging->release();
     if (vertexStaging)
       vertexStaging->release();
-    geometryArray->release();
+    if (geometryArray)
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2526,7 +2227,8 @@ bool Renderer::startBlasBuild(
   if (blitEncoder)
     blitEncoder->endEncoding();
 
-  auto asEncoder = commandBuffer->accelerationStructureCommandEncoder();
+  MTL::AccelerationStructureCommandEncoder *asEncoder =
+      commandBuffer->accelerationStructureCommandEncoder();
   if (!asEncoder) {
     if (scratchBuffer)
       scratchBuffer->release();
@@ -2534,7 +2236,8 @@ bool Renderer::startBlasBuild(
       indexStaging->release();
     if (vertexStaging)
       vertexStaging->release();
-    geometryArray->release();
+    if (geometryArray)
+      geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
@@ -2545,102 +2248,28 @@ bool Renderer::startBlasBuild(
                                         scratchBuffer, 0);
   asEncoder->endEncoding();
 
-  buildRequest->geometryDesc = geometryDesc;
-  buildRequest->geometryArray = geometryArray;
-  buildRequest->accelDesc = accelDesc;
-  buildRequest->accelerationStructure = accelerationStructure;
-  buildRequest->vertexStaging = vertexStaging;
-  buildRequest->indexStaging = indexStaging;
-  buildRequest->scratchBuffer = scratchBuffer;
-  buildRequest->commandBuffer = commandBuffer;
-  buildRequest->totalHeapBytes = totalHeapBytes;
+  commandBuffer->commit();
+  commandBuffer->waitUntilCompleted();
 
-  // Release CPU copies now that staging buffers are populated.
-  buildRequest->vertices.clear();
-  buildRequest->vertices.shrink_to_fit();
-  buildRequest->indices.clear();
-  buildRequest->indices.shrink_to_fit();
+  if (scratchBuffer)
+    scratchBuffer->release();
+  if (indexStaging)
+    indexStaging->release();
+  if (vertexStaging)
+    vertexStaging->release();
+  if (geometryArray)
+    geometryArray->release();
+  geometryDesc->release();
+  accelDesc->release();
 
-  resident.transitionToStreaming(commandBuffer);
-
-  auto completion = [this, buildRequest](bool success) {
-    this->handleCompletedBlasBuild(buildRequest, success);
-  };
-
-  if (!submitAsyncCommandBuffer(commandBuffer, completion)) {
-    resident.clearPendingCommand();
-    buildRequest->releaseResources();
-    cleanupPool();
-    return false;
-  }
+  resident.byteSize = totalHeapBytes;
+  resident.triangleCount = triangleCount;
+  resident.vertexCount = vertices.size();
+  resident.vertexBufferOffset = 0;
+  resident.indexBufferOffset = 0;
+  resident.geometryValid = true;
 
   cleanupPool();
-  return true;
-}
-
-void Renderer::handleCompletedBlasBuild(
-    const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success) {
-  if (!buildRequest || !buildRequest->resident)
-    return;
-
-  auto &resident = *buildRequest->resident;
-
-  if (resident.pendingCommand)
-    resident.clearPendingCommand();
-
-  if (success) {
-    resident.byteSize = buildRequest->totalHeapBytes;
-    resident.triangleCount = buildRequest->triangleCount;
-    resident.vertexCount = buildRequest->vertexCount;
-    resident.vertexBufferOffset = 0;
-    resident.indexBufferOffset = 0;
-    resident.geometryValid = buildRequest->triangleCount > 0;
-    resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
-    resident.lastStateChange = std::chrono::steady_clock::now();
-  } else if (buildRequest->objectIndex < _instanceRecords.size()) {
-    transitionResidentToCold(resident,
-                             _instanceRecords[buildRequest->objectIndex]);
-  } else {
-    resident.geometryValid = false;
-  }
-
-  buildRequest->releaseResources();
-
-  auto it = std::find(_activeBlasBuilds.begin(), _activeBlasBuilds.end(),
-                      buildRequest);
-  if (it != _activeBlasBuilds.end())
-    _activeBlasBuilds.erase(it);
-
-  processBlasBuildQueue();
-}
-
-void Renderer::transitionResidentToCold(ResidentObjectGpuResources &resident,
-                                        BlasInstanceRecord &instanceRecord) {
-  waitForPendingFrameCommands();
-  waitForPendingTlasBuild();
-  resident.transitionToCold(instanceRecord);
-}
-
-bool Renderer::submitAsyncCommandBuffer(
-    MTL::CommandBuffer *commandBuffer,
-    std::function<void(bool)> completion) {
-  if (!commandBuffer)
-    return false;
-
-  if (completion) {
-    commandBuffer->addCompletedHandler(
-        [completion = std::move(completion)](MTL::CommandBuffer *cmd) {
-          bool success =
-              cmd->status() == MTL::CommandBufferStatusCompleted;
-          auto completionCopy = completion;
-          dispatch_async(dispatch_get_main_queue(), ^{
-            if (completionCopy)
-              completionCopy(success);
-          });
-        });
-  }
-
-  commandBuffer->commit();
   return true;
 }
 
@@ -2649,9 +2278,6 @@ bool Renderer::ensureDummyBlas() {
     return true;
 
   if (!_pDevice || !_pCommandQueue)
-    return false;
-
-  if (_dummyBlasBuildInFlight)
     return false;
 
   _dummyBlasResources.initialize(_pDevice);
@@ -2686,15 +2312,6 @@ bool Renderer::ensureDummyBlas() {
     NS::UInteger size = 0;
   };
 
-  auto releaseZeroRequest = [](ZeroRequest &request) {
-    if (request.staging) {
-      request.staging->release();
-      request.staging = nullptr;
-    }
-    request.target = nullptr;
-    request.size = 0;
-  };
-
   ZeroRequest vertexZeroRequest;
   ZeroRequest indexZeroRequest;
 
@@ -2726,8 +2343,10 @@ bool Renderer::ensureDummyBlas() {
   if (!prepareZeroRequest(dummyVertexBuffer, dummyVertexSize,
                           vertexZeroRequest) ||
       !prepareZeroRequest(dummyIndexBuffer, dummyIndexSize, indexZeroRequest)) {
-    releaseZeroRequest(vertexZeroRequest);
-    releaseZeroRequest(indexZeroRequest);
+    if (vertexZeroRequest.staging)
+      vertexZeroRequest.staging->release();
+    if (indexZeroRequest.staging)
+      indexZeroRequest.staging->release();
     geometryDesc->release();
     return false;
   }
@@ -2739,54 +2358,21 @@ bool Renderer::ensureDummyBlas() {
       MTL::PrimitiveAccelerationStructureDescriptor::alloc()->init();
   accelDesc->setGeometryDescriptors(geometryArray);
 
-  auto releaseDescriptors = [&]() {
-    if (geometryArray) {
-      geometryArray->release();
-      geometryArray = nullptr;
-    }
-    if (geometryDesc) {
-      geometryDesc->release();
-      geometryDesc = nullptr;
-    }
-    if (accelDesc) {
-      accelDesc->release();
-      accelDesc = nullptr;
-    }
-  };
-
   MTL::AccelerationStructureSizes sizes =
       _pDevice->accelerationStructureSizes(accelDesc);
-
-  NS::UInteger alignedAccelerationSize =
-      _dummyBlasResources.alignedHeapSize(sizes.accelerationStructureSize);
-  NS::UInteger totalRequestedBytes =
-      alignedAccelerationSize + dummyVertexSize + dummyIndexSize;
-  constexpr NS::UInteger kDummyBlasMemoryBudgetBytes = 1024ull * 1024ull;
-  static bool loggedDummyUsage = false;
-  if (totalRequestedBytes > kDummyBlasMemoryBudgetBytes) {
-    std::printf(
-        "Dummy BLAS placeholder exceeded memory budget: %llu bytes used (limit %llu bytes).\n",
-        static_cast<unsigned long long>(totalRequestedBytes),
-        static_cast<unsigned long long>(kDummyBlasMemoryBudgetBytes));
-  } else if (!loggedDummyUsage &&
-             totalRequestedBytes > kDummyBlasMemoryBudgetBytes / 2) {
-    std::printf(
-        "Dummy BLAS placeholder using %llu / %llu bytes of budget.\n",
-        static_cast<unsigned long long>(totalRequestedBytes),
-        static_cast<unsigned long long>(kDummyBlasMemoryBudgetBytes));
-    loggedDummyUsage = true;
-  }
-  assert(totalRequestedBytes <= kDummyBlasMemoryBudgetBytes &&
-         "Dummy BLAS memory usage exceeds placeholder budget");
 
   MTL::AccelerationStructure *structure =
       _dummyBlasResources.ensureAccelerationStructure(
           sizes.accelerationStructureSize, "DummyBLAS");
 
   if (!structure) {
-    releaseZeroRequest(vertexZeroRequest);
-    releaseZeroRequest(indexZeroRequest);
-    releaseDescriptors();
+    if (vertexZeroRequest.staging)
+      vertexZeroRequest.staging->release();
+    if (indexZeroRequest.staging)
+      indexZeroRequest.staging->release();
+    geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
     return false;
   }
 
@@ -2800,9 +2386,13 @@ bool Renderer::ensureDummyBlas() {
   if (!commandBuffer) {
     if (scratchBuffer)
       scratchBuffer->release();
-    releaseZeroRequest(vertexZeroRequest);
-    releaseZeroRequest(indexZeroRequest);
-    releaseDescriptors();
+    if (vertexZeroRequest.staging)
+      vertexZeroRequest.staging->release();
+    if (indexZeroRequest.staging)
+      indexZeroRequest.staging->release();
+    geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
     return false;
   }
 
@@ -2811,9 +2401,13 @@ bool Renderer::ensureDummyBlas() {
     if (!blitEncoder) {
       if (scratchBuffer)
         scratchBuffer->release();
-      releaseZeroRequest(vertexZeroRequest);
-      releaseZeroRequest(indexZeroRequest);
-      releaseDescriptors();
+      if (vertexZeroRequest.staging)
+        vertexZeroRequest.staging->release();
+      if (indexZeroRequest.staging)
+        indexZeroRequest.staging->release();
+      geometryArray->release();
+      geometryDesc->release();
+      accelDesc->release();
       return false;
     }
     if (vertexZeroRequest.staging) {
@@ -2834,154 +2428,34 @@ bool Renderer::ensureDummyBlas() {
   if (!encoder) {
     if (scratchBuffer)
       scratchBuffer->release();
-    releaseZeroRequest(vertexZeroRequest);
-    releaseZeroRequest(indexZeroRequest);
-    releaseDescriptors();
+    if (vertexZeroRequest.staging)
+      vertexZeroRequest.staging->release();
+    if (indexZeroRequest.staging)
+      indexZeroRequest.staging->release();
+    geometryArray->release();
+    geometryDesc->release();
+    accelDesc->release();
     return false;
   }
 
   encoder->buildAccelerationStructure(structure, accelDesc, scratchBuffer, 0);
   encoder->endEncoding();
 
-  struct DummyBlasBuildContext {
-    MTL::Buffer *vertexStaging = nullptr;
-    MTL::Buffer *indexStaging = nullptr;
-    MTL::Buffer *scratchBuffer = nullptr;
-  };
+  commandBuffer->commit();
+  commandBuffer->waitUntilCompleted();
 
-  auto buildContext = std::make_shared<DummyBlasBuildContext>();
-  buildContext->vertexStaging = vertexZeroRequest.staging;
-  buildContext->indexStaging = indexZeroRequest.staging;
-  buildContext->scratchBuffer = scratchBuffer;
+  if (vertexZeroRequest.staging)
+    vertexZeroRequest.staging->release();
+  if (indexZeroRequest.staging)
+    indexZeroRequest.staging->release();
+  if (scratchBuffer)
+    scratchBuffer->release();
+  geometryArray->release();
+  geometryDesc->release();
+  accelDesc->release();
 
-  vertexZeroRequest.staging = nullptr;
-  indexZeroRequest.staging = nullptr;
-  scratchBuffer = nullptr;
-
-  _dummyBlasBuildInFlight = true;
-
-  auto completion = [this, context = buildContext, structure,
-                     totalRequestedBytes](bool success) {
-    if (context->vertexStaging) {
-      context->vertexStaging->release();
-      context->vertexStaging = nullptr;
-    }
-    if (context->indexStaging) {
-      context->indexStaging->release();
-      context->indexStaging = nullptr;
-    }
-    if (context->scratchBuffer) {
-      context->scratchBuffer->release();
-      context->scratchBuffer = nullptr;
-    }
-
-    if (success) {
-      _pDummyBlas = structure;
-      std::printf("Dummy BLAS placeholder ready (%llu bytes).\n",
-                  static_cast<unsigned long long>(totalRequestedBytes));
-    } else {
-      std::printf(
-          "Dummy BLAS build failed; releasing placeholder resources.\n");
-      _dummyBlasResources.ensureAccelerationStructure(0, nullptr);
-    }
-
-    _dummyBlasBuildInFlight = false;
-  };
-
-  bool submitted = submitAsyncCommandBuffer(commandBuffer, completion);
-
-  releaseDescriptors();
-
-  if (!submitted) {
-    _dummyBlasBuildInFlight = false;
-    if (buildContext->vertexStaging) {
-      buildContext->vertexStaging->release();
-      buildContext->vertexStaging = nullptr;
-    }
-    if (buildContext->indexStaging) {
-      buildContext->indexStaging->release();
-      buildContext->indexStaging = nullptr;
-    }
-    if (buildContext->scratchBuffer) {
-      buildContext->scratchBuffer->release();
-      buildContext->scratchBuffer = nullptr;
-    }
-    return false;
-  }
-
-  return false;
-}
-
-void Renderer::ensureTlasBuildEvent() {
-  if (_pTlasBuildEvent || !_pDevice)
-    return;
-
-  _pTlasBuildEvent = _pDevice->newSharedEvent();
-  if (_pTlasBuildEvent) {
-    _pTlasBuildEvent->setLabel(
-        NS::String::string("RendererTLASFence", NS::UTF8StringEncoding));
-    uint64_t initialValue = _pTlasBuildEvent->signaledValue();
-    _tlasCompletedEventValue.store(initialValue, std::memory_order_relaxed);
-  }
-}
-
-bool Renderer::hasPendingTlasBuild() const {
-  if (!_pTlasBuildEvent || _tlasBuildEventValue == 0)
-    return false;
-
-  return _tlasCompletedEventValue.load(std::memory_order_acquire) <
-         _tlasBuildEventValue;
-}
-
-void Renderer::waitForPendingTlasBuild() {
-  if (!hasPendingTlasBuild())
-    return;
-
-  uint64_t targetValue = _tlasBuildEventValue;
-  uint64_t completedValue =
-      _tlasCompletedEventValue.load(std::memory_order_acquire);
-  if (completedValue >= targetValue)
-    return;
-
-  uint64_t signaled = _pTlasBuildEvent->signaledValue();
-  if (signaled >= targetValue) {
-    _tlasCompletedEventValue.store(signaled, std::memory_order_release);
-    return;
-  }
-
-  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-  if (!semaphore) {
-    while (_pTlasBuildEvent->signaledValue() < targetValue)
-      std::this_thread::sleep_for(std::chrono::microseconds(100));
-    _tlasCompletedEventValue.store(targetValue, std::memory_order_release);
-    return;
-  }
-
-  MTL::SharedEventListener *listener =
-      MTL::SharedEventListener::alloc()->init(
-          dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0));
-
-  if (!listener) {
-    dispatch_release(semaphore);
-    while (_pTlasBuildEvent->signaledValue() < targetValue)
-      std::this_thread::sleep_for(std::chrono::microseconds(100));
-    _tlasCompletedEventValue.store(targetValue, std::memory_order_release);
-    return;
-  }
-
-  _pTlasBuildEvent->notifyListener(
-      listener, targetValue,
-      ^(MTL::SharedEvent *, uint64_t) { dispatch_semaphore_signal(semaphore); });
-
-  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-
-  listener->release();
-  dispatch_release(semaphore);
-
-  uint64_t latest = _pTlasBuildEvent->signaledValue();
-  if (latest < targetValue)
-    latest = targetValue;
-  _tlasCompletedEventValue.store(latest, std::memory_order_release);
+  _pDummyBlas = structure;
+  return true;
 }
 
 void Renderer::updateTopLevelAccelerationStructure(
@@ -3130,24 +2604,14 @@ void Renderer::updateTopLevelAccelerationStructure(
   NS::UInteger scratchSize = needsRebuild ? sizes.buildScratchBufferSize
                                           : sizes.refitScratchBufferSize;
   MTL::Buffer *scratchBuffer = nullptr;
-  if (scratchSize > 0) {
-    if (!_pTlasScratchBuffer || _tlasScratchCapacity < scratchSize) {
-      if (_pTlasScratchBuffer)
-        _pTlasScratchBuffer->release();
-      _pTlasScratchBuffer =
-          _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
-      _tlasScratchCapacity =
-          _pTlasScratchBuffer ? scratchSize : static_cast<NS::UInteger>(0);
-    }
-    scratchBuffer = _pTlasScratchBuffer;
-    if (!scratchBuffer) {
-      instanceDesc->release();
-      return;
-    }
-  }
+  if (scratchSize > 0)
+    scratchBuffer =
+        _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
 
   MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
+    if (scratchBuffer)
+      scratchBuffer->release();
     instanceDesc->release();
     return;
   }
@@ -3162,6 +2626,8 @@ void Renderer::updateTopLevelAccelerationStructure(
   if (stagingBuffer && !descriptorRanges.empty()) {
     MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
     if (!enc) {
+      if (scratchBuffer)
+        scratchBuffer->release();
       instanceDesc->release();
       return;
     }
@@ -3176,6 +2642,8 @@ void Renderer::updateTopLevelAccelerationStructure(
              instanceBuffer->length() > 0) {
     MTL::BlitCommandEncoder *enc = ensureBlitEncoder();
     if (!enc) {
+      if (scratchBuffer)
+        scratchBuffer->release();
       instanceDesc->release();
       return;
     }
@@ -3189,6 +2657,8 @@ void Renderer::updateTopLevelAccelerationStructure(
   MTL::AccelerationStructureCommandEncoder *encoder =
       commandBuffer->accelerationStructureCommandEncoder();
   if (!encoder) {
+    if (scratchBuffer)
+      scratchBuffer->release();
     instanceDesc->release();
     return;
   }
@@ -3202,30 +2672,11 @@ void Renderer::updateTopLevelAccelerationStructure(
   }
   encoder->endEncoding();
 
-  ensureTlasBuildEvent();
-  uint64_t signalValue = 0;
-  if (_pTlasBuildEvent) {
-    signalValue = ++_tlasBuildEventValue;
-    commandBuffer->encodeSignalEvent(_pTlasBuildEvent, signalValue);
-  }
-
-  if (signalValue > 0) {
-    commandBuffer->addCompletedHandler(
-        [this, signalValue](MTL::CommandBuffer *cmd) {
-          (void)cmd;
-          this->_tlasCompletedEventValue.store(signalValue,
-                                               std::memory_order_release);
-        });
-  }
-
   commandBuffer->commit();
+  commandBuffer->waitUntilCompleted();
 
-  if (!_pTlasBuildEvent) {
-    commandBuffer->waitUntilCompleted();
-    _tlasCompletedEventValue.store(_tlasBuildEventValue,
-                                   std::memory_order_release);
-  }
-
+  if (scratchBuffer)
+    scratchBuffer->release();
   instanceDesc->release();
 
   _cachedInstanceDescriptors = descriptors;
@@ -3276,108 +2727,88 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _cachedMaterialData.assign(totalPrimitiveCount * kMaterialFloat4Count,
                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
 
-    parallelFor(totalPrimitiveCount, [&](size_t begin, size_t end) {
-      for (size_t i = begin; i < end; ++i) {
-        const Primitive &p = _allPrimitives[i];
-        simd::float4 *primBase =
-            &_cachedPrimitiveData[kPrimitiveFloat4Count * i];
-        simd::float4 *matBase =
-            &_cachedMaterialData[kMaterialFloat4Count * i];
+    for (size_t i = 0; i < totalPrimitiveCount; ++i) {
+      const Primitive &p = _allPrimitives[i];
+      simd::float4 *primBase =
+          &_cachedPrimitiveData[kPrimitiveFloat4Count * i];
+      simd::float4 *matBase =
+          &_cachedMaterialData[kMaterialFloat4Count * i];
 
-        primBase[4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        primBase[5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        primBase[6] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      primBase[4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      primBase[5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      primBase[6] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
 
-        switch (p.type) {
-        case PrimitiveType::Sphere: {
-          primBase[0] =
-              simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-          primBase[1] = simd::make_float4(
-              simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
-          primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-          primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-          primBase[6] = simd::make_float4(0.0f, 0.0f, 1.0f, 0.0f);
-          break;
-        }
-        case PrimitiveType::Rectangle: {
-          primBase[0] =
-              simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-          primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
-          primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
-          primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-          primBase[4] = simd::make_float4(p.rectangle.tangent, 0.0f);
-          primBase[5] = simd::make_float4(p.rectangle.bitangent, 0.0f);
-          primBase[6] = simd::make_float4(p.rectangle.normal,
-                                          p.rectangle.supportsNormalMap ? 1.0f
-                                                                        : 0.0f);
-          break;
-        }
-        case PrimitiveType::Triangle: {
-          primBase[0] =
-              simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-          primBase[1] = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
-          primBase[2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
-          primBase[3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
-                                          p.triangle.uv2.x, p.triangle.uv2.y);
-          primBase[4] = simd::make_float4(p.triangle.tangent, 0.0f);
-          primBase[5] = simd::make_float4(p.triangle.bitangent, 0.0f);
-          primBase[6] = simd::make_float4(p.triangle.normal, 1.0f);
-          break;
-        }
-        }
-
-        const Material &m = p.material;
-        auto packed = encodeMaterial(m);
-        for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
-          matBase[j] = packed[j];
-        }
+      switch (p.type) {
+      case PrimitiveType::Sphere: {
+        primBase[0] =
+            simd::make_float4(p.sphere.center, static_cast<float>(p.type));
+        primBase[1] = simd::make_float4(
+            simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
+        primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[6] = simd::make_float4(0.0f, 0.0f, 1.0f, 0.0f);
+        break;
       }
-    });
+      case PrimitiveType::Rectangle: {
+        primBase[0] =
+            simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
+        primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
+        primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
+        primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        primBase[4] = simd::make_float4(p.rectangle.tangent, 0.0f);
+        primBase[5] = simd::make_float4(p.rectangle.bitangent, 0.0f);
+        primBase[6] = simd::make_float4(p.rectangle.normal,
+                                        p.rectangle.supportsNormalMap ? 1.0f
+                                                                      : 0.0f);
+        break;
+      }
+      case PrimitiveType::Triangle: {
+        primBase[0] =
+            simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
+        primBase[1] = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
+        primBase[2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
+        primBase[3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
+                                        p.triangle.uv2.x, p.triangle.uv2.y);
+        primBase[4] = simd::make_float4(p.triangle.tangent, 0.0f);
+        primBase[5] = simd::make_float4(p.triangle.bitangent, 0.0f);
+        primBase[6] = simd::make_float4(p.triangle.normal, 1.0f);
+        break;
+      }
+      }
+
+      const Material &m = p.material;
+      auto packed = encodeMaterial(m);
+      for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
+        matBase[j] = packed[j];
+      }
+    }
 
     _cachedTextureInfos.clear();
     _cachedTextureData.clear();
+    size_t texelOffset = 0;
     if (_pScene) {
       const auto &sceneTextures = _pScene->getTextures();
-      const size_t textureCount = sceneTextures.size();
-      std::vector<size_t> textureOffsets(textureCount, 0);
-      size_t totalTexelCount = 0;
-      for (size_t texIndex = 0; texIndex < textureCount; ++texIndex) {
-        textureOffsets[texIndex] = totalTexelCount;
-        totalTexelCount += static_cast<size_t>(sceneTextures[texIndex].width) *
-                           sceneTextures[texIndex].height;
-      }
+      for (const auto &tex : sceneTextures) {
+        TextureInfo info{};
+        info.offset = static_cast<uint32_t>(texelOffset);
+        info.width = tex.width;
+        info.height = tex.height;
+        _cachedTextureInfos.push_back(info);
 
-      _cachedTextureInfos.resize(textureCount);
-      _cachedTextureData.resize(totalTexelCount);
-
-      parallelFor(textureCount, [&](size_t begin, size_t end) {
-        for (size_t texIndex = begin; texIndex < end; ++texIndex) {
-          const auto &tex = sceneTextures[texIndex];
-          TextureInfo info{};
-          info.offset = static_cast<uint32_t>(textureOffsets[texIndex]);
-          info.width = tex.width;
-          info.height = tex.height;
-          _cachedTextureInfos[texIndex] = info;
-
-          size_t texelCount =
-              static_cast<size_t>(tex.width) * static_cast<size_t>(tex.height);
-          size_t base = textureOffsets[texIndex];
-          simd::float4 *dst = _cachedTextureData.data() + base;
-
-          for (size_t t = 0; t < texelCount; ++t) {
-            size_t idx = t * 4;
-            float r = (idx < tex.pixels.size()) ? tex.pixels[idx + 0] : 0.0f;
-            float g = (idx + 1 < tex.pixels.size()) ? tex.pixels[idx + 1] : 0.0f;
-            float b = (idx + 2 < tex.pixels.size()) ? tex.pixels[idx + 2] : 0.0f;
-            float a = (idx + 3 < tex.pixels.size()) ? tex.pixels[idx + 3] : 1.0f;
-            dst[t] = simd::make_float4(r, g, b, a);
-          }
+        size_t texelCount = static_cast<size_t>(tex.width) * tex.height;
+        for (size_t t = 0; t < texelCount; ++t) {
+          size_t idx = t * 4;
+          float r = (idx < tex.pixels.size()) ? tex.pixels[idx + 0] : 0.0f;
+          float g = (idx + 1 < tex.pixels.size()) ? tex.pixels[idx + 1] : 0.0f;
+          float b = (idx + 2 < tex.pixels.size()) ? tex.pixels[idx + 2] : 0.0f;
+          float a = (idx + 3 < tex.pixels.size()) ? tex.pixels[idx + 3] : 1.0f;
+          _cachedTextureData.push_back(simd::make_float4(r, g, b, a));
         }
-      });
+        texelOffset += texelCount;
+      }
     }
 
     rebuildMaterialTextures();
-    rebuildEnvironmentTexture();
 
     _pScene->createTriangleBuffers(_cachedTriangleVertices,
                                    _cachedTriangleIndices);
@@ -4036,7 +3467,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     if (!shouldBeResident) {
-      transitionResidentToCold(gpuResident, instanceRecord);
+      gpuResident.transitionToCold(instanceRecord);
     }
   }
 
@@ -4376,158 +3807,20 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   }
 
   _residentNodeCount = _blasNodeCount + _tlasNodeCount;
-
   size_t activeBlasNodes = 0;
-  if (_blasNodeCount > 0) {
-    if (useCompaction) {
-      activeBlasNodes = _blasNodeCount;
-    } else if (bvhSource && bvhSource->size() >= _blasNodeCount * 2) {
-      const auto &bvhNodes = *bvhSource;
-      const auto &primitiveIndices =
-          primitiveIndexSource ? *primitiveIndexSource : _cachedPrimitiveIndices;
-      std::vector<uint8_t> processed(_blasNodeCount, 0);
-      std::vector<uint8_t> nodeActive(_blasNodeCount, 0);
-      std::vector<size_t> stack;
-      stack.reserve(_blasNodeCount);
-      stack.push_back(0);
-
-      auto decodeNode = [](const simd::float4 &minVec,
-                           const simd::float4 &maxVec, int &leftFirst,
-                           int &count) {
-        const auto *minWords = reinterpret_cast<const int *>(&minVec);
-        const auto *maxWords = reinterpret_cast<const int *>(&maxVec);
-        leftFirst = minWords[3];
-        count = maxWords[3];
-      };
-
-      while (!stack.empty()) {
-        size_t nodeIdx = stack.back();
-        if (nodeIdx >= _blasNodeCount) {
-          stack.pop_back();
-          continue;
-        }
-
-        if (processed[nodeIdx]) {
-          stack.pop_back();
-          continue;
-        }
-
-        int leftFirst = 0;
-        int count = 0;
-        decodeNode(bvhNodes[2 * nodeIdx], bvhNodes[2 * nodeIdx + 1], leftFirst,
-                   count);
-
-        if (count > 0) {
-          bool leafActive = false;
-          size_t start = static_cast<size_t>(std::max(leftFirst, 0));
-          size_t end = start + static_cast<size_t>(std::max(count, 0));
-          for (size_t idx = start; idx < end; ++idx) {
-            size_t primitiveIndex =
-                (idx < primitiveIndices.size())
-                    ? static_cast<size_t>(primitiveIndices[idx])
-                    : idx;
-            if (primitiveIndex < _activePrimitive.size() &&
-                _activePrimitive[primitiveIndex]) {
-              leafActive = true;
-              break;
-            }
-          }
-          nodeActive[nodeIdx] = leafActive ? 1 : 0;
-          processed[nodeIdx] = 1;
-          stack.pop_back();
-        } else {
-          size_t leftChild =
-              static_cast<size_t>(leftFirst >= 0 ? leftFirst : 0);
-          size_t rightChild = static_cast<size_t>(-count);
-          bool leftDone = leftChild >= _blasNodeCount || processed[leftChild];
-          bool rightDone = rightChild >= _blasNodeCount || processed[rightChild];
-          if (!leftDone) {
-            stack.push_back(leftChild);
-            continue;
-          }
-          if (!rightDone) {
-            stack.push_back(rightChild);
-            continue;
-          }
-          bool anyActive =
-              (leftChild < _blasNodeCount && nodeActive[leftChild]) ||
-              (rightChild < _blasNodeCount && nodeActive[rightChild]);
-          nodeActive[nodeIdx] = anyActive ? 1 : 0;
-          processed[nodeIdx] = 1;
-          stack.pop_back();
-        }
-      }
-
-      activeBlasNodes =
-          std::accumulate(nodeActive.begin(), nodeActive.end(), size_t(0));
-    }
-  }
-
   size_t activeTlasNodes = 0;
-  if (_tlasNodeCount > 0 && tlasSource &&
-      tlasSource->size() >= _tlasNodeCount * 2) {
-    const auto &tlasNodes = *tlasSource;
-    std::vector<uint8_t> processed(_tlasNodeCount, 0);
-    std::vector<uint8_t> nodeActive(_tlasNodeCount, 0);
-    std::vector<size_t> stack;
-    stack.reserve(_tlasNodeCount);
-    stack.push_back(0);
-
-    while (!stack.empty()) {
-      size_t nodeIdx = stack.back();
-      if (nodeIdx >= _tlasNodeCount) {
-        stack.pop_back();
-        continue;
-      }
-
-      if (processed[nodeIdx]) {
-        stack.pop_back();
-        continue;
-      }
-
-      int leftChild = 0;
-      int rightChild = 0;
-      const auto *leftWords =
-          reinterpret_cast<const int *>(&tlasNodes[2 * nodeIdx]);
-      const auto *rightWords =
-          reinterpret_cast<const int *>(&tlasNodes[2 * nodeIdx + 1]);
-      leftChild = leftWords[3];
-      rightChild = rightWords[3];
-
-      if (leftChild < 0) {
-        size_t objectIndex = static_cast<size_t>(-leftChild - 1);
-        bool active = objectIndex < _objectActive.size() &&
-                      _objectActive[objectIndex];
-        nodeActive[nodeIdx] = active ? 1 : 0;
-        processed[nodeIdx] = 1;
-        stack.pop_back();
-        continue;
-      }
-
-      size_t leftIndex = static_cast<size_t>(leftChild);
-      size_t rightIndex = static_cast<size_t>(rightChild);
-      bool leftDone = leftIndex >= _tlasNodeCount || processed[leftIndex];
-      bool rightDone = rightIndex >= _tlasNodeCount || processed[rightIndex];
-      if (!leftDone) {
-        stack.push_back(leftIndex);
-        continue;
-      }
-      if (!rightDone) {
-        stack.push_back(rightIndex);
-        continue;
-      }
-      bool anyActive =
-          (leftIndex < _tlasNodeCount && nodeActive[leftIndex]) ||
-          (rightIndex < _tlasNodeCount && nodeActive[rightIndex]);
-      nodeActive[nodeIdx] = anyActive ? 1 : 0;
-      processed[nodeIdx] = 1;
-      stack.pop_back();
-    }
-
-    activeTlasNodes =
-        std::accumulate(nodeActive.begin(), nodeActive.end(), size_t(0));
+  if (useCompaction) {
+    activeBlasNodes = _blasNodeCount;
+    activeTlasNodes = (_residentPrimitiveCount > 0) ? _tlasNodeCount : 0;
+  } else if (totalPrimitiveCount > 0 && _blasNodeCount > 0) {
+    size_t denom = std::max<size_t>(totalPrimitiveCount, size_t(1));
+    activeBlasNodes = std::max<size_t>(
+        size_t(1), (_blasNodeCount * _activePrimitiveCount + denom - 1) /
+                        denom);
+    activeTlasNodes = (_tlasNodeCount > 0 && _activePrimitiveCount > 0)
+                          ? _tlasNodeCount
+                          : size_t(0);
   }
-
   _activeNodeCount = activeBlasNodes + activeTlasNodes;
 
   _objectResidentState = objectShouldBeResident;
@@ -5153,11 +4446,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
-  u.environmentMapEnabled =
-      (_environmentTexture && _environmentSampler) ? 1u : 0u;
-  u.environmentMapIntensity = _environmentBrightness;
-  u.environmentPadding0 = 0.0f;
-  u.environmentPadding1 = 0.0f;
 
   uint64_t residentPrimitiveCount = _residentPrimitiveCount;
   uint64_t residentTriangleCount = _residentTriangleCount;
@@ -5192,6 +4480,9 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.debugAS = InputSystem::debugAS;
   u.lightCount = static_cast<uint32_t>(_lightCount);
   u.lightTotalWeight = _lightTotalWeight;
+  u.environmentMapEnabled =
+      (_environmentTexture && _environmentSampler) ? 1u : 0u;
+  u.environmentMapIntensity = _environmentBrightness;
 
   markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
 }
@@ -5295,7 +4586,6 @@ void Renderer::draw(MTK::View *pView) {
       if (drawable)
         presentCmd->presentDrawable(drawable);
       presentCmd->commit();
-      trackFrameCommandBuffer(presentCmd);
     } else {
       completeFrameMetrics(nullptr);
     }
@@ -5304,8 +4594,6 @@ void Renderer::draw(MTK::View *pView) {
     return;
   }
 
-  uint32_t minSamples = 1;
-  uint32_t maxSamples = 1;
   std::vector<TileDispatchRegion> tiles;
   if (_pPathTracePSO && accum1) {
     NS::UInteger width = accum1->width();
@@ -5316,8 +4604,8 @@ void Renderer::draw(MTK::View *pView) {
       NS::UInteger tileHeight =
           std::max<NS::UInteger>(kPathTraceTileHeight, 1);
 
-      minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
-      maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
+      uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
+      uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
       minSamples = std::max<uint32_t>(minSamples, 1);
       maxSamples = std::max<uint32_t>(maxSamples, minSamples);
 
@@ -5350,10 +4638,6 @@ void Renderer::draw(MTK::View *pView) {
   }
 
   if (_pPathTracePSO && !tiles.empty()) {
-    if (_useAccelerationStructureBindings && _pTlasStructure &&
-        _pGeometryHandleBuffer)
-      waitForPendingTlasBuild();
-
     NS::UInteger tgWidth =
         std::max<NS::UInteger>(1, _pPathTracePSO->threadExecutionWidth());
     NS::UInteger maxThreads = std::max<NS::UInteger>(
@@ -5363,117 +4647,83 @@ void Renderer::draw(MTK::View *pView) {
     MTL::Size threadsPerThreadgroup =
         MTL::Size::Make(tgWidth, tgHeight, 1);
 
-    size_t tileIndex = 0;
-    const size_t maxWorkPerCommand =
-        std::max<size_t>(kMaxTileSampleWorkPerCommand, 1);
-    const size_t effectiveMaxSamples = std::max<size_t>(maxSamples, 1);
-
-    while (tileIndex < tiles.size()) {
-      size_t batchStart = tileIndex;
-      size_t batchWork = 0;
-
-      while (tileIndex < tiles.size()) {
-        const TileDispatchRegion &tile = tiles[tileIndex];
-        size_t tileWork = static_cast<size_t>(tile.width) * tile.height;
-        tileWork = std::max<size_t>(tileWork, 1);
-        tileWork *= effectiveMaxSamples;
-
-        if (tileIndex > batchStart && batchWork + tileWork > maxWorkPerCommand)
-          break;
-
-        batchWork += tileWork;
-        ++tileIndex;
-      }
-
-      size_t batchEnd = std::max<size_t>(batchStart + 1, tileIndex);
-
-      MTL::CommandBuffer *computeCmd = _pCommandQueue->commandBuffer();
-      if (!computeCmd)
-        break;
-
-      if (_useAccelerationStructureBindings && _pTlasStructure &&
-          _pGeometryHandleBuffer && _pTlasBuildEvent &&
-          _tlasBuildEventValue > 0)
-        computeCmd->encodeWait(_pTlasBuildEvent, _tlasBuildEventValue);
-
+    MTL::CommandBuffer *computeCmd = _pCommandQueue->commandBuffer();
+    if (computeCmd) {
       MTL::ComputeCommandEncoder *pCompute = computeCmd->computeCommandEncoder();
-      if (!pCompute) {
-        computeCmd->commit();
-        break;
+      if (pCompute) {
+        pCompute->setComputePipelineState(_pPathTracePSO);
+
+        bool useAccelerationStructureLayout =
+            _useAccelerationStructureBindings && _pTlasStructure &&
+            _pGeometryHandleBuffer;
+
+        if (useAccelerationStructureLayout) {
+          pCompute->setAccelerationStructure(_pTlasStructure, 0);
+          pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
+          pCompute->setBuffer(_pSphereBuffer, 0, 2);
+          pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
+          pCompute->setBuffer(_pUniformsBuffer, 0, 4);
+          pCompute->setBuffer(_pActiveBuffer, 0, 5);
+          pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
+          pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
+          pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
+          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
+          pCompute->setBuffer(_pInstanceBuffer, 0, 10);
+        } else {
+          pCompute->setBuffer(_pBVHBuffer, 0, 0);
+          pCompute->setBuffer(_pSphereBuffer, 0, 1);
+          pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
+          pCompute->setBuffer(_pUniformsBuffer, 0, 3);
+          pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
+          pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
+          pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
+          pCompute->setBuffer(_pTLASBuffer, 0, 7);
+          pCompute->setBuffer(_pActiveBuffer, 0, 8);
+          pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
+          pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
+          pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
+          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+          pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+        }
+
+        pCompute->setTexture(accum0, 0);
+        pCompute->setTexture(accum1, 1);
+        pCompute->setTexture(sampleCount, 2);
+        pCompute->setTexture(sampleImportance, 3);
+        pCompute->setTexture(albedoTexture, 4);
+        pCompute->setTexture(normalTexture, 5);
+
+        for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
+          MTL::Texture *materialTex =
+              (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
+                                                  : nullptr;
+          pCompute->setTexture(materialTex, 6 + texIdx);
+        }
+
+        pCompute->setTexture(_environmentTexture,
+                              6 + kMaxMaterialTextureSlots);
+        if (_environmentSampler)
+          pCompute->setSamplerState(_environmentSampler, 0);
+
+        for (const TileDispatchRegion &tile : tiles) {
+          TileDispatchRegion tileParams = tile;
+          pCompute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);
+
+          NS::UInteger localWidth = static_cast<NS::UInteger>(tile.width);
+          NS::UInteger localHeight = static_cast<NS::UInteger>(tile.height);
+          MTL::Size threadgroups = MTL::Size::Make(
+              (localWidth + threadsPerThreadgroup.width - 1) /
+                  threadsPerThreadgroup.width,
+              (localHeight + threadsPerThreadgroup.height - 1) /
+                  threadsPerThreadgroup.height,
+              1);
+
+          pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+        }
+
+        pCompute->endEncoding();
       }
 
-      pCompute->setComputePipelineState(_pPathTracePSO);
-
-      bool useAccelerationStructureLayout =
-          _useAccelerationStructureBindings && _pTlasStructure &&
-          _pGeometryHandleBuffer;
-
-      if (useAccelerationStructureLayout) {
-        pCompute->setAccelerationStructure(_pTlasStructure, 0);
-        pCompute->setBuffer(_pGeometryHandleBuffer, 0, 1);
-        pCompute->setBuffer(_pSphereBuffer, 0, 2);
-        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
-        pCompute->setBuffer(_pUniformsBuffer, 0, 4);
-        pCompute->setBuffer(_pActiveBuffer, 0, 5);
-        pCompute->setBuffer(_pLightIndexBuffer, 0, 6);
-        pCompute->setBuffer(_pLightCdfBuffer, 0, 7);
-        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
-        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
-        pCompute->setBuffer(_pInstanceBuffer, 0, 10);
-      } else {
-        pCompute->setBuffer(_pBVHBuffer, 0, 0);
-        pCompute->setBuffer(_pSphereBuffer, 0, 1);
-        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
-        pCompute->setBuffer(_pUniformsBuffer, 0, 3);
-        pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
-        pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
-        pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
-        pCompute->setBuffer(_pTLASBuffer, 0, 7);
-        pCompute->setBuffer(_pActiveBuffer, 0, 8);
-        pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
-        pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
-        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
-        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
-        pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-      }
-
-      pCompute->setTexture(accum0, 0);
-      pCompute->setTexture(accum1, 1);
-      pCompute->setTexture(sampleCount, 2);
-      pCompute->setTexture(sampleImportance, 3);
-      pCompute->setTexture(albedoTexture, 4);
-      pCompute->setTexture(normalTexture, 5);
-
-      for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
-        MTL::Texture *materialTex =
-            (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
-                                                : nullptr;
-        pCompute->setTexture(materialTex, 6 + texIdx);
-      }
-
-      pCompute->setTexture(_environmentTexture,
-                            6 + kMaxMaterialTextureSlots);
-      if (_environmentSampler)
-        pCompute->setSamplerState(_environmentSampler, 0);
-
-      for (size_t batchIdx = batchStart; batchIdx < batchEnd; ++batchIdx) {
-        const TileDispatchRegion &tile = tiles[batchIdx];
-        TileDispatchRegion tileParams = tile;
-        pCompute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);
-
-        NS::UInteger localWidth = static_cast<NS::UInteger>(tile.width);
-        NS::UInteger localHeight = static_cast<NS::UInteger>(tile.height);
-        MTL::Size threadgroups = MTL::Size::Make(
-            (localWidth + threadsPerThreadgroup.width - 1) /
-                threadsPerThreadgroup.width,
-            (localHeight + threadsPerThreadgroup.height - 1) /
-                threadsPerThreadgroup.height,
-            1);
-
-        pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-      }
-
-      pCompute->endEncoding();
       computeCmd->commit();
     }
   }
@@ -5589,7 +4839,6 @@ void Renderer::draw(MTK::View *pView) {
   if (drawable)
     presentCmd->presentDrawable(drawable);
   presentCmd->commit();
-  trackFrameCommandBuffer(presentCmd);
 
   if (!_frameCaptureEnabled &&
       _captureOutputsPending.load(std::memory_order_acquire))
@@ -5717,9 +4966,7 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   // than LOD_ENTER_DISTANCE, while active objects stay active until the camera
   // has moved beyond LOD_EXIT_DISTANCE. Objects fully behind the camera are
   // treated as infinitely far away and immediately culled regardless of
-  // distance thresholds. Additionally, objects must satisfy angular frustum
-  // checks with separate entry/exit margins so camera rotations do not
-  // immediately thrash residency state.
+  // distance thresholds.
 
   size_t toggles = 0;
   bool changed = false;
@@ -5728,96 +4975,30 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   std::vector<float> objectDistances(objectCount,
                                      std::numeric_limits<float>::max());
   std::vector<bool> objectBehind(objectCount, false);
-  std::vector<bool> objectViewEnter(objectCount, true);
-  std::vector<bool> objectViewExit(objectCount, true);
   std::vector<size_t> sortedIndices(objectCount);
   simd::float3 forward = Camera::forward;
   float forwardLenSq = simd::length_squared(forward);
   bool forwardValid = forwardLenSq >= 1e-6f;
   if (forwardValid)
     forward /= std::sqrt(forwardLenSq);
-  simd::float3 up = Camera::up;
-  float upLenSq = simd::length_squared(up);
-  if (upLenSq < 1e-6f) {
-    up = {0.0f, 1.0f, 0.0f};
-    upLenSq = 1.0f;
-  }
-  up /= std::sqrt(upLenSq);
-
-  simd::float3 right = simd::make_float3(1.0f, 0.0f, 0.0f);
-  if (forwardValid) {
-    right = simd::cross(forward, up);
-    float rightLenSq = simd::length_squared(right);
-    if (rightLenSq < 1e-6f) {
-      right = {1.0f, 0.0f, 0.0f};
-    } else {
-      right /= std::sqrt(rightLenSq);
-    }
-  }
-
-  if (forwardValid)
-    up = simd::normalize(simd::cross(right, forward));
-
-  float verticalHalfFov =
-      Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
-  if (verticalHalfFov <= 0.0f)
-    verticalHalfFov = 1e-3f;
-  float aspect = Camera::screenSize.y > 0.0f
-                     ? Camera::screenSize.x / Camera::screenSize.y
-                     : 1.0f;
-  float horizontalHalfFov = std::atan(std::tan(verticalHalfFov) * aspect);
-
-  constexpr float kDegToRad = static_cast<float>(M_PI) / 180.0f;
-  float enterMargin =
-      std::max(_residencyConfig.lodEnterViewDegrees, 0.0f) * kDegToRad;
-  float exitMargin =
-      std::max(_residencyConfig.lodExitViewDegrees, 0.0f) * kDegToRad;
-  exitMargin = std::max(exitMargin, enterMargin);
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const BoundingSphere &sphere =
         (objectIndex < _objectBounds.size())
             ? _objectBounds[objectIndex]
             : BoundingSphere{simd::make_float3(0.0f, 0.0f, 0.0f), 0.0f};
     simd::float3 toCenter = sphere.center - Camera::position;
-    float distanceToCenter = simd::length(toCenter);
-    float dist = distanceToCenter - sphere.radius;
-    float forwardDepth = forwardValid ? simd::dot(toCenter, forward) : 0.0f;
-    bool behind = forwardValid && forwardDepth + sphere.radius <= 0.0f;
-    objectBehind[objectIndex] = behind;
-    objectDistances[objectIndex] =
-        behind ? std::numeric_limits<float>::max() : std::max(dist, 0.0f);
+    float dist = simd::length(toCenter) - sphere.radius;
+    if (forwardValid) {
+      float forwardDepth = simd::dot(toCenter, forward);
+      if (forwardDepth + sphere.radius <= 0.0f) {
+        objectDistances[objectIndex] = std::numeric_limits<float>::max();
+        objectBehind[objectIndex] = true;
+        sortedIndices[objectIndex] = objectIndex;
+        continue;
+      }
+    }
+    objectDistances[objectIndex] = std::max(dist, 0.0f);
     sortedIndices[objectIndex] = objectIndex;
-
-    if (!forwardValid) {
-      objectViewEnter[objectIndex] = true;
-      objectViewExit[objectIndex] = true;
-      continue;
-    }
-
-    if (distanceToCenter <= 1e-5f || behind) {
-      objectViewEnter[objectIndex] = !behind;
-      objectViewExit[objectIndex] = !behind;
-      continue;
-    }
-
-    float depth = std::max(forwardDepth, 1e-5f);
-    float horiz = simd::dot(toCenter, right);
-    float vert = simd::dot(toCenter, up);
-    float horizontalAngle = std::atan2(std::fabs(horiz), depth);
-    float verticalAngle = std::atan2(std::fabs(vert), depth);
-    float radiusAngle = asinf(std::min(sphere.radius / distanceToCenter, 1.0f));
-
-    float enterHorizontalLimit = horizontalHalfFov + radiusAngle + enterMargin;
-    float exitHorizontalLimit = horizontalHalfFov + radiusAngle + exitMargin;
-    float enterVerticalLimit = verticalHalfFov + radiusAngle + enterMargin;
-    float exitVerticalLimit = verticalHalfFov + radiusAngle + exitMargin;
-
-    objectViewEnter[objectIndex] =
-        horizontalAngle <= enterHorizontalLimit &&
-        verticalAngle <= enterVerticalLimit;
-    objectViewExit[objectIndex] =
-        horizontalAngle <= exitHorizontalLimit &&
-        verticalAngle <= exitVerticalLimit;
   }
 
   std::sort(sortedIndices.begin(), sortedIndices.end(),
@@ -5834,15 +5015,9 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
     bool behind = objectIndex < objectBehind.size() && objectBehind[objectIndex];
-    bool viewAllowed = currentlyActive
-                           ? (objectIndex < objectViewExit.size() &&
-                              objectViewExit[objectIndex])
-                           : (objectIndex < objectViewEnter.size() &&
-                              objectViewEnter[objectIndex]);
-    bool shouldBeActive = viewAllowed && !behind &&
-                          (currentlyActive
-                               ? (dist <= _residencyConfig.lodExitDistance)
-                               : (dist < _residencyConfig.lodEnterDistance));
+    bool shouldBeActive =
+        currentlyActive ? (dist <= _residencyConfig.lodExitDistance && !behind)
+                         : (dist < _residencyConfig.lodEnterDistance && !behind);
     bool canToggle =
         forceAllToggles || objectIndex >= _objectCooldown.size() ||
         _objectCooldown[objectIndex] == 0;
@@ -7044,7 +6219,7 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
         resident.clearPendingCommand();
 
       if (!resident.isResident() && !pending) {
-        transitionResidentToCold(resident, record);
+        resident.transitionToCold(record);
       }
     }
     return;
@@ -7281,72 +6456,6 @@ void Renderer::processRayHitCounters() {
   });
 }
 
-void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
-  if (!commandBuffer)
-    return;
-
-  commandBuffer->retain();
-
-  MTL::CommandBuffer *previous = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    previous = _lastFrameCommandBuffer;
-    _lastFrameCommandBuffer = commandBuffer;
-  }
-  if (previous)
-    previous->release();
-
-  commandBuffer->addCompletedHandler([this](MTL::CommandBuffer *completed) {
-    bool release = false;
-    {
-      std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-      if (_lastFrameCommandBuffer == completed) {
-        _lastFrameCommandBuffer = nullptr;
-        release = true;
-      }
-    }
-    if (release)
-      completed->release();
-  });
-}
-
-void Renderer::waitForPendingFrameCommands() {
-  MTL::CommandBuffer *buffer = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    buffer = _lastFrameCommandBuffer;
-    if (buffer)
-      buffer->retain();
-  }
-
-  if (!buffer)
-    return;
-
-  auto status = buffer->status();
-  switch (status) {
-  case MTL::CommandBufferStatus::CommandBufferStatusNotEnqueued:
-  case MTL::CommandBufferStatus::CommandBufferStatusEnqueued:
-  case MTL::CommandBufferStatus::CommandBufferStatusCommitted:
-  case MTL::CommandBufferStatus::CommandBufferStatusScheduled:
-    buffer->waitUntilCompleted();
-    break;
-  case MTL::CommandBufferStatus::CommandBufferStatusCompleted:
-  case MTL::CommandBufferStatus::CommandBufferStatusError:
-  default:
-    break;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    if (_lastFrameCommandBuffer == buffer) {
-      _lastFrameCommandBuffer->release();
-      _lastFrameCommandBuffer = nullptr;
-    }
-  }
-
-  buffer->release();
-}
-
 void Renderer::beginFrameMetrics() {
   _cpuStart = std::chrono::high_resolution_clock::now();
   _lastRayCount = static_cast<size_t>(Camera::screenSize.x * Camera::screenSize.y);
@@ -7412,9 +6521,9 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
-  printf("Active nodes: %zu Resident nodes: %zu Offloaded nodes: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
-         _activeNodeCount, _residentNodeCount, offloaded,
-         _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond);
+  printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+         _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
+         _lastGPUTime * 1000.0, _lastRaysPerSecond);
 
   if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty()) {
     BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
