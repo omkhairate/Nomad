@@ -1054,7 +1054,8 @@ void Renderer::writeBenchmarkHeader() {
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
-         "lod_enter_distance,lod_exit_distance,energy_target_fraction,"
+         "lod_enter_distance,lod_exit_distance,lod_enter_view_margin,"
+         "lod_exit_view_margin,energy_target_fraction,"
          "energy_min_active,energy_visibility_boost,screen_target_fraction,"
          "screen_min_pixels,screen_min_active";
   _benchmarkStream << '\n';
@@ -1105,6 +1106,8 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << _residencyConfig.rayHitRebuildCooldownFrames << ','
       << formatFixed(_residencyConfig.lodEnterDistance, 3) << ','
       << formatFixed(_residencyConfig.lodExitDistance, 3) << ','
+      << formatFixed(_residencyConfig.lodEnterViewDegrees, 3) << ','
+      << formatFixed(_residencyConfig.lodExitViewDegrees, 3) << ','
       << formatFixed(_residencyConfig.energyTargetFraction, 3) << ','
       << _residencyConfig.energyMinActivePrimitives << ','
       << formatFixed(_residencyConfig.energyVisibilityBoost, 3) << ','
@@ -5714,7 +5717,9 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   // than LOD_ENTER_DISTANCE, while active objects stay active until the camera
   // has moved beyond LOD_EXIT_DISTANCE. Objects fully behind the camera are
   // treated as infinitely far away and immediately culled regardless of
-  // distance thresholds.
+  // distance thresholds. Additionally, objects must satisfy angular frustum
+  // checks with separate entry/exit margins so camera rotations do not
+  // immediately thrash residency state.
 
   size_t toggles = 0;
   bool changed = false;
@@ -5723,30 +5728,96 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
   std::vector<float> objectDistances(objectCount,
                                      std::numeric_limits<float>::max());
   std::vector<bool> objectBehind(objectCount, false);
+  std::vector<bool> objectViewEnter(objectCount, true);
+  std::vector<bool> objectViewExit(objectCount, true);
   std::vector<size_t> sortedIndices(objectCount);
   simd::float3 forward = Camera::forward;
   float forwardLenSq = simd::length_squared(forward);
   bool forwardValid = forwardLenSq >= 1e-6f;
   if (forwardValid)
     forward /= std::sqrt(forwardLenSq);
+  simd::float3 up = Camera::up;
+  float upLenSq = simd::length_squared(up);
+  if (upLenSq < 1e-6f) {
+    up = {0.0f, 1.0f, 0.0f};
+    upLenSq = 1.0f;
+  }
+  up /= std::sqrt(upLenSq);
+
+  simd::float3 right = simd::make_float3(1.0f, 0.0f, 0.0f);
+  if (forwardValid) {
+    right = simd::cross(forward, up);
+    float rightLenSq = simd::length_squared(right);
+    if (rightLenSq < 1e-6f) {
+      right = {1.0f, 0.0f, 0.0f};
+    } else {
+      right /= std::sqrt(rightLenSq);
+    }
+  }
+
+  if (forwardValid)
+    up = simd::normalize(simd::cross(right, forward));
+
+  float verticalHalfFov =
+      Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
+  if (verticalHalfFov <= 0.0f)
+    verticalHalfFov = 1e-3f;
+  float aspect = Camera::screenSize.y > 0.0f
+                     ? Camera::screenSize.x / Camera::screenSize.y
+                     : 1.0f;
+  float horizontalHalfFov = std::atan(std::tan(verticalHalfFov) * aspect);
+
+  constexpr float kDegToRad = static_cast<float>(M_PI) / 180.0f;
+  float enterMargin =
+      std::max(_residencyConfig.lodEnterViewDegrees, 0.0f) * kDegToRad;
+  float exitMargin =
+      std::max(_residencyConfig.lodExitViewDegrees, 0.0f) * kDegToRad;
+  exitMargin = std::max(exitMargin, enterMargin);
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const BoundingSphere &sphere =
         (objectIndex < _objectBounds.size())
             ? _objectBounds[objectIndex]
             : BoundingSphere{simd::make_float3(0.0f, 0.0f, 0.0f), 0.0f};
     simd::float3 toCenter = sphere.center - Camera::position;
-    float dist = simd::length(toCenter) - sphere.radius;
-    if (forwardValid) {
-      float forwardDepth = simd::dot(toCenter, forward);
-      if (forwardDepth + sphere.radius <= 0.0f) {
-        objectDistances[objectIndex] = std::numeric_limits<float>::max();
-        objectBehind[objectIndex] = true;
-        sortedIndices[objectIndex] = objectIndex;
-        continue;
-      }
-    }
-    objectDistances[objectIndex] = std::max(dist, 0.0f);
+    float distanceToCenter = simd::length(toCenter);
+    float dist = distanceToCenter - sphere.radius;
+    float forwardDepth = forwardValid ? simd::dot(toCenter, forward) : 0.0f;
+    bool behind = forwardValid && forwardDepth + sphere.radius <= 0.0f;
+    objectBehind[objectIndex] = behind;
+    objectDistances[objectIndex] =
+        behind ? std::numeric_limits<float>::max() : std::max(dist, 0.0f);
     sortedIndices[objectIndex] = objectIndex;
+
+    if (!forwardValid) {
+      objectViewEnter[objectIndex] = true;
+      objectViewExit[objectIndex] = true;
+      continue;
+    }
+
+    if (distanceToCenter <= 1e-5f || behind) {
+      objectViewEnter[objectIndex] = !behind;
+      objectViewExit[objectIndex] = !behind;
+      continue;
+    }
+
+    float depth = std::max(forwardDepth, 1e-5f);
+    float horiz = simd::dot(toCenter, right);
+    float vert = simd::dot(toCenter, up);
+    float horizontalAngle = std::atan2(std::fabs(horiz), depth);
+    float verticalAngle = std::atan2(std::fabs(vert), depth);
+    float radiusAngle = asinf(std::min(sphere.radius / distanceToCenter, 1.0f));
+
+    float enterHorizontalLimit = horizontalHalfFov + radiusAngle + enterMargin;
+    float exitHorizontalLimit = horizontalHalfFov + radiusAngle + exitMargin;
+    float enterVerticalLimit = verticalHalfFov + radiusAngle + enterMargin;
+    float exitVerticalLimit = verticalHalfFov + radiusAngle + exitMargin;
+
+    objectViewEnter[objectIndex] =
+        horizontalAngle <= enterHorizontalLimit &&
+        verticalAngle <= enterVerticalLimit;
+    objectViewExit[objectIndex] =
+        horizontalAngle <= exitHorizontalLimit &&
+        verticalAngle <= exitVerticalLimit;
   }
 
   std::sort(sortedIndices.begin(), sortedIndices.end(),
@@ -5763,9 +5834,15 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
     bool behind = objectIndex < objectBehind.size() && objectBehind[objectIndex];
-    bool shouldBeActive =
-        currentlyActive ? (dist <= _residencyConfig.lodExitDistance && !behind)
-                         : (dist < _residencyConfig.lodEnterDistance && !behind);
+    bool viewAllowed = currentlyActive
+                           ? (objectIndex < objectViewExit.size() &&
+                              objectViewExit[objectIndex])
+                           : (objectIndex < objectViewEnter.size() &&
+                              objectViewEnter[objectIndex]);
+    bool shouldBeActive = viewAllowed && !behind &&
+                          (currentlyActive
+                               ? (dist <= _residencyConfig.lodExitDistance)
+                               : (dist < _residencyConfig.lodEnterDistance));
     bool canToggle =
         forceAllToggles || objectIndex >= _objectCooldown.size() ||
         _objectCooldown[objectIndex] == 0;
