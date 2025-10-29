@@ -892,6 +892,8 @@ Renderer::~Renderer() {
   _tlasDescriptorStagingCapacity = 0;
   _pTlasScratchBuffer = nullptr;
   _tlasScratchCapacity = 0;
+  _tlasScratchTracker.reset();
+  updateTlasScratchResidentBytes(0);
   _pTlasBuildEvent = nullptr;
   _tlasBuildEventValue = 0;
   _tlasCompletedEventValue.store(0, std::memory_order_relaxed);
@@ -2982,6 +2984,53 @@ void Renderer::waitForPendingTlasBuild() {
   if (latest < targetValue)
     latest = targetValue;
   _tlasCompletedEventValue.store(latest, std::memory_order_release);
+
+  finalizePendingTlasScratchResize(true);
+}
+
+void Renderer::finalizePendingTlasScratchResize(bool force) {
+  if (!_tlasScratchTracker.hasPendingResize())
+    return;
+
+  bool ready = force;
+  if (!ready) {
+    uint64_t completed = _tlasCompletedEventValue.load(std::memory_order_acquire);
+    ready = _tlasScratchTracker.ready(completed);
+  }
+
+  if (!ready)
+    return;
+
+  size_t previousCapacity = static_cast<size_t>(_tlasScratchCapacity);
+  size_t desiredSize = _tlasScratchTracker.targetRefitSize();
+  size_t retiredBytes = _tlasScratchTracker.retiredBytes();
+
+  if (_pTlasScratchBuffer) {
+    _pTlasScratchBuffer->release();
+    _pTlasScratchBuffer = nullptr;
+    _tlasScratchCapacity = 0;
+  }
+
+  if (desiredSize > 0 && _pDevice) {
+    _pTlasScratchBuffer = _pDevice->newBuffer(
+        static_cast<NS::UInteger>(desiredSize), MTL::ResourceStorageModePrivate);
+    _tlasScratchCapacity =
+        _pTlasScratchBuffer ? static_cast<NS::UInteger>(desiredSize)
+                            : static_cast<NS::UInteger>(0);
+  }
+
+  _tlasScratchTracker.noteAllocation(_tlasScratchCapacity);
+  _tlasScratchTracker.finalizeResize();
+  updateTlasScratchResidentBytes(_tlasScratchCapacity);
+
+  if (retiredBytes > 0) {
+    std::printf("[TLAS] Shrunk scratch buffer from %zu to %zu bytes (retired %zu bytes).\n",
+                previousCapacity, static_cast<size_t>(_tlasScratchCapacity), retiredBytes);
+  }
+}
+
+void Renderer::updateTlasScratchResidentBytes(NS::UInteger bytes) {
+  _tlasScratchResidentBytes = static_cast<size_t>(bytes);
 }
 
 void Renderer::updateTopLevelAccelerationStructure(
@@ -2989,6 +3038,8 @@ void Renderer::updateTopLevelAccelerationStructure(
     const std::vector<MTL::AccelerationStructure *> &structures) {
   if (!_pDevice || !_pCommandQueue)
     return;
+
+  finalizePendingTlasScratchResize();
 
   if (!ensureDummyBlas())
     return;
@@ -3129,6 +3180,9 @@ void Renderer::updateTopLevelAccelerationStructure(
 
   NS::UInteger scratchSize = needsRebuild ? sizes.buildScratchBufferSize
                                           : sizes.refitScratchBufferSize;
+  size_t buildScratchBytes = static_cast<size_t>(scratchSize);
+  size_t refitScratchBytes =
+      static_cast<size_t>(sizes.refitScratchBufferSize);
   MTL::Buffer *scratchBuffer = nullptr;
   if (scratchSize > 0) {
     if (!_pTlasScratchBuffer || _tlasScratchCapacity < scratchSize) {
@@ -3145,6 +3199,9 @@ void Renderer::updateTopLevelAccelerationStructure(
       return;
     }
   }
+
+  _tlasScratchTracker.noteAllocation(_tlasScratchCapacity);
+  updateTlasScratchResidentBytes(_tlasScratchCapacity);
 
   MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
@@ -3209,6 +3266,10 @@ void Renderer::updateTopLevelAccelerationStructure(
     commandBuffer->encodeSignalEvent(_pTlasBuildEvent, signalValue);
   }
 
+  if (needsRebuild)
+    _tlasScratchTracker.registerRebuild(signalValue, buildScratchBytes,
+                                        refitScratchBytes);
+
   if (signalValue > 0) {
     commandBuffer->addCompletedHandler(
         [this, signalValue](MTL::CommandBuffer *cmd) {
@@ -3224,6 +3285,7 @@ void Renderer::updateTopLevelAccelerationStructure(
     commandBuffer->waitUntilCompleted();
     _tlasCompletedEventValue.store(_tlasBuildEventValue,
                                    std::memory_order_release);
+    finalizePendingTlasScratchResize(true);
   }
 
   instanceDesc->release();
