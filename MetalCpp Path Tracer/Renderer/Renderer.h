@@ -286,29 +286,6 @@ private:
   std::deque<std::shared_ptr<PendingBlasBuild>> _pendingBlasBuilds;
   std::deque<std::shared_ptr<PendingBlasBuild>> _activeBlasBuilds;
 
-  struct BlasBufferPoolEntry {
-    MTL::Buffer *buffer = nullptr;
-    NS::UInteger capacity = 0;
-    bool inUse = false;
-  };
-
-  MTL::Buffer *acquireBlasBuffer(std::vector<BlasBufferPoolEntry> &pool,
-                                 NS::UInteger requiredBytes,
-                                 MTL::ResourceOptions storageMode);
-  void releaseBlasBuffer(std::vector<BlasBufferPoolEntry> &pool,
-                         MTL::Buffer *buffer);
-  MTL::Buffer *acquireBlasScratchBuffer(NS::UInteger requiredBytes);
-  MTL::Buffer *acquireBlasVertexStagingBuffer(NS::UInteger requiredBytes);
-  MTL::Buffer *acquireBlasIndexStagingBuffer(NS::UInteger requiredBytes);
-  void releaseBlasScratchBuffer(MTL::Buffer *buffer);
-  void releaseBlasVertexStagingBuffer(MTL::Buffer *buffer);
-  void releaseBlasIndexStagingBuffer(MTL::Buffer *buffer);
-  void trimIdleBlasBuffers();
-
-  std::vector<BlasBufferPoolEntry> _blasScratchBuffers;
-  std::vector<BlasBufferPoolEntry> _blasVertexStagingBuffers;
-  std::vector<BlasBufferPoolEntry> _blasIndexStagingBuffers;
-
   struct BenchmarkSample {
     size_t frameIndex = 0;
     size_t rayCount = 0;
