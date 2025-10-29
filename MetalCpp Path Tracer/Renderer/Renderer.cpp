@@ -80,7 +80,22 @@ TaskLimiter &sceneBvhTaskLimiter() {
 namespace MetalCppPathTracer {
 
 void ResidentObjectGpuResources::clearPendingCommand() {
-  if (pendingCommand) {
+  if (!pendingCommand)
+    return;
+
+  using Status = MTL::CommandBufferStatus;
+  auto status = pendingCommand->status();
+
+  if (status == Status::CommandBufferStatusNotEnqueued ||
+      status == Status::CommandBufferStatusEnqueued ||
+      status == Status::CommandBufferStatusCommitted ||
+      status == Status::CommandBufferStatusScheduled) {
+    pendingCommand->waitUntilCompleted();
+    status = pendingCommand->status();
+  }
+
+  if (status == Status::CommandBufferStatusCompleted ||
+      status == Status::CommandBufferStatusError) {
     pendingCommand->release();
     pendingCommand = nullptr;
   }
