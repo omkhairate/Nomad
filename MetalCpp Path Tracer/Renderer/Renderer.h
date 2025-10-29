@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "AlwaysResidentCache.h"
+#include "DeferredPurgeQueue.h"
 #include "GpuHeapResources.h"
 #include "ResidencyBudget.h"
 #include "TlasScratchTracker.h"
@@ -181,8 +182,17 @@ private:
   bool startBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void handleCompletedBlasBuild(
       const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success);
-  void transitionResidentToCold(ResidentObjectGpuResources &resident,
-                                BlasInstanceRecord &instanceRecord);
+  void requestResidentEviction(size_t objectIndex,
+                               ResidentObjectGpuResources &resident,
+                               BlasInstanceRecord &instanceRecord);
+  void cancelPendingResidentEviction(size_t objectIndex,
+                                     ResidentObjectGpuResources &resident);
+  void handleDeferredBlasEvictions(MTL::CommandBuffer *commandBuffer,
+                                   bool success);
+  void transitionResidentToCold(size_t objectIndex,
+                                ResidentObjectGpuResources &resident,
+                                BlasInstanceRecord &instanceRecord,
+                                bool removePending = true);
   bool submitAsyncCommandBuffer(MTL::CommandBuffer *commandBuffer,
                                std::function<void(bool)> completion);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
@@ -398,6 +408,9 @@ private:
   std::vector<bool> _objectResidentState;
 
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
+
+  DeferredPurgeQueue<ResidentObjectGpuResources, MTL::CommandBuffer>
+      _pendingBlasEvictions;
 
   GpuHeapResources _tlasHeap;
   GpuHeapResources _dummyBlasResources;
