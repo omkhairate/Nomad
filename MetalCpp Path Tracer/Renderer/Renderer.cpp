@@ -134,6 +134,8 @@ void ResidentObjectGpuResources::transitionToCold(
 bool ResidentObjectGpuResources::ensureResident(
     Renderer &renderer, size_t objectIndex, const SceneObject &object,
     BlasInstanceRecord &instanceRecord, bool forceRebuild) {
+  renderer.cancelPendingResidentEviction(objectIndex, *this);
+
   if (isResident() && !forceRebuild) {
     lastStateChange = std::chrono::steady_clock::now();
     return true;
@@ -143,7 +145,7 @@ bool ResidentObjectGpuResources::ensureResident(
   geometryValid = false;
   bool built = renderer.buildObjectBlas(objectIndex, object, *this);
   if (!built) {
-    renderer.transitionResidentToCold(*this, instanceRecord);
+    renderer.transitionResidentToCold(objectIndex, *this, instanceRecord);
     return false;
   }
   return true;
@@ -959,7 +961,16 @@ bool Renderer::isInView(const BoundingSphere &b) {
 }
 
 Renderer::Renderer(MTL::Device *pDevice)
-    : _pDevice(pDevice->retain()), _pScene(new Scene()) {
+    : _pDevice(pDevice->retain()), _pScene(new Scene()),
+      _pendingBlasEvictions(
+          [](MTL::CommandBuffer *command) {
+            if (command)
+              command->retain();
+          },
+          [](MTL::CommandBuffer *command) {
+            if (command)
+              command->release();
+          }) {
   _pCommandQueue = _pDevice->newCommandQueue();
   _tlasHeap.initialize(_pDevice);
   _dummyBlasResources.initialize(_pDevice);
@@ -980,6 +991,9 @@ Renderer::Renderer(MTL::Device *pDevice)
 Renderer::~Renderer() {
   processPendingCapturedFrames();
   waitForPendingFrameCommands();
+
+  _pendingBlasEvictions.clear();
+  assert(_pendingBlasEvictions.empty());
 
   if (_pSphereBuffer)
     _pSphereBuffer->release();
@@ -2439,9 +2453,9 @@ void Renderer::processBlasBuildQueue() {
       _pendingBlasBuilds.pop_front();
       if (buildRequest && buildRequest->resident &&
           buildRequest->objectIndex < _instanceRecords.size()) {
-        transitionResidentToCold(
-            *buildRequest->resident,
-            _instanceRecords[buildRequest->objectIndex]);
+        transitionResidentToCold(buildRequest->objectIndex,
+                                 *buildRequest->resident,
+                                 _instanceRecords[buildRequest->objectIndex]);
       }
       continue;
     }
@@ -2764,7 +2778,7 @@ void Renderer::handleCompletedBlasBuild(
     resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
     resident.lastStateChange = std::chrono::steady_clock::now();
   } else if (buildRequest->objectIndex < _instanceRecords.size()) {
-    transitionResidentToCold(resident,
+    transitionResidentToCold(buildRequest->objectIndex, resident,
                              _instanceRecords[buildRequest->objectIndex]);
   } else {
     resident.geometryValid = false;
@@ -2787,11 +2801,58 @@ void Renderer::handleCompletedBlasBuild(
   processBlasBuildQueue();
 }
 
-void Renderer::transitionResidentToCold(ResidentObjectGpuResources &resident,
-                                        BlasInstanceRecord &instanceRecord) {
+void Renderer::transitionResidentToCold(size_t objectIndex,
+                                        ResidentObjectGpuResources &resident,
+                                        BlasInstanceRecord &instanceRecord,
+                                        bool removePending) {
+  if (removePending)
+    _pendingBlasEvictions.cancel(objectIndex, resident);
+
   waitForPendingFrameCommands();
   waitForPendingTlasBuild();
   resident.transitionToCold(instanceRecord);
+}
+
+void Renderer::requestResidentEviction(size_t objectIndex,
+                                       ResidentObjectGpuResources &resident,
+                                       BlasInstanceRecord &instanceRecord) {
+  if (objectIndex >= _residentObjectGpuResources.size())
+    return;
+
+  bool hasPendingCommand = resident.pendingCommand &&
+                           resident.pendingCommand->status() !=
+                               MTL::CommandBufferStatusCompleted;
+  if (!resident.isResident() && !hasPendingCommand) {
+    transitionResidentToCold(objectIndex, resident, instanceRecord);
+    return;
+  }
+
+  resident.transitionToStreaming();
+  resident.geometryValid = false;
+  _pendingBlasEvictions.enqueue(objectIndex, resident);
+}
+
+void Renderer::cancelPendingResidentEviction(size_t objectIndex,
+                                             ResidentObjectGpuResources &resident) {
+  _pendingBlasEvictions.cancel(objectIndex, resident);
+}
+
+void Renderer::handleDeferredBlasEvictions(MTL::CommandBuffer *commandBuffer,
+                                           bool success) {
+  if (!commandBuffer)
+    return;
+
+  if (success)
+    waitForPendingFrameCommands();
+
+  _pendingBlasEvictions.complete(
+      commandBuffer, success, [this](ResidentObjectGpuResources &resident,
+                                     size_t objectIndex) {
+        if (objectIndex >= _instanceRecords.size())
+          return;
+        auto &instanceRecord = _instanceRecords[objectIndex];
+        resident.transitionToCold(instanceRecord);
+      });
 }
 
 bool Renderer::submitAsyncCommandBuffer(
@@ -3445,16 +3506,23 @@ void Renderer::updateTopLevelAccelerationStructure(
   if (signalValue > 0) {
     commandBuffer->addCompletedHandler(
         [this, signalValue](MTL::CommandBuffer *cmd) {
-          (void)cmd;
+          bool success =
+              cmd->status() == MTL::CommandBufferStatusCompleted;
+          this->handleDeferredBlasEvictions(cmd, success);
           this->_tlasCompletedEventValue.store(signalValue,
                                                std::memory_order_release);
         });
   }
 
+  _pendingBlasEvictions.assign(commandBuffer);
+
   commandBuffer->commit();
 
   if (!_pTlasBuildEvent) {
     commandBuffer->waitUntilCompleted();
+    bool success =
+        commandBuffer->status() == MTL::CommandBufferStatusCompleted;
+    handleDeferredBlasEvictions(commandBuffer, success);
     _tlasCompletedEventValue.store(_tlasBuildEventValue,
                                    std::memory_order_release);
     finalizePendingTlasScratchResize(true);
@@ -4270,7 +4338,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     if (!shouldBeResident) {
-      transitionResidentToCold(gpuResident, instanceRecord);
+      requestResidentEviction(objectIndex, gpuResident, instanceRecord);
     }
   }
 
@@ -7294,7 +7362,7 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
         resident.clearPendingCommand();
 
       if (!resident.isResident() && !pending) {
-        transitionResidentToCold(resident, record);
+        transitionResidentToCold(objectIndex, resident, record);
       }
     }
     return;
