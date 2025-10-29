@@ -201,6 +201,15 @@ GpuHeapResources::ensureAccelerationStructure(NS::UInteger requiredSize,
 
   ensureHeapCapacity(alignedSize);
 
+  if (_accelerationStructure && _accelerationSize >= alignedSize) {
+    if (label) {
+      using NS::StringEncoding::UTF8StringEncoding;
+      _accelerationStructure->setLabel(
+          NS::String::string(label, UTF8StringEncoding));
+    }
+    return _accelerationStructure;
+  }
+
   releaseAccelerationStructure();
 
   if (!_heap)
