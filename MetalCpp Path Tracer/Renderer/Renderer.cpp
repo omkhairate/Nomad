@@ -4322,6 +4322,16 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _lightCount = _cachedLightIndices.size();
   }
 
+  if (_frameStrategy == ResidencyStrategy::AlwaysResident) {
+    for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
+         ++objectIndex) {
+      const SceneObject &obj = sceneObjects[objectIndex];
+      if (obj.primitiveCount > 0) {
+        objectShouldBeResident[objectIndex] = true;
+      }
+    }
+  }
+
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
     auto &gpuResident = _residentObjectGpuResources[objectIndex];
@@ -4337,7 +4347,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       }
     }
 
-    if (!shouldBeResident) {
+    if (!shouldBeResident &&
+        _frameStrategy != ResidencyStrategy::AlwaysResident) {
       requestResidentEviction(objectIndex, gpuResident, instanceRecord);
     }
   }
@@ -7361,7 +7372,8 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
       if (resident.pendingCommand && !pending)
         resident.clearPendingCommand();
 
-      if (!resident.isResident() && !pending) {
+      if (_frameStrategy != ResidencyStrategy::AlwaysResident &&
+          !resident.isResident() && !pending) {
         transitionResidentToCold(objectIndex, resident, record);
       }
     }
