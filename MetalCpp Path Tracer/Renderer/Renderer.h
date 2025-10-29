@@ -18,6 +18,7 @@
 
 #include "AlwaysResidentCache.h"
 #include "GpuHeapResources.h"
+#include "TlasScratchTracker.h"
 #include "Camera.h"
 #include "Scene.h"
 
@@ -170,6 +171,8 @@ private:
   void ensureTlasBuildEvent();
   void waitForPendingTlasBuild();
   bool hasPendingTlasBuild() const;
+  void finalizePendingTlasScratchResize(bool force = false);
+  void updateTlasScratchResidentBytes(NS::UInteger bytes);
   struct PendingBlasBuild;
   void enqueueBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void processBlasBuildQueue();
@@ -235,6 +238,8 @@ private:
   MTL::Buffer *_pFrustumVertexBuffer = nullptr;
   MTL::Buffer *_pTlasScratchBuffer = nullptr;
   NS::UInteger _tlasScratchCapacity = 0;
+  size_t _tlasScratchResidentBytes = 0;
+  TlasScratchTracker _tlasScratchTracker;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
