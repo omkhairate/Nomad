@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <simd/simd.h>
@@ -132,8 +131,6 @@ private:
                             bool allowShrink = false,
                             MTL::ResourceOptions storageMode =
                                 MTL::ResourceStorageModeManaged);
-  void rebuildEnvironmentTexture();
-  void releaseEnvironmentTexture();
   struct BoundingSphere {
     simd::float3 center;
     float radius;
@@ -149,8 +146,6 @@ private:
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
-  void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
-  void waitForPendingFrameCommands();
   bool flushRayHitCopy();
   bool rayHitCopyReady() const;
   void processRayHitCounters();
@@ -161,27 +156,10 @@ private:
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
           &descriptors,
       const std::vector<MTL::AccelerationStructure *> &structures);
-  struct SceneAccelerationBuildResult {
-    size_t blasNodeCount = 0;
-    size_t tlasNodeCount = 0;
-  };
-  SceneAccelerationBuildResult buildSceneAccelerationStructures(
-      size_t primitiveCount, size_t primitiveHitBytes);
-  void ensureTlasBuildEvent();
-  void waitForPendingTlasBuild();
-  bool hasPendingTlasBuild() const;
-  struct PendingBlasBuild;
-  void enqueueBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
-  void processBlasBuildQueue();
-  bool startBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
-  void handleCompletedBlasBuild(
-      const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success);
-  void transitionResidentToCold(ResidentObjectGpuResources &resident,
-                                BlasInstanceRecord &instanceRecord);
-  bool submitAsyncCommandBuffer(MTL::CommandBuffer *commandBuffer,
-                               std::function<void(bool)> completion);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
+  void rebuildEnvironmentTexture();
+  void releaseEnvironmentTexture();
   void rebuildMaterialTextures();
   void clearMaterialTextures();
   void initializeBenchmarking();
@@ -223,8 +201,6 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
-  MTL::CommandBuffer *_lastFrameCommandBuffer = nullptr;
-  std::mutex _frameCommandBufferMutex;
   MTL::CommandBuffer *_lastRayHitCommandBuffer = nullptr;
   bool _rayHitCopyError = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
@@ -233,8 +209,6 @@ private:
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
   MTL::Buffer *_pFrustumVertexBuffer = nullptr;
-  MTL::Buffer *_pTlasScratchBuffer = nullptr;
-  NS::UInteger _tlasScratchCapacity = 0;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;
@@ -260,31 +234,6 @@ private:
   ManagedTextureSlot _sampleImportanceSlot;
   ManagedTextureSlot _albedoSlot;
   ManagedTextureSlot _normalSlot;
-
-  struct PendingBlasBuild {
-    Renderer *renderer = nullptr;
-    ResidentObjectGpuResources *resident = nullptr;
-    size_t objectIndex = 0;
-    std::vector<simd::float3> vertices;
-    std::vector<uint32_t> indices;
-    size_t triangleCount = 0;
-    size_t vertexCount = 0;
-    NS::UInteger totalHeapBytes = 0;
-    MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc = nullptr;
-    MTL::PrimitiveAccelerationStructureDescriptor *accelDesc = nullptr;
-    NS::Array *geometryArray = nullptr;
-    MTL::AccelerationStructure *accelerationStructure = nullptr;
-    MTL::Buffer *vertexStaging = nullptr;
-    MTL::Buffer *indexStaging = nullptr;
-    MTL::Buffer *scratchBuffer = nullptr;
-    MTL::CommandBuffer *commandBuffer = nullptr;
-
-    void releaseResources();
-  };
-
-  static constexpr size_t kMaxBlasBuildsInFlight = 3;
-  std::deque<std::shared_ptr<PendingBlasBuild>> _pendingBlasBuilds;
-  std::deque<std::shared_ptr<PendingBlasBuild>> _activeBlasBuilds;
 
   struct BenchmarkSample {
     size_t frameIndex = 0;
@@ -379,15 +328,11 @@ private:
   GpuHeapResources _dummyBlasResources;
   MTL::AccelerationStructure *_pTlasStructure = nullptr;
   MTL::AccelerationStructure *_pDummyBlas = nullptr;
-  bool _dummyBlasBuildInFlight = false;
   std::vector<MTL::AccelerationStructureInstanceDescriptor>
       _cachedInstanceDescriptors;
   std::vector<MTL::AccelerationStructure *> _cachedInstancedAccelerationStructures;
   MTL::Buffer *_pTlasDescriptorStaging = nullptr;
   size_t _tlasDescriptorStagingCapacity = 0;
-  MTL::SharedEvent *_pTlasBuildEvent = nullptr;
-  uint64_t _tlasBuildEventValue = 0;
-  std::atomic<uint64_t> _tlasCompletedEventValue{0};
 
   uint32_t _rayHitRebuildCooldown = 0;
 
