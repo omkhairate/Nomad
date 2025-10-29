@@ -91,15 +91,18 @@ kernel void pathTraceKernel(
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
 
-    PathTraceSample sample = rayColor(
-        r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes, primitives,
-        materials, u.primitiveCount, primitiveIndices, activeMask,
-        instanceRecords, lightIndices, lightCdf, primitiveRemap,
-        primitiveHitCounts, seed, u.maxRayDepth, u.debugAS, u.blasNodeCount,
-        u.lightCount, u.lightTotalWeight,
-        static_cast<uint>(u.totalPrimitiveCount), materialTextures,
-        u.textureCount, environmentMap, environmentSampler,
-        u.environmentMapEnabled, u.environmentMapIntensity);
+    PathTraceSample sample = rayColor(r, rayDx, rayDy, tlasNodes, u.tlasNodeCount,
+                                      bvhNodes, primitives, materials,
+                                      u.primitiveCount, primitiveIndices,
+                                      activeMask, instanceRecords, lightIndices,
+                                      lightCdf, primitiveRemap, primitiveHitCounts,
+                                      seed, u.maxRayDepth, u.debugAS, u.blasNodeCount,
+                                      u.lightCount, u.lightTotalWeight,
+                                      static_cast<uint>(u.totalPrimitiveCount),
+                                      materialTextures, u.textureCount,
+                                      environmentMap, environmentSampler,
+                                      u.environmentMapEnabled,
+                                      u.environmentMapIntensity);
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;

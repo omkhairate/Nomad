@@ -35,6 +35,8 @@ struct SceneObject {
 struct ResidencyParameters {
   float lodEnterDistance = 225.0f;
   float lodExitDistance = 275.0f;
+  float lodEnterViewDegrees = 5.0f;
+  float lodExitViewDegrees = 12.0f;
   uint32_t stateCooldownFrames = 5;
   size_t lodMaxTogglesPerFrame = 24;
 
