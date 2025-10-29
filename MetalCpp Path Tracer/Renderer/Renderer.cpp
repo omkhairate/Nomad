@@ -201,8 +201,13 @@ void Renderer::PendingBlasBuild::releaseResources() {
     indexStaging = nullptr;
   }
   if (scratchBuffer) {
-    scratchBuffer->release();
+    if (renderer) {
+      renderer->recycleBlasScratchBuffer(scratchBuffer, scratchSize);
+    } else {
+      scratchBuffer->release();
+    }
     scratchBuffer = nullptr;
+    scratchSize = 0;
   }
   if (geometryArray) {
     geometryArray->release();
@@ -218,6 +223,113 @@ void Renderer::PendingBlasBuild::releaseResources() {
   }
   accelerationStructure = nullptr;
   commandBuffer = nullptr;
+}
+
+MTL::Buffer *Renderer::acquireBlasScratchBuffer(NS::UInteger requestedSize,
+                                                NS::UInteger &allocatedSize,
+                                                bool &reused) {
+  allocatedSize = requestedSize;
+  reused = false;
+  if (!_pDevice || requestedSize == 0)
+    return nullptr;
+
+  auto it = _blasScratchPool.lower_bound(requestedSize);
+  while (it != _blasScratchPool.end()) {
+    auto &bucket = it->second;
+    if (!bucket.empty()) {
+      auto *buffer = bucket.back();
+      bucket.pop_back();
+      NS::UInteger bucketSize = it->first;
+      if (bucket.empty())
+        _blasScratchPool.erase(it);
+      allocatedSize = bucketSize;
+      reused = true;
+      if (_blasScratchPoolAvailableBytes >= bucketSize)
+        _blasScratchPoolAvailableBytes -= bucketSize;
+      else
+        _blasScratchPoolAvailableBytes = 0;
+      _blasScratchPoolInUseBytes += bucketSize;
+      ++_blasScratchPoolReusedCount;
+      std::printf(
+          "[BLAS] Reusing scratch buffer (%llu bytes, requested %llu). Pool "
+          "in-flight: %zu bytes, available: %zu bytes. (created=%zu, reused=%zu)\n",
+          static_cast<unsigned long long>(bucketSize),
+          static_cast<unsigned long long>(requestedSize),
+          _blasScratchPoolInUseBytes, _blasScratchPoolAvailableBytes,
+          _blasScratchPoolCreatedCount, _blasScratchPoolReusedCount);
+      return buffer;
+    }
+    it = _blasScratchPool.erase(it);
+  }
+
+  auto *buffer = _pDevice->newBuffer(requestedSize,
+                                     MTL::ResourceStorageModePrivate);
+  if (buffer) {
+    allocatedSize = requestedSize;
+    _blasScratchPoolInUseBytes += requestedSize;
+    ++_blasScratchPoolCreatedCount;
+    std::printf(
+        "[BLAS] Allocated scratch buffer (%llu bytes). Pool in-flight: %zu "
+        "bytes, available: %zu bytes. (created=%zu, reused=%zu)\n",
+        static_cast<unsigned long long>(requestedSize),
+        _blasScratchPoolInUseBytes, _blasScratchPoolAvailableBytes,
+        _blasScratchPoolCreatedCount, _blasScratchPoolReusedCount);
+  }
+  return buffer;
+}
+
+void Renderer::recycleBlasScratchBuffer(MTL::Buffer *buffer, NS::UInteger size) {
+  if (!buffer)
+    return;
+
+  if (size == 0) {
+    buffer->release();
+    return;
+  }
+
+  if (_blasScratchPoolInUseBytes >= size)
+    _blasScratchPoolInUseBytes -= size;
+  else
+    _blasScratchPoolInUseBytes = 0;
+
+  _blasScratchPoolAvailableBytes += size;
+  _blasScratchPool[size].push_back(buffer);
+
+  std::printf(
+      "[BLAS] Recycled scratch buffer (%llu bytes). Pool in-flight: %zu bytes, "
+      "available: %zu bytes. (created=%zu, reused=%zu)\n",
+      static_cast<unsigned long long>(size), _blasScratchPoolInUseBytes,
+      _blasScratchPoolAvailableBytes, _blasScratchPoolCreatedCount,
+      _blasScratchPoolReusedCount);
+}
+
+void Renderer::releaseBlasScratchPool() {
+  if (!_blasScratchPool.empty() || _blasScratchPoolInUseBytes != 0 ||
+      _blasScratchPoolCreatedCount != 0 || _blasScratchPoolReusedCount != 0) {
+    std::printf(
+        "[BLAS] Releasing scratch pool (available=%zu bytes, in-flight=%zu "
+        "bytes, created=%zu, reused=%zu).\n",
+        _blasScratchPoolAvailableBytes, _blasScratchPoolInUseBytes,
+        _blasScratchPoolCreatedCount, _blasScratchPoolReusedCount);
+  }
+
+  for (auto &entry : _blasScratchPool) {
+    for (auto *buffer : entry.second) {
+      if (buffer)
+        buffer->release();
+    }
+  }
+
+  _blasScratchPool.clear();
+  _blasScratchPoolAvailableBytes = 0;
+
+  if (_blasScratchPoolInUseBytes != 0) {
+    std::printf(
+        "[BLAS] Warning: scratch pool destroyed with %zu bytes still in "
+        "flight.\n",
+        _blasScratchPoolInUseBytes);
+    _blasScratchPoolInUseBytes = 0;
+  }
 }
 
 struct UniformsData {
@@ -936,6 +1048,8 @@ Renderer::~Renderer() {
     resident.resources.destroy();
   }
   _residentObjectGpuResources.clear();
+
+  releaseBlasScratchPool();
 
   if (_pPSO)
     _pPSO->release();
@@ -2490,16 +2604,40 @@ bool Renderer::startBlasBuild(
     return false;
   }
 
-  NS::UInteger scratchSize = sizes.buildScratchBufferSize;
+  NS::UInteger requestedScratchSize = sizes.buildScratchBufferSize;
   MTL::Buffer *scratchBuffer = nullptr;
-  if (scratchSize > 0)
-    scratchBuffer =
-        _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
+  buildRequest->scratchBuffer = nullptr;
+  buildRequest->scratchSize = 0;
+  if (requestedScratchSize > 0) {
+    bool scratchReused = false;
+    NS::UInteger allocatedScratchSize = requestedScratchSize;
+    scratchBuffer = acquireBlasScratchBuffer(requestedScratchSize,
+                                            allocatedScratchSize,
+                                            scratchReused);
+    if (!scratchBuffer) {
+      if (indexStaging)
+        indexStaging->release();
+      if (vertexStaging)
+        vertexStaging->release();
+      geometryArray->release();
+      geometryDesc->release();
+      accelDesc->release();
+      cleanupPool();
+      return false;
+    }
+
+    buildRequest->scratchBuffer = scratchBuffer;
+    buildRequest->scratchSize = allocatedScratchSize;
+    (void)scratchReused;
+  }
 
   auto commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
-    if (scratchBuffer)
-      scratchBuffer->release();
+    if (scratchBuffer) {
+      recycleBlasScratchBuffer(scratchBuffer, buildRequest->scratchSize);
+      buildRequest->scratchBuffer = nullptr;
+      buildRequest->scratchSize = 0;
+    }
     if (indexStaging)
       indexStaging->release();
     if (vertexStaging)
@@ -2530,8 +2668,11 @@ bool Renderer::startBlasBuild(
 
   auto asEncoder = commandBuffer->accelerationStructureCommandEncoder();
   if (!asEncoder) {
-    if (scratchBuffer)
-      scratchBuffer->release();
+    if (scratchBuffer) {
+      recycleBlasScratchBuffer(scratchBuffer, buildRequest->scratchSize);
+      buildRequest->scratchBuffer = nullptr;
+      buildRequest->scratchSize = 0;
+    }
     if (indexStaging)
       indexStaging->release();
     if (vertexStaging)
@@ -2607,6 +2748,13 @@ void Renderer::handleCompletedBlasBuild(
   }
 
   buildRequest->releaseResources();
+
+  std::printf(
+      "[BLAS] Build %s for object %zu complete. Scratch pool in-flight=%zu "
+      "bytes, available=%zu bytes (created=%zu, reused=%zu).\n",
+      success ? "succeeded" : "failed", buildRequest->objectIndex,
+      _blasScratchPoolInUseBytes, _blasScratchPoolAvailableBytes,
+      _blasScratchPoolCreatedCount, _blasScratchPoolReusedCount);
 
   auto it = std::find(_activeBlasBuilds.begin(), _activeBlasBuilds.end(),
                       buildRequest);
