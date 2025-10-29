@@ -2409,11 +2409,8 @@ void Renderer::processBlasBuildQueue() {
   if (!_pDevice || !_pCommandQueue)
     return;
 
-  adjustBlasBuildLimitForMemory();
-  size_t maxInFlight = std::max<size_t>(_currentBlasBuildLimit, size_t(1));
-
   while (!_pendingBlasBuilds.empty() &&
-         _activeBlasBuilds.size() < maxInFlight) {
+         _activeBlasBuilds.size() < kMaxBlasBuildsInFlight) {
     auto buildRequest = _pendingBlasBuilds.front();
     if (!startBlasBuild(buildRequest)) {
       _pendingBlasBuilds.pop_front();
@@ -2428,35 +2425,6 @@ void Renderer::processBlasBuildQueue() {
 
     _pendingBlasBuilds.pop_front();
     _activeBlasBuilds.push_back(buildRequest);
-  }
-}
-
-void Renderer::adjustBlasBuildLimitForMemory() {
-  double cap = _textureResidencyMemoryCapMB;
-  if (cap <= 0.0) {
-    if (_currentBlasBuildLimit != kMaxBlasBuildsInFlight)
-      _currentBlasBuildLimit = kMaxBlasBuildsInFlight;
-    return;
-  }
-
-  double usage = currentGPUMemoryMB();
-  double highWatermark = cap * kBlasMemoryPressureRatio;
-  double lowWatermark = cap * kBlasMemoryRecoveryRatio;
-
-  size_t desiredLimit = _currentBlasBuildLimit;
-  if (usage >= highWatermark)
-    desiredLimit = 1;
-  else if (usage <= lowWatermark)
-    desiredLimit = kMaxBlasBuildsInFlight;
-
-  desiredLimit = std::max<size_t>(desiredLimit, size_t(1));
-
-  if (desiredLimit != _currentBlasBuildLimit) {
-    std::printf(
-        "[BLAS] GPU memory %.1f MB (cap %.1f MB): adjusting in-flight build "
-        "limit to %zu\n",
-        usage, cap, desiredLimit);
-    _currentBlasBuildLimit = desiredLimit;
   }
 }
 

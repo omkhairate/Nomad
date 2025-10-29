@@ -177,7 +177,6 @@ private:
   struct PendingBlasBuild;
   void enqueueBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void processBlasBuildQueue();
-  void adjustBlasBuildLimitForMemory();
   bool startBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void handleCompletedBlasBuild(
       const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success);
@@ -296,8 +295,6 @@ private:
   };
 
   static constexpr size_t kMaxBlasBuildsInFlight = 3;
-  static constexpr double kBlasMemoryPressureRatio = 0.95;
-  static constexpr double kBlasMemoryRecoveryRatio = 0.85;
   std::deque<std::shared_ptr<PendingBlasBuild>> _pendingBlasBuilds;
   std::deque<std::shared_ptr<PendingBlasBuild>> _activeBlasBuilds;
   std::map<NS::UInteger, std::vector<MTL::Buffer *>> _blasScratchPool;
@@ -305,7 +302,6 @@ private:
   size_t _blasScratchPoolInUseBytes = 0;
   size_t _blasScratchPoolCreatedCount = 0;
   size_t _blasScratchPoolReusedCount = 0;
-  size_t _currentBlasBuildLimit = kMaxBlasBuildsInFlight;
 
   struct BenchmarkSample {
     size_t frameIndex = 0;
