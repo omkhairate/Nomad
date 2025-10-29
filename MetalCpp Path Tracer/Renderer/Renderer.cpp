@@ -257,6 +257,7 @@ MTL::Buffer *Renderer::acquireBlasScratchBuffer(NS::UInteger requestedSize,
           static_cast<unsigned long long>(requestedSize),
           _blasScratchPoolInUseBytes, _blasScratchPoolAvailableBytes,
           _blasScratchPoolCreatedCount, _blasScratchPoolReusedCount);
+      updateBlasScratchResidencyBudget();
       return buffer;
     }
     it = _blasScratchPool.erase(it);
@@ -275,6 +276,7 @@ MTL::Buffer *Renderer::acquireBlasScratchBuffer(NS::UInteger requestedSize,
         _blasScratchPoolInUseBytes, _blasScratchPoolAvailableBytes,
         _blasScratchPoolCreatedCount, _blasScratchPoolReusedCount);
   }
+  updateBlasScratchResidencyBudget();
   return buffer;
 }
 
@@ -294,6 +296,8 @@ void Renderer::recycleBlasScratchBuffer(MTL::Buffer *buffer, NS::UInteger size) 
 
   _blasScratchPoolAvailableBytes += size;
   _blasScratchPool[size].push_back(buffer);
+
+  updateBlasScratchResidencyBudget();
 
   std::printf(
       "[BLAS] Recycled scratch buffer (%llu bytes). Pool in-flight: %zu bytes, "
@@ -330,6 +334,22 @@ void Renderer::releaseBlasScratchPool() {
         _blasScratchPoolInUseBytes);
     _blasScratchPoolInUseBytes = 0;
   }
+
+  updateBlasScratchResidencyBudget();
+}
+
+void Renderer::updateBlasScratchResidencyBudget() {
+  _residencyBudget.setBlasScratchBytes(_blasScratchPoolAvailableBytes,
+                                       _blasScratchPoolInUseBytes);
+}
+
+double Renderer::scratchMemoryMB() const {
+  return _residencyBudget.scratchMemoryMB();
+}
+
+double Renderer::residencyMemoryMB() const {
+  double totalMB = currentGPUMemoryMB();
+  return _residencyBudget.residencyMemoryMB(totalMB);
 }
 
 struct UniformsData {
@@ -1166,7 +1186,8 @@ void Renderer::writeBenchmarkHeader() {
          "object_deactivations,active_primitives,resident_primitives,total_primitives,"
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
          "resident_nodes,total_nodes,active_objects,resident_objects,gpu_memory_mb,"
-         "texture_memory_cap_mb,over_memory_cap,residency_compacted,"
+         "scratch_memory_mb,residency_memory_mb,texture_memory_cap_mb,"
+         "over_memory_cap,residency_compacted,"
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
@@ -1207,6 +1228,8 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.totalNodeCount << ',' << sample.activeObjectCount << ','
       << sample.residentObjectCount << ','
       << formatFixed(sample.gpuMemoryMB, 3) << ','
+      << formatFixed(sample.scratchMemoryMB, 3) << ','
+      << formatFixed(sample.residencyMemoryMB, 3) << ','
       << formatFixed(sample.textureMemoryCapMB, 3) << ','
       << boolToInt(sample.overMemoryCap) << ','
       << boolToInt(sample.residentCompacted) << ','
@@ -3179,6 +3202,7 @@ void Renderer::finalizePendingTlasScratchResize(bool force) {
 
 void Renderer::updateTlasScratchResidentBytes(NS::UInteger bytes) {
   _tlasScratchResidentBytes = static_cast<size_t>(bytes);
+  _residencyBudget.setTlasScratchBytes(_tlasScratchResidentBytes);
 }
 
 void Renderer::updateTopLevelAccelerationStructure(
@@ -4975,9 +4999,25 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
     return;
 
   bool belowBudget = _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
-  bool overMemory = currentGPUMemoryMB() > _textureResidencyMemoryCapMB;
+  double totalMemoryMB = currentGPUMemoryMB();
+  double scratchMB = scratchMemoryMB();
+  double residencyMB = std::max(0.0, totalMemoryMB - scratchMB);
+  bool overMemory = residencyMB > _textureResidencyMemoryCapMB;
+
+  if (!overMemory && totalMemoryMB > _textureResidencyMemoryCapMB &&
+      scratchMB > 0.0) {
+    std::printf("[TextureResidency] Skipping eviction: total=%.2f MB, scratch=%.2f MB, "
+                "residency=%.2f MB (cap=%.2f MB).\n",
+                totalMemoryMB, scratchMB, residencyMB, _textureResidencyMemoryCapMB);
+  }
   if (!belowBudget && !overMemory)
     return;
+
+  if (overMemory) {
+    std::printf("[TextureResidency] Triggering eviction: residency=%.2f MB (total=%.2f MB, "
+                "scratch=%.2f MB, cap=%.2f MB).\n",
+                residencyMB, totalMemoryMB, scratchMB, _textureResidencyMemoryCapMB);
+  }
 
   std::array<ManagedTextureSlot *, 6> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
@@ -5449,8 +5489,8 @@ void Renderer::draw(MTK::View *pView) {
 
   bool belowBudget =
       _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
-  double currentMemory = currentGPUMemoryMB();
-  bool overCap = currentMemory > _textureResidencyMemoryCapMB;
+  double contentMemory = residencyMemoryMB();
+  bool overCap = contentMemory > _textureResidencyMemoryCapMB;
 
   if (!_needsAccumulationReset && (belowBudget || overCap))
     updateTextureResidency(prepCmd);
@@ -7590,6 +7630,9 @@ void Renderer::beginFrameMetrics() {
         ++residentObjects;
     sample.residentObjectCount = residentObjects;
     sample.gpuMemoryMB = currentGPUMemoryMB();
+    sample.scratchMemoryMB = scratchMemoryMB();
+    sample.residencyMemoryMB =
+        std::max(0.0, sample.gpuMemoryMB - sample.scratchMemoryMB);
     sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
     sample.deltaTimeSeconds = _deltaTimeSeconds;
     sample.wallSeconds = std::chrono::duration<double>(
@@ -7601,7 +7644,8 @@ void Renderer::beginFrameMetrics() {
     sample.maxSamplesPerPixel = _maxSamplesPerPixel;
     sample.accumulationReset = _needsAccumulationReset;
     sample.residentCompacted = _residentCompacted;
-    sample.overMemoryCap = sample.gpuMemoryMB > _textureResidencyMemoryCapMB;
+    sample.overMemoryCap =
+        sample.residencyMemoryMB > _textureResidencyMemoryCapMB;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
 }
