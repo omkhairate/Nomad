@@ -192,21 +192,18 @@ void parallelFor(size_t count, Func &&func, size_t minChunkSize = 64) {
 } // namespace
 
 void Renderer::PendingBlasBuild::releaseResources() {
-  if (renderer) {
-    renderer->releaseBlasVertexStagingBuffer(vertexStaging);
-    renderer->releaseBlasIndexStagingBuffer(indexStaging);
-    renderer->releaseBlasScratchBuffer(scratchBuffer);
-  } else {
-    if (vertexStaging)
-      vertexStaging->release();
-    if (indexStaging)
-      indexStaging->release();
-    if (scratchBuffer)
-      scratchBuffer->release();
+  if (vertexStaging) {
+    vertexStaging->release();
+    vertexStaging = nullptr;
   }
-  vertexStaging = nullptr;
-  indexStaging = nullptr;
-  scratchBuffer = nullptr;
+  if (indexStaging) {
+    indexStaging->release();
+    indexStaging = nullptr;
+  }
+  if (scratchBuffer) {
+    scratchBuffer->release();
+    scratchBuffer = nullptr;
+  }
   if (geometryArray) {
     geometryArray->release();
     geometryArray = nullptr;
@@ -221,142 +218,6 @@ void Renderer::PendingBlasBuild::releaseResources() {
   }
   accelerationStructure = nullptr;
   commandBuffer = nullptr;
-}
-
-MTL::Buffer *Renderer::acquireBlasBuffer(
-    std::vector<BlasBufferPoolEntry> &pool, NS::UInteger requiredBytes,
-    MTL::ResourceOptions storageMode) {
-  if (!_pDevice || requiredBytes == 0)
-    return nullptr;
-
-  BlasBufferPoolEntry *exactMatch = nullptr;
-  BlasBufferPoolEntry *growCandidate = nullptr;
-
-  for (auto &entry : pool) {
-    if (entry.inUse)
-      continue;
-    if (entry.capacity >= requiredBytes) {
-      exactMatch = &entry;
-      break;
-    }
-    if (!growCandidate || entry.capacity < growCandidate->capacity)
-      growCandidate = &entry;
-  }
-
-  bool createdNewEntry = false;
-  BlasBufferPoolEntry *selected = exactMatch;
-  if (!selected) {
-    if (growCandidate) {
-      selected = growCandidate;
-    } else if (pool.size() < kMaxBlasBuildsInFlight) {
-      pool.emplace_back();
-      selected = &pool.back();
-      createdNewEntry = true;
-    } else {
-      return nullptr;
-    }
-  }
-
-  if (!selected->buffer || selected->capacity < requiredBytes) {
-    NS::UInteger desiredCapacity = selected->capacity > 0
-                                       ? std::max(requiredBytes,
-                                                  selected->capacity *
-                                                      NS::UInteger(2))
-                                       : requiredBytes;
-
-    if (selected->buffer) {
-      selected->buffer->release();
-      selected->buffer = nullptr;
-      selected->capacity = 0;
-    }
-
-    selected->buffer = _pDevice->newBuffer(desiredCapacity, storageMode);
-    if (!selected->buffer) {
-      if (createdNewEntry)
-        pool.pop_back();
-      return nullptr;
-    }
-    selected->capacity = selected->buffer->length();
-  }
-
-  selected->inUse = true;
-  selected->buffer->setPurgeableState(MTL::PurgeableStateNonVolatile);
-  return selected->buffer;
-}
-
-MTL::Buffer *Renderer::acquireBlasScratchBuffer(
-    NS::UInteger requiredBytes) {
-  return acquireBlasBuffer(
-      _blasScratchBuffers, requiredBytes,
-      static_cast<MTL::ResourceOptions>(MTL::ResourceStorageModePrivate));
-}
-
-MTL::Buffer *Renderer::acquireBlasVertexStagingBuffer(
-    NS::UInteger requiredBytes) {
-  return acquireBlasBuffer(
-      _blasVertexStagingBuffers, requiredBytes,
-      static_cast<MTL::ResourceOptions>(MTL::ResourceStorageModeShared));
-}
-
-MTL::Buffer *Renderer::acquireBlasIndexStagingBuffer(
-    NS::UInteger requiredBytes) {
-  return acquireBlasBuffer(
-      _blasIndexStagingBuffers, requiredBytes,
-      static_cast<MTL::ResourceOptions>(MTL::ResourceStorageModeShared));
-}
-
-void Renderer::releaseBlasBuffer(std::vector<BlasBufferPoolEntry> &pool,
-                                 MTL::Buffer *buffer) {
-  if (!buffer)
-    return;
-
-  for (auto &entry : pool) {
-    if (entry.buffer == buffer) {
-      entry.inUse = false;
-      entry.buffer->setPurgeableState(MTL::PurgeableStateVolatile);
-      break;
-    }
-  }
-
-  trimIdleBlasBuffers();
-}
-
-void Renderer::releaseBlasScratchBuffer(MTL::Buffer *buffer) {
-  releaseBlasBuffer(_blasScratchBuffers, buffer);
-}
-
-void Renderer::releaseBlasVertexStagingBuffer(MTL::Buffer *buffer) {
-  releaseBlasBuffer(_blasVertexStagingBuffers, buffer);
-}
-
-void Renderer::releaseBlasIndexStagingBuffer(MTL::Buffer *buffer) {
-  releaseBlasBuffer(_blasIndexStagingBuffers, buffer);
-}
-
-void Renderer::trimIdleBlasBuffers() {
-  if (!_pendingBlasBuilds.empty() || !_activeBlasBuilds.empty())
-    return;
-
-  auto trimPool = [](std::vector<BlasBufferPoolEntry> &pool) {
-    pool.erase(std::remove_if(pool.begin(), pool.end(),
-                              [](BlasBufferPoolEntry &entry) {
-                                if (entry.inUse)
-                                  return false;
-                                if (entry.buffer) {
-                                  entry.buffer->setPurgeableState(
-                                      MTL::PurgeableStateEmpty);
-                                  entry.buffer->release();
-                                  entry.buffer = nullptr;
-                                }
-                                entry.capacity = 0;
-                                return true;
-                              }),
-               pool.end());
-  };
-
-  trimPool(_blasScratchBuffers);
-  trimPool(_blasVertexStagingBuffers);
-  trimPool(_blasIndexStagingBuffers);
 }
 
 struct UniformsData {
@@ -1073,22 +934,6 @@ Renderer::~Renderer() {
     resident.resources.destroy();
   }
   _residentObjectGpuResources.clear();
-
-  auto releasePool = [](std::vector<BlasBufferPoolEntry> &pool) {
-    for (auto &entry : pool) {
-      if (entry.buffer) {
-        entry.buffer->release();
-        entry.buffer = nullptr;
-      }
-      entry.capacity = 0;
-      entry.inUse = false;
-    }
-    pool.clear();
-  };
-
-  releasePool(_blasScratchBuffers);
-  releasePool(_blasVertexStagingBuffers);
-  releasePool(_blasIndexStagingBuffers);
 
   if (_pPSO)
     _pPSO->release();
@@ -2465,9 +2310,6 @@ void Renderer::processBlasBuildQueue() {
     _pendingBlasBuilds.pop_front();
     _activeBlasBuilds.push_back(buildRequest);
   }
-
-  if (_pendingBlasBuilds.empty() && _activeBlasBuilds.empty())
-    trimIdleBlasBuffers();
 }
 
 bool Renderer::startBlasBuild(
@@ -2615,7 +2457,8 @@ bool Renderer::startBlasBuild(
   MTL::Buffer *vertexStaging = nullptr;
   MTL::Buffer *indexStaging = nullptr;
   if (vertexBytes > 0) {
-    vertexStaging = acquireBlasVertexStagingBuffer(vertexBytes);
+    vertexStaging =
+        _pDevice->newBuffer(vertexBytes, MTL::ResourceStorageModeShared);
     if (vertexStaging) {
       std::memcpy(vertexStaging->contents(), buildRequest->vertices.data(),
                   vertexBytes);
@@ -2623,7 +2466,8 @@ bool Renderer::startBlasBuild(
     }
   }
   if (indexBytes > 0) {
-    indexStaging = acquireBlasIndexStagingBuffer(indexBytes);
+    indexStaging =
+        _pDevice->newBuffer(indexBytes, MTL::ResourceStorageModeShared);
     if (indexStaging) {
       std::memcpy(indexStaging->contents(), buildRequest->indices.data(),
                   indexBytes);
@@ -2633,8 +2477,10 @@ bool Renderer::startBlasBuild(
 
   if ((vertexBytes > 0 && !vertexStaging) ||
       (indexBytes > 0 && !indexStaging)) {
-    releaseBlasIndexStagingBuffer(indexStaging);
-    releaseBlasVertexStagingBuffer(vertexStaging);
+    if (indexStaging)
+      indexStaging->release();
+    if (vertexStaging)
+      vertexStaging->release();
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
@@ -2645,13 +2491,17 @@ bool Renderer::startBlasBuild(
   NS::UInteger scratchSize = sizes.buildScratchBufferSize;
   MTL::Buffer *scratchBuffer = nullptr;
   if (scratchSize > 0)
-    scratchBuffer = acquireBlasScratchBuffer(scratchSize);
+    scratchBuffer =
+        _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
 
   auto commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
-    releaseBlasScratchBuffer(scratchBuffer);
-    releaseBlasIndexStagingBuffer(indexStaging);
-    releaseBlasVertexStagingBuffer(vertexStaging);
+    if (scratchBuffer)
+      scratchBuffer->release();
+    if (indexStaging)
+      indexStaging->release();
+    if (vertexStaging)
+      vertexStaging->release();
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
@@ -2678,9 +2528,12 @@ bool Renderer::startBlasBuild(
 
   auto asEncoder = commandBuffer->accelerationStructureCommandEncoder();
   if (!asEncoder) {
-    releaseBlasScratchBuffer(scratchBuffer);
-    releaseBlasIndexStagingBuffer(indexStaging);
-    releaseBlasVertexStagingBuffer(vertexStaging);
+    if (scratchBuffer)
+      scratchBuffer->release();
+    if (indexStaging)
+      indexStaging->release();
+    if (vertexStaging)
+      vertexStaging->release();
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
@@ -2759,9 +2612,6 @@ void Renderer::handleCompletedBlasBuild(
     _activeBlasBuilds.erase(it);
 
   processBlasBuildQueue();
-
-  if (_pendingBlasBuilds.empty() && _activeBlasBuilds.empty())
-    trimIdleBlasBuffers();
 }
 
 void Renderer::transitionResidentToCold(ResidentObjectGpuResources &resident,
