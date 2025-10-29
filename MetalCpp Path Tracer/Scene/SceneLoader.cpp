@@ -634,6 +634,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     ResidencyParameters params = scene->getResidencyParameters();
     params.lodEnterDistance = root->FloatAttribute("lodEnterDistance", params.lodEnterDistance);
     params.lodExitDistance = root->FloatAttribute("lodExitDistance", params.lodExitDistance);
+    params.lodEnterViewDegrees =
+        root->FloatAttribute("lodEnterViewDegrees", params.lodEnterViewDegrees);
+    params.lodExitViewDegrees =
+        root->FloatAttribute("lodExitViewDegrees", params.lodExitViewDegrees);
     params.stateCooldownFrames =
         root->UnsignedAttribute("residencyCooldown", params.stateCooldownFrames);
     params.lodMaxTogglesPerFrame =
