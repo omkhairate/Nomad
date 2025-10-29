@@ -136,6 +136,10 @@ bool ResidentObjectGpuResources::ensureResident(
     BlasInstanceRecord &instanceRecord, bool forceRebuild) {
   renderer.cancelPendingResidentEviction(objectIndex, *this);
 
+  const auto previousState = state;
+  const auto previousStateChange = lastStateChange;
+  const bool previousGeometryValid = geometryValid;
+
   if (isResident() && !forceRebuild) {
     lastStateChange = std::chrono::steady_clock::now();
     return true;
@@ -145,6 +149,12 @@ bool ResidentObjectGpuResources::ensureResident(
   geometryValid = false;
   bool built = renderer.buildObjectBlas(objectIndex, object, *this);
   if (!built) {
+    if (renderer.isAlwaysResidentStrategy()) {
+      state = previousState;
+      geometryValid = previousGeometryValid;
+      lastStateChange = previousStateChange;
+      return false;
+    }
     renderer.transitionResidentToCold(objectIndex, *this, instanceRecord);
     return false;
   }
@@ -7770,3 +7780,6 @@ double Renderer::lastRaysPerSecond() const { return _lastRaysPerSecond; }
 size_t Renderer::activeNodeCount() const { return _activeNodeCount; }
 size_t Renderer::residentNodeCount() const { return _residentNodeCount; }
 size_t Renderer::totalNodeCount() const { return _totalNodeCount; }
+bool Renderer::isAlwaysResidentStrategy() const {
+  return _frameStrategy == ResidencyStrategy::AlwaysResident;
+}
