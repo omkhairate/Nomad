@@ -114,6 +114,7 @@ public:
   size_t activeNodeCount() const;
   size_t residentNodeCount() const;
   size_t totalNodeCount() const;
+  bool isAlwaysResidentStrategy() const;
 
   std::vector<std::pair<simd::float3, float>> _allSpheres;
 
