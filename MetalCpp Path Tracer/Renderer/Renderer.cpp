@@ -4373,20 +4373,152 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   }
 
   _residentNodeCount = _blasNodeCount + _tlasNodeCount;
+
   size_t activeBlasNodes = 0;
-  size_t activeTlasNodes = 0;
-  if (useCompaction) {
-    activeBlasNodes = _blasNodeCount;
-    activeTlasNodes = (_residentPrimitiveCount > 0) ? _tlasNodeCount : 0;
-  } else if (totalPrimitiveCount > 0 && _blasNodeCount > 0) {
-    size_t denom = std::max<size_t>(totalPrimitiveCount, size_t(1));
-    activeBlasNodes = std::max<size_t>(
-        size_t(1), (_blasNodeCount * _activePrimitiveCount + denom - 1) /
-                        denom);
-    activeTlasNodes = (_tlasNodeCount > 0 && _activePrimitiveCount > 0)
-                          ? _tlasNodeCount
-                          : size_t(0);
+  if (_blasNodeCount > 0) {
+    if (useCompaction) {
+      activeBlasNodes = _blasNodeCount;
+    } else if (bvhSource && bvhSource->size() >= _blasNodeCount * 2) {
+      const auto &bvhNodes = *bvhSource;
+      const auto &primitiveIndices =
+          primitiveIndexSource ? *primitiveIndexSource : _cachedPrimitiveIndices;
+      std::vector<uint8_t> processed(_blasNodeCount, 0);
+      std::vector<uint8_t> nodeActive(_blasNodeCount, 0);
+      std::vector<size_t> stack;
+      stack.reserve(_blasNodeCount);
+      stack.push_back(0);
+
+      auto decodeNode = [](const simd::float4 &minVec,
+                           const simd::float4 &maxVec, int &leftFirst,
+                           int &count) {
+        std::memcpy(&leftFirst, &minVec.w, sizeof(int));
+        std::memcpy(&count, &maxVec.w, sizeof(int));
+      };
+
+      while (!stack.empty()) {
+        size_t nodeIdx = stack.back();
+        if (nodeIdx >= _blasNodeCount) {
+          stack.pop_back();
+          continue;
+        }
+
+        if (processed[nodeIdx]) {
+          stack.pop_back();
+          continue;
+        }
+
+        int leftFirst = 0;
+        int count = 0;
+        decodeNode(bvhNodes[2 * nodeIdx], bvhNodes[2 * nodeIdx + 1], leftFirst,
+                   count);
+
+        if (count > 0) {
+          bool leafActive = false;
+          size_t start = static_cast<size_t>(std::max(leftFirst, 0));
+          size_t end = start + static_cast<size_t>(std::max(count, 0));
+          for (size_t idx = start; idx < end; ++idx) {
+            size_t primitiveIndex =
+                (idx < primitiveIndices.size())
+                    ? static_cast<size_t>(primitiveIndices[idx])
+                    : idx;
+            if (primitiveIndex < _activePrimitive.size() &&
+                _activePrimitive[primitiveIndex]) {
+              leafActive = true;
+              break;
+            }
+          }
+          nodeActive[nodeIdx] = leafActive ? 1 : 0;
+          processed[nodeIdx] = 1;
+          stack.pop_back();
+        } else {
+          size_t leftChild =
+              static_cast<size_t>(leftFirst >= 0 ? leftFirst : 0);
+          size_t rightChild = static_cast<size_t>(-count);
+          bool leftDone = leftChild >= _blasNodeCount || processed[leftChild];
+          bool rightDone = rightChild >= _blasNodeCount || processed[rightChild];
+          if (!leftDone) {
+            stack.push_back(leftChild);
+            continue;
+          }
+          if (!rightDone) {
+            stack.push_back(rightChild);
+            continue;
+          }
+          bool anyActive =
+              (leftChild < _blasNodeCount && nodeActive[leftChild]) ||
+              (rightChild < _blasNodeCount && nodeActive[rightChild]);
+          nodeActive[nodeIdx] = anyActive ? 1 : 0;
+          processed[nodeIdx] = 1;
+          stack.pop_back();
+        }
+      }
+
+      activeBlasNodes =
+          std::accumulate(nodeActive.begin(), nodeActive.end(), size_t(0));
+    }
   }
+
+  size_t activeTlasNodes = 0;
+  if (_tlasNodeCount > 0 && tlasSource &&
+      tlasSource->size() >= _tlasNodeCount * 2) {
+    const auto &tlasNodes = *tlasSource;
+    std::vector<uint8_t> processed(_tlasNodeCount, 0);
+    std::vector<uint8_t> nodeActive(_tlasNodeCount, 0);
+    std::vector<size_t> stack;
+    stack.reserve(_tlasNodeCount);
+    stack.push_back(0);
+
+    while (!stack.empty()) {
+      size_t nodeIdx = stack.back();
+      if (nodeIdx >= _tlasNodeCount) {
+        stack.pop_back();
+        continue;
+      }
+
+      if (processed[nodeIdx]) {
+        stack.pop_back();
+        continue;
+      }
+
+      int leftChild = 0;
+      int rightChild = 0;
+      std::memcpy(&leftChild, &tlasNodes[2 * nodeIdx].w, sizeof(int));
+      std::memcpy(&rightChild, &tlasNodes[2 * nodeIdx + 1].w, sizeof(int));
+
+      if (leftChild < 0) {
+        size_t objectIndex = static_cast<size_t>(-leftChild - 1);
+        bool active = objectIndex < _objectActive.size() &&
+                      _objectActive[objectIndex];
+        nodeActive[nodeIdx] = active ? 1 : 0;
+        processed[nodeIdx] = 1;
+        stack.pop_back();
+        continue;
+      }
+
+      size_t leftIndex = static_cast<size_t>(leftChild);
+      size_t rightIndex = static_cast<size_t>(rightChild);
+      bool leftDone = leftIndex >= _tlasNodeCount || processed[leftIndex];
+      bool rightDone = rightIndex >= _tlasNodeCount || processed[rightIndex];
+      if (!leftDone) {
+        stack.push_back(leftIndex);
+        continue;
+      }
+      if (!rightDone) {
+        stack.push_back(rightIndex);
+        continue;
+      }
+      bool anyActive =
+          (leftIndex < _tlasNodeCount && nodeActive[leftIndex]) ||
+          (rightIndex < _tlasNodeCount && nodeActive[rightIndex]);
+      nodeActive[nodeIdx] = anyActive ? 1 : 0;
+      processed[nodeIdx] = 1;
+      stack.pop_back();
+    }
+
+    activeTlasNodes =
+        std::accumulate(nodeActive.begin(), nodeActive.end(), size_t(0));
+  }
+
   _activeNodeCount = activeBlasNodes + activeTlasNodes;
 
   _objectResidentState = objectShouldBeResident;
@@ -7197,9 +7329,9 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
-  printf("Resident nodes: %zu offloaded: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
-         _activeNodeCount, offloaded, _lastCPUTime * 1000.0,
-         _lastGPUTime * 1000.0, _lastRaysPerSecond);
+  printf("Active nodes: %zu Resident nodes: %zu Offloaded nodes: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+         _activeNodeCount, _residentNodeCount, offloaded,
+         _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond);
 
   if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty()) {
     BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
