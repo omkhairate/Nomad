@@ -2820,6 +2820,7 @@ void Renderer::transitionResidentToCold(size_t objectIndex,
 
   waitForPendingFrameCommands();
   waitForPendingTlasBuild();
+  debugAssertNoPendingFrameCommands("GpuHeapResources::makeResourcesPurgeable");
   resident.transitionToCold(instanceRecord);
 }
 
@@ -2861,6 +2862,7 @@ void Renderer::handleDeferredBlasEvictions(MTL::CommandBuffer *commandBuffer,
         if (objectIndex >= _instanceRecords.size())
           return;
         auto &instanceRecord = _instanceRecords[objectIndex];
+        debugAssertNoPendingFrameCommands("GpuHeapResources::makeResourcesPurgeable");
         resident.transitionToCold(instanceRecord);
       });
 }
@@ -5620,6 +5622,7 @@ void Renderer::draw(MTK::View *pView) {
   updateAdaptiveSamplingMaps(prepCmd);
 
   prepCmd->commit();
+  trackFrameCommandBuffer(prepCmd);
 
   if (!haveAllTextures) {
     MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
@@ -7627,64 +7630,106 @@ void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
 
   commandBuffer->retain();
 
-  MTL::CommandBuffer *previous = nullptr;
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    previous = _lastFrameCommandBuffer;
-    _lastFrameCommandBuffer = commandBuffer;
+    _frameCommandBuffers.push_back(commandBuffer);
   }
-  if (previous)
-    previous->release();
 
   commandBuffer->addCompletedHandler([this](MTL::CommandBuffer *completed) {
-    bool release = false;
-    {
-      std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-      if (_lastFrameCommandBuffer == completed) {
-        _lastFrameCommandBuffer = nullptr;
-        release = true;
-      }
+    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+    auto it = std::find(_frameCommandBuffers.begin(),
+                        _frameCommandBuffers.end(), completed);
+    if (it != _frameCommandBuffers.end()) {
+      (*it)->release();
+      _frameCommandBuffers.erase(it);
     }
-    if (release)
-      completed->release();
   });
 }
 
 void Renderer::waitForPendingFrameCommands() {
-  MTL::CommandBuffer *buffer = nullptr;
-  {
-    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    buffer = _lastFrameCommandBuffer;
-    if (buffer)
-      buffer->retain();
-  }
+  using Status = MTL::CommandBufferStatus;
 
-  if (!buffer)
-    return;
+  while (true) {
+    std::vector<MTL::CommandBuffer *> buffersToWait;
+    {
+      std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+      if (_frameCommandBuffers.empty())
+        break;
 
-  auto status = buffer->status();
-  switch (status) {
-  case MTL::CommandBufferStatus::CommandBufferStatusNotEnqueued:
-  case MTL::CommandBufferStatus::CommandBufferStatusEnqueued:
-  case MTL::CommandBufferStatus::CommandBufferStatusCommitted:
-  case MTL::CommandBufferStatus::CommandBufferStatusScheduled:
-    buffer->waitUntilCompleted();
-    break;
-  case MTL::CommandBufferStatus::CommandBufferStatusCompleted:
-  case MTL::CommandBufferStatus::CommandBufferStatusError:
-  default:
-    break;
-  }
+      buffersToWait.reserve(_frameCommandBuffers.size());
+      for (auto *buffer : _frameCommandBuffers) {
+        if (!buffer)
+          continue;
+        buffer->retain();
+        buffersToWait.push_back(buffer);
+      }
+    }
 
-  {
-    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    if (_lastFrameCommandBuffer == buffer) {
-      _lastFrameCommandBuffer->release();
-      _lastFrameCommandBuffer = nullptr;
+    if (buffersToWait.empty())
+      break;
+
+    for (MTL::CommandBuffer *buffer : buffersToWait) {
+      auto status = buffer->status();
+      switch (status) {
+      case Status::CommandBufferStatusNotEnqueued:
+      case Status::CommandBufferStatusEnqueued:
+      case Status::CommandBufferStatusCommitted:
+      case Status::CommandBufferStatusScheduled:
+        buffer->waitUntilCompleted();
+        break;
+      case Status::CommandBufferStatusCompleted:
+      case Status::CommandBufferStatusError:
+      default:
+        break;
+      }
+      buffer->release();
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+      auto it = _frameCommandBuffers.begin();
+      while (it != _frameCommandBuffers.end()) {
+        MTL::CommandBuffer *buffer = *it;
+        if (!buffer) {
+          it = _frameCommandBuffers.erase(it);
+          continue;
+        }
+
+        auto status = buffer->status();
+        if (status == Status::CommandBufferStatusCompleted ||
+            status == Status::CommandBufferStatusError) {
+          buffer->release();
+          it = _frameCommandBuffers.erase(it);
+        } else {
+          ++it;
+        }
+      }
+
+      if (_frameCommandBuffers.empty())
+        break;
     }
   }
+}
 
-  buffer->release();
+void Renderer::debugAssertNoPendingFrameCommands(const char *reason) {
+#if !defined(NDEBUG)
+  std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+  if (_frameCommandBuffers.empty())
+    return;
+
+  std::printf(
+      "[Renderer] Pending frame command buffers detected before %s (%zu).\n",
+      reason ? reason : "frame purge",
+      static_cast<unsigned long>(_frameCommandBuffers.size()));
+  for (const auto &entry : _frameCommandBuffers) {
+    if (!entry)
+      continue;
+    std::printf("  status=%d\n", static_cast<int>(entry->status()));
+  }
+  assert(_frameCommandBuffers.empty());
+#else
+  (void)reason;
+#endif
 }
 
 void Renderer::beginFrameMetrics() {
