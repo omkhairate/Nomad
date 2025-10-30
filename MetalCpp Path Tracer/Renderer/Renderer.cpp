@@ -7666,6 +7666,7 @@ void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
 
 bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
   std::vector<FrameCommandBufferRecord> pending;
+  std::chrono::steady_clock::time_point waitStart;
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
     pending.reserve(_frameCommandBuffers.size());
@@ -7674,6 +7675,7 @@ bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
         record.buffer->retain();
       pending.push_back(record);
     }
+    waitStart = std::chrono::steady_clock::now();
   }
 
   const bool infiniteTimeout = timeout == std::chrono::milliseconds::max();
@@ -7708,10 +7710,24 @@ bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
       allComplete = false;
   }
 
+  bool newCommandTracked = false;
+  {
+    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+    for (const auto &record : _frameCommandBuffers) {
+      if (record.trackedSince > waitStart) {
+        newCommandTracked = true;
+        break;
+      }
+    }
+  }
+
   for (auto &record : pending) {
     if (record.buffer)
       record.buffer->release();
   }
+
+  if (newCommandTracked)
+    return false;
 
   return allComplete;
 }
