@@ -223,8 +223,7 @@ private:
   void updateBlasScratchResidencyBudget();
   double scratchMemoryMB() const;
   double residencyMemoryMB() const;
-  void debugAssertNoPendingFrameCommands(const char *reason);
-
+  
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
@@ -248,7 +247,7 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
-  std::vector<MTL::CommandBuffer *> _frameCommandBuffers;
+  MTL::CommandBuffer *_lastFrameCommandBuffer = nullptr;
   std::mutex _frameCommandBufferMutex;
   MTL::CommandBuffer *_lastRayHitCommandBuffer = nullptr;
   bool _rayHitCopyError = false;
