@@ -7668,10 +7668,11 @@ bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
   std::vector<FrameCommandBufferRecord> pending;
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    pending = _frameCommandBuffers;
-    for (auto &record : pending) {
+    pending.reserve(_frameCommandBuffers.size());
+    for (const auto &record : _frameCommandBuffers) {
       if (record.buffer)
         record.buffer->retain();
+      pending.push_back(record);
     }
   }
 
