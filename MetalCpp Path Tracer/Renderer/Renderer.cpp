@@ -1002,7 +1002,9 @@ Renderer::Renderer(MTL::Device *pDevice)
 
 Renderer::~Renderer() {
   processPendingCapturedFrames();
-  waitForPendingFrameCommands(std::chrono::milliseconds::max());
+  std::chrono::steady_clock::time_point frameWaitSnapshot;
+  waitForPendingFrameCommands(std::chrono::milliseconds::max(),
+                              &frameWaitSnapshot);
 
   _pendingBlasEvictions.clear();
   assert(_pendingBlasEvictions.empty());
@@ -2817,11 +2819,26 @@ bool Renderer::transitionResidentToCold(size_t objectIndex,
                                         ResidentObjectGpuResources &resident,
                                         BlasInstanceRecord &instanceRecord,
                                         bool removePending) {
-  if (!waitForPendingFrameCommands(kFrameCommandBufferWaitTimeout))
+  std::chrono::steady_clock::time_point frameWaitSnapshot;
+  if (!waitForPendingFrameCommands(kFrameCommandBufferWaitTimeout,
+                                   &frameWaitSnapshot))
     return false;
 
   waitForPendingTlasBuild();
+
+  std::unique_lock<std::mutex> lock(_frameCommandBufferMutex);
+  auto newerSubmission = std::find_if(
+      _frameCommandBuffers.begin(), _frameCommandBuffers.end(),
+      [frameWaitSnapshot](const FrameCommandBufferRecord &record) {
+        return record.trackedSince >= frameWaitSnapshot;
+      });
+  if (newerSubmission != _frameCommandBuffers.end()) {
+    lock.unlock();
+    return false;
+  }
+
   resident.transitionToCold(instanceRecord);
+  lock.unlock();
 
   if (removePending)
     _pendingBlasEvictions.cancel(objectIndex, resident);
@@ -2858,7 +2875,10 @@ void Renderer::handleDeferredBlasEvictions(MTL::CommandBuffer *commandBuffer,
   if (!commandBuffer)
     return;
 
-  bool ready = success && waitForPendingFrameCommands(kFrameCommandBufferWaitTimeout);
+  std::chrono::steady_clock::time_point frameWaitSnapshot;
+  bool ready =
+      success && waitForPendingFrameCommands(kFrameCommandBufferWaitTimeout,
+                                             &frameWaitSnapshot);
 
   _pendingBlasEvictions.complete(
       commandBuffer, success && ready,
@@ -7665,7 +7685,9 @@ void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
   });
 }
 
-bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
+bool Renderer::waitForPendingFrameCommands(
+    std::chrono::milliseconds timeout,
+    std::chrono::steady_clock::time_point *waitSnapshot) {
   std::vector<FrameCommandBufferRecord> pending;
   std::vector<MTL::CommandBuffer *> snapshotBuffers;
   std::chrono::steady_clock::time_point waitStart;
@@ -7681,6 +7703,8 @@ bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
         snapshotBuffers.push_back(record.buffer);
     }
     waitStart = std::chrono::steady_clock::now();
+    if (waitSnapshot)
+      *waitSnapshot = waitStart;
   }
 
   const bool infiniteTimeout = timeout == std::chrono::milliseconds::max();
