@@ -155,7 +155,9 @@ private:
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
-  bool waitForPendingFrameCommands(std::chrono::milliseconds timeout);
+  bool waitForPendingFrameCommands(
+      std::chrono::milliseconds timeout,
+      std::chrono::steady_clock::time_point *waitSnapshot = nullptr);
   bool flushRayHitCopy();
   bool rayHitCopyReady() const;
   void processRayHitCounters();
