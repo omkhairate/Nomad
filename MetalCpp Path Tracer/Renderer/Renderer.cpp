@@ -37,7 +37,6 @@
 #include <string>
 #include <utility>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #define TINYEXR_IMPLEMENTATION
@@ -8003,18 +8002,15 @@ bool Renderer::waitForPendingFrameCommands(
     std::chrono::milliseconds timeout,
     std::chrono::steady_clock::time_point *waitSnapshot) {
   std::vector<FrameCommandBufferRecord> pending;
-  std::vector<MTL::CommandBuffer *> snapshotBuffers;
+  std::vector<bool> completionStatus;
   std::chrono::steady_clock::time_point waitStart;
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
     pending.reserve(_frameCommandBuffers.size());
-    snapshotBuffers.reserve(_frameCommandBuffers.size());
     for (const auto &record : _frameCommandBuffers) {
       if (record.buffer)
         record.buffer->retain();
       pending.push_back(record);
-      if (record.buffer)
-        snapshotBuffers.push_back(record.buffer);
     }
     waitStart = std::chrono::steady_clock::now();
     if (waitSnapshot)
@@ -8024,47 +8020,52 @@ bool Renderer::waitForPendingFrameCommands(
   const bool infiniteTimeout = timeout == std::chrono::milliseconds::max();
   bool allComplete = true;
 
+  completionStatus.reserve(pending.size());
   for (auto &record : pending) {
     auto *buffer = record.buffer;
-    if (!buffer)
-      continue;
+    bool completed = true;
 
-    const auto startTime = record.trackedSince;
-    bool completed = false;
+    if (buffer) {
+      const auto startTime = record.trackedSince;
+      completed = false;
 
-    while (true) {
-      auto status = buffer->status();
-      if (status == MTL::CommandBufferStatusCompleted ||
-          status == MTL::CommandBufferStatusError) {
-        completed = true;
-        break;
-      }
-
-      if (!infiniteTimeout) {
-        auto now = std::chrono::steady_clock::now();
-        if (now - startTime >= timeout)
+      while (true) {
+        auto status = buffer->status();
+        if (status == MTL::CommandBufferStatusCompleted ||
+            status == MTL::CommandBufferStatusError) {
+          completed = true;
           break;
-      }
+        }
 
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (!infiniteTimeout) {
+          auto now = std::chrono::steady_clock::now();
+          if (now - startTime >= timeout)
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
     }
 
+    completionStatus.push_back(completed);
     if (!completed)
       allComplete = false;
   }
 
-  std::unordered_set<MTL::CommandBuffer *> snapshotSet(snapshotBuffers.begin(),
-                                                       snapshotBuffers.end());
-  bool newCommandTracked = false;
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    for (const auto &record : _frameCommandBuffers) {
-      if (!record.buffer)
+    for (size_t i = 0; i < pending.size(); ++i) {
+      auto &record = pending[i];
+      if (!record.buffer || !completionStatus[i])
         continue;
-      bool presentInSnapshot = snapshotSet.find(record.buffer) != snapshotSet.end();
-      if (!presentInSnapshot || record.trackedSince >= waitStart) {
-        newCommandTracked = true;
-        break;
+      auto it = std::find_if(
+          _frameCommandBuffers.begin(), _frameCommandBuffers.end(),
+          [&record](const FrameCommandBufferRecord &inFlight) {
+            return inFlight.buffer == record.buffer;
+          });
+      if (it != _frameCommandBuffers.end()) {
+        _frameCommandBuffers.erase(it);
+        record.buffer->release();
       }
     }
   }
@@ -8073,9 +8074,6 @@ bool Renderer::waitForPendingFrameCommands(
     if (record.buffer)
       record.buffer->release();
   }
-
-  if (newCommandTracked)
-    return false;
 
   return allComplete;
 }
