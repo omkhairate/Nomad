@@ -7669,11 +7669,10 @@ bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
     pending = _frameCommandBuffers;
-  }
-
-  for (auto &record : pending) {
-    if (record.buffer)
-      record.buffer->retain();
+    for (auto &record : pending) {
+      if (record.buffer)
+        record.buffer->retain();
+    }
   }
 
   const bool infiniteTimeout = timeout == std::chrono::milliseconds::max();
