@@ -37,6 +37,7 @@
 #include <string>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #define TINYEXR_IMPLEMENTATION
@@ -7666,14 +7667,20 @@ void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
 
 bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
   std::vector<FrameCommandBufferRecord> pending;
+  std::vector<MTL::CommandBuffer *> snapshotBuffers;
+  std::chrono::steady_clock::time_point waitStart;
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
     pending.reserve(_frameCommandBuffers.size());
+    snapshotBuffers.reserve(_frameCommandBuffers.size());
     for (const auto &record : _frameCommandBuffers) {
       if (record.buffer)
         record.buffer->retain();
       pending.push_back(record);
+      if (record.buffer)
+        snapshotBuffers.push_back(record.buffer);
     }
+    waitStart = std::chrono::steady_clock::now();
   }
 
   const bool infiniteTimeout = timeout == std::chrono::milliseconds::max();
@@ -7708,10 +7715,29 @@ bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
       allComplete = false;
   }
 
+  std::unordered_set<MTL::CommandBuffer *> snapshotSet(snapshotBuffers.begin(),
+                                                       snapshotBuffers.end());
+  bool newCommandTracked = false;
+  {
+    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
+    for (const auto &record : _frameCommandBuffers) {
+      if (!record.buffer)
+        continue;
+      bool presentInSnapshot = snapshotSet.find(record.buffer) != snapshotSet.end();
+      if (!presentInSnapshot || record.trackedSince >= waitStart) {
+        newCommandTracked = true;
+        break;
+      }
+    }
+  }
+
   for (auto &record : pending) {
     if (record.buffer)
       record.buffer->release();
   }
+
+  if (newCommandTracked)
+    return false;
 
   return allComplete;
 }
