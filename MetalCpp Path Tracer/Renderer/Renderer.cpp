@@ -2875,6 +2875,24 @@ bool Renderer::transitionResidentToCold(size_t objectIndex,
     return false;
   }
 
+  auto outstanding = std::find_if(
+      _frameCommandBuffers.begin(), _frameCommandBuffers.end(),
+      [](const FrameCommandBufferRecord &record) {
+        if (!record.buffer)
+          return false;
+        auto status = record.buffer->status();
+        return status != MTL::CommandBufferStatusCompleted &&
+               status != MTL::CommandBufferStatusError;
+      });
+  if (outstanding != _frameCommandBuffers.end()) {
+#if !defined(NDEBUG)
+    assert(false &&
+           "Outstanding frame command buffers detected before residency purge.");
+#endif
+    lock.unlock();
+    return false;
+  }
+
   resident.transitionToCold(instanceRecord);
   lock.unlock();
 
@@ -5968,8 +5986,8 @@ void Renderer::draw(MTK::View *pView) {
       MTL::Drawable *drawable = pView->currentDrawable();
       if (drawable)
         presentCmd->presentDrawable(drawable);
-      trackFrameCommandBuffer(presentCmd);
       presentCmd->commit();
+      trackFrameCommandBuffer(presentCmd);
     } else {
       completeFrameMetrics(nullptr);
     }
@@ -6072,8 +6090,8 @@ void Renderer::draw(MTK::View *pView) {
 
       MTL::ComputeCommandEncoder *pCompute = computeCmd->computeCommandEncoder();
       if (!pCompute) {
-        trackFrameCommandBuffer(computeCmd);
         computeCmd->commit();
+        trackFrameCommandBuffer(computeCmd);
         break;
       }
 
@@ -6149,8 +6167,8 @@ void Renderer::draw(MTK::View *pView) {
       }
 
       pCompute->endEncoding();
-      trackFrameCommandBuffer(computeCmd);
       computeCmd->commit();
+      trackFrameCommandBuffer(computeCmd);
     }
   }
 
@@ -6264,8 +6282,8 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Drawable *drawable = pView->currentDrawable();
   if (drawable)
     presentCmd->presentDrawable(drawable);
-  trackFrameCommandBuffer(presentCmd);
   presentCmd->commit();
+  trackFrameCommandBuffer(presentCmd);
 
   if (_historyStreamingActive) {
     std::printf("[TextureResidency] History streaming active: restored %zu slot%s%s.\n",
