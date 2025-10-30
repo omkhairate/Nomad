@@ -7650,25 +7650,25 @@ void Renderer::waitForPendingFrameCommands() {
   using Status = MTL::CommandBufferStatus;
 
   while (true) {
-    std::vector<MTL::CommandBuffer *> buffersToWait;
+    std::vector<MTL::CommandBuffer *> snapshot;
     {
       std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
       if (_frameCommandBuffers.empty())
         break;
 
-      buffersToWait.reserve(_frameCommandBuffers.size());
+      snapshot.reserve(_frameCommandBuffers.size());
       for (auto *buffer : _frameCommandBuffers) {
         if (!buffer)
           continue;
         buffer->retain();
-        buffersToWait.push_back(buffer);
+        snapshot.push_back(buffer);
       }
     }
 
-    if (buffersToWait.empty())
-      break;
+    if (snapshot.empty())
+      continue;
 
-    for (MTL::CommandBuffer *buffer : buffersToWait) {
+    for (MTL::CommandBuffer *buffer : snapshot) {
       auto status = buffer->status();
       switch (status) {
       case Status::CommandBufferStatusNotEnqueued:
@@ -7687,21 +7687,12 @@ void Renderer::waitForPendingFrameCommands() {
 
     {
       std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-      auto it = _frameCommandBuffers.begin();
-      while (it != _frameCommandBuffers.end()) {
-        MTL::CommandBuffer *buffer = *it;
-        if (!buffer) {
-          it = _frameCommandBuffers.erase(it);
-          continue;
-        }
-
-        auto status = buffer->status();
-        if (status == Status::CommandBufferStatusCompleted ||
-            status == Status::CommandBufferStatusError) {
-          buffer->release();
-          it = _frameCommandBuffers.erase(it);
-        } else {
-          ++it;
+      for (MTL::CommandBuffer *buffer : snapshot) {
+        auto it = std::find(_frameCommandBuffers.begin(),
+                            _frameCommandBuffers.end(), buffer);
+        if (it != _frameCommandBuffers.end()) {
+          (*it)->release();
+          _frameCommandBuffers.erase(it);
         }
       }
 
