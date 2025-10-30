@@ -888,23 +888,38 @@ BufferCountInfo prepareBufferCounts(size_t current, size_t previous,
 void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                                     size_t &currentCapacity,
                                     bool allowShrink,
-                                    MTL::ResourceOptions storageMode) {
+                                    MTL::ResourceOptions storageMode,
+                                    const char *label,
+                                    const char *resizeContext) {
   if (requiredBytes == 0)
     requiredBytes = 1;
 
   size_t desiredCapacity = requiredBytes;
+  size_t originalCapacity = currentCapacity;
+  bool hadBuffer = buffer != nullptr;
+  bool shrinking = false;
+  bool growing = false;
 
   if (!allowShrink) {
     if (buffer && requiredBytes <= currentCapacity)
       return;
     desiredCapacity = std::max(requiredBytes, currentCapacity);
+    if (buffer && requiredBytes > currentCapacity)
+      growing = true;
   } else if (buffer) {
     size_t shrinkThreshold = currentCapacity / 2;
     if (requiredBytes <= currentCapacity && requiredBytes > shrinkThreshold)
       return;
-    if (requiredBytes > currentCapacity)
+    if (requiredBytes <= shrinkThreshold) {
+      shrinking = requiredBytes < currentCapacity;
+    } else if (requiredBytes > currentCapacity) {
       desiredCapacity = std::max(requiredBytes, currentCapacity * 2);
+      growing = true;
+    }
   }
+
+  if (!hadBuffer)
+    growing = true;
 
   if (buffer) {
     buffer->release();
@@ -912,9 +927,31 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
     currentCapacity = 0;
   }
 
+  if (allowShrink && desiredCapacity < requiredBytes)
+    desiredCapacity = requiredBytes;
+
   desiredCapacity = std::max(desiredCapacity, size_t(1));
   buffer = _pDevice->newBuffer(desiredCapacity, storageMode);
   currentCapacity = buffer ? buffer->length() : 0;
+
+  const char *name = label ? label : "UnnamedBuffer";
+  const char *context = resizeContext
+                            ? resizeContext
+                            : (allowShrink ? "shrink-policy" : "capacity");
+  if (!buffer) {
+    std::printf(
+        "[Renderer][Buffer] Failed to allocate %s (requested=%zu bytes, context=%s).\n",
+        name, desiredCapacity, context);
+    return;
+  }
+
+  const char *action = hadBuffer
+                           ? (shrinking ? "shrunk" : (growing ? "grown" : "rebound"))
+                           : "allocated";
+  std::printf(
+      "[Renderer][Buffer] %s %s from %zu to %zu bytes (required=%zu, allowShrink=%s, context=%s, activeRatio=%.3f).\n",
+      name, action, originalCapacity, currentCapacity, requiredBytes,
+      allowShrink ? "true" : "false", context, _lastActivePrimitiveRatio);
 }
 
 bool Renderer::isInView(const BoundingSphere &b) {
@@ -3817,6 +3854,13 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   _lightCount = _cachedLightIndices.size();
   _lightTotalWeight = totalLightWeight;
 
+  float activeRatio = (totalPrimitiveCount > 0)
+                          ? static_cast<float>(_activePrimitiveCount) /
+                                static_cast<float>(totalPrimitiveCount)
+                          : 1.0f;
+  activeRatio = std::clamp(activeRatio, 0.0f, 1.0f);
+  _lastActivePrimitiveRatio = activeRatio;
+
   constexpr float kCompactionEnterRatio = 0.45f;
   constexpr float kCompactionExitRatio = 0.7f;
   constexpr uint32_t kCompactionCooldownFrames = 30;
@@ -3846,6 +3890,21 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   if (compactionStateChanged) {
     _residentCompacted = useCompaction;
     _compactionCooldown = kCompactionCooldownFrames;
+  }
+
+  float shrinkTarget = std::clamp(_residencyConfig.bufferShrinkActiveRatio, 0.0f, 1.0f);
+  bool occupancyShrinkActive = _residencyConfig.enableBufferShrink &&
+                               activeRatio <= shrinkTarget &&
+                               totalPrimitiveCount > 0;
+
+  bool allowShrink = useCompaction;
+  const char *shrinkContext = nullptr;
+  if (allowShrink)
+    shrinkContext = occupancyShrinkActive ? "compaction+low-occupancy"
+                                          : "compaction";
+  else if (occupancyShrinkActive) {
+    allowShrink = true;
+    shrinkContext = "low-occupancy";
   }
 
   std::vector<uint32_t> remapUpload;
@@ -4459,7 +4518,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   _residentRemap = remapUpload;
 
   bool uploadAll = needFullUpload || useCompaction || compactionStateChanged;
-  bool allowShrink = useCompaction;
 
   if (uploadAll) {
     size_t primitiveFloat4Count = primitiveSource->size();
@@ -4473,7 +4531,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     if (primitiveBytes == 0)
       primitiveBytes = sizeof(simd::float4);
     ensureBufferCapacity(_pSphereBuffer, primitiveBytes, _sphereBufferCapacity,
-                         allowShrink);
+                         allowShrink, MTL::ResourceStorageModeManaged,
+                         "PrimitiveData", shrinkContext);
     if (_pSphereBuffer) {
       simd::float4 *dst =
           static_cast<simd::float4 *>(_pSphereBuffer->contents());
@@ -4493,7 +4552,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         std::max<size_t>(materialFloat4Count, size_t(1)) *
         sizeof(simd::float4);
     ensureBufferCapacity(_pSphereMaterialBuffer, materialBytes,
-                         _sphereMaterialBufferCapacity, allowShrink);
+                         _sphereMaterialBufferCapacity, allowShrink,
+                         MTL::ResourceStorageModeManaged, "PrimitiveMaterials",
+                         shrinkContext);
     if (_pSphereMaterialBuffer) {
       simd::float4 *dst = static_cast<simd::float4 *>(
           _pSphereMaterialBuffer->contents());
@@ -4513,7 +4574,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t primitiveIndexBytes =
         std::max<size_t>(primitiveIndexCount, size_t(1)) * sizeof(int);
     ensureBufferCapacity(_pPrimitiveIndexBuffer, primitiveIndexBytes,
-                         _primitiveIndexBufferCapacity, allowShrink);
+                         _primitiveIndexBufferCapacity, allowShrink,
+                         MTL::ResourceStorageModeManaged, "PrimitiveIndices",
+                         shrinkContext);
     if (_pPrimitiveIndexBuffer) {
       int *dst = static_cast<int *>(_pPrimitiveIndexBuffer->contents());
       if (primitiveIndexCount > 0)
@@ -4528,7 +4591,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t blasFloat4Count = bvhSource->size();
     size_t bvhBytes =
         std::max<size_t>(blasFloat4Count, size_t(1)) * sizeof(simd::float4);
-    ensureBufferCapacity(_pBVHBuffer, bvhBytes, _bvhBufferCapacity, allowShrink);
+    ensureBufferCapacity(_pBVHBuffer, bvhBytes, _bvhBufferCapacity, allowShrink,
+                         MTL::ResourceStorageModeManaged, "BLASNodes",
+                         shrinkContext);
     if (_pBVHBuffer) {
       simd::float4 *dst =
           static_cast<simd::float4 *>(_pBVHBuffer->contents());
@@ -4547,7 +4612,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t tlasBytes =
         std::max<size_t>(tlasFloat4Count, size_t(1)) * sizeof(simd::float4);
     ensureBufferCapacity(_pTLASBuffer, tlasBytes, _tlasBufferCapacity,
-                         allowShrink);
+                         allowShrink, MTL::ResourceStorageModeManaged,
+                         "TLASNodes", shrinkContext);
     if (_pTLASBuffer) {
       simd::float4 *dst =
           static_cast<simd::float4 *>(_pTLASBuffer->contents());
@@ -4565,7 +4631,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t remapCount = std::max<size_t>(_residentRemap.size(), size_t(1));
     ensureBufferCapacity(_pPrimitiveRemapBuffer,
                          remapCount * sizeof(uint32_t),
-                         _primitiveRemapBufferCapacity, allowShrink);
+                         _primitiveRemapBufferCapacity, allowShrink,
+                         MTL::ResourceStorageModeManaged, "PrimitiveRemap",
+                         shrinkContext);
     if (_pPrimitiveRemapBuffer) {
       uint32_t *dst = static_cast<uint32_t *>(
           _pPrimitiveRemapBuffer->contents());
@@ -4585,7 +4653,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t vertexBytes =
         std::max<size_t>(vertexCount, size_t(1)) * sizeof(simd::float3);
     ensureBufferCapacity(_pTriangleVertexBuffer, vertexBytes,
-                         _triangleVertexBufferCapacity, allowShrink);
+                         _triangleVertexBufferCapacity, allowShrink,
+                         MTL::ResourceStorageModeManaged, "TriangleVertices",
+                         shrinkContext);
     if (_pTriangleVertexBuffer) {
       simd::float3 *dst = static_cast<simd::float3 *>(
           _pTriangleVertexBuffer->contents());
@@ -4602,7 +4672,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t indexBytes =
         std::max<size_t>(indexCount, size_t(1)) * sizeof(simd::uint3);
     ensureBufferCapacity(_pTriangleIndexBuffer, indexBytes,
-                         _triangleIndexBufferCapacity, allowShrink);
+                         _triangleIndexBufferCapacity, allowShrink,
+                         MTL::ResourceStorageModeManaged, "TriangleIndices",
+                         shrinkContext);
     if (_pTriangleIndexBuffer) {
       simd::uint3 *dst = static_cast<simd::uint3 *>(
           _pTriangleIndexBuffer->contents());
@@ -4621,7 +4693,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
   size_t instanceBytes = instanceCount * sizeof(BlasInstanceRecord);
   ensureBufferCapacity(_pInstanceBuffer, instanceBytes, _instanceBufferCapacity,
-                       allowShrink);
+                       allowShrink, MTL::ResourceStorageModeManaged,
+                       "InstanceRecords", shrinkContext);
   if (_pInstanceBuffer) {
     auto *dst = static_cast<BlasInstanceRecord *>(
         _pInstanceBuffer->contents());
@@ -4641,7 +4714,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       std::max<size_t>(geometryHandleCount, size_t(1)) *
       sizeof(GeometryHandle);
   ensureBufferCapacity(_pGeometryHandleBuffer, geometryHandleBytes,
-                       _geometryHandleBufferCapacity, allowShrink);
+                       _geometryHandleBufferCapacity, allowShrink,
+                       MTL::ResourceStorageModeManaged, "GeometryHandles",
+                       shrinkContext);
   if (_pGeometryHandleBuffer) {
     auto *dst = static_cast<GeometryHandle *>(
         _pGeometryHandleBuffer->contents());
@@ -4660,7 +4735,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t activeBytes =
       std::max<size_t>(activeMaskCount, size_t(1)) * sizeof(uint8_t);
   ensureBufferCapacity(_pActiveBuffer, activeBytes, _activeBufferCapacity,
-                       allowShrink);
+                       allowShrink, MTL::ResourceStorageModeManaged,
+                       "ActiveMask", shrinkContext);
   if (_pActiveBuffer) {
     uint8_t *activePtr =
         static_cast<uint8_t *>(_pActiveBuffer->contents());
@@ -4700,7 +4776,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       std::max<size_t>(_cachedLightIndices.size(), size_t(1)) *
       sizeof(uint32_t);
   ensureBufferCapacity(_pLightIndexBuffer, lightIndexBytes,
-                       _lightIndexBufferCapacity, allowShrink);
+                       _lightIndexBufferCapacity, allowShrink,
+                       MTL::ResourceStorageModeManaged, "LightIndices",
+                       shrinkContext);
   if (_pLightIndexBuffer) {
     uint32_t *dst = static_cast<uint32_t *>(_pLightIndexBuffer->contents());
     if (_cachedLightIndices.empty())
@@ -4715,7 +4793,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t lightCdfBytes =
       std::max<size_t>(_cachedLightCdf.size(), size_t(1)) * sizeof(float);
   ensureBufferCapacity(_pLightCdfBuffer, lightCdfBytes, _lightCdfBufferCapacity,
-                       allowShrink);
+                       allowShrink, MTL::ResourceStorageModeManaged,
+                       "LightCdf", shrinkContext);
   if (_pLightCdfBuffer) {
     float *dst = static_cast<float *>(_pLightCdfBuffer->contents());
     if (_cachedLightCdf.empty())
