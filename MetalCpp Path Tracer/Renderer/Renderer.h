@@ -155,7 +155,7 @@ private:
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
-  void waitForPendingFrameCommands();
+  bool waitForPendingFrameCommands(std::chrono::milliseconds timeout);
   bool flushRayHitCopy();
   bool rayHitCopyReady() const;
   void processRayHitCounters();
@@ -190,7 +190,7 @@ private:
                                      ResidentObjectGpuResources &resident);
   void handleDeferredBlasEvictions(MTL::CommandBuffer *commandBuffer,
                                    bool success);
-  void transitionResidentToCold(size_t objectIndex,
+  bool transitionResidentToCold(size_t objectIndex,
                                 ResidentObjectGpuResources &resident,
                                 BlasInstanceRecord &instanceRecord,
                                 bool removePending = true);
@@ -247,7 +247,12 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
-  MTL::CommandBuffer *_lastFrameCommandBuffer = nullptr;
+  struct FrameCommandBufferRecord {
+    MTL::CommandBuffer *buffer = nullptr;
+    std::chrono::steady_clock::time_point trackedSince{};
+  };
+
+  std::vector<FrameCommandBufferRecord> _frameCommandBuffers;
   std::mutex _frameCommandBufferMutex;
   MTL::CommandBuffer *_lastRayHitCommandBuffer = nullptr;
   bool _rayHitCopyError = false;

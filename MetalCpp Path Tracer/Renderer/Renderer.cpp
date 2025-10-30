@@ -413,6 +413,7 @@ constexpr uint32_t kPathTraceTileHeight = 128;
 // scenes keep significantly more geometry active, so reduce the per-command
 // budget to lower kernel runtimes and avoid tripping the macOS GPU watchdog.
 constexpr size_t kMaxTileSampleWorkPerCommand = 128 * 128 * 4;
+constexpr std::chrono::milliseconds kFrameCommandBufferWaitTimeout(4);
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
 inline uint32_t bitm_random() {
@@ -1000,7 +1001,7 @@ Renderer::Renderer(MTL::Device *pDevice)
 
 Renderer::~Renderer() {
   processPendingCapturedFrames();
-  waitForPendingFrameCommands();
+  waitForPendingFrameCommands(std::chrono::milliseconds::max());
 
   _pendingBlasEvictions.clear();
   assert(_pendingBlasEvictions.empty());
@@ -2811,16 +2812,20 @@ void Renderer::handleCompletedBlasBuild(
   processBlasBuildQueue();
 }
 
-void Renderer::transitionResidentToCold(size_t objectIndex,
+bool Renderer::transitionResidentToCold(size_t objectIndex,
                                         ResidentObjectGpuResources &resident,
                                         BlasInstanceRecord &instanceRecord,
                                         bool removePending) {
+  if (!waitForPendingFrameCommands(kFrameCommandBufferWaitTimeout))
+    return false;
+
+  waitForPendingTlasBuild();
+  resident.transitionToCold(instanceRecord);
+
   if (removePending)
     _pendingBlasEvictions.cancel(objectIndex, resident);
 
-  waitForPendingFrameCommands();
-  waitForPendingTlasBuild();
-  resident.transitionToCold(instanceRecord);
+  return true;
 }
 
 void Renderer::requestResidentEviction(size_t objectIndex,
@@ -2852,16 +2857,18 @@ void Renderer::handleDeferredBlasEvictions(MTL::CommandBuffer *commandBuffer,
   if (!commandBuffer)
     return;
 
-  if (success)
-    waitForPendingFrameCommands();
+  bool ready = success && waitForPendingFrameCommands(kFrameCommandBufferWaitTimeout);
 
   _pendingBlasEvictions.complete(
-      commandBuffer, success, [this](ResidentObjectGpuResources &resident,
-                                     size_t objectIndex) {
+      commandBuffer, success && ready,
+      [this](ResidentObjectGpuResources &resident, size_t objectIndex) {
         if (objectIndex >= _instanceRecords.size())
           return;
         auto &instanceRecord = _instanceRecords[objectIndex];
-        resident.transitionToCold(instanceRecord);
+        if (!transitionResidentToCold(objectIndex, resident, instanceRecord,
+                                      false)) {
+          _pendingBlasEvictions.enqueue(objectIndex, resident);
+        }
       });
 }
 
@@ -5633,8 +5640,8 @@ void Renderer::draw(MTK::View *pView) {
       MTL::Drawable *drawable = pView->currentDrawable();
       if (drawable)
         presentCmd->presentDrawable(drawable);
-      presentCmd->commit();
       trackFrameCommandBuffer(presentCmd);
+      presentCmd->commit();
     } else {
       completeFrameMetrics(nullptr);
     }
@@ -5737,6 +5744,7 @@ void Renderer::draw(MTK::View *pView) {
 
       MTL::ComputeCommandEncoder *pCompute = computeCmd->computeCommandEncoder();
       if (!pCompute) {
+        trackFrameCommandBuffer(computeCmd);
         computeCmd->commit();
         break;
       }
@@ -5813,6 +5821,7 @@ void Renderer::draw(MTK::View *pView) {
       }
 
       pCompute->endEncoding();
+      trackFrameCommandBuffer(computeCmd);
       computeCmd->commit();
     }
   }
@@ -5927,8 +5936,8 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Drawable *drawable = pView->currentDrawable();
   if (drawable)
     presentCmd->presentDrawable(drawable);
-  presentCmd->commit();
   trackFrameCommandBuffer(presentCmd);
+  presentCmd->commit();
 
   if (!_frameCaptureEnabled &&
       _captureOutputsPending.load(std::memory_order_acquire))
@@ -7627,21 +7636,26 @@ void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
 
   commandBuffer->retain();
 
-  MTL::CommandBuffer *previous = nullptr;
+  FrameCommandBufferRecord record;
+  record.buffer = commandBuffer;
+  record.trackedSince = std::chrono::steady_clock::now();
+
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    previous = _lastFrameCommandBuffer;
-    _lastFrameCommandBuffer = commandBuffer;
+    _frameCommandBuffers.push_back(record);
   }
-  if (previous)
-    previous->release();
 
   commandBuffer->addCompletedHandler([this](MTL::CommandBuffer *completed) {
     bool release = false;
     {
       std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-      if (_lastFrameCommandBuffer == completed) {
-        _lastFrameCommandBuffer = nullptr;
+      auto it = std::find_if(
+          _frameCommandBuffers.begin(), _frameCommandBuffers.end(),
+          [completed](const FrameCommandBufferRecord &record) {
+            return record.buffer == completed;
+          });
+      if (it != _frameCommandBuffers.end()) {
+        _frameCommandBuffers.erase(it);
         release = true;
       }
     }
@@ -7650,41 +7664,56 @@ void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
   });
 }
 
-void Renderer::waitForPendingFrameCommands() {
-  MTL::CommandBuffer *buffer = nullptr;
+bool Renderer::waitForPendingFrameCommands(std::chrono::milliseconds timeout) {
+  std::vector<FrameCommandBufferRecord> pending;
   {
     std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    buffer = _lastFrameCommandBuffer;
-    if (buffer)
-      buffer->retain();
-  }
-
-  if (!buffer)
-    return;
-
-  auto status = buffer->status();
-  switch (status) {
-  case MTL::CommandBufferStatus::CommandBufferStatusNotEnqueued:
-  case MTL::CommandBufferStatus::CommandBufferStatusEnqueued:
-  case MTL::CommandBufferStatus::CommandBufferStatusCommitted:
-  case MTL::CommandBufferStatus::CommandBufferStatusScheduled:
-    buffer->waitUntilCompleted();
-    break;
-  case MTL::CommandBufferStatus::CommandBufferStatusCompleted:
-  case MTL::CommandBufferStatus::CommandBufferStatusError:
-  default:
-    break;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(_frameCommandBufferMutex);
-    if (_lastFrameCommandBuffer == buffer) {
-      _lastFrameCommandBuffer->release();
-      _lastFrameCommandBuffer = nullptr;
+    pending.reserve(_frameCommandBuffers.size());
+    for (const auto &record : _frameCommandBuffers) {
+      if (record.buffer)
+        record.buffer->retain();
+      pending.push_back(record);
     }
   }
 
-  buffer->release();
+  const bool infiniteTimeout = timeout == std::chrono::milliseconds::max();
+  bool allComplete = true;
+
+  for (auto &record : pending) {
+    auto *buffer = record.buffer;
+    if (!buffer)
+      continue;
+
+    const auto startTime = record.trackedSince;
+    bool completed = false;
+
+    while (true) {
+      auto status = buffer->status();
+      if (status == MTL::CommandBufferStatusCompleted ||
+          status == MTL::CommandBufferStatusError) {
+        completed = true;
+        break;
+      }
+
+      if (!infiniteTimeout) {
+        auto now = std::chrono::steady_clock::now();
+        if (now - startTime >= timeout)
+          break;
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    if (!completed)
+      allComplete = false;
+  }
+
+  for (auto &record : pending) {
+    if (record.buffer)
+      record.buffer->release();
+  }
+
+  return allComplete;
 }
 
 void Renderer::beginFrameMetrics() {
