@@ -438,6 +438,7 @@ size_t alignTo(size_t value, size_t alignment) {
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
 constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
+constexpr size_t kMaxTextureHistoryBytes = 16ull * 1024ull * 1024ull;
 constexpr float kFrustumDebugNear = 0.1f;
 constexpr float kFrustumDebugFarMultiplier = 5.0f;
 
@@ -4982,6 +4983,7 @@ void Renderer::releaseTextureSlot(ManagedTextureSlot &slot) {
     slot.stagingCapacity = 0;
   }
   slot.stagingValid = false;
+  clearTextureHistory(slot);
 }
 
 const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
@@ -5036,12 +5038,205 @@ size_t Renderer::textureByteSize(const ManagedTextureSlot &slot) const {
   return alignedRowBytes * slot.height;
 }
 
+void Renderer::clearTextureHistory(ManagedTextureSlot &slot) {
+  slot.historyData.clear();
+  slot.historyBacking = ManagedTextureSlot::HistoryBacking::None;
+  slot.historyIsProxy = false;
+  slot.historyWidth = 0;
+  slot.historyHeight = 0;
+  slot.historyBytesPerRow = 0;
+  slot.needsGpuRefresh = false;
+}
+
+bool Renderer::captureCpuHistoryProxy(ManagedTextureSlot &slot) {
+  clearTextureHistory(slot);
+
+  if (!slot.texture)
+    return false;
+
+  if (slot.width == 0 || slot.height == 0)
+    return false;
+
+  size_t pixelBytes = bytesPerPixel(slot.pixelFormat);
+  if (pixelBytes == 0)
+    return false;
+
+  NS::UInteger proxyWidth = slot.width;
+  NS::UInteger proxyHeight = slot.height;
+  size_t proxyRowBytes = proxyWidth * pixelBytes;
+  size_t proxyTotalBytes = proxyRowBytes * proxyHeight;
+
+  while (proxyTotalBytes > kMaxTextureHistoryBytes && proxyWidth > 1 &&
+         proxyHeight > 1) {
+    proxyWidth = std::max<NS::UInteger>(1, proxyWidth / 2);
+    proxyHeight = std::max<NS::UInteger>(1, proxyHeight / 2);
+    proxyRowBytes = proxyWidth * pixelBytes;
+    proxyTotalBytes = proxyRowBytes * proxyHeight;
+  }
+
+  if (proxyTotalBytes == 0)
+    return false;
+
+  std::vector<uint8_t> data(proxyTotalBytes, 0);
+  std::vector<uint8_t> pixel(pixelBytes, 0);
+  for (NS::UInteger y = 0; y < proxyHeight; ++y) {
+    NS::UInteger srcY = static_cast<NS::UInteger>(
+        std::min<NS::UInteger>(slot.height - 1,
+                                (y * slot.height) / std::max<NS::UInteger>(proxyHeight, 1)));
+    uint8_t *dstRow = data.data() + static_cast<size_t>(y) * proxyRowBytes;
+    for (NS::UInteger x = 0; x < proxyWidth; ++x) {
+      NS::UInteger srcX = static_cast<NS::UInteger>(
+          std::min<NS::UInteger>(slot.width - 1,
+                                  (x * slot.width) /
+                                      std::max<NS::UInteger>(proxyWidth, 1)));
+      MTL::Region region = MTL::Region::Make2D(srcX, srcY, 1, 1);
+      slot.texture->getBytes(pixel.data(), pixelBytes, region, 0);
+      std::memcpy(dstRow + static_cast<size_t>(x) * pixelBytes, pixel.data(),
+                  pixelBytes);
+    }
+  }
+
+  slot.historyBacking = ManagedTextureSlot::HistoryBacking::CpuData;
+  slot.historyIsProxy = proxyWidth != slot.width || proxyHeight != slot.height;
+  slot.historyWidth = proxyWidth;
+  slot.historyHeight = proxyHeight;
+  slot.historyBytesPerRow = proxyRowBytes;
+  slot.historyData = std::move(data);
+  slot.needsGpuRefresh = true;
+  slot.stagingValid = false;
+  return true;
+}
+
+bool Renderer::uploadHistoryToTexture(ManagedTextureSlot &slot,
+                                      MTL::CommandBuffer *cmd,
+                                      MTL::BlitCommandEncoder *&blit) {
+  if (!slot.texture)
+    return false;
+
+  size_t pixelBytes = bytesPerPixel(slot.pixelFormat);
+  if (pixelBytes == 0)
+    return false;
+
+  if (slot.historyBacking == ManagedTextureSlot::HistoryBacking::SharedBuffer) {
+    if (!slot.stagingBuffer || !slot.stagingValid)
+      return false;
+
+    size_t totalBytes = textureByteSize(slot);
+    if (totalBytes == 0 || slot.stagingCapacity < totalBytes)
+      return false;
+
+    if (cmd) {
+      if (!blit)
+        blit = cmd->blitCommandEncoder();
+      if (blit) {
+        MTL::Size size = MTL::Size::Make(slot.historyWidth, slot.historyHeight, 1);
+        MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+        NS::UInteger bytesPerImage = static_cast<NS::UInteger>(
+            slot.historyBytesPerRow * slot.historyHeight);
+        blit->copyFromBuffer(slot.stagingBuffer, 0, slot.historyBytesPerRow,
+                             bytesPerImage, size, slot.texture, 0, 0, origin);
+        slot.needsGpuRefresh = false;
+        return true;
+      }
+    }
+
+    if (void *contents = slot.stagingBuffer->contents()) {
+      const uint8_t *src = static_cast<const uint8_t *>(contents);
+      NS::UInteger uploadWidth = std::max<NS::UInteger>(1, slot.historyWidth);
+      NS::UInteger uploadHeight = std::max<NS::UInteger>(1, slot.historyHeight);
+      MTL::Region region = MTL::Region::Make2D(0, 0, uploadWidth, uploadHeight);
+      slot.texture->replaceRegion(region, 0, src, slot.historyBytesPerRow);
+      slot.needsGpuRefresh = false;
+      return true;
+    }
+
+    return false;
+  }
+
+  if (slot.historyBacking == ManagedTextureSlot::HistoryBacking::CpuData) {
+    if (slot.historyData.empty() || slot.historyWidth == 0 ||
+        slot.historyHeight == 0)
+      return false;
+
+    std::vector<uint8_t> expanded;
+    const uint8_t *srcData = slot.historyData.data();
+    size_t srcRowBytes = slot.historyBytesPerRow;
+
+    if (slot.historyIsProxy &&
+        (slot.historyWidth != slot.width || slot.historyHeight != slot.height)) {
+      size_t expandedBytes = static_cast<size_t>(slot.width) * slot.height *
+                             pixelBytes;
+      expanded.resize(expandedBytes);
+      for (NS::UInteger y = 0; y < slot.height; ++y) {
+        NS::UInteger srcY = static_cast<NS::UInteger>(
+            std::min<NS::UInteger>(slot.historyHeight - 1,
+                                    (y * slot.historyHeight) /
+                                        std::max<NS::UInteger>(slot.height, 1)));
+        const uint8_t *srcRow =
+            srcData + static_cast<size_t>(srcY) * slot.historyBytesPerRow;
+        uint8_t *dstRow = expanded.data() +
+                          static_cast<size_t>(y) * slot.width * pixelBytes;
+        for (NS::UInteger x = 0; x < slot.width; ++x) {
+          NS::UInteger srcX = static_cast<NS::UInteger>(
+              std::min<NS::UInteger>(slot.historyWidth - 1,
+                                      (x * slot.historyWidth) /
+                                          std::max<NS::UInteger>(slot.width, 1)));
+          const uint8_t *srcPixel =
+              srcRow + static_cast<size_t>(srcX) * pixelBytes;
+          std::memcpy(dstRow + static_cast<size_t>(x) * pixelBytes, srcPixel,
+                      pixelBytes);
+        }
+      }
+      srcData = expanded.data();
+      srcRowBytes = static_cast<size_t>(slot.width) * pixelBytes;
+    }
+
+    MTL::Region region =
+        MTL::Region::Make2D(0, 0, slot.width, slot.height);
+    slot.texture->replaceRegion(region, 0, srcData, srcRowBytes);
+    slot.needsGpuRefresh = false;
+    return true;
+  }
+
+  return false;
+}
+
 MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
                                                MTL::CommandBuffer *cmd,
                                                MTL::BlitCommandEncoder *&blit) {
   if (slot.texture || !slot.descriptorValid || slot.width == 0 ||
-      slot.height == 0)
+      slot.height == 0) {
+    if (slot.texture && slot.needsGpuRefresh &&
+        slot.historyBacking != ManagedTextureSlot::HistoryBacking::None) {
+      if (uploadHistoryToTexture(slot, cmd, blit)) {
+        _historyStreamingActive = true;
+        ++_historyStreamingRestoreCount;
+        if (slot.historyIsProxy)
+          _historyStreamingUsedProxy = true;
+        const char *source =
+            slot.historyBacking == ManagedTextureSlot::HistoryBacking::SharedBuffer
+                ? "staging buffer"
+                : (slot.historyIsProxy ? "CPU proxy" : "CPU history");
+        std::printf(
+            "[TextureResidency] Refreshed slot %s from %s (%ux%u).\n",
+            textureSlotLabel(slot), source,
+            static_cast<unsigned>(slot.historyWidth),
+            static_cast<unsigned>(slot.historyHeight));
+      } else {
+        std::printf(
+            "[TextureResidency] Failed to refresh resident slot %s from history;"
+            " history unavailable.\n",
+            textureSlotLabel(slot));
+        slot.needsGpuRefresh = false;
+        if (!slot.stagingValid &&
+            slot.historyBacking == ManagedTextureSlot::HistoryBacking::CpuData)
+          slot.historyData.clear();
+        _needsAccumulationReset = true;
+        _accumulationTargetsNeedClear = true;
+      }
+    }
     return slot.texture;
+  }
 
   const char *label = textureSlotLabel(slot);
   MTL::TextureDescriptor *descriptor =
@@ -5065,49 +5260,31 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
   }
 
   bool logged = false;
-  if (slot.stagingBuffer && slot.stagingValid && cmd) {
-    size_t totalBytes = textureByteSize(slot);
-    if (totalBytes > 0 && slot.stagingCapacity >= totalBytes) {
-      if (!blit)
-        blit = cmd->blitCommandEncoder();
-      if (blit) {
-        size_t rowBytes = slot.width * bytesPerPixel(slot.pixelFormat);
-        size_t alignedRowBytes = alignTo(rowBytes, 256);
-        NS::UInteger bytesPerImage =
-            static_cast<NS::UInteger>(alignedRowBytes * slot.height);
-        MTL::Size size = MTL::Size::Make(slot.width, slot.height, 1);
-        MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-        blit->copyFromBuffer(slot.stagingBuffer, 0, alignedRowBytes,
-                             bytesPerImage, size, slot.texture, 0, 0, origin);
-        std::printf(
-            "[TextureResidency] Restored slot %s from staging buffer (%zu bytes).\n",
-            label, totalBytes);
-        logged = true;
-      } else {
-        slot.stagingValid = false;
-        _needsAccumulationReset = true;
-        _accumulationTargetsNeedClear = true;
-        std::printf(
-            "[TextureResidency] Restored slot %s without staging data: failed to "
-            "obtain blit encoder.\n",
-            label);
-        logged = true;
-      }
+  if (slot.historyBacking != ManagedTextureSlot::HistoryBacking::None) {
+    if (uploadHistoryToTexture(slot, cmd, blit)) {
+      logged = true;
+      _historyStreamingActive = true;
+      ++_historyStreamingRestoreCount;
+      if (slot.historyIsProxy)
+        _historyStreamingUsedProxy = true;
+      const char *source =
+          slot.historyBacking == ManagedTextureSlot::HistoryBacking::SharedBuffer
+              ? "staging buffer"
+              : (slot.historyIsProxy ? "CPU proxy" : "CPU history");
+      std::printf(
+          "[TextureResidency] Restored slot %s from %s (%ux%u).\n", label,
+          source, static_cast<unsigned>(slot.historyWidth),
+          static_cast<unsigned>(slot.historyHeight));
     } else {
-      slot.stagingValid = false;
+      std::printf(
+          "[TextureResidency] Restored slot %s without history data.\n", label);
+      clearTextureHistory(slot);
       _needsAccumulationReset = true;
       _accumulationTargetsNeedClear = true;
-      std::printf(
-          "[TextureResidency] Restored slot %s without staging data: staging "
-          "buffer capacity (%zu) insufficient for %zu bytes.\n",
-          label, slot.stagingCapacity, totalBytes);
-      logged = true;
     }
-  }
-
-  if (!logged) {
-    std::printf(
-        "[TextureResidency] Restored slot %s without staging data.\n", label);
+  } else {
+    std::printf("[TextureResidency] Restored slot %s without staging data.\n",
+                label);
   }
 
   return slot.texture;
@@ -5121,6 +5298,7 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
 
   const char *label = textureSlotLabel(slot);
   size_t totalBytes = textureByteSize(slot);
+  bool preservedHistory = false;
   if (totalBytes == 0 || !cmd) {
     std::string reason;
     if (totalBytes == 0)
@@ -5130,63 +5308,91 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
         reason += ", ";
       reason += "no command buffer";
     }
-    std::printf(
-        "[TextureResidency] Evicting slot %s: releasing without staging (%s).\n",
-        label, reason.c_str());
-    slot.texture->release();
-    slot.texture = nullptr;
+
+    if (captureCpuHistoryProxy(slot)) {
+      preservedHistory = true;
+      std::printf(
+          "[TextureResidency] Evicting slot %s: captured CPU %s (%ux%u).\n",
+          label, slot.historyIsProxy ? "proxy" : "copy",
+          static_cast<unsigned>(slot.historyWidth),
+          static_cast<unsigned>(slot.historyHeight));
+    } else {
+      std::printf("[TextureResidency] Evicting slot %s: releasing without staging"
+                  " (%s).\n",
+                  label, reason.c_str());
+    }
+  } else {
+    ensureBufferCapacity(slot.stagingBuffer, totalBytes, slot.stagingCapacity,
+                         false, MTL::ResourceStorageModeShared);
+    if (!slot.stagingBuffer) {
+      if (captureCpuHistoryProxy(slot)) {
+        preservedHistory = true;
+        std::printf("[TextureResidency] Evicting slot %s: captured CPU %s (%ux%u)"
+                    " after staging allocation failure.\n",
+                    label, slot.historyIsProxy ? "proxy" : "copy",
+                    static_cast<unsigned>(slot.historyWidth),
+                    static_cast<unsigned>(slot.historyHeight));
+      } else {
+        std::printf("[TextureResidency] Evicting slot %s: releasing without staging"
+                    " (failed to allocate staging buffer).\n",
+                    label);
+      }
+    } else {
+      if (!blit)
+        blit = cmd->blitCommandEncoder();
+      if (!blit) {
+        if (captureCpuHistoryProxy(slot)) {
+          preservedHistory = true;
+          std::printf(
+              "[TextureResidency] Evicting slot %s: captured CPU %s (%ux%u) after"
+              " blit encoder failure.\n",
+              label, slot.historyIsProxy ? "proxy" : "copy",
+              static_cast<unsigned>(slot.historyWidth),
+              static_cast<unsigned>(slot.historyHeight));
+        } else {
+          std::printf("[TextureResidency] Evicting slot %s: releasing without staging"
+                      " (failed to create blit encoder).\n",
+                      label);
+        }
+      } else {
+        size_t rowBytes = slot.width * bytesPerPixel(slot.pixelFormat);
+        size_t alignedRowBytes = alignTo(rowBytes, 256);
+        NS::UInteger bytesPerImage =
+            static_cast<NS::UInteger>(alignedRowBytes * slot.height);
+        MTL::Size size = MTL::Size::Make(slot.width, slot.height, 1);
+        MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+        blit->copyFromTexture(slot.texture, 0, 0, origin, size,
+                              slot.stagingBuffer, 0, alignedRowBytes,
+                              bytesPerImage);
+
+        slot.stagingValid = true;
+        slot.historyBacking = ManagedTextureSlot::HistoryBacking::SharedBuffer;
+        slot.historyIsProxy = false;
+        slot.historyWidth = slot.width;
+        slot.historyHeight = slot.height;
+        slot.historyBytesPerRow = alignedRowBytes;
+        slot.needsGpuRefresh = true;
+        preservedHistory = true;
+
+        std::printf(
+            "[TextureResidency] Evicting slot %s: copied %zu bytes to staging buffer"
+            " before release.\n",
+            label, totalBytes);
+      }
+    }
+  }
+
+  if (!preservedHistory) {
+    clearTextureHistory(slot);
     slot.stagingValid = false;
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
-    return true;
   }
 
-  ensureBufferCapacity(slot.stagingBuffer, totalBytes, slot.stagingCapacity,
-                       false, MTL::ResourceStorageModeShared);
-  if (!slot.stagingBuffer) {
-    std::printf(
-        "[TextureResidency] Evicting slot %s: releasing without staging (failed "
-        "to allocate staging buffer).\n",
-        label);
+  if (slot.texture) {
     slot.texture->release();
     slot.texture = nullptr;
-    slot.stagingValid = false;
-    _needsAccumulationReset = true;
-    _accumulationTargetsNeedClear = true;
-    return true;
   }
-
-  if (!blit)
-    blit = cmd->blitCommandEncoder();
-  if (!blit) {
-    std::printf(
-        "[TextureResidency] Evicting slot %s: releasing without staging (failed "
-        "to create blit encoder).\n",
-        label);
-    slot.texture->release();
-    slot.texture = nullptr;
-    slot.stagingValid = false;
-    _needsAccumulationReset = true;
-    _accumulationTargetsNeedClear = true;
-    return true;
-  }
-
-  size_t rowBytes = slot.width * bytesPerPixel(slot.pixelFormat);
-  size_t alignedRowBytes = alignTo(rowBytes, 256);
-  NS::UInteger bytesPerImage =
-      static_cast<NS::UInteger>(alignedRowBytes * slot.height);
-  MTL::Size size = MTL::Size::Make(slot.width, slot.height, 1);
-  MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-  blit->copyFromTexture(slot.texture, 0, 0, origin, size, slot.stagingBuffer, 0,
-                        alignedRowBytes, bytesPerImage);
-
-  std::printf(
-      "[TextureResidency] Evicting slot %s: copied %zu bytes to staging buffer "
-      "before release.\n",
-      label, totalBytes);
-  slot.stagingValid = true;
-  slot.texture->release();
-  slot.texture = nullptr;
   return true;
 }
 
@@ -5661,6 +5867,10 @@ void Renderer::draw(MTK::View *pView) {
   beginFrameMetrics();
   std::swap(_accumulationSlots[0], _accumulationSlots[1]);
 
+  _historyStreamingActive = false;
+  _historyStreamingRestoreCount = 0;
+  _historyStreamingUsedProxy = false;
+
   uint64_t frameIndex = _renderedFrameCount;
   bool captureThisFrame = _frameCaptureEnabled && _frameCaptureInterval > 0 &&
                           (frameIndex % _frameCaptureInterval == 0);
@@ -5710,6 +5920,24 @@ void Renderer::draw(MTK::View *pView) {
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
     normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
   }
+
+  auto ensureSlotReady = [&](ManagedTextureSlot &slot, MTL::Texture *&handle) {
+    if (!handle &&
+        slot.historyBacking != ManagedTextureSlot::HistoryBacking::None) {
+      handle = requestResidentTexture(slot, prepCmd, restoreBlit);
+    } else if (handle && slot.needsGpuRefresh &&
+               slot.historyBacking != ManagedTextureSlot::HistoryBacking::None) {
+      requestResidentTexture(slot, prepCmd, restoreBlit);
+    }
+  };
+
+  ensureSlotReady(_accumulationSlots[0], accum0);
+  ensureSlotReady(_accumulationSlots[1], accum1);
+  ensureSlotReady(_sampleCountSlot, sampleCount);
+  ensureSlotReady(_sampleImportanceSlot, sampleImportance);
+  ensureSlotReady(_albedoSlot, albedoTexture);
+  ensureSlotReady(_normalSlot, normalTexture);
+
   if (restoreBlit)
     restoreBlit->endEncoding();
 
@@ -6038,6 +6266,13 @@ void Renderer::draw(MTK::View *pView) {
     presentCmd->presentDrawable(drawable);
   trackFrameCommandBuffer(presentCmd);
   presentCmd->commit();
+
+  if (_historyStreamingActive) {
+    std::printf("[TextureResidency] History streaming active: restored %zu slot%s%s.\n",
+                _historyStreamingRestoreCount,
+                (_historyStreamingRestoreCount == 1) ? "" : "s",
+                _historyStreamingUsedProxy ? " (proxy data involved)" : "");
+  }
 
   if (!_frameCaptureEnabled &&
       _captureOutputsPending.load(std::memory_order_acquire))

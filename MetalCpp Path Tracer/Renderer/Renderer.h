@@ -277,6 +277,8 @@ private:
   size_t _residentNodeCount = 0;
   size_t _totalNodeCount = 0;
   struct ManagedTextureSlot {
+    enum class HistoryBacking { None, SharedBuffer, CpuData };
+
     NS::UInteger width = 0;
     NS::UInteger height = 0;
     MTL::PixelFormat pixelFormat = MTL::PixelFormat::PixelFormatInvalid;
@@ -288,6 +290,13 @@ private:
     MTL::Texture *texture = nullptr;
     MTL::Buffer *stagingBuffer = nullptr;
     size_t stagingCapacity = 0;
+    HistoryBacking historyBacking = HistoryBacking::None;
+    bool historyIsProxy = false;
+    bool needsGpuRefresh = false;
+    NS::UInteger historyWidth = 0;
+    NS::UInteger historyHeight = 0;
+    size_t historyBytesPerRow = 0;
+    std::vector<uint8_t> historyData;
   };
 
   // Accumulation framebuffers
@@ -541,12 +550,19 @@ private:
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
+  bool _historyStreamingActive = false;
+  bool _historyStreamingUsedProxy = false;
+  size_t _historyStreamingRestoreCount = 0;
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
                             NS::UInteger height, MTL::PixelFormat format,
                             MTL::TextureUsage usage);
   size_t textureByteSize(const ManagedTextureSlot &slot) const;
+  void clearTextureHistory(ManagedTextureSlot &slot);
+  bool captureCpuHistoryProxy(ManagedTextureSlot &slot);
+  bool uploadHistoryToTexture(ManagedTextureSlot &slot, MTL::CommandBuffer *cmd,
+                              MTL::BlitCommandEncoder *&blit);
   MTL::Texture *requestResidentTexture(ManagedTextureSlot &slot,
                                        MTL::CommandBuffer *cmd,
                                        MTL::BlitCommandEncoder *&blit);
