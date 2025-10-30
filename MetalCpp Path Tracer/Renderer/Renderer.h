@@ -136,7 +136,9 @@ private:
                             size_t &currentCapacity,
                             bool allowShrink = false,
                             MTL::ResourceOptions storageMode =
-                                MTL::ResourceStorageModeManaged);
+                                MTL::ResourceStorageModeManaged,
+                            const char *label = nullptr,
+                            const char *resizeContext = nullptr);
   void rebuildEnvironmentTexture();
   void releaseEnvironmentTexture();
   struct BoundingSphere {
@@ -443,6 +445,7 @@ private:
   size_t _activeTriangleCount = 0;
   size_t _lightCount = 0;
   float _lightTotalWeight = 0.0f;
+  float _lastActivePrimitiveRatio = 1.0f;
 
   bool _residentBuffersInitialized = false;
   bool _residentCompacted = false;

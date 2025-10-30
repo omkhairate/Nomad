@@ -56,6 +56,10 @@ struct ResidencyParameters {
   size_t screenFootprintMinActivePrimitives = 16;
   size_t screenFootprintMaxTogglesPerFrame = 10;
 
+  // Allows resident buffers to shrink when most primitives remain inactive.
+  bool enableBufferShrink = true;
+  float bufferShrinkActiveRatio = 0.3f;
+
   // Controls whether per-object BLAS caches should be precomputed during BVH
   // construction. Disabling this reduces build time at the cost of on-demand
   // rebuilds when residency streaming requires the data.

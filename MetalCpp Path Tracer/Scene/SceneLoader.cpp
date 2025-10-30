@@ -672,6 +672,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.screenFootprintMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "screenToggleBudget",
         static_cast<uint64_t>(params.screenFootprintMaxTogglesPerFrame)));
+    params.enableBufferShrink = root->BoolAttribute(
+        "enableBufferShrink", params.enableBufferShrink);
+    params.bufferShrinkActiveRatio = root->FloatAttribute(
+        "bufferShrinkActiveRatio", params.bufferShrinkActiveRatio);
     params.buildCachedBlas = root->BoolAttribute(
         "buildCachedBlas", params.buildCachedBlas);
 
