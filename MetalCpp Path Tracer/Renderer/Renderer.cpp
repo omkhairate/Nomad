@@ -5079,9 +5079,6 @@ bool Renderer::captureCpuHistoryProxy(ManagedTextureSlot &slot) {
   if (pixelBytes == 0)
     return false;
 
-  if (!_pDevice || !_pCommandQueue)
-    return false;
-
   NS::UInteger proxyWidth = slot.width;
   NS::UInteger proxyHeight = slot.height;
   size_t proxyRowBytes = proxyWidth * pixelBytes;
@@ -5098,79 +5095,34 @@ bool Renderer::captureCpuHistoryProxy(ManagedTextureSlot &slot) {
   if (proxyTotalBytes == 0)
     return false;
 
-  size_t srcRowBytes = static_cast<size_t>(slot.width) * pixelBytes;
-  size_t alignedSrcRowBytes = alignTo(srcRowBytes, 256);
-  size_t totalBytes = alignedSrcRowBytes * slot.height;
-  if (totalBytes == 0)
-    return false;
-
-  MTL::Buffer *captureBuffer =
-      _pDevice->newBuffer(static_cast<NS::UInteger>(totalBytes),
-                          MTL::ResourceOptions::ResourceStorageModeShared);
-  if (!captureBuffer)
-    return false;
-
-  bool success = false;
-  MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
-  if (commandBuffer) {
-    MTL::BlitCommandEncoder *blit = commandBuffer->blitCommandEncoder();
-    if (blit) {
-      MTL::Size size = MTL::Size::Make(slot.width, slot.height, 1);
-      MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-      NS::UInteger bytesPerImage =
-          static_cast<NS::UInteger>(alignedSrcRowBytes * slot.height);
-      blit->copyFromTexture(slot.texture, 0, 0, origin, size, captureBuffer, 0,
-                            alignedSrcRowBytes, bytesPerImage);
-      blit->endEncoding();
-      commandBuffer->commit();
-      commandBuffer->waitUntilCompleted();
-
-      using Status = MTL::CommandBufferStatus;
-      Status status = commandBuffer->status();
-      if (status == Status::CommandBufferStatusCompleted) {
-        const uint8_t *contents =
-            static_cast<const uint8_t *>(captureBuffer->contents());
-        if (contents) {
-          std::vector<uint8_t> data(proxyTotalBytes, 0);
-          for (NS::UInteger y = 0; y < proxyHeight; ++y) {
-            NS::UInteger srcY = static_cast<NS::UInteger>(
-                std::min<NS::UInteger>(slot.height - 1,
-                                        (y * slot.height) /
-                                            std::max<NS::UInteger>(proxyHeight, 1)));
-            const uint8_t *srcRow =
-                contents + static_cast<size_t>(srcY) * alignedSrcRowBytes;
-            uint8_t *dstRow =
-                data.data() + static_cast<size_t>(y) * proxyRowBytes;
-            for (NS::UInteger x = 0; x < proxyWidth; ++x) {
-              NS::UInteger srcX = static_cast<NS::UInteger>(
-                  std::min<NS::UInteger>(slot.width - 1,
-                                          (x * slot.width) /
-                                              std::max<NS::UInteger>(proxyWidth, 1)));
-              const uint8_t *srcPixel =
-                  srcRow + static_cast<size_t>(srcX) * pixelBytes;
-              std::memcpy(dstRow + static_cast<size_t>(x) * pixelBytes,
-                          srcPixel, pixelBytes);
-            }
-          }
-
-          slot.historyBacking =
-              ManagedTextureSlot::HistoryBacking::CpuData;
-          slot.historyIsProxy =
-              proxyWidth != slot.width || proxyHeight != slot.height;
-          slot.historyWidth = proxyWidth;
-          slot.historyHeight = proxyHeight;
-          slot.historyBytesPerRow = proxyRowBytes;
-          slot.historyData = std::move(data);
-          slot.needsGpuRefresh = true;
-          slot.stagingValid = false;
-          success = true;
-        }
-      }
+  std::vector<uint8_t> data(proxyTotalBytes, 0);
+  std::vector<uint8_t> pixel(pixelBytes, 0);
+  for (NS::UInteger y = 0; y < proxyHeight; ++y) {
+    NS::UInteger srcY = static_cast<NS::UInteger>(
+        std::min<NS::UInteger>(slot.height - 1,
+                                (y * slot.height) / std::max<NS::UInteger>(proxyHeight, 1)));
+    uint8_t *dstRow = data.data() + static_cast<size_t>(y) * proxyRowBytes;
+    for (NS::UInteger x = 0; x < proxyWidth; ++x) {
+      NS::UInteger srcX = static_cast<NS::UInteger>(
+          std::min<NS::UInteger>(slot.width - 1,
+                                  (x * slot.width) /
+                                      std::max<NS::UInteger>(proxyWidth, 1)));
+      MTL::Region region = MTL::Region::Make2D(srcX, srcY, 1, 1);
+      slot.texture->getBytes(pixel.data(), pixelBytes, region, 0);
+      std::memcpy(dstRow + static_cast<size_t>(x) * pixelBytes, pixel.data(),
+                  pixelBytes);
     }
   }
 
-  captureBuffer->release();
-  return success;
+  slot.historyBacking = ManagedTextureSlot::HistoryBacking::CpuData;
+  slot.historyIsProxy = proxyWidth != slot.width || proxyHeight != slot.height;
+  slot.historyWidth = proxyWidth;
+  slot.historyHeight = proxyHeight;
+  slot.historyBytesPerRow = proxyRowBytes;
+  slot.historyData = std::move(data);
+  slot.needsGpuRefresh = true;
+  slot.stagingValid = false;
+  return true;
 }
 
 bool Renderer::uploadHistoryToTexture(ManagedTextureSlot &slot,
@@ -5206,31 +5158,17 @@ bool Renderer::uploadHistoryToTexture(ManagedTextureSlot &slot,
       }
     }
 
-    if (!_pCommandQueue)
-      return false;
+    if (void *contents = slot.stagingBuffer->contents()) {
+      const uint8_t *src = static_cast<const uint8_t *>(contents);
+      NS::UInteger uploadWidth = std::max<NS::UInteger>(1, slot.historyWidth);
+      NS::UInteger uploadHeight = std::max<NS::UInteger>(1, slot.historyHeight);
+      MTL::Region region = MTL::Region::Make2D(0, 0, uploadWidth, uploadHeight);
+      slot.texture->replaceRegion(region, 0, src, slot.historyBytesPerRow);
+      slot.needsGpuRefresh = false;
+      return true;
+    }
 
-    MTL::CommandBuffer *tempCmd = _pCommandQueue->commandBuffer();
-    if (!tempCmd)
-      return false;
-
-    MTL::BlitCommandEncoder *tempBlit = tempCmd->blitCommandEncoder();
-    if (!tempBlit)
-      return false;
-
-    MTL::Size size = MTL::Size::Make(slot.historyWidth, slot.historyHeight, 1);
-    MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-    NS::UInteger bytesPerImage = static_cast<NS::UInteger>(
-        slot.historyBytesPerRow * slot.historyHeight);
-    tempBlit->copyFromBuffer(slot.stagingBuffer, 0, slot.historyBytesPerRow,
-                             bytesPerImage, size, slot.texture, 0, 0, origin);
-    tempBlit->endEncoding();
-    tempCmd->commit();
-    tempCmd->waitUntilCompleted();
-    using Status = MTL::CommandBufferStatus;
-    if (tempCmd->status() != Status::CommandBufferStatusCompleted)
-      return false;
-    slot.needsGpuRefresh = false;
-    return true;
+    return false;
   }
 
   if (slot.historyBacking == ManagedTextureSlot::HistoryBacking::CpuData) {
@@ -5297,12 +5235,6 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
             slot.historyBacking == ManagedTextureSlot::HistoryBacking::SharedBuffer
                 ? "staging buffer"
                 : (slot.historyIsProxy ? "CPU proxy" : "CPU history");
-        if (slot.needsGpuRefresh) {
-          std::printf("[TextureResidency] Warning: slot %s still flagged for GPU refresh after history upload.\n",
-                      textureSlotLabel(slot));
-        }
-        assert(!slot.needsGpuRefresh &&
-               "History upload should populate the texture before reuse.");
         std::printf(
             "[TextureResidency] Refreshed slot %s from %s (%ux%u).\n",
             textureSlotLabel(slot), source,
@@ -5357,12 +5289,6 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
           slot.historyBacking == ManagedTextureSlot::HistoryBacking::SharedBuffer
               ? "staging buffer"
               : (slot.historyIsProxy ? "CPU proxy" : "CPU history");
-      if (slot.needsGpuRefresh) {
-        std::printf("[TextureResidency] Warning: slot %s still flagged for GPU refresh after history upload.\n",
-                    textureSlotLabel(slot));
-      }
-      assert(!slot.needsGpuRefresh &&
-             "History upload should populate the texture before reuse.");
       std::printf(
           "[TextureResidency] Restored slot %s from %s (%ux%u).\n", label,
           source, static_cast<unsigned>(slot.historyWidth),
