@@ -7096,6 +7096,12 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     allowedRatio = std::max(allowedRatio, kRelativeFallback);
 
     float allowedDelta = meshLastPrimaryAverage * allowedRatio;
+    const float kMaxAllowedFraction = 0.25f;
+    if (std::isfinite(allowedDelta) && meshLastPrimaryAverage > 0.0f) {
+      float maxAllowedDelta = meshLastPrimaryAverage * kMaxAllowedFraction;
+      if (std::isfinite(maxAllowedDelta))
+        allowedDelta = std::min(allowedDelta, maxAllowedDelta);
+    }
 
     if (allowedDelta > 0.0f) {
       float epsilon = std::max(1e-5f, meshLastPrimaryAverage * 1e-3f);
