@@ -7425,7 +7425,9 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
               _screenCoverageSortedIndices.end(), size_t(0));
   }
 
-  const float screenArea = Camera::screenSize.x * Camera::screenSize.y;
+  float screenArea = Camera::screenSize.x * Camera::screenSize.y;
+  if (screenArea <= 0.0f)
+    screenArea = 1.0f;
   float halfFov = Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
   float tanHalfFov = std::tan(halfFov);
   if (tanHalfFov <= 0.0f)
