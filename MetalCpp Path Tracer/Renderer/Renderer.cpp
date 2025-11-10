@@ -2184,8 +2184,12 @@ void Renderer::updateVisibleScene() {
   _energySortedIndices.clear();
   _primitiveHitScores.assign(primCount, 0.0f);
   _primitiveHitLastFrame.assign(primCount, 0);
+  _primitiveHitAlpha.assign(primCount, 1.0f);
+  _primitiveHitBeta.assign(primCount, 1.0f);
+  _primitiveHitProbability.assign(primCount, 0.5f);
   _primitiveVisible.assign(primCount, 0);
   _rayHitSortedIndices.resize(primCount);
+  _probabilitySortedIndices.resize(primCount);
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
@@ -2227,6 +2231,8 @@ void Renderer::updateVisibleScene() {
     _primitiveImportance[i] = primitiveImportance(p);
     if (i < _rayHitSortedIndices.size())
       _rayHitSortedIndices[i] = i;
+    if (i < _probabilitySortedIndices.size())
+      _probabilitySortedIndices[i] = i;
     if (i < _screenCoverageSortedIndices.size())
       _screenCoverageSortedIndices[i] = i;
     _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
@@ -7927,28 +7933,55 @@ void Renderer::processRayHitCounters() {
   if (!flushRayHitCopy())
     return;
 
-  if (!_pPrimitiveHitReadback)
+  if (!_pPrimitiveHitReadback) {
+    _primitiveHitScores.clear();
+    _primitiveHitLastFrame.clear();
+    _primitiveHitAlpha.clear();
+    _primitiveHitBeta.clear();
+    _primitiveHitProbability.clear();
+    _probabilitySortedIndices.clear();
     return;
+  }
 
   size_t bufferLength = _pPrimitiveHitReadback->length();
   uint32_t *hitPtr =
       static_cast<uint32_t *>(_pPrimitiveHitReadback->contents());
-  if (!hitPtr)
+  if (!hitPtr) {
+    _primitiveHitScores.clear();
+    _primitiveHitLastFrame.clear();
+    _primitiveHitAlpha.clear();
+    _primitiveHitBeta.clear();
+    _primitiveHitProbability.clear();
+    _probabilitySortedIndices.clear();
     return;
+  }
 
   if (_rayHitCopyError) {
     std::memset(hitPtr, 0, bufferLength);
     _primitiveHitScores.clear();
     _primitiveHitLastFrame.clear();
+    _primitiveHitAlpha.clear();
+    _primitiveHitBeta.clear();
+    _primitiveHitProbability.clear();
+    _probabilitySortedIndices.clear();
     _rayHitCopyError = false;
     return;
   }
 
-  if (!_pScene ||
-      _pScene->getResidencyStrategy() != ResidencyStrategy::RayHitBudget) {
+  ResidencyStrategy strategy =
+      _pScene ? _pScene->getResidencyStrategy()
+              : ResidencyStrategy::DistanceLOD;
+  bool strategyUsesHits =
+      strategy == ResidencyStrategy::RayHitBudget ||
+      strategy == ResidencyStrategy::Probabilistic;
+  if (!strategyUsesHits) {
     std::memset(hitPtr, 0, bufferLength);
     _primitiveHitScores.clear();
     _primitiveHitLastFrame.clear();
+    _primitiveHitAlpha.clear();
+    _primitiveHitBeta.clear();
+    _primitiveHitProbability.clear();
+    _probabilitySortedIndices.clear();
     return;
   }
 
@@ -7965,14 +7998,36 @@ void Renderer::processRayHitCounters() {
     _primitiveHitScores.resize(totalPrimitiveCount, 0.0f);
   if (_primitiveHitLastFrame.size() < totalPrimitiveCount)
     _primitiveHitLastFrame.resize(totalPrimitiveCount, 0);
+  if (_primitiveHitAlpha.size() < totalPrimitiveCount)
+    _primitiveHitAlpha.resize(totalPrimitiveCount, 1.0f);
+  if (_primitiveHitBeta.size() < totalPrimitiveCount)
+    _primitiveHitBeta.resize(totalPrimitiveCount, 1.0f);
+  if (_primitiveHitProbability.size() < totalPrimitiveCount)
+    _primitiveHitProbability.resize(totalPrimitiveCount, 0.5f);
+  if (_probabilitySortedIndices.size() != totalPrimitiveCount) {
+    _probabilitySortedIndices.resize(totalPrimitiveCount);
+    std::iota(_probabilitySortedIndices.begin(), _probabilitySortedIndices.end(),
+              size_t(0));
+  }
+
+  float decay = _residencyConfig.rayHitDecay;
 
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
       uint32_t hits = hitPtr[i];
       _primitiveHitLastFrame[i] = hits;
-      _primitiveHitScores[i] =
-          _primitiveHitScores[i] * _residencyConfig.rayHitDecay +
-          static_cast<float>(hits);
+      _primitiveHitScores[i] = _primitiveHitScores[i] * decay +
+                               static_cast<float>(hits);
+
+      float success = static_cast<float>(hits);
+      float failure = 1.0f;
+      float alpha = _primitiveHitAlpha[i] * decay + success;
+      float beta = _primitiveHitBeta[i] * decay + failure;
+      _primitiveHitAlpha[i] = alpha;
+      _primitiveHitBeta[i] = beta;
+      float sum = alpha + beta;
+      _primitiveHitProbability[i] =
+          (sum > 0.0f) ? (alpha / sum) : 0.5f;
       hitPtr[i] = 0;
     }
   });
