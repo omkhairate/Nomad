@@ -1334,6 +1334,8 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
     return "Screen-space footprint";
   case ResidencyStrategy::AlwaysResident:
     return "Always resident";
+  case ResidencyStrategy::Probabilistic:
+    return "Probabilistic residency";
   case ResidencyStrategy::DistanceLOD:
   default:
     return "Distance-based LOD";
@@ -2156,6 +2158,9 @@ void Renderer::updateVisibleScene() {
     break;
   case ResidencyStrategy::AlwaysResident:
     strategyName = "Always resident";
+    break;
+  case ResidencyStrategy::Probabilistic:
+    strategyName = "Probabilistic residency";
     break;
   case ResidencyStrategy::DistanceLOD:
   default:

@@ -18,6 +18,7 @@ enum class ResidencyStrategy {
   RayHitBudget = 2,
   ScreenSpaceFootprint = 3,
   AlwaysResident = 4,
+  Probabilistic = 5,
 };
 
 struct SceneObject {
@@ -55,6 +56,11 @@ struct ResidencyParameters {
   float screenFootprintMinPixelCoverage = 32.0f;
   size_t screenFootprintMinActivePrimitives = 16;
   size_t screenFootprintMaxTogglesPerFrame = 10;
+
+  float probabilityDecay = 0.9f;
+  float probabilityThreshold = 0.5f;
+  size_t probabilityMinActivePrimitives = 16;
+  size_t probabilityMaxTogglesPerFrame = 16;
 
   // Allows resident buffers to shrink when most primitives remain inactive.
   bool enableBufferShrink = true;

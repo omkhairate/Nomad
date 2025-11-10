@@ -624,6 +624,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         } else if (value == "alwaysresident" || value == "always_resident" ||
                    value == "always" || value == "none" || value == "off") {
             scene->setResidencyStrategy(ResidencyStrategy::AlwaysResident);
+        } else if (value == "probabilistic" || value == "probability" ||
+                   value == "stochastic" || value == "probability_based" ||
+                   value == "probabilitybased") {
+            scene->setResidencyStrategy(ResidencyStrategy::Probabilistic);
         } else {
             printf("Unknown residency strategy '%s', defaulting to distance LOD.\n",
                    residencyAttr);
@@ -672,6 +676,17 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.screenFootprintMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "screenToggleBudget",
         static_cast<uint64_t>(params.screenFootprintMaxTogglesPerFrame)));
+
+    params.probabilityDecay =
+        root->FloatAttribute("probabilityDecay", params.probabilityDecay);
+    params.probabilityThreshold =
+        root->FloatAttribute("probabilityThreshold", params.probabilityThreshold);
+    params.probabilityMinActivePrimitives = static_cast<size_t>(root->Unsigned64Attribute(
+        "probabilityMinActive",
+        static_cast<uint64_t>(params.probabilityMinActivePrimitives)));
+    params.probabilityMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
+        "probabilityToggleBudget",
+        static_cast<uint64_t>(params.probabilityMaxTogglesPerFrame)));
     params.enableBufferShrink = root->BoolAttribute(
         "enableBufferShrink", params.enableBufferShrink);
     params.bufferShrinkActiveRatio = root->FloatAttribute(
