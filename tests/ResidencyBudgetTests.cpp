@@ -6,7 +6,7 @@
 
 using MetalCppPathTracer::ResidencyBudget;
 
-int main() {
+void RunResidencyBudgetTests() {
   ResidencyBudget budget;
 
   assert(budget.totalScratchBytes() == 0);
@@ -33,7 +33,5 @@ int main() {
   budget.setTlasScratchBytes(0);
   assert(budget.totalScratchBytes() == 0);
   assert(budget.residencyMemoryMB(1.0) == 1.0);
-
-  return 0;
 }
 
