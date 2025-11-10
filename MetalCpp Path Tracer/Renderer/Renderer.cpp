@@ -8117,19 +8117,36 @@ void Renderer::processRayHitCounters() {
               size_t(0));
   }
 
-  float decay = _residencyConfig.rayHitDecay;
+  auto clampDecay = [](float value) {
+    if (!std::isfinite(value))
+      return 0.0f;
+    return std::clamp(value, 0.0f, 1.0f);
+  };
+
+  float scoreDecay = clampDecay(_residencyConfig.rayHitDecay);
+  float probabilityDecay = clampDecay(_residencyConfig.probabilityDecay);
+  bool probabilityTrackingActive =
+      strategy == ResidencyStrategy::Probabilistic || _benchmarkEnabled;
+
+  // QA: Ray-hit budgeting continues to smooth scores with rayHitDecay, while
+  // probabilistic residency (and analytics that record posterior
+  // probabilities) rely on probabilityDecay for the beta distribution. The
+  // probability path is gated above so the legacy ray-hit budget keeps its
+  // historical decay semantics when probability tracking is disabled.
+  float alphaBetaDecay = probabilityTrackingActive ? probabilityDecay
+                                                   : scoreDecay;
 
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
       uint32_t hits = hitPtr[i];
       _primitiveHitLastFrame[i] = hits;
-      _primitiveHitScores[i] = _primitiveHitScores[i] * decay +
+      _primitiveHitScores[i] = _primitiveHitScores[i] * scoreDecay +
                                static_cast<float>(hits);
 
       float success = static_cast<float>(hits);
       float failure = 1.0f;
-      float alpha = _primitiveHitAlpha[i] * decay + success;
-      float beta = _primitiveHitBeta[i] * decay + failure;
+      float alpha = _primitiveHitAlpha[i] * alphaBetaDecay + success;
+      float beta = _primitiveHitBeta[i] * alphaBetaDecay + failure;
       _primitiveHitAlpha[i] = alpha;
       _primitiveHitBeta[i] = beta;
       float sum = alpha + beta;
