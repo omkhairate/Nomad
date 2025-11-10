@@ -6334,6 +6334,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   case ResidencyStrategy::RayHitBudget:
     changed = updateRayHitBudget(forceAllToggles);
     break;
+  case ResidencyStrategy::Probabilistic:
+    changed = updateProbabilisticResidency(forceAllToggles);
+    break;
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
     break;
@@ -7419,6 +7422,100 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
   if (activeCount == 0 && !_activePrimitive.empty()) {
     size_t fallback = !_rayHitSortedIndices.empty() ? _rayHitSortedIndices.front()
                                                     : size_t(0);
+    if (setPrimitiveActive(fallback, true))
+      changed = true;
+  }
+
+  if (changed)
+    _rayHitRebuildCooldown = _residencyConfig.rayHitRebuildCooldownFrames;
+
+  return changed;
+}
+
+bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
+  if (_activePrimitive.empty())
+    return false;
+
+  const size_t primCount = _activePrimitive.size();
+  if (_primitiveHitProbability.size() < primCount)
+    _primitiveHitProbability.resize(primCount, 0.5f);
+  if (_probabilitySortedIndices.size() != primCount) {
+    _probabilitySortedIndices.resize(primCount);
+    std::iota(_probabilitySortedIndices.begin(), _probabilitySortedIndices.end(),
+              size_t(0));
+  }
+
+  if (_rayHitRebuildCooldown > 0) {
+    if (forceAllToggles)
+      _rayHitRebuildCooldown = 0;
+    else {
+      --_rayHitRebuildCooldown;
+      return false;
+    }
+  }
+
+  std::vector<bool> desired(primCount, false);
+  float threshold = _residencyConfig.probabilityThreshold;
+  for (size_t i = 0; i < primCount; ++i) {
+    float probability = (i < _primitiveHitProbability.size())
+                            ? _primitiveHitProbability[i]
+                            : 0.0f;
+    if (probability >= threshold)
+      desired[i] = true;
+  }
+
+  size_t minActive = std::min(_residencyConfig.probabilityMinActivePrimitives,
+                              primCount);
+  size_t partialCount = std::max<size_t>(
+      1, std::min(primCount, std::max(minActive, size_t(1))));
+  auto comparator = [this](size_t a, size_t b) {
+    float probA = (a < _primitiveHitProbability.size())
+                      ? sanitizeSortValue(_primitiveHitProbability[a])
+                      : -std::numeric_limits<float>::max();
+    float probB = (b < _primitiveHitProbability.size())
+                      ? sanitizeSortValue(_primitiveHitProbability[b])
+                      : -std::numeric_limits<float>::max();
+    if (probA == probB)
+      return a < b;
+    return probA > probB;
+  };
+  std::partial_sort(_probabilitySortedIndices.begin(),
+                    _probabilitySortedIndices.begin() + partialCount,
+                    _probabilitySortedIndices.end(), comparator);
+
+  for (size_t i = 0; i < minActive && i < _probabilitySortedIndices.size(); ++i)
+    desired[_probabilitySortedIndices[i]] = true;
+
+  size_t toggles = 0;
+  bool changed = false;
+  size_t maxToggles = _residencyConfig.probabilityMaxTogglesPerFrame;
+  for (size_t i = 0; i < primCount; ++i) {
+    bool shouldBeActive = desired[i];
+    if (shouldBeActive == _activePrimitive[i])
+      continue;
+    if (!forceAllToggles) {
+      if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+        continue;
+      if (toggles >= maxToggles)
+        break;
+    }
+    if (setPrimitiveActive(i, shouldBeActive)) {
+      ++toggles;
+      changed = true;
+    }
+  }
+
+  size_t activeCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activeCount;
+
+  if (activeCount == 0 && primCount > 0) {
+    size_t fallback = !_probabilitySortedIndices.empty()
+                          ? _probabilitySortedIndices.front()
+                          : size_t(0);
+    if (fallback >= primCount)
+      fallback = primCount - 1;
     if (setPrimitiveActive(fallback, true))
       changed = true;
   }
