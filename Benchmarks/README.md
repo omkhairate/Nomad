@@ -9,6 +9,17 @@ The path tracer can emit additional metrics and frame captures while running ben
 
 These variables can be exported in your shell or added to any run scripts you maintain for benchmarking sessions.
 
+## Benchmark CSV columns
+
+Benchmark exports now include stochastic residency metrics alongside the existing memory and activation counters:
+
+- `avg_hit_probability` – arithmetic mean of the per-primitive hit probabilities tracked during the frame.
+- `p95_hit_probability` – 95th percentile of the same per-primitive hit probabilities, highlighting upper-tail engagement.
+- `probability_threshold` – the active residency threshold applied by the probabilistic strategy for the frame.
+- `probabilistic_toggles` – number of primitives that flipped residency state due to the probabilistic strategy during the frame.
+
+These columns complement the existing residency memory statistics in `*_memory_mb` and allow the plotting tools to chart probability-driven residency behavior when comparing runs.
+
 ## Comparing EXR captures
 
 Use `compare_exr_ssim.cpp` to quantify the visual difference between two EXR frames with the Structural Similarity Index (SSIM). Build the tool with a C++17 compiler:
