@@ -365,6 +365,10 @@ private:
     double cpuTimeSeconds = 0.0;
     double gpuTimeSeconds = 0.0;
     double raysPerSecond = 0.0;
+    double avgHitProbability = 0.0;
+    double p95HitProbability = 0.0;
+    double probabilityThreshold = 0.0;
+    size_t probabilisticToggles = 0;
     ResidencyStrategy strategy = ResidencyStrategy::DistanceLOD;
     std::string strategyName;
     uint32_t minSamplesPerPixel = 1;
@@ -539,6 +543,7 @@ private:
   size_t _framePrimitiveDeactivations = 0;
   size_t _frameObjectActivations = 0;
   size_t _frameObjectDeactivations = 0;
+  size_t _frameProbabilisticToggles = 0;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
   AlwaysResidentCache _alwaysResidentCache;

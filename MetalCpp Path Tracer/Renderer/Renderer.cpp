@@ -1252,7 +1252,9 @@ void Renderer::writeBenchmarkHeader() {
          "object_deactivations,active_primitives,resident_primitives,total_primitives,"
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
          "resident_nodes,total_nodes,active_objects,resident_objects,gpu_memory_mb,"
-         "scratch_memory_mb,residency_memory_mb,texture_memory_cap_mb,"
+         "avg_hit_probability,p95_hit_probability,probability_threshold,"
+         "probabilistic_toggles,gpu_memory_mb,scratch_memory_mb,"
+         "residency_memory_mb,texture_memory_cap_mb,"
          "over_memory_cap,residency_compacted,"
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
@@ -1293,6 +1295,10 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.activeNodeCount << ',' << sample.residentNodeCount << ','
       << sample.totalNodeCount << ',' << sample.activeObjectCount << ','
       << sample.residentObjectCount << ','
+      << formatFixed(sample.avgHitProbability, 6) << ','
+      << formatFixed(sample.p95HitProbability, 6) << ','
+      << formatFixed(sample.probabilityThreshold, 3) << ','
+      << sample.probabilisticToggles << ','
       << formatFixed(sample.gpuMemoryMB, 3) << ','
       << formatFixed(sample.scratchMemoryMB, 3) << ','
       << formatFixed(sample.residencyMemoryMB, 3) << ','
@@ -6309,6 +6315,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _framePrimitiveDeactivations = 0;
   _frameObjectActivations = 0;
   _frameObjectDeactivations = 0;
+  _frameProbabilisticToggles = 0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
   if (strategy != _lastResidencyStrategy) {
     if (strategy == ResidencyStrategy::AlwaysResident)
@@ -7501,6 +7508,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     }
     if (setPrimitiveActive(i, shouldBeActive)) {
       ++toggles;
+      ++_frameProbabilisticToggles;
       changed = true;
     }
   }
@@ -7516,8 +7524,10 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                           : size_t(0);
     if (fallback >= primCount)
       fallback = primCount - 1;
-    if (setPrimitiveActive(fallback, true))
+    if (setPrimitiveActive(fallback, true)) {
+      ++_frameProbabilisticToggles;
       changed = true;
+    }
   }
 
   if (changed)
@@ -8282,6 +8292,33 @@ void Renderer::beginFrameMetrics() {
     sample.residencyMemoryMB =
         std::max(0.0, sample.gpuMemoryMB - sample.scratchMemoryMB);
     sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
+    sample.avgHitProbability = 0.0;
+    sample.p95HitProbability = 0.0;
+    sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
+    if (!_primitiveHitProbability.empty()) {
+      std::vector<float> validProbabilities;
+      validProbabilities.reserve(_primitiveHitProbability.size());
+      double probabilitySum = 0.0;
+      for (float probability : _primitiveHitProbability) {
+        if (!std::isfinite(probability))
+          continue;
+        probabilitySum += probability;
+        validProbabilities.push_back(probability);
+      }
+      if (!validProbabilities.empty()) {
+        sample.avgHitProbability =
+            probabilitySum / static_cast<double>(validProbabilities.size());
+        size_t percentileIndex = static_cast<size_t>(std::floor(
+            0.95 * static_cast<double>(validProbabilities.size() - 1)));
+        percentileIndex = std::min(percentileIndex,
+                                    validProbabilities.size() - 1);
+        std::nth_element(validProbabilities.begin(),
+                         validProbabilities.begin() + percentileIndex,
+                         validProbabilities.end());
+        sample.p95HitProbability = validProbabilities[percentileIndex];
+      }
+    }
+    sample.probabilisticToggles = _frameProbabilisticToggles;
     sample.deltaTimeSeconds = _deltaTimeSeconds;
     sample.wallSeconds = std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - _benchmarkStartTime)

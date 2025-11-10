@@ -6,7 +6,9 @@ numeric metric columns.  For every metric that exists in both files a
 ``frame vs metric`` plot is written next to the CSVs.  When present, a
 ``strategy`` column provides the legend label; otherwise the filename stem
 is used.  This is useful when benchmark runs are timestamped under
-``benchmarks/runs1``.
+``benchmarks/runs1``.  Newly exported metrics such as
+``avg_hit_probability`` and ``probabilistic_toggles`` are automatically
+included when both CSVs expose them.
 """
 from __future__ import annotations
 
@@ -19,6 +21,16 @@ import matplotlib.pyplot as plt
 
 Frames = List[int]
 Series = Dict[str, List[float]]
+
+PREFERRED_METRICS = [
+    "residency_memory_mb",
+    "gpu_memory_mb",
+    "avg_hit_probability",
+    "p95_hit_probability",
+    "probability_threshold",
+    "probabilistic_toggles",
+]
+_PREFERRED_INDEX = {name: index for index, name in enumerate(PREFERRED_METRICS)}
 
 
 def _load_csv(path: Path) -> Tuple[Frames, Series, str]:
@@ -70,10 +82,13 @@ def _load_csv(path: Path) -> Tuple[Frames, Series, str]:
 def _metric_names(metrics_a: Series, metrics_b: Series) -> Iterable[str]:
     """Return the metrics shared by both CSV files."""
 
-    shared = sorted(set(metrics_a) & set(metrics_b))
+    shared = set(metrics_a) & set(metrics_b)
     if not shared:
         raise ValueError("No shared numeric metrics between the provided CSVs")
-    return shared
+    return sorted(
+        shared,
+        key=lambda name: (_PREFERRED_INDEX.get(name, len(PREFERRED_METRICS)), name),
+    )
 
 
 def _safe_name(name: str) -> str:
