@@ -7709,19 +7709,14 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                                                 : 0.0f;
     if (probability > threshold)
       continue;
-    uint32_t raysTested =
-        (idx < _primitiveRaysTestedLastFrame.size())
-            ? _primitiveRaysTestedLastFrame[idx]
-            : 0u;
-    if (raysTested == 0)
-      continue;
+    bool visible = computeVisibility(idx);
     float exploreScore =
         (idx < _primitiveExplorationScore.size())
             ? _primitiveExplorationScore[idx]
             : 0.0f;
     if (exploreScore <= 0.0f)
       continue;
-    if (computeVisibility(idx))
+    if (visible)
       visibleExplore.push_back(idx);
     else
       hiddenExplore.push_back(idx);
@@ -8458,6 +8453,7 @@ void Renderer::processRayHitCounters() {
   float probabilityDecay = _residencyConfig.probabilityDecay;
   float probabilityThreshold = _residencyConfig.probabilityThreshold;
   constexpr float kMinPosteriorMass = 1.0e-3f;
+  constexpr float kIdleVisibleExploreBoost = 1.0f;
 
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
@@ -8501,6 +8497,8 @@ void Renderer::processRayHitCounters() {
       _primitiveHitProbability[i] = clampedProbability;
 
       float exploration = _primitiveExplorationScore[i] * probabilityDecay;
+      bool wasVisible =
+          (i < _primitiveVisible.size()) ? (_primitiveVisible[i] != 0) : false;
       if (raysTested > 0) {
         if (clampedProbability < probabilityThreshold)
           exploration += static_cast<float>(raysTested);
@@ -8508,6 +8506,8 @@ void Renderer::processRayHitCounters() {
           exploration *= rayHitDecay;
       } else {
         exploration *= rayHitDecay;
+        if (wasVisible)
+          exploration += kIdleVisibleExploreBoost;
       }
       _primitiveExplorationScore[i] = exploration;
       hitPtr[base + 0] = 0;
@@ -8545,6 +8545,12 @@ void Renderer::processRayHitCounters() {
                              float exploration =
                                  _primitiveExplorationScore[i] * probabilityDecay;
                              exploration *= rayHitDecay;
+                             bool wasVisible =
+                                 (i < _primitiveVisible.size())
+                                     ? (_primitiveVisible[i] != 0)
+                                     : false;
+                             if (wasVisible)
+                               exploration += kIdleVisibleExploreBoost;
                              _primitiveExplorationScore[i] = exploration;
                            }
                          });
