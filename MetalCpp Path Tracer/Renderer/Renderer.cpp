@@ -8284,17 +8284,14 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         (maxPrimitiveToggles > toggledPrimitiveCount)
             ? (maxPrimitiveToggles - toggledPrimitiveCount)
             : size_t(0);
-    if (forceAllToggles || remainingBudget > 0) {
-      size_t toggled = setObjectActive(fallback, true);
-      if (toggled > 0) {
-        if (!forceAllToggles) {
-          size_t applied = std::min(toggled, remainingBudget);
-          toggledPrimitiveCount += applied;
-          remainingBudget -= applied;
-        }
-        _frameProbabilisticToggles += toggled;
-        changed = true;
+    size_t toggled = setObjectActive(fallback, true);
+    if (toggled > 0) {
+      if (!forceAllToggles) {
+        size_t applied = std::min(toggled, remainingBudget);
+        toggledPrimitiveCount += applied;
       }
+      _frameProbabilisticToggles += toggled;
+      changed = true;
     }
   }
 
