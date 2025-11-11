@@ -15,8 +15,8 @@ The script will look for ``perf.csv`` and ``gpu_mem.csv`` inside ``runs`` and
 an ``as`` directory containing frame dumps. Each output is optional; missing
 inputs are reported but do not abort the run.
 
-Set ``METALAPT_BENCH`` before launching the renderer to capture
-``as/frame_XXXX.json`` files alongside the CSV logs. Each primitive entry exposes ``active``,
+Set ``MPT_RUNS_PATH`` before launching the renderer to capture ``as/frame_XXXX.json``
+files alongside the CSV logs. Each primitive entry exposes ``active``,
 ``hitProbability``, and (when available) ``object`` metadata. The probability
 values feed the new heatmap and per-object trend plots, which highlight how
 the stochastic residency tracker cools primitives over time.
