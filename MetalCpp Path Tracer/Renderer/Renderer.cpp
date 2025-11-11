@@ -8121,7 +8121,8 @@ void Renderer::processRayHitCounters() {
               size_t(0));
   }
 
-  float decay = _residencyConfig.probabilityDecay;
+  float rayHitDecay = _residencyConfig.rayHitDecay;
+  float probabilityDecay = _residencyConfig.probabilityDecay;
 
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
@@ -8130,17 +8131,17 @@ void Renderer::processRayHitCounters() {
       uint32_t raysTested = hitPtr[base + 1];
       _primitiveHitLastFrame[i] = hits;
       _primitiveRaysTestedLastFrame[i] = raysTested;
-      _primitiveHitScores[i] = _primitiveHitScores[i] * decay +
+      _primitiveHitScores[i] = _primitiveHitScores[i] * rayHitDecay +
                                static_cast<float>(hits);
       _primitiveRayContributions[i] =
-          _primitiveRayContributions[i] * decay +
+          _primitiveRayContributions[i] * rayHitDecay +
           static_cast<float>(raysTested);
 
       float success = static_cast<float>(hits);
       float failure =
           std::max(static_cast<float>(raysTested) - success, 0.0f);
-      float alpha = _primitiveHitAlpha[i] * decay + success;
-      float beta = _primitiveHitBeta[i] * decay + failure;
+      float alpha = _primitiveHitAlpha[i] * probabilityDecay + success;
+      float beta = _primitiveHitBeta[i] * probabilityDecay + failure;
       _primitiveHitAlpha[i] = alpha;
       _primitiveHitBeta[i] = beta;
       float sum = alpha + beta;
