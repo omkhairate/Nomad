@@ -8295,7 +8295,15 @@ void Renderer::processRayHitCounters() {
       float clampedProbability = std::clamp(probability, 0.0f, 1.0f);
       // Numerical safeguards ensure the Beta-derived probability stays within
       // the true [0, 1] interval regardless of tuning.
-      _primitiveHitProbability[i] = clampedProbability;
+      float adjustedProbability = clampedProbability;
+      if (raysTested == 0) {
+        // When no rays were fired at a primitive this frame, apply a decay so
+        // dormant primitives slowly cool off instead of preserving stale
+        // residency values indefinitely.
+        adjustedProbability =
+            std::clamp(clampedProbability * probabilityDecay, 0.0f, 1.0f);
+      }
+      _primitiveHitProbability[i] = adjustedProbability;
 
       float exploration = _primitiveExplorationScore[i] * probabilityDecay;
       if (raysTested > 0) {
