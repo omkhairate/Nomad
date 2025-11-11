@@ -8288,22 +8288,29 @@ void Renderer::processRayHitCounters() {
           std::max(static_cast<float>(raysTested) - success, 0.0f);
       float alpha = _primitiveHitAlpha[i] * probabilityDecay + success;
       float beta = _primitiveHitBeta[i] * probabilityDecay + failure;
-      _primitiveHitAlpha[i] = alpha;
-      _primitiveHitBeta[i] = beta;
       float sum = alpha + beta;
       float probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
-      float clampedProbability = std::clamp(probability, 0.0f, 1.0f);
-      // Numerical safeguards ensure the Beta-derived probability stays within
-      // the true [0, 1] interval regardless of tuning.
-      float adjustedProbability = clampedProbability;
       if (raysTested == 0) {
-        // When no rays were fired at a primitive this frame, apply a decay so
-        // dormant primitives slowly cool off instead of preserving stale
-        // residency values indefinitely.
-        adjustedProbability =
-            std::clamp(clampedProbability * probabilityDecay, 0.0f, 1.0f);
+        // When no rays were fired this frame we still decay the posterior so
+        // idle primitives drift toward deactivation. We rescale the Beta
+        // parameters to match the cooled probability instead of just scaling
+        // both equally, which keeps the stored expectation in sync with the
+        // decay. Tuning `probabilityDecay` controls how aggressively the
+        // posterior cools, while `kMinPosteriorMass` keeps a trickle of
+        // pseudo-count mass so the distribution never fully collapses.
+        float cooledProbability =
+            std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
+        constexpr float kMinPosteriorMass = 1.0e-3f;
+        float cooledMass = std::max(sum, kMinPosteriorMass);
+        alpha = cooledProbability * cooledMass;
+        beta = std::max(cooledMass - alpha, 0.0f);
+        sum = alpha + beta;
+        probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
       }
-      _primitiveHitProbability[i] = adjustedProbability;
+      float clampedProbability = std::clamp(probability, 0.0f, 1.0f);
+      _primitiveHitAlpha[i] = alpha;
+      _primitiveHitBeta[i] = beta;
+      _primitiveHitProbability[i] = clampedProbability;
 
       float exploration = _primitiveExplorationScore[i] * probabilityDecay;
       if (raysTested > 0) {
