@@ -17,7 +17,8 @@ enum class ResidencyStrategy {
   EnergyImportance = 1,
   RayHitBudget = 2,
   ScreenSpaceFootprint = 3,
-  AlwaysResident = 4,
+  Probabilistic = 4,
+  AlwaysResident = 5,
 };
 
 struct SceneObject {
@@ -50,6 +51,11 @@ struct ResidencyParameters {
   size_t rayHitMinActivePrimitives = 16;
   size_t rayHitMaxTogglesPerFrame = 12;
   uint32_t rayHitRebuildCooldownFrames = 6;
+
+  float probabilityDecay = 0.9f;
+  float probabilityThreshold = 0.5f;
+  size_t probabilityMinActivePrimitives = 16;
+  size_t probabilityMaxTogglesPerFrame = 16;
 
   float screenFootprintTargetFraction = 0.65f;
   float screenFootprintMinPixelCoverage = 32.0f;
