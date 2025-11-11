@@ -18,12 +18,17 @@ files.  Point the script at a benchmark run directory (or directly at the
 
 Capture guidance
 ================
-1. Export ``MPT_RUNS_PATH=/path/to/runs`` before launching the renderer.
+1. Export ``METALAPT_BENCH=/path/to/runs`` before launching the renderer.
 2. Optionally bound the capture with ``MPT_MAX_FRAMES=300`` (or similar) to
    keep the dump series manageable.
 3. After the run, you should have ``runs/<timestamp>/as/frame_XXXX.json``
    alongside CSV metrics.  Run this script against the directory to produce the
    heatmap and per-object summaries that help debug residency behaviour.
+4. Interpret the new plots as follows: bright bands in the heatmap flag
+   primitives whose ``hitProbability`` remains high (potential residency
+   pressure), while diagonal fades show cooling behaviour.  The per-object
+   trends highlight which scene instances accumulate probability so you can
+   focus on problematic assets frame-by-frame.
 
 Example::
 
@@ -39,6 +44,7 @@ import csv
 import json
 import math
 import re
+import os
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -313,7 +319,12 @@ def resolve_source_path(path: Path) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("path", type=Path, help="Run directory or JSON dump path")
+    parser.add_argument(
+        "path",
+        type=Path,
+        nargs="?",
+        help="Run directory or JSON dump path (defaults to METALAPT_BENCH)",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -329,7 +340,17 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    source = resolve_source_path(args.path.resolve())
+    env_default = os.getenv("METALAPT_BENCH")
+    if args.path is None:
+        if not env_default:
+            parser.error(
+                "Provide a run directory/JSON path or set METALAPT_BENCH."
+            )
+        base_path = Path(env_default).resolve()
+    else:
+        base_path = args.path.resolve()
+
+    source = resolve_source_path(base_path)
     frames = load_frames(source)
 
     output_dir = args.output_dir.resolve() if args.output_dir else source.parent

@@ -2,7 +2,7 @@
 
 The path tracer can emit additional metrics and frame captures while running benchmarks. Configure the behavior with the following environment variables before launching the app:
 
-- `MPT_RUNS_PATH` (default: unset) – directory where run artifacts such as acceleration structure dumps and CSV metrics are written.
+- `METALAPT_BENCH` (default: unset) – directory where run artifacts such as acceleration structure dumps and CSV metrics are written.
 - `MPT_MAX_FRAMES` (default: unset) – stop rendering after the specified number of frames when keyframes are present.
 - `MPT_CAPTURE_EXR` (default: `0`) – set to `1`, `true`, or `yes` to enable EXR frame capture from the renderer. Captured frames are written to the `Benchmarks/frames` directory next to benchmark logs.
 - `MPT_CAPTURE_INTERVAL` (default: `4`) – capture every _n_ frames when EXR capture is enabled. Values less than `1` are ignored and treated as `1`.
@@ -22,14 +22,14 @@ These columns complement the existing residency memory statistics in `*_memory_m
 
 ## Acceleration-structure dumps and residency debugging
 
-Setting `MPT_RUNS_PATH` before launching the renderer creates a run directory containing CSV logs and an `as/` folder with frame-by-frame acceleration-structure dumps. Each JSON file mirrors the renderer's TLAS/BLAS hierarchy and includes a `primitives` array with the following keys:
+Setting `METALAPT_BENCH` before launching the renderer creates a run directory containing CSV logs and an `as/` folder with frame-by-frame acceleration-structure dumps. Each JSON file mirrors the renderer's TLAS/BLAS hierarchy and includes a `primitives` array with the following keys:
 
 - `index` – primitive identifier within the flattened BLAS list.
 - `active` – whether the primitive was resident during the frame.
 - `hitProbability` – the stochastic hit probability tracked for the primitive (range 0–1).
 - `object` – optional owning object index, present when the primitive can be mapped back to a scene object.
 
-Run `analyze_residency_dump.py` against the capture directory to transform the dumps into Matplotlib artifacts that mirror the CSV tooling (`compare_runs.py`). The script emits `hit_probability_heatmap.png` for a per-primitive probability heatmap plus `object_hit_probability.png`/`.csv` for per-object trends. Capture a short run (for example, `MPT_MAX_FRAMES=300`) to produce a manageable series of dumps, then inspect the heatmap for stubbornly hot primitives or use the per-object plot to find residency oscillations.
+Run `analyze_residency_dump.py` against the capture directory to transform the dumps into Matplotlib artifacts that mirror the CSV tooling (`compare_runs.py`). The script emits `hit_probability_heatmap.png` for a per-primitive probability heatmap plus `object_hit_probability.png`/`.csv` for per-object trends. Capture a short run (for example, `MPT_MAX_FRAMES=300`) to produce a manageable series of dumps, then inspect the heatmap for stubbornly hot primitives or use the per-object plot to find residency oscillations. When debugging the hitProbability tracker, bright bands highlight primitives that remain hot, while fading traces indicate successful cooling.
 
 ## Comparing EXR captures
 
