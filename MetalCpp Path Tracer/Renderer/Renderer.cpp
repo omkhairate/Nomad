@@ -1191,14 +1191,14 @@ void Renderer::setFrameCaptureInterval(size_t interval) {
 }
 
 void Renderer::initializeBenchmarking() {
-  const char *primaryEnv = std::getenv("METALPT_BENCH");
-  const char *legacyEnv = std::getenv("METALAPT_BENCH");
+  const char *primaryEnv = std::getenv("METALAPT_BENCH");
+  const char *legacyEnv = std::getenv("METALPT_BENCH");
   const char *env = primaryEnv ? primaryEnv : legacyEnv;
   if (!env)
     return;
 
   if (!primaryEnv && legacyEnv) {
-    printf("METALAPT_BENCH detected; please update to METALPT_BENCH for future runs.\n");
+    printf("METALPT_BENCH detected; please update to METALAPT_BENCH for future runs.\n");
   }
 
   std::string value(env);
