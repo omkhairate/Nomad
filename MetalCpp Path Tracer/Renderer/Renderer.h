@@ -427,6 +427,14 @@ private:
   std::vector<uint8_t> _primitiveVisible;
   std::vector<size_t> _rayHitSortedIndices;
   std::vector<size_t> _probabilitySortedIndices;
+  std::vector<uint32_t> _objectHitLastFrame;
+  std::vector<uint32_t> _objectRaysTestedLastFrame;
+  std::vector<float> _objectHitAlpha;
+  std::vector<float> _objectHitBeta;
+  std::vector<float> _objectHitProbability;
+  std::vector<float> _objectExplorationScore;
+  std::vector<uint8_t> _objectVisible;
+  std::vector<size_t> _objectProbabilitySortedIndices;
   std::vector<float> _primitiveScreenCoverage;
   std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;

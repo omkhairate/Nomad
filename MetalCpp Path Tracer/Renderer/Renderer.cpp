@@ -78,6 +78,10 @@ TaskLimiter &sceneBvhTaskLimiter() {
 }
 } // namespace
 
+namespace {
+constexpr float kIdleVisibleExploreSeed = 1.0f;
+}
+
 namespace MetalCppPathTracer {
 
 void ResidentObjectGpuResources::clearPendingCommand() {
@@ -2293,7 +2297,17 @@ void Renderer::updateVisibleScene() {
   _objectCooldown.assign(objectCount, 0);
   _objectImportance.assign(objectCount, 0.0f);
   _energySortedIndices.resize(objectCount);
+  _objectHitLastFrame.assign(objectCount, 0);
+  _objectRaysTestedLastFrame.assign(objectCount, 0);
+  _objectHitAlpha.assign(objectCount, 1.0f);
+  _objectHitBeta.assign(objectCount, 1.0f);
+  _objectHitProbability.assign(objectCount, 0.5f);
+  _objectExplorationScore.assign(objectCount, 0.0f);
+  _objectVisible.assign(objectCount, 0);
+  _objectProbabilitySortedIndices.resize(objectCount);
   std::iota(_energySortedIndices.begin(), _energySortedIndices.end(), size_t(0));
+  std::iota(_objectProbabilitySortedIndices.begin(),
+            _objectProbabilitySortedIndices.end(), size_t(0));
   _residentObjectGpuResources.resize(objectCount);
 
   _meshGroups.clear();
@@ -7645,15 +7659,46 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   if (_primitiveVisible.size() < primCount)
     _primitiveVisible.resize(primCount, 0);
+  if (_primitiveExplorationScore.size() < primCount)
+    _primitiveExplorationScore.resize(primCount, 0.0f);
+
+  const size_t objectCount = _allSceneObjects.size();
+  if (_objectHitProbability.size() < objectCount)
+    _objectHitProbability.resize(objectCount, 0.5f);
+  if (_objectProbabilitySortedIndices.size() != objectCount) {
+    _objectProbabilitySortedIndices.resize(objectCount);
+    std::iota(_objectProbabilitySortedIndices.begin(),
+              _objectProbabilitySortedIndices.end(), size_t(0));
+  }
+  if (_objectVisible.size() < objectCount)
+    _objectVisible.resize(objectCount, 0);
+  if (_objectExplorationScore.size() < objectCount)
+    _objectExplorationScore.resize(objectCount, 0.0f);
 
   std::vector<bool> desired(primCount, false);
+  std::vector<bool> desiredObject(objectCount, false);
   float threshold = _residencyConfig.probabilityThreshold;
   for (size_t i = 0; i < primCount; ++i) {
     float probability = (i < _primitiveHitProbability.size())
                             ? _primitiveHitProbability[i]
                             : 0.0f;
-    if (probability > threshold)
+    if (probability > threshold) {
       desired[i] = true;
+      if (i < _primitiveToObject.size()) {
+        size_t objectIndex = _primitiveToObject[i];
+        if (objectIndex < desiredObject.size())
+          desiredObject[objectIndex] = true;
+      }
+    }
+  }
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    float probability =
+        (objectIndex < _objectHitProbability.size())
+            ? _objectHitProbability[objectIndex]
+            : 0.0f;
+    if (probability > threshold)
+      desiredObject[objectIndex] = true;
   }
 
   size_t minActive = std::min(_residencyConfig.probabilityMinActivePrimitives,
@@ -7675,6 +7720,22 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                     _probabilitySortedIndices.begin() + partialCount,
                     _probabilitySortedIndices.end(), comparator);
 
+  if (objectCount > 0) {
+    auto objectComparator = [this](size_t a, size_t b) {
+      float probA = (a < _objectHitProbability.size())
+                        ? sanitizeSortValue(_objectHitProbability[a])
+                        : -std::numeric_limits<float>::max();
+      float probB = (b < _objectHitProbability.size())
+                        ? sanitizeSortValue(_objectHitProbability[b])
+                        : -std::numeric_limits<float>::max();
+      if (probA == probB)
+        return a < b;
+      return probA > probB;
+    };
+    std::sort(_objectProbabilitySortedIndices.begin(),
+              _objectProbabilitySortedIndices.end(), objectComparator);
+  }
+
   auto computeVisibility = [this](size_t idx) {
     bool visible = false;
     if (idx < _primitiveBounds.size()) {
@@ -7686,6 +7747,72 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     }
     return visible;
   };
+
+  std::vector<size_t> objectDesiredCounts(objectCount, 0);
+  if (objectCount > 0) {
+    for (size_t prim = 0; prim < primCount; ++prim) {
+      if (!desired[prim])
+        continue;
+      if (prim >= _primitiveToObject.size())
+        continue;
+      size_t objectIndex = _primitiveToObject[prim];
+      if (objectIndex < objectDesiredCounts.size())
+        ++objectDesiredCounts[objectIndex];
+    }
+
+    auto selectRepresentativePrimitive = [&](size_t objectIndex) {
+      if (objectIndex >= _allSceneObjects.size())
+        return primCount;
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      size_t first = obj.firstPrimitive;
+      size_t last = std::min(first + obj.primitiveCount, primCount);
+      if (first >= last)
+        return primCount;
+      size_t bestPrim = primCount;
+      float bestScore = -std::numeric_limits<float>::max();
+      for (size_t prim = first; prim < last; ++prim) {
+        float probability = (prim < _primitiveHitProbability.size())
+                                ? _primitiveHitProbability[prim]
+                                : 0.0f;
+        float explore = (prim < _primitiveExplorationScore.size())
+                            ? _primitiveExplorationScore[prim]
+                            : 0.0f;
+        float probabilityScore = sanitizeSortValue(probability);
+        float explorationScore = sanitizeSortValue(explore);
+        float combined = std::max(probabilityScore, explorationScore);
+        if (combined > bestScore) {
+          bestScore = combined;
+          bestPrim = prim;
+        }
+      }
+      if (bestPrim == primCount)
+        bestPrim = first;
+      return bestPrim;
+    };
+
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+      if (!desiredObject[objectIndex])
+        continue;
+      if (objectDesiredCounts[objectIndex] > 0)
+        continue;
+      size_t prim = selectRepresentativePrimitive(objectIndex);
+      if (prim >= primCount)
+        continue;
+      if (!desired[prim]) {
+        desired[prim] = true;
+        if (objectIndex < objectDesiredCounts.size())
+          ++objectDesiredCounts[objectIndex];
+      } else if (objectIndex < objectDesiredCounts.size() &&
+                 objectDesiredCounts[objectIndex] == 0) {
+        objectDesiredCounts[objectIndex] = 1;
+      }
+      if (prim < _primitiveToObject.size()) {
+        size_t mappedObject = _primitiveToObject[prim];
+        if (mappedObject < desiredObject.size())
+          desiredObject[mappedObject] = true;
+      }
+    }
+  }
 
   size_t desiredCount = 0;
   for (bool flag : desired)
@@ -7714,7 +7841,24 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         (idx < _primitiveExplorationScore.size())
             ? _primitiveExplorationScore[idx]
             : 0.0f;
-    if (exploreScore <= 0.0f)
+    uint32_t raysTested =
+        (idx < _primitiveRaysTestedLastFrame.size())
+            ? _primitiveRaysTestedLastFrame[idx]
+            : 0u;
+    float effectiveExplore = exploreScore;
+    if (visible && raysTested == 0)
+      effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
+    size_t objectIndex =
+        (idx < _primitiveToObject.size()) ? _primitiveToObject[idx]
+                                          : std::numeric_limits<size_t>::max();
+    if (objectIndex < _objectExplorationScore.size())
+      effectiveExplore =
+          std::max(effectiveExplore, _objectExplorationScore[objectIndex]);
+    if (objectIndex < desiredObject.size() && desiredObject[objectIndex])
+      effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
+    if (idx < _primitiveExplorationScore.size())
+      _primitiveExplorationScore[idx] = effectiveExplore;
+    if (effectiveExplore <= 0.0f)
       continue;
     if (visible)
       visibleExplore.push_back(idx);
@@ -7757,9 +7901,25 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       if (desired[idx])
         continue;
       desired[idx] = true;
+      if (idx < _primitiveToObject.size()) {
+        size_t objectIndex = _primitiveToObject[idx];
+        if (objectIndex < desiredObject.size())
+          desiredObject[objectIndex] = true;
+        if (objectIndex < objectDesiredCounts.size())
+          ++objectDesiredCounts[objectIndex];
+      }
       ++desiredCount;
       if (slots > 0)
         --slots;
+      bool wasVisible =
+          (idx < _primitiveVisible.size()) ? (_primitiveVisible[idx] != 0) : false;
+      bool idle =
+          (idx < _primitiveRaysTestedLastFrame.size())
+              ? (_primitiveRaysTestedLastFrame[idx] == 0)
+              : true;
+      if (wasVisible && idle && idx < _primitiveExplorationScore.size() &&
+          _primitiveExplorationScore[idx] < kIdleVisibleExploreSeed)
+        _primitiveExplorationScore[idx] = kIdleVisibleExploreSeed;
     }
   };
 
@@ -7787,6 +7947,13 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       if (desired[idx])
         continue;
       desired[idx] = true;
+      if (idx < _primitiveToObject.size()) {
+        size_t objectIndex = _primitiveToObject[idx];
+        if (objectIndex < desiredObject.size())
+          desiredObject[objectIndex] = true;
+        if (objectIndex < objectDesiredCounts.size())
+          ++objectDesiredCounts[objectIndex];
+      }
       ++desiredCount;
     }
   }
@@ -7800,6 +7967,25 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     promote(hiddenExplore, slots);
   }
 
+  auto selectObjectFallback = [&]() -> size_t {
+    if (objectCount == 0)
+      return primCount;
+    for (size_t objectIndex : _objectProbabilitySortedIndices) {
+      if (objectIndex >= _allSceneObjects.size())
+        continue;
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      size_t first = obj.firstPrimitive;
+      size_t last = std::min(first + obj.primitiveCount, primCount);
+      for (size_t prim = first; prim < last; ++prim) {
+        if (prim >= primCount)
+          break;
+        if (prim >= _activePrimitive.size() || !_activePrimitive[prim])
+          return prim;
+      }
+    }
+    return primCount;
+  };
+
   size_t fallbackCandidate = primCount;
   if (!visibleExplore.empty())
     fallbackCandidate = visibleExplore.front();
@@ -7807,6 +7993,14 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     fallbackCandidate = hiddenExplore.front();
   else if (!_probabilitySortedIndices.empty())
     fallbackCandidate = _probabilitySortedIndices.front();
+
+  if ((fallbackCandidate >= primCount) ||
+      (fallbackCandidate < _activePrimitive.size() &&
+       _activePrimitive[fallbackCandidate])) {
+    size_t objectFallback = selectObjectFallback();
+    if (objectFallback < primCount)
+      fallbackCandidate = objectFallback;
+  }
 
   size_t toggles = 0;
   bool changed = false;
@@ -8353,7 +8547,7 @@ void Renderer::processRayHitCounters() {
   if (!flushRayHitCopy())
     return;
 
-  if (!_pPrimitiveHitReadback) {
+  auto clearHitTracking = [this]() {
     _primitiveHitScores.clear();
     _primitiveHitLastFrame.clear();
     _primitiveRayContributions.clear();
@@ -8363,6 +8557,18 @@ void Renderer::processRayHitCounters() {
     _primitiveHitProbability.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
+    _objectHitLastFrame.clear();
+    _objectRaysTestedLastFrame.clear();
+    _objectHitAlpha.clear();
+    _objectHitBeta.clear();
+    _objectHitProbability.clear();
+    _objectExplorationScore.clear();
+    _objectProbabilitySortedIndices.clear();
+    _objectVisible.clear();
+  };
+
+  if (!_pPrimitiveHitReadback) {
+    clearHitTracking();
     return;
   }
 
@@ -8370,29 +8576,13 @@ void Renderer::processRayHitCounters() {
   uint32_t *hitPtr =
       static_cast<uint32_t *>(_pPrimitiveHitReadback->contents());
   if (!hitPtr) {
-    _primitiveHitScores.clear();
-    _primitiveHitLastFrame.clear();
-    _primitiveRayContributions.clear();
-    _primitiveRaysTestedLastFrame.clear();
-    _primitiveHitAlpha.clear();
-    _primitiveHitBeta.clear();
-    _primitiveHitProbability.clear();
-    _primitiveExplorationScore.clear();
-    _probabilitySortedIndices.clear();
+    clearHitTracking();
     return;
   }
 
   if (_rayHitCopyError) {
     std::memset(hitPtr, 0, bufferLength);
-    _primitiveHitScores.clear();
-    _primitiveHitLastFrame.clear();
-    _primitiveRayContributions.clear();
-    _primitiveRaysTestedLastFrame.clear();
-    _primitiveHitAlpha.clear();
-    _primitiveHitBeta.clear();
-    _primitiveHitProbability.clear();
-    _primitiveExplorationScore.clear();
-    _probabilitySortedIndices.clear();
+    clearHitTracking();
     _rayHitCopyError = false;
     return;
   }
@@ -8405,21 +8595,15 @@ void Renderer::processRayHitCounters() {
       strategy == ResidencyStrategy::Probabilistic;
   if (!strategyUsesHits) {
     std::memset(hitPtr, 0, bufferLength);
-    _primitiveHitScores.clear();
-    _primitiveHitLastFrame.clear();
-    _primitiveRayContributions.clear();
-    _primitiveRaysTestedLastFrame.clear();
-    _primitiveHitAlpha.clear();
-    _primitiveHitBeta.clear();
-    _primitiveHitProbability.clear();
-    _primitiveExplorationScore.clear();
-    _probabilitySortedIndices.clear();
+    clearHitTracking();
     return;
   }
 
   size_t totalPrimitiveCount = _allPrimitives.size();
-  if (totalPrimitiveCount == 0)
+  if (totalPrimitiveCount == 0) {
+    clearHitTracking();
     return;
+  }
 
   constexpr size_t kStatsPerPrimitive = 2;
   size_t bufferCount = bufferLength / sizeof(uint32_t);
@@ -8449,12 +8633,35 @@ void Renderer::processRayHitCounters() {
               size_t(0));
   }
 
+  size_t objectCount = _allSceneObjects.size();
+  if (objectCount > 0) {
+    _objectHitLastFrame.resize(objectCount, 0);
+    _objectRaysTestedLastFrame.resize(objectCount, 0);
+    _objectHitAlpha.resize(objectCount, 1.0f);
+    _objectHitBeta.resize(objectCount, 1.0f);
+    _objectHitProbability.resize(objectCount, 0.5f);
+    _objectExplorationScore.resize(objectCount, 0.0f);
+    _objectVisible.resize(objectCount, 0);
+    if (_objectProbabilitySortedIndices.size() != objectCount) {
+      _objectProbabilitySortedIndices.resize(objectCount);
+      std::iota(_objectProbabilitySortedIndices.begin(),
+                _objectProbabilitySortedIndices.end(), size_t(0));
+    }
+  } else {
+    _objectHitLastFrame.clear();
+    _objectRaysTestedLastFrame.clear();
+    _objectHitAlpha.clear();
+    _objectHitBeta.clear();
+    _objectHitProbability.clear();
+    _objectExplorationScore.clear();
+    _objectProbabilitySortedIndices.clear();
+    _objectVisible.clear();
+  }
+
   float rayHitDecay = _residencyConfig.rayHitDecay;
   float probabilityDecay = _residencyConfig.probabilityDecay;
   float probabilityThreshold = _residencyConfig.probabilityThreshold;
   constexpr float kMinPosteriorMass = 1.0e-3f;
-  constexpr float kIdleVisibleExploreBoost = 1.0f;
-
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
       size_t base = i * kStatsPerPrimitive;
@@ -8507,7 +8714,7 @@ void Renderer::processRayHitCounters() {
       } else {
         exploration *= rayHitDecay;
         if (wasVisible)
-          exploration += kIdleVisibleExploreBoost;
+          exploration = std::max(exploration, kIdleVisibleExploreSeed);
       }
       _primitiveExplorationScore[i] = exploration;
       hitPtr[base + 0] = 0;
@@ -8550,10 +8757,85 @@ void Renderer::processRayHitCounters() {
                                      ? (_primitiveVisible[i] != 0)
                                      : false;
                              if (wasVisible)
-                               exploration += kIdleVisibleExploreBoost;
+                               exploration =
+                                   std::max(exploration, kIdleVisibleExploreSeed);
                              _primitiveExplorationScore[i] = exploration;
                            }
                          });
+  }
+
+  if (objectCount > 0) {
+    std::vector<uint64_t> objectHitAccum(objectCount, 0);
+    std::vector<uint64_t> objectRayAccum(objectCount, 0);
+
+    size_t primitiveLimit =
+        std::min(totalPrimitiveCount, _primitiveToObject.size());
+    for (size_t prim = 0; prim < primitiveLimit; ++prim) {
+      size_t objectIndex = _primitiveToObject[prim];
+      if (objectIndex >= objectCount)
+        continue;
+      uint32_t hits =
+          (prim < _primitiveHitLastFrame.size()) ? _primitiveHitLastFrame[prim] : 0;
+      uint32_t rays = (prim < _primitiveRaysTestedLastFrame.size())
+                          ? _primitiveRaysTestedLastFrame[prim]
+                          : 0;
+      objectHitAccum[objectIndex] += static_cast<uint64_t>(hits);
+      objectRayAccum[objectIndex] += static_cast<uint64_t>(rays);
+    }
+
+    constexpr uint64_t kMaxUint32 =
+        static_cast<uint64_t>(std::numeric_limits<uint32_t>::max());
+
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+      uint64_t hits64 = objectHitAccum[objectIndex];
+      uint64_t rays64 = objectRayAccum[objectIndex];
+      uint32_t hits = static_cast<uint32_t>(std::min(hits64, kMaxUint32));
+      uint32_t rays = static_cast<uint32_t>(std::min(rays64, kMaxUint32));
+
+      _objectHitLastFrame[objectIndex] = hits;
+      _objectRaysTestedLastFrame[objectIndex] = rays;
+
+      bool visible = false;
+      if (objectIndex < _objectBounds.size())
+        visible = isInView(_objectBounds[objectIndex]);
+      if (objectIndex < _objectVisible.size())
+        _objectVisible[objectIndex] = visible ? 1 : 0;
+
+      float success = static_cast<float>(hits);
+      float failure = std::max(static_cast<float>(rays) - success, 0.0f);
+      float alpha = _objectHitAlpha[objectIndex] * probabilityDecay + success;
+      float beta = _objectHitBeta[objectIndex] * probabilityDecay + failure;
+      float sum = alpha + beta;
+      float probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
+      if (rays == 0) {
+        float cooledProbability =
+            std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
+        float cooledMass = std::max(sum, kMinPosteriorMass);
+        alpha = cooledProbability * cooledMass;
+        beta = std::max(cooledMass - alpha, 0.0f);
+        sum = alpha + beta;
+        probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
+      }
+
+      float clampedProbability = std::clamp(probability, 0.0f, 1.0f);
+      _objectHitAlpha[objectIndex] = alpha;
+      _objectHitBeta[objectIndex] = beta;
+      _objectHitProbability[objectIndex] = clampedProbability;
+
+      float exploration = _objectExplorationScore[objectIndex] * probabilityDecay;
+      if (rays > 0) {
+        if (clampedProbability < probabilityThreshold)
+          exploration += static_cast<float>(rays);
+        else
+          exploration *= rayHitDecay;
+      } else {
+        exploration *= rayHitDecay;
+        if (visible)
+          exploration = std::max(exploration, kIdleVisibleExploreSeed);
+      }
+
+      _objectExplorationScore[objectIndex] = exploration;
+    }
   }
 }
 
@@ -8759,8 +9041,12 @@ void Renderer::beginFrameMetrics() {
         for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
              ++objectIndex) {
           double avgProbability = 0.0;
-          if (objectIndex < objectProbabilitySums.size() &&
-              objectProbabilityCounts[objectIndex] > 0) {
+          if (objectIndex < _objectHitProbability.size()) {
+            float stored = _objectHitProbability[objectIndex];
+            if (std::isfinite(stored))
+              avgProbability = std::clamp(static_cast<double>(stored), 0.0, 1.0);
+          } else if (objectIndex < objectProbabilitySums.size() &&
+                     objectProbabilityCounts[objectIndex] > 0) {
             avgProbability = objectProbabilitySums[objectIndex] /
                               static_cast<double>(
                                   objectProbabilityCounts[objectIndex]);
