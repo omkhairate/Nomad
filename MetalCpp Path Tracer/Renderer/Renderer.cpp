@@ -8053,6 +8053,9 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
   return true;
 }
 
+// The dump serialises TLAS, BLAS, and per-primitive state as JSON. Primitive
+// records now include an estimated hitProbability (and optional object index)
+// so tooling can correlate residency decisions with the stochastic tracker.
 void Renderer::dumpAccelerationStructure(const std::string &path) {
   std::filesystem::create_directories(
       std::filesystem::path(path).parent_path());
@@ -8113,9 +8116,17 @@ void Renderer::dumpAccelerationStructure(const std::string &path) {
   out << "  \"primitives\": [\n";
   size_t primCount = std::min(_allPrimitives.size(), _activePrimitive.size());
   for (size_t i = 0; i < primCount; ++i) {
+    float hitProbability =
+        (i < _primitiveHitProbability.size()) ? _primitiveHitProbability[i] : 0.0f;
     out << "    {\"index\":" << i
         << ",\"active\":" << (_activePrimitive[i] ? "true" : "false")
-        << "}";
+        << ",\"hitProbability\":" << hitProbability;
+    if (i < _primitiveToObject.size()) {
+      size_t objectIndex = _primitiveToObject[i];
+      if (objectIndex != std::numeric_limits<size_t>::max())
+        out << ",\"object\":" << objectIndex;
+    }
+    out << "}";
     if (i + 1 < primCount)
       out << ",\n";
     else
