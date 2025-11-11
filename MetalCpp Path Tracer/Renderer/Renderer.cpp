@@ -8117,7 +8117,7 @@ void Renderer::processRayHitCounters() {
               size_t(0));
   }
 
-  float decay = _residencyConfig.rayHitDecay;
+  float decay = _residencyConfig.probabilityDecay;
 
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
