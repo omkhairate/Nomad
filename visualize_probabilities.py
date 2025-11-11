@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -60,6 +61,7 @@ def _load_probability_data(
     object_counts: Counts = {}
 
     with path.open("r", encoding="utf-8") as handle:
+        csv.field_size_limit(sys.maxsize)
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
             raise ValueError(f"CSV file has no header: {path}")
