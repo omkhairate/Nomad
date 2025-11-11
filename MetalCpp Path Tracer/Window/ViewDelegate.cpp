@@ -16,9 +16,7 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
       _lastTime(std::chrono::steady_clock::now()) {
   if (const char *env = std::getenv("MPT_MAX_FRAMES"))
     _maxFrames = std::strtoul(env, nullptr, 10);
-  const char *runs = std::getenv("METALAPT_BENCHMARK");
-  if (!runs)
-    runs = std::getenv("MPT_RUNS_PATH");
+  const char *runs = std::getenv("METALAPT_BENCH");
   if (runs) {
     std::filesystem::path base(runs);
     std::filesystem::create_directories(base);

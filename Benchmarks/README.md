@@ -2,7 +2,7 @@
 
 The path tracer can emit additional metrics and frame captures while running benchmarks. Configure the behavior with the following environment variables before launching the app:
 
-- `METALAPT_BENCHMARK` (default: unset) – directory where run artifacts such as acceleration structure dumps and CSV metrics are written. The renderer also honours the legacy `MPT_RUNS_PATH` variable for backwards compatibility.
+- `METALAPT_BENCH` (default: unset) – directory where run artifacts such as acceleration structure dumps and CSV metrics are written.
 - `MPT_MAX_FRAMES` (default: unset) – stop rendering after the specified number of frames when keyframes are present.
 - `MPT_CAPTURE_EXR` (default: `0`) – set to `1`, `true`, or `yes` to enable EXR frame capture from the renderer. Captured frames are written to the `Benchmarks/frames` directory next to benchmark logs.
 - `MPT_CAPTURE_INTERVAL` (default: `4`) – capture every _n_ frames when EXR capture is enabled. Values less than `1` are ignored and treated as `1`.
@@ -22,7 +22,7 @@ These columns complement the existing residency memory statistics in `*_memory_m
 
 ## Acceleration-structure dumps and residency debugging
 
-Setting `METALAPT_BENCHMARK` before launching the renderer creates a run directory containing CSV logs and an `as/` folder with frame-by-frame acceleration-structure dumps. (If you still rely on older automation, `MPT_RUNS_PATH` continues to work as a fallback.) Each JSON file mirrors the renderer's TLAS/BLAS hierarchy and includes a `primitives` array with the following keys:
+Setting `METALAPT_BENCH` before launching the renderer creates a run directory containing CSV logs and an `as/` folder with frame-by-frame acceleration-structure dumps. Each JSON file mirrors the renderer's TLAS/BLAS hierarchy and includes a `primitives` array with the following keys:
 
 - `index` – primitive identifier within the flattened BLAS list.
 - `active` – whether the primitive was resident during the frame.

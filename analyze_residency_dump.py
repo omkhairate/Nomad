@@ -18,9 +18,7 @@ files.  Point the script at a benchmark run directory (or directly at the
 
 Capture guidance
 ================
-1. Export ``METALAPT_BENCHMARK=/path/to/runs`` before launching the renderer.
-   (Legacy automation that still sets ``MPT_RUNS_PATH`` continues to work as a
-   fallback.)
+1. Export ``METALAPT_BENCH=/path/to/runs`` before launching the renderer.
 2. Optionally bound the capture with ``MPT_MAX_FRAMES=300`` (or similar) to
    keep the dump series manageable.
 3. After the run, you should have ``runs/<timestamp>/as/frame_XXXX.json``
@@ -325,7 +323,7 @@ def main() -> None:
         "path",
         type=Path,
         nargs="?",
-        help="Run directory or JSON dump path (defaults to METALAPT_BENCHMARK)",
+        help="Run directory or JSON dump path (defaults to METALAPT_BENCH)",
     )
     parser.add_argument(
         "--output-dir",
@@ -342,11 +340,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    env_default = os.getenv("METALAPT_BENCHMARK") or os.getenv("MPT_RUNS_PATH")
+    env_default = os.getenv("METALAPT_BENCH")
     if args.path is None:
         if not env_default:
             parser.error(
-                "Provide a run directory/JSON path or set METALAPT_BENCHMARK (or the legacy MPT_RUNS_PATH)."
+                "Provide a run directory/JSON path or set METALAPT_BENCH."
             )
         base_path = Path(env_default).resolve()
     else:
