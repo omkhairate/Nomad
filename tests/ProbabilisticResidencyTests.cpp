@@ -175,6 +175,97 @@ private:
   std::vector<std::size_t> _sorted;
 };
 
+class ObjectFallbackHarness {
+public:
+  explicit ObjectFallbackHarness(const std::vector<std::size_t> &objectPrimitiveCounts)
+      : _objectPrimitiveCounts(objectPrimitiveCounts),
+        _objectOffsets(objectPrimitiveCounts.size(), 0) {
+    std::size_t totalPrimitives = 0;
+    for (std::size_t i = 0; i < objectPrimitiveCounts.size(); ++i) {
+      _objectOffsets[i] = totalPrimitives;
+      totalPrimitives += objectPrimitiveCounts[i];
+    }
+    _activePrimitive.assign(totalPrimitives, false);
+    _objectActive.assign(objectPrimitiveCounts.size(), false);
+  }
+
+  void setMaxPrimitiveToggles(std::size_t maxToggles) {
+    _maxPrimitiveToggles = maxToggles;
+  }
+
+  void resetFrameCounters() {
+    _toggledPrimitiveCount = 0;
+    _frameProbabilisticToggles = 0;
+  }
+
+  std::size_t setObjectActive(std::size_t objectIndex, bool shouldBeActive) {
+    if (objectIndex >= _objectActive.size())
+      return 0;
+    bool currentlyActive = _objectActive[objectIndex];
+    if (currentlyActive == shouldBeActive)
+      return 0;
+    std::size_t start = _objectOffsets[objectIndex];
+    std::size_t count = _objectPrimitiveCounts[objectIndex];
+    std::size_t toggled = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+      std::size_t primIndex = start + i;
+      if (primIndex >= _activePrimitive.size())
+        break;
+      if (_activePrimitive[primIndex] != shouldBeActive) {
+        _activePrimitive[primIndex] = shouldBeActive;
+        ++toggled;
+      }
+    }
+    _objectActive[objectIndex] = shouldBeActive;
+    return toggled;
+  }
+
+  std::size_t activePrimitiveCount() const {
+    return static_cast<std::size_t>(
+        std::count(_activePrimitive.begin(), _activePrimitive.end(), true));
+  }
+
+  bool applyFallback(bool forceAllToggles, std::size_t fallbackCandidate) {
+    std::size_t objectCount = _objectActive.size();
+    if (activePrimitiveCount() != 0 || objectCount == 0)
+      return false;
+
+    std::size_t fallback =
+        fallbackCandidate < objectCount ? fallbackCandidate : std::size_t(0);
+    if (fallback >= objectCount)
+      fallback = objectCount - 1;
+    std::size_t remainingBudget =
+        (_maxPrimitiveToggles > _toggledPrimitiveCount)
+            ? (_maxPrimitiveToggles - _toggledPrimitiveCount)
+            : std::size_t(0);
+    std::size_t toggled = setObjectActive(fallback, true);
+    if (toggled == 0)
+      return false;
+
+    if (!forceAllToggles) {
+      std::size_t applied = std::min(toggled, remainingBudget);
+      _toggledPrimitiveCount += applied;
+    }
+    _frameProbabilisticToggles += toggled;
+    return true;
+  }
+
+  std::size_t frameProbabilisticToggles() const {
+    return _frameProbabilisticToggles;
+  }
+
+  std::size_t toggledPrimitiveCount() const { return _toggledPrimitiveCount; }
+
+private:
+  std::vector<std::size_t> _objectPrimitiveCounts;
+  std::vector<std::size_t> _objectOffsets;
+  std::vector<bool> _activePrimitive;
+  std::vector<bool> _objectActive;
+  std::size_t _maxPrimitiveToggles = 0;
+  std::size_t _toggledPrimitiveCount = 0;
+  std::size_t _frameProbabilisticToggles = 0;
+};
+
 void testPosteriorProbabilityTrend() {
   ProbabilityResidencyHarness harness(1);
   harness.config.decay = 0.9f;
@@ -264,10 +355,27 @@ void testZeroActiveFallbackEnsuresOnePrimitive() {
   assert(!harness.isActive(1));
 }
 
+void testObjectFallbackOverridesToggleBudget() {
+  ObjectFallbackHarness harness({1, 1});
+  harness.setMaxPrimitiveToggles(0);
+  harness.resetFrameCounters();
+
+  harness.setObjectActive(0, true);
+  harness.setObjectActive(0, false);
+  harness.setObjectActive(1, false);
+
+  bool changed = harness.applyFallback(false, 0);
+  assert(changed);
+  assert(harness.activePrimitiveCount() >= 1);
+  assert(harness.frameProbabilisticToggles() == 1);
+  assert(harness.toggledPrimitiveCount() == 0);
+}
+
 } // namespace
 
 void RunProbabilisticResidencyTests() {
   testPosteriorProbabilityTrend();
   testAlternatingHitsRespectDecayAndFallback();
   testZeroActiveFallbackEnsuresOnePrimitive();
+  testObjectFallbackOverridesToggleBudget();
 }
