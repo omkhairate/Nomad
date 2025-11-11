@@ -7512,6 +7512,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   for (size_t idx : _probabilitySortedIndices) {
     if (idx >= primCount)
       continue;
+    if (idx < _activePrimitive.size() && _activePrimitive[idx])
+      continue;
     if (desired[idx])
       continue;
     float probability =
@@ -7640,6 +7642,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       ++toggles;
       ++_frameProbabilisticToggles;
       changed = true;
+      if (!shouldBeActive && i < _primitiveExplorationScore.size())
+        _primitiveExplorationScore[i] = 0.0f;
     }
   }
 
