@@ -7455,6 +7455,9 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
               size_t(0));
   }
 
+  if (_primitiveVisible.size() < primCount)
+    _primitiveVisible.resize(primCount, 0);
+
   std::vector<bool> desired(primCount, false);
   float threshold = _residencyConfig.probabilityThreshold;
   for (size_t i = 0; i < primCount; ++i) {
@@ -7484,8 +7487,141 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                     _probabilitySortedIndices.begin() + partialCount,
                     _probabilitySortedIndices.end(), comparator);
 
-  for (size_t i = 0; i < minActive && i < _probabilitySortedIndices.size(); ++i)
-    desired[_probabilitySortedIndices[i]] = true;
+  auto computeVisibility = [this](size_t idx) {
+    bool visible = false;
+    if (idx < _primitiveBounds.size()) {
+      visible = isInView(_primitiveBounds[idx]);
+      if (idx < _primitiveVisible.size())
+        _primitiveVisible[idx] = visible ? 1 : 0;
+    } else if (idx < _primitiveVisible.size()) {
+      visible = _primitiveVisible[idx] != 0;
+    }
+    return visible;
+  };
+
+  size_t desiredCount = 0;
+  for (bool flag : desired)
+    if (flag)
+      ++desiredCount;
+
+  std::vector<size_t> visibleExplore;
+  std::vector<size_t> hiddenExplore;
+  visibleExplore.reserve(primCount);
+  hiddenExplore.reserve(primCount);
+
+  for (size_t idx : _probabilitySortedIndices) {
+    if (idx >= primCount)
+      continue;
+    if (desired[idx])
+      continue;
+    float probability =
+        (idx < _primitiveHitProbability.size()) ? _primitiveHitProbability[idx]
+                                                : 0.0f;
+    if (probability >= threshold)
+      continue;
+    uint32_t raysTested =
+        (idx < _primitiveRaysTestedLastFrame.size())
+            ? _primitiveRaysTestedLastFrame[idx]
+            : 0u;
+    if (raysTested == 0)
+      continue;
+    float exploreScore =
+        (idx < _primitiveExplorationScore.size())
+            ? _primitiveExplorationScore[idx]
+            : 0.0f;
+    if (exploreScore <= 0.0f)
+      continue;
+    if (computeVisibility(idx))
+      visibleExplore.push_back(idx);
+    else
+      hiddenExplore.push_back(idx);
+  }
+
+  auto explorationComparator = [this](size_t a, size_t b) {
+    float exploreA = (a < _primitiveExplorationScore.size())
+                         ? sanitizeSortValue(_primitiveExplorationScore[a])
+                         : -std::numeric_limits<float>::max();
+    float exploreB = (b < _primitiveExplorationScore.size())
+                         ? sanitizeSortValue(_primitiveExplorationScore[b])
+                         : -std::numeric_limits<float>::max();
+    if (exploreA == exploreB) {
+      uint32_t raysA = (a < _primitiveRaysTestedLastFrame.size())
+                           ? _primitiveRaysTestedLastFrame[a]
+                           : 0u;
+      uint32_t raysB = (b < _primitiveRaysTestedLastFrame.size())
+                           ? _primitiveRaysTestedLastFrame[b]
+                           : 0u;
+      if (raysA == raysB)
+        return a < b;
+      return raysA > raysB;
+    }
+    return exploreA > exploreB;
+  };
+
+  std::sort(visibleExplore.begin(), visibleExplore.end(), explorationComparator);
+  std::sort(hiddenExplore.begin(), hiddenExplore.end(), explorationComparator);
+
+  auto promote = [&](const std::vector<size_t> &candidates, size_t &slots) {
+    if (slots == 0)
+      return;
+    for (size_t idx : candidates) {
+      if (slots == 0)
+        break;
+      if (idx >= primCount)
+        continue;
+      if (desired[idx])
+        continue;
+      desired[idx] = true;
+      ++desiredCount;
+      if (slots > 0)
+        --slots;
+    }
+  };
+
+  auto countRemaining = [&](const std::vector<size_t> &candidates) {
+    size_t remaining = 0;
+    for (size_t idx : candidates) {
+      if (idx < primCount && !desired[idx])
+        ++remaining;
+    }
+    return remaining;
+  };
+
+  if (desiredCount < minActive) {
+    size_t slots = std::min(minActive - desiredCount, primCount - desiredCount);
+    promote(visibleExplore, slots);
+    promote(hiddenExplore, slots);
+  }
+
+  if (desiredCount < minActive) {
+    for (size_t idx : _probabilitySortedIndices) {
+      if (desiredCount >= minActive)
+        break;
+      if (idx >= primCount)
+        continue;
+      if (desired[idx])
+        continue;
+      desired[idx] = true;
+      ++desiredCount;
+    }
+  }
+
+  size_t remainingExplore = countRemaining(visibleExplore) +
+                            countRemaining(hiddenExplore);
+  if (remainingExplore > 0 && desiredCount < primCount) {
+    size_t slots = std::min({std::max<size_t>(size_t(1), minActive / 2),
+                             remainingExplore, primCount - desiredCount});
+    promote(visibleExplore, slots);
+    promote(hiddenExplore, slots);
+  }
+
+  size_t fallbackCandidate = primCount;
+  if (!visibleExplore.empty())
+    fallbackCandidate = visibleExplore.front();
+  else if (!hiddenExplore.empty())
+    fallbackCandidate = hiddenExplore.front();
+  else if (!_probabilitySortedIndices.empty())
+    fallbackCandidate = _probabilitySortedIndices.front();
 
   size_t toggles = 0;
   bool changed = false;
@@ -7513,9 +7649,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       ++activeCount;
 
   if (activeCount == 0 && primCount > 0) {
-    size_t fallback = !_probabilitySortedIndices.empty()
-                          ? _probabilitySortedIndices.front()
-                          : size_t(0);
+    size_t fallback = fallbackCandidate < primCount ? fallbackCandidate
+                                                    : size_t(0);
     if (fallback >= primCount)
       fallback = primCount - 1;
     if (setPrimitiveActive(fallback, true)) {
@@ -8039,6 +8174,7 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     return;
   }
@@ -8054,6 +8190,7 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     return;
   }
@@ -8067,6 +8204,7 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _rayHitCopyError = false;
     return;
@@ -8087,6 +8225,7 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     return;
   }
@@ -8115,6 +8254,8 @@ void Renderer::processRayHitCounters() {
     _primitiveHitBeta.resize(totalPrimitiveCount, 1.0f);
   if (_primitiveHitProbability.size() < totalPrimitiveCount)
     _primitiveHitProbability.resize(totalPrimitiveCount, 0.5f);
+  if (_primitiveExplorationScore.size() < totalPrimitiveCount)
+    _primitiveExplorationScore.resize(totalPrimitiveCount, 0.0f);
   if (_probabilitySortedIndices.size() != totalPrimitiveCount) {
     _probabilitySortedIndices.resize(totalPrimitiveCount);
     std::iota(_probabilitySortedIndices.begin(), _probabilitySortedIndices.end(),
@@ -8123,6 +8264,7 @@ void Renderer::processRayHitCounters() {
 
   float rayHitDecay = _residencyConfig.rayHitDecay;
   float probabilityDecay = _residencyConfig.probabilityDecay;
+  float probabilityThreshold = _residencyConfig.probabilityThreshold;
 
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
@@ -8146,9 +8288,21 @@ void Renderer::processRayHitCounters() {
       _primitiveHitBeta[i] = beta;
       float sum = alpha + beta;
       float probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
+      float clampedProbability = std::clamp(probability, 0.0f, 1.0f);
       // Numerical safeguards ensure the Beta-derived probability stays within
       // the true [0, 1] interval regardless of tuning.
-      _primitiveHitProbability[i] = std::clamp(probability, 0.0f, 1.0f);
+      _primitiveHitProbability[i] = clampedProbability;
+
+      float exploration = _primitiveExplorationScore[i] * probabilityDecay;
+      if (raysTested > 0) {
+        if (clampedProbability < probabilityThreshold)
+          exploration += static_cast<float>(raysTested);
+        else
+          exploration *= rayHitDecay;
+      } else {
+        exploration *= rayHitDecay;
+      }
+      _primitiveExplorationScore[i] = exploration;
       hitPtr[base + 0] = 0;
       hitPtr[base + 1] = 0;
     }
