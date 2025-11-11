@@ -20,17 +20,6 @@ Benchmark exports now include stochastic residency metrics alongside the existin
 
 These columns complement the existing residency memory statistics in `*_memory_mb` and allow the plotting tools to chart probability-driven residency behavior when comparing runs.
 
-## Acceleration-structure dumps and residency debugging
-
-Setting `MPT_RUNS_PATH` before launching the renderer creates a run directory containing CSV logs and an `as/` folder with frame-by-frame acceleration-structure dumps. Each JSON file mirrors the renderer's TLAS/BLAS hierarchy and includes a `primitives` array with the following keys:
-
-- `index` – primitive identifier within the flattened BLAS list.
-- `active` – whether the primitive was resident during the frame.
-- `hitProbability` – the stochastic hit probability tracked for the primitive (range 0–1).
-- `object` – optional owning object index, present when the primitive can be mapped back to a scene object.
-
-Run `analyze_residency_dump.py` against the capture directory to transform the dumps into Matplotlib artifacts that mirror the CSV tooling (`compare_runs.py`). The script emits `hit_probability_heatmap.png` for a per-primitive probability heatmap plus `object_hit_probability.png`/`.csv` for per-object trends. Capture a short run (for example, `MPT_MAX_FRAMES=300`) to produce a manageable series of dumps, then inspect the heatmap for stubbornly hot primitives or use the per-object plot to find residency oscillations.
-
 ## Comparing EXR captures
 
 Use `compare_exr_ssim.cpp` to quantify the visual difference between two EXR frames with the Structural Similarity Index (SSIM). Build the tool with a C++17 compiler:
