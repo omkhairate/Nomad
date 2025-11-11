@@ -2212,6 +2212,8 @@ void Renderer::updateVisibleScene() {
   _primitiveHitAlpha.assign(primCount, 1.0f);
   _primitiveHitBeta.assign(primCount, 1.0f);
   _primitiveHitProbability.assign(primCount, 0.5f);
+  _primitiveHitVariance.assign(primCount, 1.0f / 12.0f);
+  _primitivePosteriorMass.assign(primCount, 2.0f);
   _primitiveVisible.assign(primCount, 0);
   _rayHitSortedIndices.resize(primCount);
   _probabilitySortedIndices.resize(primCount);
@@ -2302,6 +2304,8 @@ void Renderer::updateVisibleScene() {
   _objectHitAlpha.assign(objectCount, 1.0f);
   _objectHitBeta.assign(objectCount, 1.0f);
   _objectHitProbability.assign(objectCount, 0.5f);
+  _objectHitVariance.assign(objectCount, 1.0f / 12.0f);
+  _objectPosteriorMass.assign(objectCount, 2.0f);
   _objectExplorationScore.assign(objectCount, 0.0f);
   _objectHitLastFrame.assign(objectCount, 0);
   _objectRaysTestedLastFrame.assign(objectCount, 0);
@@ -7651,6 +7655,45 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   const size_t primCount = _activePrimitive.size();
   const size_t objectCount = _allSceneObjects.size();
 
+  constexpr float kPosteriorFloor = 1.0e-3f;
+  const float configuredWindow = _residencyConfig.probabilityEvidenceWindow;
+  const bool finiteEvidenceWindow =
+      configuredWindow > 0.0f && std::isfinite(configuredWindow);
+  float scoringWindow = finiteEvidenceWindow
+                            ? std::max(configuredWindow, kPosteriorFloor)
+                            : std::max(64.0f, kPosteriorFloor);
+  auto computeEvidenceFactor = [&](float mass) {
+    if (!(mass > 0.0f) || !std::isfinite(mass))
+      return 0.0f;
+    if (finiteEvidenceWindow) {
+      float normalized = mass / scoringWindow;
+      return std::clamp(normalized, 0.0f, 1.0f);
+    }
+    float normalized = mass / (mass + scoringWindow);
+    return std::clamp(normalized, 0.0f, 1.0f);
+  };
+  auto sanitizePosteriorProbability = [](float probability) {
+    if (!std::isfinite(probability))
+      return 0.5f;
+    return std::clamp(probability, 0.0f, 1.0f);
+  };
+  auto sanitizePosteriorVariance = [](float variance) {
+    if (!std::isfinite(variance) || variance < 0.0f)
+      return 0.0f;
+    return variance;
+  };
+  auto computeRegressedProbability = [&](float probability, float mass) {
+    float evidence = computeEvidenceFactor(mass);
+    float sanitized = sanitizePosteriorProbability(probability);
+    return sanitized * evidence + 0.5f * (1.0f - evidence);
+  };
+  auto computePosteriorScore = [&](float probability, float variance, float mass) {
+    float regressed = computeRegressedProbability(probability, mass);
+    float sqrtVariance = std::sqrt(std::max(sanitizePosteriorVariance(variance), 0.0f));
+    return regressed +
+           _residencyConfig.probabilityUncertaintyBoost * sqrtVariance;
+  };
+
   if (objectCount == 0) {
     if (_primitiveHitProbability.size() < primCount)
       _primitiveHitProbability.resize(primCount, 0.5f);
@@ -7670,8 +7713,12 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     for (size_t i = 0; i < primCount; ++i) {
       float probability = (i < _primitiveHitProbability.size())
                               ? _primitiveHitProbability[i]
-                              : 0.0f;
-      if (probability > threshold)
+                              : 0.5f;
+      float mass = (i < _primitivePosteriorMass.size())
+                       ? _primitivePosteriorMass[i]
+                       : 0.0f;
+      float effectiveProbability = computeRegressedProbability(probability, mass);
+      if (effectiveProbability > threshold)
         desired[i] = true;
     }
 
@@ -7679,16 +7726,30 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         std::min(_residencyConfig.probabilityMinActivePrimitives, primCount);
     size_t partialCount = std::max<size_t>(
         1, std::min(primCount, std::max(minActive, size_t(1))));
-    auto comparator = [this](size_t a, size_t b) {
+    auto comparator = [this, &computePosteriorScore](size_t a, size_t b) {
       float probA = (a < _primitiveHitProbability.size())
-                        ? sanitizeSortValue(_primitiveHitProbability[a])
-                        : -std::numeric_limits<float>::max();
+                        ? _primitiveHitProbability[a]
+                        : 0.5f;
+      float varA = (a < _primitiveHitVariance.size())
+                       ? _primitiveHitVariance[a]
+                       : 0.0f;
+      float massA = (a < _primitivePosteriorMass.size())
+                        ? _primitivePosteriorMass[a]
+                        : 0.0f;
+      float scoreA = sanitizeSortValue(computePosteriorScore(probA, varA, massA));
       float probB = (b < _primitiveHitProbability.size())
-                        ? sanitizeSortValue(_primitiveHitProbability[b])
-                        : -std::numeric_limits<float>::max();
-      if (probA == probB)
+                        ? _primitiveHitProbability[b]
+                        : 0.5f;
+      float varB = (b < _primitiveHitVariance.size())
+                       ? _primitiveHitVariance[b]
+                       : 0.0f;
+      float massB = (b < _primitivePosteriorMass.size())
+                        ? _primitivePosteriorMass[b]
+                        : 0.0f;
+      float scoreB = sanitizeSortValue(computePosteriorScore(probB, varB, massB));
+      if (scoreA == scoreB)
         return a < b;
-      return probA > probB;
+      return scoreA > scoreB;
     };
     std::partial_sort(_probabilitySortedIndices.begin(),
                       _probabilitySortedIndices.begin() + partialCount,
@@ -7725,8 +7786,13 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         continue;
       float probability = (idx < _primitiveHitProbability.size())
                               ? _primitiveHitProbability[idx]
-                              : 0.0f;
-      if (probability > threshold)
+                              : 0.5f;
+      float mass = (idx < _primitivePosteriorMass.size())
+                       ? _primitivePosteriorMass[idx]
+                       : 0.0f;
+      float effectiveProbability =
+          computeRegressedProbability(probability, mass);
+      if (effectiveProbability > threshold)
         continue;
       bool visible = computeVisibility(idx);
       float exploreScore =
@@ -7895,6 +7961,10 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   if (_objectHitProbability.size() < objectCount)
     _objectHitProbability.resize(objectCount, 0.5f);
+  if (_objectHitVariance.size() < objectCount)
+    _objectHitVariance.resize(objectCount, 1.0f / 12.0f);
+  if (_objectPosteriorMass.size() < objectCount)
+    _objectPosteriorMass.resize(objectCount, 2.0f);
   if (_objectProbabilitySortedIndices.size() != objectCount) {
     _objectProbabilitySortedIndices.resize(objectCount);
     std::iota(_objectProbabilitySortedIndices.begin(),
@@ -7913,8 +7983,13 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   for (size_t i = 0; i < objectCount; ++i) {
     float probability = (i < _objectHitProbability.size())
                             ? _objectHitProbability[i]
-                            : 0.0f;
-    if (probability > threshold) {
+                            : 0.5f;
+    float mass = (i < _objectPosteriorMass.size())
+                     ? _objectPosteriorMass[i]
+                     : 0.0f;
+    float effectiveProbability =
+        computeRegressedProbability(probability, mass);
+    if (effectiveProbability > threshold) {
       desiredObjects[i] = true;
       size_t contribution =
           (i < _objectPrimitiveCounts.size()) ? _objectPrimitiveCounts[i] : 0;
@@ -7926,16 +8001,32 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   std::sort(_objectProbabilitySortedIndices.begin(),
             _objectProbabilitySortedIndices.end(),
-            [this](size_t a, size_t b) {
+            [this, &computePosteriorScore](size_t a, size_t b) {
               float probA = (a < _objectHitProbability.size())
-                                ? sanitizeSortValue(_objectHitProbability[a])
-                                : -std::numeric_limits<float>::max();
+                                ? _objectHitProbability[a]
+                                : 0.5f;
+              float varA = (a < _objectHitVariance.size())
+                               ? _objectHitVariance[a]
+                               : 0.0f;
+              float massA = (a < _objectPosteriorMass.size())
+                                ? _objectPosteriorMass[a]
+                                : 0.0f;
+              float scoreA =
+                  sanitizeSortValue(computePosteriorScore(probA, varA, massA));
               float probB = (b < _objectHitProbability.size())
-                                ? sanitizeSortValue(_objectHitProbability[b])
-                                : -std::numeric_limits<float>::max();
-              if (probA == probB)
+                                ? _objectHitProbability[b]
+                                : 0.5f;
+              float varB = (b < _objectHitVariance.size())
+                               ? _objectHitVariance[b]
+                               : 0.0f;
+              float massB = (b < _objectPosteriorMass.size())
+                                ? _objectPosteriorMass[b]
+                                : 0.0f;
+              float scoreB =
+                  sanitizeSortValue(computePosteriorScore(probB, varB, massB));
+              if (scoreA == scoreB)
                 return a < b;
-              return probA > probB;
+              return scoreA > scoreB;
             });
 
   auto computeObjectVisibility = [this](size_t idx) {
@@ -7966,8 +8057,13 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       continue;
     float probability = (idx < _objectHitProbability.size())
                             ? _objectHitProbability[idx]
-                            : 0.0f;
-    if (probability > threshold)
+                            : 0.5f;
+    float mass = (idx < _objectPosteriorMass.size())
+                     ? _objectPosteriorMass[idx]
+                     : 0.0f;
+    float effectiveProbability =
+        computeRegressedProbability(probability, mass);
+    if (effectiveProbability > threshold)
       continue;
     bool visible = computeObjectVisibility(idx);
     float exploreScore = (idx < _objectExplorationScore.size())
@@ -8716,11 +8812,15 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveHitVariance.clear();
+    _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
+    _objectHitVariance.clear();
+    _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
@@ -8740,11 +8840,15 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveHitVariance.clear();
+    _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
+    _objectHitVariance.clear();
+    _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
@@ -8762,12 +8866,16 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveHitVariance.clear();
+    _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _rayHitCopyError = false;
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
+    _objectHitVariance.clear();
+    _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
@@ -8791,11 +8899,15 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveHitVariance.clear();
+    _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
+    _objectHitVariance.clear();
+    _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
@@ -8828,6 +8940,10 @@ void Renderer::processRayHitCounters() {
     _primitiveHitBeta.resize(totalPrimitiveCount, 1.0f);
   if (_primitiveHitProbability.size() < totalPrimitiveCount)
     _primitiveHitProbability.resize(totalPrimitiveCount, 0.5f);
+  if (_primitiveHitVariance.size() < totalPrimitiveCount)
+    _primitiveHitVariance.resize(totalPrimitiveCount, 1.0f / 12.0f);
+  if (_primitivePosteriorMass.size() < totalPrimitiveCount)
+    _primitivePosteriorMass.resize(totalPrimitiveCount, 2.0f);
   if (_primitiveExplorationScore.size() < totalPrimitiveCount)
     _primitiveExplorationScore.resize(totalPrimitiveCount, 0.0f);
   if (_probabilitySortedIndices.size() != totalPrimitiveCount) {
@@ -8840,6 +8956,32 @@ void Renderer::processRayHitCounters() {
   float probabilityDecay = _residencyConfig.probabilityDecay;
   float probabilityThreshold = _residencyConfig.probabilityThreshold;
   constexpr float kMinPosteriorMass = 1.0e-3f;
+  const float configuredWindow = _residencyConfig.probabilityEvidenceWindow;
+  const float maxPosteriorMass =
+      (configuredWindow > 0.0f && std::isfinite(configuredWindow))
+          ? std::max(configuredWindow, kMinPosteriorMass)
+          : std::numeric_limits<float>::max();
+  const bool clampPosteriorMass =
+      maxPosteriorMass < std::numeric_limits<float>::max();
+  auto renormalizePosterior = [&](float &alpha, float &beta) {
+    float sum = alpha + beta;
+    if (!(sum > 0.0f)) {
+      alpha = beta = kMinPosteriorMass * 0.5f;
+      sum = kMinPosteriorMass;
+    } else if (sum < kMinPosteriorMass) {
+      float scale = kMinPosteriorMass / sum;
+      alpha *= scale;
+      beta *= scale;
+      sum = kMinPosteriorMass;
+    }
+    if (clampPosteriorMass && sum > maxPosteriorMass) {
+      float scale = maxPosteriorMass / sum;
+      alpha *= scale;
+      beta *= scale;
+      sum = maxPosteriorMass;
+    }
+    return sum;
+  };
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
       size_t base = i * kStatsPerPrimitive;
@@ -8871,15 +9013,22 @@ void Renderer::processRayHitCounters() {
         float cooledProbability =
             std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
         float cooledMass = std::max(sum, kMinPosteriorMass);
+        if (clampPosteriorMass && cooledMass > maxPosteriorMass)
+          cooledMass = maxPosteriorMass;
         alpha = cooledProbability * cooledMass;
         beta = std::max(cooledMass - alpha, 0.0f);
-        sum = alpha + beta;
-        probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
       }
+      sum = renormalizePosterior(alpha, beta);
+      probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
       float clampedProbability = std::clamp(probability, 0.0f, 1.0f);
+      float variance = 0.0f;
+      if (sum > 1.0f)
+        variance = (alpha * beta) / ((sum * sum) * (sum + 1.0f));
       _primitiveHitAlpha[i] = alpha;
       _primitiveHitBeta[i] = beta;
       _primitiveHitProbability[i] = clampedProbability;
+      _primitiveHitVariance[i] = std::max(variance, 0.0f);
+      _primitivePosteriorMass[i] = sum;
 
       float exploration = _primitiveExplorationScore[i] * probabilityDecay;
       bool wasVisible =
@@ -8917,15 +9066,25 @@ void Renderer::processRayHitCounters() {
                              float cooledProbability =
                                  std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
                              float cooledMass = std::max(sum, kMinPosteriorMass);
+                             if (clampPosteriorMass && cooledMass > maxPosteriorMass)
+                               cooledMass = maxPosteriorMass;
                              alpha = cooledProbability * cooledMass;
                              beta = std::max(cooledMass - alpha, 0.0f);
-                             float updatedSum = alpha + beta;
+                             float updatedSum = renormalizePosterior(alpha, beta);
                              float updatedProbability =
                                  (updatedSum > 0.0f) ? (alpha / updatedSum) : 0.5f;
+                             float variance = 0.0f;
+                             if (updatedSum > 1.0f)
+                               variance =
+                                   (alpha * beta) /
+                                   ((updatedSum * updatedSum) *
+                                    (updatedSum + 1.0f));
                              _primitiveHitAlpha[i] = alpha;
                              _primitiveHitBeta[i] = beta;
                              _primitiveHitProbability[i] =
                                  std::clamp(updatedProbability, 0.0f, 1.0f);
+                             _primitiveHitVariance[i] = std::max(variance, 0.0f);
+                             _primitivePosteriorMass[i] = updatedSum;
 
                              float exploration =
                                  _primitiveExplorationScore[i] * probabilityDecay;
@@ -8947,6 +9106,8 @@ void Renderer::processRayHitCounters() {
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
+    _objectHitVariance.clear();
+    _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
@@ -8961,6 +9122,10 @@ void Renderer::processRayHitCounters() {
     _objectHitBeta.resize(objectCount, 1.0f);
   if (_objectHitProbability.size() < objectCount)
     _objectHitProbability.resize(objectCount, 0.5f);
+  if (_objectHitVariance.size() < objectCount)
+    _objectHitVariance.resize(objectCount, 1.0f / 12.0f);
+  if (_objectPosteriorMass.size() < objectCount)
+    _objectPosteriorMass.resize(objectCount, 2.0f);
   if (_objectExplorationScore.size() < objectCount)
     _objectExplorationScore.resize(objectCount, 0.0f);
   if (_objectHitLastFrame.size() < objectCount)
@@ -9003,16 +9168,23 @@ void Renderer::processRayHitCounters() {
       float cooledProbability =
           std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
       float cooledMass = std::max(sum, kMinPosteriorMass);
+      if (clampPosteriorMass && cooledMass > maxPosteriorMass)
+        cooledMass = maxPosteriorMass;
       alpha = cooledProbability * cooledMass;
       beta = std::max(cooledMass - alpha, 0.0f);
-      sum = alpha + beta;
-      probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
     }
 
+    sum = renormalizePosterior(alpha, beta);
+    probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
     float clampedProbability = std::clamp(probability, 0.0f, 1.0f);
+    float variance = 0.0f;
+    if (sum > 1.0f)
+      variance = (alpha * beta) / ((sum * sum) * (sum + 1.0f));
     _objectHitAlpha[objectIndex] = alpha;
     _objectHitBeta[objectIndex] = beta;
     _objectHitProbability[objectIndex] = clampedProbability;
+    _objectHitVariance[objectIndex] = std::max(variance, 0.0f);
+    _objectPosteriorMass[objectIndex] = sum;
 
     bool visible =
         (objectIndex < _objectBounds.size()) ? isInView(_objectBounds[objectIndex])

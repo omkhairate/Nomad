@@ -676,6 +676,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.probabilityMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "probabilityToggleBudget",
         static_cast<uint64_t>(params.probabilityMaxTogglesPerFrame)));
+    params.probabilityUncertaintyBoost = root->FloatAttribute(
+        "probabilityUncertaintyBoost", params.probabilityUncertaintyBoost);
+    params.probabilityEvidenceWindow = root->FloatAttribute(
+        "probabilityEvidenceWindow", params.probabilityEvidenceWindow);
 
     params.screenFootprintTargetFraction = root->FloatAttribute(
         "screenTargetFraction", params.screenFootprintTargetFraction);

@@ -56,6 +56,8 @@ struct ResidencyParameters {
   float probabilityThreshold = 0.5f;
   size_t probabilityMinActivePrimitives = 16;
   size_t probabilityMaxTogglesPerFrame = 16;
+  float probabilityUncertaintyBoost = 0.25f;
+  float probabilityEvidenceWindow = 64.0f;
 
   float screenFootprintTargetFraction = 0.65f;
   float screenFootprintMinPixelCoverage = 32.0f;
