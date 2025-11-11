@@ -416,6 +416,8 @@ private:
   std::vector<float> _primitiveHitScores;
   std::vector<float> _primitiveHitScoresSnapshot;
   std::vector<uint32_t> _primitiveHitLastFrame;
+  std::vector<float> _primitiveRayContributions;
+  std::vector<uint32_t> _primitiveRaysTestedLastFrame;
   std::vector<float> _primitiveHitAlpha;
   std::vector<float> _primitiveHitBeta;
   std::vector<float> _primitiveHitProbability;
