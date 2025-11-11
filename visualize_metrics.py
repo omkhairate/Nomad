@@ -2,8 +2,8 @@
 """Generate all research plots from a single renderer run.
 
 The renderer can log performance counters (``perf.csv``), GPU memory usage
-(``gpu_mem.csv``), and per-frame acceleration-structure dumps. Previously a
-collection of small scripts were required to visualise these outputs. This
+(``gpu_mem.csv``), and per-frame acceleration-structure dumps.  Previously a
+collection of small scripts were required to visualise these outputs.  This
 utility consolidates those workflows: run it once and it will emit dedicated
 Plotly HTML dashboards for every available data source.
 
@@ -12,14 +12,8 @@ Example::
     python visualize_metrics.py runs --output-dir figures
 
 The script will look for ``perf.csv`` and ``gpu_mem.csv`` inside ``runs`` and
-an ``as`` directory containing frame dumps. Each output is optional; missing
+an ``as`` directory containing frame dumps.  Each output is optional; missing
 inputs are reported but do not abort the run.
-
-Set ``MPT_RUNS_PATH`` before launching the renderer to capture ``as/frame_XXXX.json``
-files alongside the CSV logs. Each primitive entry exposes ``active``,
-``hitProbability``, and (when available) ``object`` metadata. The probability
-values feed the new heatmap and per-object trend plots, which highlight how
-the stochastic residency tracker cools primitives over time.
 """
 from __future__ import annotations
 
@@ -189,99 +183,25 @@ def _node_series_from_frames(frames: List[Dict[str, Any]]) -> Dict[str, List[int
     }
 
 
-def _build_intersection_arrays(
-    frames: List[Dict[str, Any]]
-) -> tuple[List[List[int]], List[List[int]], List[List[Optional[float]]]]:
-    """Return 2-D arrays for intersection counts, residency, and hit probability."""
+def _build_intersection_arrays(frames: List[Dict[str, Any]]) -> tuple[List[List[int]], List[List[int]]]:
+    """Return 2-D arrays for intersection counts and residency."""
 
     if not frames:
-        return [], [], []
+        return [], []
 
     frame_count = len(frames)
     max_prims = max(len(f.get("primitives", [])) for f in frames)
 
     counts = [[0 for _ in range(frame_count)] for _ in range(max_prims)]
     active = [[0 for _ in range(frame_count)] for _ in range(max_prims)]
-    probabilities: List[List[Optional[float]]] = [
-        [None for _ in range(frame_count)] for _ in range(max_prims)
-    ]
 
     for f_idx, frame in enumerate(frames):
         prims = frame.get("primitives", [])
         for p_idx, prim in enumerate(prims):
             counts[p_idx][f_idx] = int(prim.get("lastIntersection", 0))
             active[p_idx][f_idx] = 1 if prim.get("active", True) else 0
-            prob_value = prim.get("hitProbability")
-            if prob_value is not None:
-                try:
-                    probabilities[p_idx][f_idx] = float(prob_value)
-                except (TypeError, ValueError):  # pragma: no cover - defensive parsing
-                    probabilities[p_idx][f_idx] = None
 
-    return counts, active, probabilities
-
-
-def _has_probability_data(probabilities: List[List[Optional[float]]]) -> bool:
-    """Return True if any probability samples are present."""
-
-    return any(any(value is not None for value in row) for row in probabilities)
-
-
-def _aggregate_object_probabilities(
-    frames: List[Dict[str, Any]]
-) -> Dict[int, List[Optional[float]]]:
-    """Return average hit probability per object for each frame."""
-
-    if not frames:
-        return {}
-
-    frame_count = len(frames)
-    object_ids = set()
-    for frame in frames:
-        for prim in frame.get("primitives", []):
-            obj = prim.get("object")
-            prob = prim.get("hitProbability")
-            if obj is None or prob is None:
-                continue
-            try:
-                object_ids.add(int(obj))
-            except (TypeError, ValueError):  # pragma: no cover - defensive parsing
-                continue
-
-    series: Dict[int, List[Optional[float]]] = {
-        obj: [None for _ in range(frame_count)] for obj in sorted(object_ids)
-    }
-
-    if not series:
-        return series
-
-    for f_idx, frame in enumerate(frames):
-        totals: Dict[int, float] = {}
-        counts: Dict[int, int] = {}
-        for prim in frame.get("primitives", []):
-            obj = prim.get("object")
-            prob = prim.get("hitProbability")
-            if obj is None or prob is None:
-                continue
-            try:
-                obj_idx = int(obj)
-                prob_value = float(prob)
-            except (TypeError, ValueError):  # pragma: no cover - defensive parsing
-                continue
-            totals[obj_idx] = totals.get(obj_idx, 0.0) + prob_value
-            counts[obj_idx] = counts.get(obj_idx, 0) + 1
-        for obj_idx, total in totals.items():
-            count = counts.get(obj_idx, 0)
-            if count:
-                series[obj_idx][f_idx] = total / count
-
-    return series
-
-
-def _has_object_probability_series(series: Mapping[int, List[Optional[float]]]) -> bool:
-    """Return True if any object-level probability samples are present."""
-
-    return any(any(value is not None for value in values) for values in series.values())
+    return counts, active
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +281,9 @@ def _intersection_figure(counts: List[List[int]], active: List[List[int]]) -> go
     )
 
     if counts:
-        frame_count = len(counts[0]) if counts[0] else 0
-        prim_indices = list(range(len(counts)))
-        frame_indices = list(range(frame_count))
         fig.add_trace(
             go.Heatmap(
                 z=counts,
-                x=frame_indices,
-                y=prim_indices,
                 colorscale="Viridis",
                 colorbar=dict(title="Hits"),
             ),
@@ -377,14 +292,9 @@ def _intersection_figure(counts: List[List[int]], active: List[List[int]]) -> go
         )
 
     if active:
-        frame_count = len(active[0]) if active[0] else 0
-        prim_indices = list(range(len(active)))
-        frame_indices = list(range(frame_count))
         fig.add_trace(
             go.Heatmap(
                 z=active,
-                x=frame_indices,
-                y=prim_indices,
                 colorscale=[[0, "#f44336"], [1, "#4caf50"]],
                 colorbar=dict(title="Active"),
             ),
@@ -397,58 +307,6 @@ def _intersection_figure(counts: List[List[int]], active: List[List[int]]) -> go
     fig.update_xaxes(title_text="Frame", row=2, col=1)
     fig.update_yaxes(title_text="Primitive", row=1, col=1)
     fig.update_yaxes(title_text="Primitive", row=2, col=1)
-    return fig
-
-
-
-def _probability_figure(probabilities: List[List[Optional[float]]]) -> go.Figure:
-    fig = go.Figure()
-    if probabilities:
-        frame_count = len(probabilities[0]) if probabilities[0] else 0
-        frame_indices = list(range(frame_count))
-        prim_indices = list(range(len(probabilities)))
-        fig.add_trace(
-            go.Heatmap(
-                z=probabilities,
-                x=frame_indices,
-                y=prim_indices,
-                colorscale="Inferno",
-                colorbar=dict(title="P(hit)"),
-                zmin=0.0,
-                zmax=1.0,
-            )
-        )
-    fig.update_layout(
-        title="Per-primitive hit probability",
-        xaxis_title="Frame",
-        yaxis_title="Primitive",
-        height=500,
-    )
-    return fig
-
-
-def _object_probability_figure(
-    frames: Iterable[int], series: Mapping[int, List[Optional[float]]]
-) -> go.Figure:
-    fig = go.Figure()
-    frame_list = list(frames)
-    for obj_idx, values in series.items():
-        if not any(value is not None for value in values):
-            continue
-        fig.add_trace(
-            go.Scatter(
-                x=frame_list,
-                y=values,
-                mode="lines+markers",
-                name=f"Object {obj_idx}",
-            )
-        )
-    fig.update_layout(
-        title="Average hit probability per object",
-        xaxis_title="Frame",
-        yaxis_title="Probability",
-    )
-    fig.update_yaxes(range=[0.0, 1.0])
     return fig
 
 
@@ -514,27 +372,12 @@ def main() -> None:
         _write_html(node_fig, node_output, args.auto_open)
         outputs["active_nodes"] = node_output
 
-        counts, active, probabilities = _build_intersection_arrays(frames_for_nodes)
+        counts, active = _build_intersection_arrays(frames_for_nodes)
         if counts or active:
             intersection_fig = _intersection_figure(counts, active)
             intersection_output = args.output_dir / "intersections.html"
             _write_html(intersection_fig, intersection_output, args.auto_open)
             outputs["intersections"] = intersection_output
-
-        if _has_probability_data(probabilities):
-            probability_fig = _probability_figure(probabilities)
-            probability_output = args.output_dir / "hit_probability.html"
-            _write_html(probability_fig, probability_output, args.auto_open)
-            outputs["hit_probability"] = probability_output
-
-        object_series = _aggregate_object_probabilities(frames_for_nodes)
-        if _has_object_probability_series(object_series):
-            object_fig = _object_probability_figure(
-                range(len(frames_for_nodes)), object_series
-            )
-            object_output = args.output_dir / "object_hit_probability.html"
-            _write_html(object_fig, object_output, args.auto_open)
-            outputs["object_hit_probability"] = object_output
 
     if not outputs:
         raise SystemExit("No plots were generated; ensure the runs directory contains logs")
