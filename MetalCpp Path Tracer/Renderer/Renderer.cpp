@@ -1253,7 +1253,8 @@ void Renderer::writeBenchmarkHeader() {
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
          "resident_nodes,total_nodes,active_objects,resident_objects,"
          "avg_hit_probability,p95_hit_probability,probability_threshold,"
-         "probabilistic_toggles,gpu_memory_mb,scratch_memory_mb,"
+         "primitive_probabilities,object_probabilities,probabilistic_toggles,"
+         "gpu_memory_mb,scratch_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,"
          "over_memory_cap,residency_compacted,"
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
@@ -1273,6 +1274,16 @@ static std::string formatFixed(double value, int precision) {
   return ss.str();
 }
 
+static void appendCsvEscaped(std::ostringstream &ss, const std::string &value) {
+  ss << '"';
+  for (char c : value) {
+    if (c == '"')
+      ss << '"';
+    ss << c;
+  }
+  ss << '"';
+}
+
 void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
   if (!_benchmarkStream.is_open())
     return;
@@ -1283,8 +1294,9 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
   row << sample.frameIndex << ',' << formatFixed(sample.wallSeconds, 6) << ','
       << formatFixed(sample.cpuTimeSeconds * 1000.0, 3) << ','
       << formatFixed(sample.gpuTimeSeconds * 1000.0, 3) << ','
-      << formatFixed(sample.raysPerSecond, 2) << ',' << sample.rayCount << ','
-      << '"' << sample.strategyName << "\"," << static_cast<int>(sample.strategy)
+      << formatFixed(sample.raysPerSecond, 2) << ',' << sample.rayCount << ',';
+  appendCsvEscaped(row, sample.strategyName);
+  row << ',' << static_cast<int>(sample.strategy)
       << ',' << formatFixed(sample.deltaTimeSeconds, 6) << ','
       << sample.minSamplesPerPixel << ',' << sample.maxSamplesPerPixel << ','
       << sample.primitiveActivations << ',' << sample.primitiveDeactivations << ','
@@ -1297,7 +1309,11 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.residentObjectCount << ','
       << formatFixed(sample.avgHitProbability, 6) << ','
       << formatFixed(sample.p95HitProbability, 6) << ','
-      << formatFixed(sample.probabilityThreshold, 3) << ','
+      << formatFixed(sample.probabilityThreshold, 3) << ',';
+  appendCsvEscaped(row, sample.primitiveProbabilities);
+  row << ',';
+  appendCsvEscaped(row, sample.objectProbabilities);
+  row << ','
       << sample.probabilisticToggles << ','
       << formatFixed(sample.gpuMemoryMB, 3) << ','
       << formatFixed(sample.scratchMemoryMB, 3) << ','
@@ -8484,15 +8500,67 @@ void Renderer::beginFrameMetrics() {
     sample.p95HitProbability = 0.0;
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
     if (!_primitiveHitProbability.empty()) {
+      size_t primitiveCount =
+          std::min(_primitiveHitProbability.size(), _allPrimitives.size());
       std::vector<float> validProbabilities;
-      validProbabilities.reserve(_primitiveHitProbability.size());
+      validProbabilities.reserve(primitiveCount);
       double probabilitySum = 0.0;
-      for (float probability : _primitiveHitProbability) {
-        if (!std::isfinite(probability))
-          continue;
-        probabilitySum += probability;
-        validProbabilities.push_back(probability);
+      std::ostringstream primitiveStream;
+      bool firstPrimitive = true;
+
+      std::vector<double> objectProbabilitySums(_allSceneObjects.size(), 0.0);
+      std::vector<size_t> objectProbabilityCounts(_allSceneObjects.size(), 0);
+
+      for (size_t index = 0; index < primitiveCount; ++index) {
+        float probability = _primitiveHitProbability[index];
+        bool probabilityFinite = std::isfinite(probability);
+        float sanitized = probabilityFinite
+                               ? std::clamp(probability, 0.0f, 1.0f)
+                               : 0.0f;
+
+        if (!firstPrimitive)
+          primitiveStream << ';';
+        primitiveStream << index << ':'
+                        << formatFixed(static_cast<double>(sanitized), 6);
+        firstPrimitive = false;
+
+        if (probabilityFinite) {
+          probabilitySum += sanitized;
+          validProbabilities.push_back(sanitized);
+        }
+
+        if (index < _primitiveToObject.size()) {
+          size_t objectIndex = _primitiveToObject[index];
+          if (objectIndex < objectProbabilitySums.size()) {
+            objectProbabilitySums[objectIndex] += static_cast<double>(sanitized);
+            objectProbabilityCounts[objectIndex] += 1;
+          }
+        }
       }
+
+      sample.primitiveProbabilities = primitiveStream.str();
+
+      if (!_allSceneObjects.empty()) {
+        std::ostringstream objectStream;
+        bool firstObject = true;
+        for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+             ++objectIndex) {
+          double avgProbability = 0.0;
+          if (objectIndex < objectProbabilitySums.size() &&
+              objectProbabilityCounts[objectIndex] > 0) {
+            avgProbability = objectProbabilitySums[objectIndex] /
+                              static_cast<double>(
+                                  objectProbabilityCounts[objectIndex]);
+          }
+          if (!firstObject)
+            objectStream << ';';
+          objectStream << objectIndex << ':'
+                       << formatFixed(avgProbability, 6);
+          firstObject = false;
+        }
+        sample.objectProbabilities = objectStream.str();
+      }
+
       if (!validProbabilities.empty()) {
         sample.avgHitProbability =
             probabilitySum / static_cast<double>(validProbabilities.size());
@@ -8505,6 +8573,17 @@ void Renderer::beginFrameMetrics() {
                          validProbabilities.end());
         sample.p95HitProbability = validProbabilities[percentileIndex];
       }
+    } else if (!_allSceneObjects.empty()) {
+      std::ostringstream objectStream;
+      bool firstObject = true;
+      for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+           ++objectIndex) {
+        if (!firstObject)
+          objectStream << ';';
+        objectStream << objectIndex << ':' << formatFixed(0.0, 6);
+        firstObject = false;
+      }
+      sample.objectProbabilities = objectStream.str();
     }
     sample.probabilisticToggles = _frameProbabilisticToggles;
     sample.deltaTimeSeconds = _deltaTimeSeconds;

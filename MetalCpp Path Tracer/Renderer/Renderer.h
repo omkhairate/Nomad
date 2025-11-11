@@ -368,6 +368,8 @@ private:
     double avgHitProbability = 0.0;
     double p95HitProbability = 0.0;
     double probabilityThreshold = 0.0;
+    std::string primitiveProbabilities;
+    std::string objectProbabilities;
     size_t probabilisticToggles = 0;
     ResidencyStrategy strategy = ResidencyStrategy::DistanceLOD;
     std::string strategyName;
