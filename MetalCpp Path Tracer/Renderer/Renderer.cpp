@@ -1251,7 +1251,7 @@ void Renderer::writeBenchmarkHeader() {
          "primitive_activations,primitive_deactivations,object_activations,"
          "object_deactivations,active_primitives,resident_primitives,total_primitives,"
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
-         "resident_nodes,total_nodes,active_objects,resident_objects,gpu_memory_mb,"
+         "resident_nodes,total_nodes,active_objects,resident_objects,"
          "avg_hit_probability,p95_hit_probability,probability_threshold,"
          "probabilistic_toggles,gpu_memory_mb,scratch_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,"
