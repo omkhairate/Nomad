@@ -423,6 +423,8 @@ private:
   std::vector<float> _primitiveHitAlpha;
   std::vector<float> _primitiveHitBeta;
   std::vector<float> _primitiveHitProbability;
+  std::vector<float> _primitiveHitVariance;
+  std::vector<float> _primitivePosteriorMass;
   std::vector<float> _primitiveExplorationScore;
   std::vector<uint8_t> _primitiveVisible;
   std::vector<size_t> _rayHitSortedIndices;
@@ -430,6 +432,8 @@ private:
   std::vector<float> _objectHitAlpha;
   std::vector<float> _objectHitBeta;
   std::vector<float> _objectHitProbability;
+  std::vector<float> _objectHitVariance;
+  std::vector<float> _objectPosteriorMass;
   std::vector<float> _objectExplorationScore;
   std::vector<uint32_t> _objectHitLastFrame;
   std::vector<uint32_t> _objectRaysTestedLastFrame;

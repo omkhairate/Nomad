@@ -14,6 +14,8 @@ struct ProbabilityResidencyConfig {
   float threshold = 0.5f;
   std::size_t minActive = 16;
   std::size_t maxToggles = 16;
+  float uncertaintyBoost = 0.25f;
+  float evidenceWindow = 64.0f;
 };
 
 class ProbabilityResidencyHarness {
@@ -22,6 +24,8 @@ public:
       : _alpha(primitiveCount, 1.0f),
         _beta(primitiveCount, 1.0f),
         _probability(primitiveCount, 0.5f),
+        _variance(primitiveCount, 1.0f / 12.0f),
+        _mass(primitiveCount, 2.0f),
         _active(primitiveCount, false),
         _sorted(primitiveCount) {
     std::iota(_sorted.begin(), _sorted.end(), std::size_t(0));
@@ -35,6 +39,10 @@ public:
   }
 
   float probabilityAt(std::size_t index) const { return _probability[index]; }
+
+  float regressedProbabilityAt(std::size_t index) const {
+    return computeRegressedProbability(index);
+  }
 
   bool isActive(std::size_t index) const { return _active[index]; }
 
@@ -50,6 +58,38 @@ private:
     return value;
   }
 
+  static float sanitizeProbability(float value) {
+    if (!std::isfinite(value))
+      return 0.5f;
+    return std::clamp(value, 0.0f, 1.0f);
+  }
+
+  float computeEvidence(float mass) const {
+    if (!(mass > 0.0f) || !std::isfinite(mass))
+      return 0.0f;
+    float window = config.evidenceWindow > 0.0f
+                       ? std::max(config.evidenceWindow, 1.0e-3f)
+                       : 64.0f;
+    if (config.evidenceWindow > 0.0f)
+      return std::clamp(mass / window, 0.0f, 1.0f);
+    return std::clamp(mass / (mass + window), 0.0f, 1.0f);
+  }
+
+  float computeRegressedProbability(std::size_t index) const {
+    float probability = sanitizeProbability(_probability[index]);
+    float evidence = computeEvidence(_mass[index]);
+    return probability * evidence + 0.5f * (1.0f - evidence);
+  }
+
+  float computePosteriorScore(std::size_t index) const {
+    float regressed = computeRegressedProbability(index);
+    float variance = _variance[index];
+    if (!std::isfinite(variance) || variance < 0.0f)
+      variance = 0.0f;
+    float sqrtVar = std::sqrt(variance);
+    return regressed + config.uncertaintyBoost * sqrtVar;
+  }
+
   void updateProbabilities(const std::vector<std::uint32_t> &hits) {
     const std::size_t primCount = _probability.size();
     assert(hits.size() == primCount);
@@ -59,10 +99,35 @@ private:
       float failure = 1.0f;
       float alpha = _alpha[i] * config.decay + success;
       float beta = _beta[i] * config.decay + failure;
+      float sum = alpha + beta;
+      constexpr float kPosteriorFloor = 1.0e-3f;
+      if (!(sum > 0.0f)) {
+        alpha = beta = kPosteriorFloor * 0.5f;
+        sum = kPosteriorFloor;
+      }
+      if (sum < kPosteriorFloor) {
+        float scale = kPosteriorFloor / sum;
+        alpha *= scale;
+        beta *= scale;
+        sum = kPosteriorFloor;
+      }
+      if (config.evidenceWindow > 0.0f) {
+        float maxMass = std::max(config.evidenceWindow, kPosteriorFloor);
+        if (sum > maxMass) {
+          float scale = maxMass / sum;
+          alpha *= scale;
+          beta *= scale;
+          sum = maxMass;
+        }
+      }
       _alpha[i] = alpha;
       _beta[i] = beta;
-      float sum = alpha + beta;
+      _mass[i] = sum;
       _probability[i] = (sum > 0.0f) ? (alpha / sum) : 0.5f;
+      if (sum > 1.0f)
+        _variance[i] = (alpha * beta) / ((sum * sum) * (sum + 1.0f));
+      else
+        _variance[i] = 0.0f;
     }
   }
 
@@ -70,17 +135,17 @@ private:
     const std::size_t primCount = _probability.size();
     std::vector<bool> desired(primCount, false);
     for (std::size_t i = 0; i < primCount; ++i)
-      if (_probability[i] >= config.threshold)
+      if (computeRegressedProbability(i) >= config.threshold)
         desired[i] = true;
 
     std::size_t minActive = std::min(config.minActive, primCount);
     std::iota(_sorted.begin(), _sorted.end(), std::size_t(0));
     std::sort(_sorted.begin(), _sorted.end(), [this](std::size_t a, std::size_t b) {
-      float probA = sanitizeSortValue(_probability[a]);
-      float probB = sanitizeSortValue(_probability[b]);
-      if (probA == probB)
+      float scoreA = sanitizeSortValue(computePosteriorScore(a));
+      float scoreB = sanitizeSortValue(computePosteriorScore(b));
+      if (scoreA == scoreB)
         return a < b;
-      return probA > probB;
+      return scoreA > scoreB;
     });
 
     for (std::size_t i = 0; i < minActive && i < _sorted.size(); ++i)
@@ -104,6 +169,8 @@ private:
   std::vector<float> _alpha;
   std::vector<float> _beta;
   std::vector<float> _probability;
+  std::vector<float> _variance;
+  std::vector<float> _mass;
   std::vector<bool> _active;
   std::vector<std::size_t> _sorted;
 };
