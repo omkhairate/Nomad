@@ -1,0 +1,70 @@
+<Scene width="960" height="540" maxRayDepth="4" startCompacted="true"
+       residencyStrategy="probabilistic"
+       textureResidencyMemoryCapMB="512"
+       probabilityDecay="0.92"
+       probabilityThreshold="0.42"
+       probabilityMinActive="150"
+       probabilityToggleBudget="14000">
+    <CameraPath>
+        <!-- Strafe across staggered occluders so probability estimates drift as visibility changes -->
+        <Keyframe frame="0"   position="-40,8,20" lookAt="0,6,-20" />
+        <Keyframe frame="45"  position="-20,8,0"  lookAt="0,6,-40" />
+        <Keyframe frame="90"  position="0,8,-20"  lookAt="0,6,-60" />
+        <Keyframe frame="140" position="20,8,-40" lookAt="0,6,-80" />
+    </CameraPath>
+
+    <Sphere position="0,-10000,0" radius="10000"
+            albedo="0.68,0.68,0.68" emission="0,0,0"
+            materialType="0" emissionPower="0" />
+
+    <Rectangle position="-10,10,-15" u="0,0,25" v="0,20,0"
+               albedo="0.52,0.52,0.55" emission="0,0,0"
+               materialType="0" emissionPower="0" />
+    <Rectangle position="10,12,-35" u="0,0,25" v="0,20,0"
+               albedo="0.55,0.52,0.52" emission="0,0,0"
+               materialType="0" emissionPower="0" />
+    <Rectangle position="-10,14,-55" u="0,0,25" v="0,20,0"
+               albedo="0.52,0.55,0.52" emission="0,0,0"
+               materialType="0" emissionPower="0" />
+
+    <Rectangle position="0,25,-60" u="18,0,0" v="0,0,30"
+               albedo="1.0,1.0,1.0" emission="0.92,0.9,0.85"
+               materialType="-1" emissionPower="20" />
+
+    <!-- Mesh groups behind each occluder toggle residency as their hit probabilities fall -->
+    <Mesh file="assets/bunny.obj" position="-22,0,-10" scale="7.8"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.66,0.62,0.58" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-2,0,-10" scale="7.8"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.58,0.66,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="18,0,-30" scale="9.0"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.64,0.6,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-2,0,-30" scale="9.0"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.62,0.64,0.6" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="-22,0,-50" scale="10.2"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.6,0.62,0.64" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-2,0,-50" scale="10.2"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.64,0.6,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="18,0,-70" scale="11.4"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.6,0.64,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-2,0,-70" scale="11.4"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.62,0.6,0.64" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+</Scene>
