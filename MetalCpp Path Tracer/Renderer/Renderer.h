@@ -421,6 +421,7 @@ private:
   std::vector<float> _primitiveHitAlpha;
   std::vector<float> _primitiveHitBeta;
   std::vector<float> _primitiveHitProbability;
+  std::vector<float> _primitiveExplorationScore;
   std::vector<uint8_t> _primitiveVisible;
   std::vector<size_t> _rayHitSortedIndices;
   std::vector<size_t> _probabilitySortedIndices;

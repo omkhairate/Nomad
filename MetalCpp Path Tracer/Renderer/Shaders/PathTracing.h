@@ -265,8 +265,7 @@ inline intersection firstHitBVH(thread const Ray &r,
         int primIdx = primitiveIndices[leftFirst + i];
         if (primIdx < 0)
           continue;
-        if (!activeMask[primIdx])
-          continue;
+
         uint remapIdx = static_cast<uint>(primIdx);
         uint globalId = remapIdx;
         if (primitiveRemap && remapIdx < residentPrimitiveCount)
@@ -276,6 +275,9 @@ inline intersection firstHitBVH(thread const Ray &r,
           atomic_fetch_add_explicit(&primitiveRayStats[statsIndex], 1u,
                                     memory_order_relaxed);
         }
+
+        if (!activeMask[primIdx])
+          continue;
         int base = primIdx * int(kPrimitiveFloat4Count);
         float4 p0 = primitives[base + 0];
         float4 p1 = primitives[base + 1];
