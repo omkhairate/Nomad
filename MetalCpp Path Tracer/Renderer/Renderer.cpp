@@ -78,6 +78,10 @@ TaskLimiter &sceneBvhTaskLimiter() {
 }
 } // namespace
 
+namespace {
+constexpr float kIdleVisibleExploreSeed = 1.0f;
+}
+
 namespace MetalCppPathTracer {
 
 void ResidentObjectGpuResources::clearPendingCommand() {
@@ -7645,6 +7649,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   if (_primitiveVisible.size() < primCount)
     _primitiveVisible.resize(primCount, 0);
+  if (_primitiveExplorationScore.size() < primCount)
+    _primitiveExplorationScore.resize(primCount, 0.0f);
 
   std::vector<bool> desired(primCount, false);
   float threshold = _residencyConfig.probabilityThreshold;
@@ -7714,7 +7720,16 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         (idx < _primitiveExplorationScore.size())
             ? _primitiveExplorationScore[idx]
             : 0.0f;
-    if (exploreScore <= 0.0f)
+    uint32_t raysTested =
+        (idx < _primitiveRaysTestedLastFrame.size())
+            ? _primitiveRaysTestedLastFrame[idx]
+            : 0u;
+    float effectiveExplore = exploreScore;
+    if (visible && raysTested == 0)
+      effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
+    if (idx < _primitiveExplorationScore.size())
+      _primitiveExplorationScore[idx] = effectiveExplore;
+    if (effectiveExplore <= 0.0f)
       continue;
     if (visible)
       visibleExplore.push_back(idx);
@@ -7760,6 +7775,15 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       ++desiredCount;
       if (slots > 0)
         --slots;
+      bool wasVisible =
+          (idx < _primitiveVisible.size()) ? (_primitiveVisible[idx] != 0) : false;
+      bool idle =
+          (idx < _primitiveRaysTestedLastFrame.size())
+              ? (_primitiveRaysTestedLastFrame[idx] == 0)
+              : true;
+      if (wasVisible && idle && idx < _primitiveExplorationScore.size() &&
+          _primitiveExplorationScore[idx] < kIdleVisibleExploreSeed)
+        _primitiveExplorationScore[idx] = kIdleVisibleExploreSeed;
     }
   };
 
@@ -8453,8 +8477,6 @@ void Renderer::processRayHitCounters() {
   float probabilityDecay = _residencyConfig.probabilityDecay;
   float probabilityThreshold = _residencyConfig.probabilityThreshold;
   constexpr float kMinPosteriorMass = 1.0e-3f;
-  constexpr float kIdleVisibleExploreBoost = 1.0f;
-
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
       size_t base = i * kStatsPerPrimitive;
@@ -8507,7 +8529,7 @@ void Renderer::processRayHitCounters() {
       } else {
         exploration *= rayHitDecay;
         if (wasVisible)
-          exploration += kIdleVisibleExploreBoost;
+          exploration = std::max(exploration, kIdleVisibleExploreSeed);
       }
       _primitiveExplorationScore[i] = exploration;
       hitPtr[base + 0] = 0;
@@ -8550,7 +8572,8 @@ void Renderer::processRayHitCounters() {
                                      ? (_primitiveVisible[i] != 0)
                                      : false;
                              if (wasVisible)
-                               exploration += kIdleVisibleExploreBoost;
+                               exploration =
+                                   std::max(exploration, kIdleVisibleExploreSeed);
                              _primitiveExplorationScore[i] = exploration;
                            }
                          });
