@@ -8114,6 +8114,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   size_t maxPrimitiveToggles = _residencyConfig.probabilityMaxTogglesPerFrame;
 
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (!forceAllToggles) {
+      if (maxPrimitiveToggles == 0 || toggledPrimitiveCount >= maxPrimitiveToggles)
+        break;
+    }
+
     bool shouldBeActive = desiredObjects[objectIndex];
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
@@ -8145,15 +8150,24 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         continue;
       if (pendingToggles == 0)
         continue;
-      if (maxPrimitiveToggles > 0 &&
-          toggledPrimitiveCount + pendingToggles > maxPrimitiveToggles)
+      size_t remainingBudget =
+          (maxPrimitiveToggles > toggledPrimitiveCount)
+              ? (maxPrimitiveToggles - toggledPrimitiveCount)
+              : size_t(0);
+      if (pendingToggles > remainingBudget)
         continue;
     }
 
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
     if (toggled > 0) {
-      toggledPrimitiveCount = std::min(
-          toggledPrimitiveCount + toggled, maxPrimitiveToggles);
+      if (!forceAllToggles) {
+        size_t remainingBudget =
+            (maxPrimitiveToggles > toggledPrimitiveCount)
+                ? (maxPrimitiveToggles - toggledPrimitiveCount)
+                : size_t(0);
+        size_t applied = std::min(toggled, remainingBudget);
+        toggledPrimitiveCount += applied;
+      }
       _frameProbabilisticToggles += toggled;
       changed = true;
       if (!shouldBeActive && objectIndex < _objectExplorationScore.size())
@@ -8170,10 +8184,21 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     size_t fallback = fallbackObject < objectCount ? fallbackObject : size_t(0);
     if (fallback >= objectCount)
       fallback = objectCount - 1;
-    size_t toggled = setObjectActive(fallback, true);
-    if (toggled > 0) {
-      _frameProbabilisticToggles += toggled;
-      changed = true;
+    size_t remainingBudget =
+        (maxPrimitiveToggles > toggledPrimitiveCount)
+            ? (maxPrimitiveToggles - toggledPrimitiveCount)
+            : size_t(0);
+    if (forceAllToggles || remainingBudget > 0) {
+      size_t toggled = setObjectActive(fallback, true);
+      if (toggled > 0) {
+        if (!forceAllToggles) {
+          size_t applied = std::min(toggled, remainingBudget);
+          toggledPrimitiveCount += applied;
+          remainingBudget -= applied;
+        }
+        _frameProbabilisticToggles += toggled;
+        changed = true;
+      }
     }
   }
 
