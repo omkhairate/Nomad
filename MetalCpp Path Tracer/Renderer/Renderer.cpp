@@ -7464,7 +7464,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float probability = (i < _primitiveHitProbability.size())
                             ? _primitiveHitProbability[i]
                             : 0.0f;
-    if (probability >= threshold)
+    if (probability > threshold)
       desired[i] = true;
   }
 
@@ -7519,7 +7519,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float probability =
         (idx < _primitiveHitProbability.size()) ? _primitiveHitProbability[idx]
                                                 : 0.0f;
-    if (probability >= threshold)
+    if (probability > threshold)
       continue;
     uint32_t raysTested =
         (idx < _primitiveRaysTestedLastFrame.size())
