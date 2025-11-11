@@ -4842,7 +4842,180 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     markBufferModified(_pLightCdfBuffer, NS::Range::Make(0, lightCdfBytes));
   }
 
-  _residentNodeCount = _blasNodeCount + _tlasNodeCount;
+  size_t residentBlasNodes = 0;
+  size_t residentTlasNodes = 0;
+
+  if (useCompaction) {
+    residentBlasNodes = _blasNodeCount;
+    residentTlasNodes = _tlasNodeCount;
+  } else {
+    std::vector<uint8_t> primitiveResident(totalPrimitiveCount, 0);
+    for (size_t i = 0; i < totalPrimitiveCount && i < _activePrimitive.size(); ++i) {
+      if (_activePrimitive[i])
+        primitiveResident[i] = 1;
+    }
+    for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
+      if (!objectShouldBeResident[objectIndex])
+        continue;
+      const SceneObject &obj = sceneObjects[objectIndex];
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      for (size_t prim = first; prim < last && prim < totalPrimitiveCount; ++prim)
+        primitiveResident[prim] = 1;
+    }
+
+    if (_blasNodeCount > 0 && bvhSource &&
+        bvhSource->size() >= _blasNodeCount * 2) {
+      const auto &bvhNodes = *bvhSource;
+      const auto &primitiveIndices =
+          primitiveIndexSource ? *primitiveIndexSource : _cachedPrimitiveIndices;
+      std::vector<uint8_t> processed(_blasNodeCount, 0);
+      std::vector<uint8_t> nodeResident(_blasNodeCount, 0);
+      std::vector<size_t> stack;
+      stack.reserve(_blasNodeCount);
+      stack.push_back(0);
+
+      auto decodeNode = [](const simd::float4 &minVec,
+                           const simd::float4 &maxVec, int &leftFirst,
+                           int &count) {
+        const auto *minWords = reinterpret_cast<const int *>(&minVec);
+        const auto *maxWords = reinterpret_cast<const int *>(&maxVec);
+        leftFirst = minWords[3];
+        count = maxWords[3];
+      };
+
+      while (!stack.empty()) {
+        size_t nodeIdx = stack.back();
+        if (nodeIdx >= _blasNodeCount) {
+          stack.pop_back();
+          continue;
+        }
+
+        if (processed[nodeIdx]) {
+          stack.pop_back();
+          continue;
+        }
+
+        int leftFirst = 0;
+        int count = 0;
+        decodeNode(bvhNodes[2 * nodeIdx], bvhNodes[2 * nodeIdx + 1], leftFirst,
+                   count);
+
+        if (count > 0) {
+          bool leafResident = false;
+          size_t start = static_cast<size_t>(std::max(leftFirst, 0));
+          size_t end = start + static_cast<size_t>(std::max(count, 0));
+          for (size_t idx = start; idx < end; ++idx) {
+            size_t primitiveIndex =
+                (idx < primitiveIndices.size())
+                    ? static_cast<size_t>(primitiveIndices[idx])
+                    : idx;
+            if (primitiveIndex < primitiveResident.size() &&
+                primitiveResident[primitiveIndex]) {
+              leafResident = true;
+              break;
+            }
+          }
+          nodeResident[nodeIdx] = leafResident ? 1 : 0;
+          processed[nodeIdx] = 1;
+          stack.pop_back();
+        } else {
+          size_t leftChild =
+              static_cast<size_t>(leftFirst >= 0 ? leftFirst : 0);
+          size_t rightChild = static_cast<size_t>(-count);
+          bool leftDone = leftChild >= _blasNodeCount || processed[leftChild];
+          bool rightDone = rightChild >= _blasNodeCount || processed[rightChild];
+          if (!leftDone) {
+            stack.push_back(leftChild);
+            continue;
+          }
+          if (!rightDone) {
+            stack.push_back(rightChild);
+            continue;
+          }
+          bool anyResident =
+              (leftChild < _blasNodeCount && nodeResident[leftChild]) ||
+              (rightChild < _blasNodeCount && nodeResident[rightChild]);
+          nodeResident[nodeIdx] = anyResident ? 1 : 0;
+          processed[nodeIdx] = 1;
+          stack.pop_back();
+        }
+      }
+
+      residentBlasNodes =
+          std::accumulate(nodeResident.begin(), nodeResident.end(), size_t(0));
+    } else {
+      residentBlasNodes = _blasNodeCount;
+    }
+
+    if (_tlasNodeCount > 0 && tlasSource &&
+        tlasSource->size() >= _tlasNodeCount * 2) {
+      const auto &tlasNodes = *tlasSource;
+      std::vector<uint8_t> processed(_tlasNodeCount, 0);
+      std::vector<uint8_t> nodeResident(_tlasNodeCount, 0);
+      std::vector<size_t> stack;
+      stack.reserve(_tlasNodeCount);
+      stack.push_back(0);
+
+      while (!stack.empty()) {
+        size_t nodeIdx = stack.back();
+        if (nodeIdx >= _tlasNodeCount) {
+          stack.pop_back();
+          continue;
+        }
+
+        if (processed[nodeIdx]) {
+          stack.pop_back();
+          continue;
+        }
+
+        int leftChild = 0;
+        int rightChild = 0;
+        const auto *leftWords =
+            reinterpret_cast<const int *>(&tlasNodes[2 * nodeIdx]);
+        const auto *rightWords =
+            reinterpret_cast<const int *>(&tlasNodes[2 * nodeIdx + 1]);
+        leftChild = leftWords[3];
+        rightChild = rightWords[3];
+
+        if (leftChild < 0) {
+          size_t objectIndex = static_cast<size_t>(-leftChild - 1);
+          bool resident = objectIndex < objectShouldBeResident.size() &&
+                          objectShouldBeResident[objectIndex];
+          nodeResident[nodeIdx] = resident ? 1 : 0;
+          processed[nodeIdx] = 1;
+          stack.pop_back();
+          continue;
+        }
+
+        size_t leftIndex = static_cast<size_t>(leftChild);
+        size_t rightIndex = static_cast<size_t>(rightChild);
+        bool leftDone = leftIndex >= _tlasNodeCount || processed[leftIndex];
+        bool rightDone = rightIndex >= _tlasNodeCount || processed[rightIndex];
+        if (!leftDone) {
+          stack.push_back(leftIndex);
+          continue;
+        }
+        if (!rightDone) {
+          stack.push_back(rightIndex);
+          continue;
+        }
+        bool anyResident =
+            (leftIndex < _tlasNodeCount && nodeResident[leftIndex]) ||
+            (rightIndex < _tlasNodeCount && nodeResident[rightIndex]);
+        nodeResident[nodeIdx] = anyResident ? 1 : 0;
+        processed[nodeIdx] = 1;
+        stack.pop_back();
+      }
+
+      residentTlasNodes =
+          std::accumulate(nodeResident.begin(), nodeResident.end(), size_t(0));
+    } else {
+      residentTlasNodes = _tlasNodeCount;
+    }
+  }
+
+  _residentNodeCount = residentBlasNodes + residentTlasNodes;
 
   size_t activeBlasNodes = 0;
   if (_blasNodeCount > 0) {
