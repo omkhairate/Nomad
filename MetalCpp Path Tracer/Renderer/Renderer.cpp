@@ -1354,6 +1354,8 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
     return "Ray-hit budget";
   case ResidencyStrategy::ScreenSpaceFootprint:
     return "Screen-space footprint";
+  case ResidencyStrategy::Probabilistic:
+    return "Probabilistic";
   case ResidencyStrategy::AlwaysResident:
     return "Always resident";
   case ResidencyStrategy::DistanceLOD:
@@ -8455,6 +8457,7 @@ void Renderer::processRayHitCounters() {
   float rayHitDecay = _residencyConfig.rayHitDecay;
   float probabilityDecay = _residencyConfig.probabilityDecay;
   float probabilityThreshold = _residencyConfig.probabilityThreshold;
+  constexpr float kMinPosteriorMass = 1.0e-3f;
 
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
@@ -8486,7 +8489,6 @@ void Renderer::processRayHitCounters() {
         // pseudo-count mass so the distribution never fully collapses.
         float cooledProbability =
             std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
-        constexpr float kMinPosteriorMass = 1.0e-3f;
         float cooledMass = std::max(sum, kMinPosteriorMass);
         alpha = cooledProbability * cooledMass;
         beta = std::max(cooledMass - alpha, 0.0f);
@@ -8512,6 +8514,41 @@ void Renderer::processRayHitCounters() {
       hitPtr[base + 1] = 0;
     }
   });
+
+  if (count < totalPrimitiveCount) {
+    parallelChunkedAsync(count, totalPrimitiveCount,
+                         [&](size_t chunkStart, size_t chunkEnd) {
+                           for (size_t i = chunkStart; i < chunkEnd; ++i) {
+                             _primitiveHitScores[i] *= rayHitDecay;
+                             _primitiveRayContributions[i] *= rayHitDecay;
+                             _primitiveHitLastFrame[i] = 0;
+                             _primitiveRaysTestedLastFrame[i] = 0;
+
+                             float alpha = _primitiveHitAlpha[i] * probabilityDecay;
+                             float beta = _primitiveHitBeta[i] * probabilityDecay;
+                             float sum = alpha + beta;
+                             float probability =
+                                 (sum > 0.0f) ? (alpha / sum) : 0.5f;
+                             float cooledProbability =
+                                 std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
+                             float cooledMass = std::max(sum, kMinPosteriorMass);
+                             alpha = cooledProbability * cooledMass;
+                             beta = std::max(cooledMass - alpha, 0.0f);
+                             float updatedSum = alpha + beta;
+                             float updatedProbability =
+                                 (updatedSum > 0.0f) ? (alpha / updatedSum) : 0.5f;
+                             _primitiveHitAlpha[i] = alpha;
+                             _primitiveHitBeta[i] = beta;
+                             _primitiveHitProbability[i] =
+                                 std::clamp(updatedProbability, 0.0f, 1.0f);
+
+                             float exploration =
+                                 _primitiveExplorationScore[i] * probabilityDecay;
+                             exploration *= rayHitDecay;
+                             _primitiveExplorationScore[i] = exploration;
+                           }
+                         });
+  }
 }
 
 void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
