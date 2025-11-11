@@ -8225,6 +8225,7 @@ void Renderer::processRayHitCounters() {
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
+    _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     return;
   }
