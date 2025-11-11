@@ -2190,6 +2190,8 @@ void Renderer::updateVisibleScene() {
   _energySortedIndices.clear();
   _primitiveHitScores.assign(primCount, 0.0f);
   _primitiveHitLastFrame.assign(primCount, 0);
+  _primitiveRayContributions.assign(primCount, 0.0f);
+  _primitiveRaysTestedLastFrame.assign(primCount, 0);
   _primitiveHitAlpha.assign(primCount, 1.0f);
   _primitiveHitBeta.assign(primCount, 1.0f);
   _primitiveHitProbability.assign(primCount, 0.5f);
@@ -2244,8 +2246,9 @@ void Renderer::updateVisibleScene() {
     _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
   }
 
+  constexpr size_t kStatsPerPrimitive = 2;
   size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
-  size_t hitBytes = hitCount * sizeof(uint32_t);
+  size_t hitBytes = hitCount * kStatsPerPrimitive * sizeof(uint32_t);
   flushRayHitCopy();
   ensureBufferCapacity(_pPrimitiveHitBufferGPU, hitBytes,
                        _primitiveHitBufferCapacity, false,
@@ -7452,15 +7455,6 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
               size_t(0));
   }
 
-  if (_rayHitRebuildCooldown > 0) {
-    if (forceAllToggles)
-      _rayHitRebuildCooldown = 0;
-    else {
-      --_rayHitRebuildCooldown;
-      return false;
-    }
-  }
-
   std::vector<bool> desired(primCount, false);
   float threshold = _residencyConfig.probabilityThreshold;
   for (size_t i = 0; i < primCount; ++i) {
@@ -7529,9 +7523,6 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       changed = true;
     }
   }
-
-  if (changed)
-    _rayHitRebuildCooldown = _residencyConfig.rayHitRebuildCooldownFrames;
 
   return changed;
 }
@@ -8043,6 +8034,8 @@ void Renderer::processRayHitCounters() {
   if (!_pPrimitiveHitReadback) {
     _primitiveHitScores.clear();
     _primitiveHitLastFrame.clear();
+    _primitiveRayContributions.clear();
+    _primitiveRaysTestedLastFrame.clear();
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
@@ -8056,6 +8049,8 @@ void Renderer::processRayHitCounters() {
   if (!hitPtr) {
     _primitiveHitScores.clear();
     _primitiveHitLastFrame.clear();
+    _primitiveRayContributions.clear();
+    _primitiveRaysTestedLastFrame.clear();
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
@@ -8067,6 +8062,8 @@ void Renderer::processRayHitCounters() {
     std::memset(hitPtr, 0, bufferLength);
     _primitiveHitScores.clear();
     _primitiveHitLastFrame.clear();
+    _primitiveRayContributions.clear();
+    _primitiveRaysTestedLastFrame.clear();
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
@@ -8085,6 +8082,8 @@ void Renderer::processRayHitCounters() {
     std::memset(hitPtr, 0, bufferLength);
     _primitiveHitScores.clear();
     _primitiveHitLastFrame.clear();
+    _primitiveRayContributions.clear();
+    _primitiveRaysTestedLastFrame.clear();
     _primitiveHitAlpha.clear();
     _primitiveHitBeta.clear();
     _primitiveHitProbability.clear();
@@ -8096,8 +8095,9 @@ void Renderer::processRayHitCounters() {
   if (totalPrimitiveCount == 0)
     return;
 
+  constexpr size_t kStatsPerPrimitive = 2;
   size_t bufferCount = bufferLength / sizeof(uint32_t);
-  size_t count = std::min(totalPrimitiveCount, bufferCount);
+  size_t count = std::min(totalPrimitiveCount, bufferCount / kStatsPerPrimitive);
   if (count == 0)
     return;
 
@@ -8105,6 +8105,10 @@ void Renderer::processRayHitCounters() {
     _primitiveHitScores.resize(totalPrimitiveCount, 0.0f);
   if (_primitiveHitLastFrame.size() < totalPrimitiveCount)
     _primitiveHitLastFrame.resize(totalPrimitiveCount, 0);
+  if (_primitiveRayContributions.size() < totalPrimitiveCount)
+    _primitiveRayContributions.resize(totalPrimitiveCount, 0.0f);
+  if (_primitiveRaysTestedLastFrame.size() < totalPrimitiveCount)
+    _primitiveRaysTestedLastFrame.resize(totalPrimitiveCount, 0);
   if (_primitiveHitAlpha.size() < totalPrimitiveCount)
     _primitiveHitAlpha.resize(totalPrimitiveCount, 1.0f);
   if (_primitiveHitBeta.size() < totalPrimitiveCount)
@@ -8121,21 +8125,31 @@ void Renderer::processRayHitCounters() {
 
   parallelChunkedAsync(0, count, [&](size_t chunkStart, size_t chunkEnd) {
     for (size_t i = chunkStart; i < chunkEnd; ++i) {
-      uint32_t hits = hitPtr[i];
+      size_t base = i * kStatsPerPrimitive;
+      uint32_t hits = hitPtr[base + 0];
+      uint32_t raysTested = hitPtr[base + 1];
       _primitiveHitLastFrame[i] = hits;
+      _primitiveRaysTestedLastFrame[i] = raysTested;
       _primitiveHitScores[i] = _primitiveHitScores[i] * decay +
                                static_cast<float>(hits);
+      _primitiveRayContributions[i] =
+          _primitiveRayContributions[i] * decay +
+          static_cast<float>(raysTested);
 
       float success = static_cast<float>(hits);
-      float failure = 1.0f;
+      float failure =
+          std::max(static_cast<float>(raysTested) - success, 0.0f);
       float alpha = _primitiveHitAlpha[i] * decay + success;
       float beta = _primitiveHitBeta[i] * decay + failure;
       _primitiveHitAlpha[i] = alpha;
       _primitiveHitBeta[i] = beta;
       float sum = alpha + beta;
-      _primitiveHitProbability[i] =
-          (sum > 0.0f) ? (alpha / sum) : 0.5f;
-      hitPtr[i] = 0;
+      float probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
+      // Numerical safeguards ensure the Beta-derived probability stays within
+      // the true [0, 1] interval regardless of tuning.
+      _primitiveHitProbability[i] = std::clamp(probability, 0.0f, 1.0f);
+      hitPtr[base + 0] = 0;
+      hitPtr[base + 1] = 0;
     }
   });
 }
