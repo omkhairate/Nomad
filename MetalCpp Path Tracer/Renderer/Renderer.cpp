@@ -8239,22 +8239,76 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   size_t toggledPrimitiveCount = 0;
   size_t maxPrimitiveToggles = _residencyConfig.probabilityMaxTogglesPerFrame;
 
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+  auto toggleObjectPrimitivesWithBudget =
+      [this](size_t objectIndex, bool targetState, size_t budget) {
+        if (budget == 0 || objectIndex >= _allSceneObjects.size())
+          return size_t(0);
+
+        const SceneObject &obj = _allSceneObjects[objectIndex];
+        size_t toggled = 0;
+        auto tryTogglePrimitive = [&](size_t primIndex) {
+          if (toggled >= budget)
+            return;
+          if (primIndex >= _activePrimitive.size())
+            return;
+          if (_activePrimitive[primIndex] == targetState)
+            return;
+          if (primIndex < _primitiveCooldown.size() &&
+              _primitiveCooldown[primIndex] > 0)
+            return;
+          if (setPrimitiveActive(primIndex, targetState))
+            ++toggled;
+        };
+
+        if (!obj.cachedPrimitiveIndices.empty()) {
+          for (size_t prim : obj.cachedPrimitiveIndices) {
+            tryTogglePrimitive(prim);
+            if (toggled >= budget)
+              break;
+          }
+        }
+
+        size_t first = obj.firstPrimitive;
+        size_t last = first + obj.primitiveCount;
+        for (size_t prim = first; prim < last && toggled < budget; ++prim)
+          tryTogglePrimitive(prim);
+
+        if (toggled > 0) {
+          if (objectIndex >= _objectCooldown.size())
+            _objectCooldown.resize(objectIndex + 1, 0);
+          _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
+        }
+
+        return toggled;
+      };
+
+#ifndef NDEBUG
+  if (_objectProbabilitySortedIndices.size() != objectCount) {
+    assert(false &&
+           "_objectProbabilitySortedIndices must stay in sync with objectCount");
+  }
+#endif
+
+  auto processObjectToggle = [&](size_t objectIndex) {
+    if (objectIndex >= objectCount)
+      return false;
+
     if (!forceAllToggles) {
-      if (maxPrimitiveToggles == 0 || toggledPrimitiveCount >= maxPrimitiveToggles)
-        break;
+      if (maxPrimitiveToggles == 0 ||
+          toggledPrimitiveCount >= maxPrimitiveToggles)
+        return true;
     }
 
     bool shouldBeActive = desiredObjects[objectIndex];
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
     if (shouldBeActive == currentlyActive)
-      continue;
+      return false;
 
     if (!forceAllToggles) {
       if (objectIndex < _objectCooldown.size() &&
           _objectCooldown[objectIndex] > 0)
-        continue;
+        return false;
 
       const SceneObject &obj = _allSceneObjects[objectIndex];
       size_t first = obj.firstPrimitive;
@@ -8273,33 +8327,53 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       }
 
       if (!canToggle)
-        continue;
+        return false;
       if (pendingToggles == 0)
-        continue;
+        return false;
+
       size_t remainingBudget =
           (maxPrimitiveToggles > toggledPrimitiveCount)
               ? (maxPrimitiveToggles - toggledPrimitiveCount)
               : size_t(0);
-      if (pendingToggles > remainingBudget)
-        continue;
+      if (remainingBudget == 0)
+        return true;
+
+      size_t allowed = std::min(pendingToggles, remainingBudget);
+      size_t toggled =
+          toggleObjectPrimitivesWithBudget(objectIndex, shouldBeActive, allowed);
+      if (toggled == 0)
+        return false;
+
+      toggledPrimitiveCount += toggled;
+      _frameProbabilisticToggles += toggled;
+      changed = true;
+      if (!shouldBeActive && objectIndex < _objectExplorationScore.size())
+        _objectExplorationScore[objectIndex] = 0.0f;
+      return false;
     }
 
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
     if (toggled > 0) {
-      if (!forceAllToggles) {
-        size_t remainingBudget =
-            (maxPrimitiveToggles > toggledPrimitiveCount)
-                ? (maxPrimitiveToggles - toggledPrimitiveCount)
-                : size_t(0);
-        size_t applied = std::min(toggled, remainingBudget);
-        toggledPrimitiveCount += applied;
-      }
       _frameProbabilisticToggles += toggled;
       changed = true;
       if (!shouldBeActive && objectIndex < _objectExplorationScore.size())
         _objectExplorationScore[objectIndex] = 0.0f;
     }
-  }
+    return false;
+  };
+
+  auto walkObjectOrder = [&](const std::vector<size_t> &order) {
+    for (size_t idx : order) {
+      if (processObjectToggle(idx))
+        return true;
+    }
+    return false;
+  };
+
+  // The toggle walk intentionally follows the posterior/exploration ordering
+  // encoded in _objectProbabilitySortedIndices to ensure the residency budget
+  // is consumed on the most important objects first.
+  walkObjectOrder(_objectProbabilitySortedIndices);
 
   size_t activePrimitiveCount = 0;
   for (bool active : _activePrimitive)
@@ -8310,16 +8384,20 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     size_t fallback = fallbackObject < objectCount ? fallbackObject : size_t(0);
     if (fallback >= objectCount)
       fallback = objectCount - 1;
-    size_t remainingBudget =
-        (maxPrimitiveToggles > toggledPrimitiveCount)
-            ? (maxPrimitiveToggles - toggledPrimitiveCount)
-            : size_t(0);
-    size_t toggled = setObjectActive(fallback, true);
+    size_t toggled = 0;
+    if (forceAllToggles) {
+      toggled = setObjectActive(fallback, true);
+    } else {
+      size_t remainingBudget =
+          (maxPrimitiveToggles > toggledPrimitiveCount)
+              ? (maxPrimitiveToggles - toggledPrimitiveCount)
+              : size_t(0);
+      toggled =
+          toggleObjectPrimitivesWithBudget(fallback, true, remainingBudget);
+    }
     if (toggled > 0) {
-      if (!forceAllToggles) {
-        size_t applied = std::min(toggled, remainingBudget);
-        toggledPrimitiveCount += applied;
-      }
+      if (!forceAllToggles)
+        toggledPrimitiveCount += toggled;
       _frameProbabilisticToggles += toggled;
       changed = true;
     }
