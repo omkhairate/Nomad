@@ -158,6 +158,7 @@ private:
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
+  std::vector<bool> buildResidentMaskFromGpuResources() const;
   void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
   bool waitForPendingFrameCommands(
       std::chrono::milliseconds timeout,
