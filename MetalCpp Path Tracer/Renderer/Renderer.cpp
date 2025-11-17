@@ -5073,84 +5073,82 @@ void Renderer::recalculateNodeCounters(
   if (_residentCompacted) {
     activeBlasNodes = _blasNodeCount;
   } else if (hasBlasData) {
-      const auto &bvhNodes = _cachedBVHNodes;
-      const auto &primitiveIndices = _cachedPrimitiveIndices;
-      std::vector<uint8_t> processed(_blasNodeCount, 0);
-      std::vector<uint8_t> nodeActive(_blasNodeCount, 0);
-      std::vector<size_t> stack;
-      stack.reserve(_blasNodeCount);
-      stack.push_back(0);
+    const auto &bvhNodes = _cachedBVHNodes;
+    const auto &primitiveIndices = _cachedPrimitiveIndices;
+    std::vector<uint8_t> processed(_blasNodeCount, 0);
+    std::vector<uint8_t> nodeActive(_blasNodeCount, 0);
+    std::vector<size_t> stack;
+    stack.reserve(_blasNodeCount);
+    stack.push_back(0);
 
-      auto decodeNode = [](const simd::float4 &minVec,
-                           const simd::float4 &maxVec, int &leftFirst,
-                           int &count) {
-        const auto *minWords = reinterpret_cast<const int *>(&minVec);
-        const auto *maxWords = reinterpret_cast<const int *>(&maxVec);
-        leftFirst = minWords[3];
-        count = maxWords[3];
-      };
+    auto decodeNode = [](const simd::float4 &minVec,
+                         const simd::float4 &maxVec, int &leftFirst,
+                         int &count) {
+      const auto *minWords = reinterpret_cast<const int *>(&minVec);
+      const auto *maxWords = reinterpret_cast<const int *>(&maxVec);
+      leftFirst = minWords[3];
+      count = maxWords[3];
+    };
 
-      while (!stack.empty()) {
-        size_t nodeIdx = stack.back();
-        if (nodeIdx >= _blasNodeCount) {
-          stack.pop_back();
-          continue;
-        }
-
-        if (processed[nodeIdx]) {
-          stack.pop_back();
-          continue;
-        }
-
-        int leftFirst = 0;
-        int count = 0;
-        decodeNode(bvhNodes[2 * nodeIdx], bvhNodes[2 * nodeIdx + 1], leftFirst,
-                   count);
-
-        if (count > 0) {
-          bool leafActive = false;
-          size_t start = static_cast<size_t>(std::max(leftFirst, 0));
-          size_t end = start + static_cast<size_t>(std::max(count, 0));
-          for (size_t idx = start; idx < end; ++idx) {
-            size_t primitiveIndex =
-                (idx < primitiveIndices.size())
-                    ? static_cast<size_t>(primitiveIndices[idx])
-                    : idx;
-            if (primitiveIndex < _activePrimitive.size() &&
-                _activePrimitive[primitiveIndex]) {
-              leafActive = true;
-              break;
-            }
-          }
-          nodeActive[nodeIdx] = leafActive ? 1 : 0;
-          processed[nodeIdx] = 1;
-          stack.pop_back();
-        } else {
-          size_t leftChild =
-              static_cast<size_t>(leftFirst >= 0 ? leftFirst : 0);
-          size_t rightChild = static_cast<size_t>(-count);
-          bool leftDone = leftChild >= _blasNodeCount || processed[leftChild];
-          bool rightDone = rightChild >= _blasNodeCount || processed[rightChild];
-          if (!leftDone) {
-            stack.push_back(leftChild);
-            continue;
-          }
-          if (!rightDone) {
-            stack.push_back(rightChild);
-            continue;
-          }
-          bool anyActive =
-              (leftChild < _blasNodeCount && nodeActive[leftChild]) ||
-              (rightChild < _blasNodeCount && nodeActive[rightChild]);
-          nodeActive[nodeIdx] = anyActive ? 1 : 0;
-          processed[nodeIdx] = 1;
-          stack.pop_back();
-        }
+    while (!stack.empty()) {
+      size_t nodeIdx = stack.back();
+      if (nodeIdx >= _blasNodeCount) {
+        stack.pop_back();
+        continue;
       }
 
-      activeBlasNodes =
-          std::accumulate(nodeActive.begin(), nodeActive.end(), size_t(0));
+      if (processed[nodeIdx]) {
+        stack.pop_back();
+        continue;
+      }
+
+      int leftFirst = 0;
+      int count = 0;
+      decodeNode(bvhNodes[2 * nodeIdx], bvhNodes[2 * nodeIdx + 1], leftFirst,
+                 count);
+
+      if (count > 0) {
+        bool leafActive = false;
+        size_t start = static_cast<size_t>(std::max(leftFirst, 0));
+        size_t end = start + static_cast<size_t>(std::max(count, 0));
+        for (size_t idx = start; idx < end; ++idx) {
+          size_t primitiveIndex =
+              (idx < primitiveIndices.size())
+                  ? static_cast<size_t>(primitiveIndices[idx])
+                  : idx;
+          if (primitiveIndex < _activePrimitive.size() &&
+              _activePrimitive[primitiveIndex]) {
+            leafActive = true;
+            break;
+          }
+        }
+        nodeActive[nodeIdx] = leafActive ? 1 : 0;
+        processed[nodeIdx] = 1;
+        stack.pop_back();
+      } else {
+        size_t leftChild = static_cast<size_t>(leftFirst >= 0 ? leftFirst : 0);
+        size_t rightChild = static_cast<size_t>(-count);
+        bool leftDone = leftChild >= _blasNodeCount || processed[leftChild];
+        bool rightDone = rightChild >= _blasNodeCount || processed[rightChild];
+        if (!leftDone) {
+          stack.push_back(leftChild);
+          continue;
+        }
+        if (!rightDone) {
+          stack.push_back(rightChild);
+          continue;
+        }
+        bool anyActive =
+            (leftChild < _blasNodeCount && nodeActive[leftChild]) ||
+            (rightChild < _blasNodeCount && nodeActive[rightChild]);
+        nodeActive[nodeIdx] = anyActive ? 1 : 0;
+        processed[nodeIdx] = 1;
+        stack.pop_back();
+      }
     }
+
+    activeBlasNodes =
+        std::accumulate(nodeActive.begin(), nodeActive.end(), size_t(0));
   }
 
   size_t activeTlasNodes = 0;
