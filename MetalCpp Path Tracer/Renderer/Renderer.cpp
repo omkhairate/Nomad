@@ -4857,33 +4857,71 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     markBufferModified(_pLightCdfBuffer, NS::Range::Make(0, lightCdfBytes));
   }
 
+  recalculateNodeCounters(objectShouldBeResident);
+
+  _objectResidentState = objectShouldBeResident;
+  _dirtyResidentObjects.clear();
+  _recentlyActivated.clear();
+  _recentlyDeactivated.clear();
+
+  _needsAccumulationReset = true;
+}
+
+void Renderer::recalculateNodeCounters(
+    const std::vector<bool> &residentMask) {
+  bool hasBlasData =
+      _blasNodeCount > 0 && _cachedBVHNodes.size() >= _blasNodeCount * 2;
+  bool hasTlasData =
+      _tlasNodeCount > 0 && _cachedTLASNodes.size() >= _tlasNodeCount * 2;
+
+  if (_blasNodeCount == 0 && _tlasNodeCount == 0) {
+    _residentNodeCount = 0;
+    _activeNodeCount = 0;
+    return;
+  }
+
+  const std::vector<SceneObject> *sceneObjects = nullptr;
+  if (!_allSceneObjects.empty()) {
+    sceneObjects = &_allSceneObjects;
+  } else if (_pScene) {
+    sceneObjects = &_pScene->getObjects();
+  }
+
+  size_t totalPrimitiveCount = _allPrimitives.size();
   size_t residentBlasNodes = 0;
   size_t residentTlasNodes = 0;
 
-  if (useCompaction) {
+  if (_residentCompacted) {
     residentBlasNodes = _blasNodeCount;
     residentTlasNodes = _tlasNodeCount;
   } else {
-    std::vector<uint8_t> primitiveResident(totalPrimitiveCount, 0);
-    for (size_t i = 0; i < totalPrimitiveCount && i < _activePrimitive.size(); ++i) {
-      if (_activePrimitive[i])
-        primitiveResident[i] = 1;
-    }
-    for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
-      if (!objectShouldBeResident[objectIndex])
-        continue;
-      const SceneObject &obj = sceneObjects[objectIndex];
-      size_t first = obj.firstPrimitive;
-      size_t last = first + obj.primitiveCount;
-      for (size_t prim = first; prim < last && prim < totalPrimitiveCount; ++prim)
-        primitiveResident[prim] = 1;
-    }
+    if (hasBlasData) {
+      std::vector<uint8_t> primitiveResident(totalPrimitiveCount, 0);
+      size_t activeLimit =
+          std::min(totalPrimitiveCount, _activePrimitive.size());
+      for (size_t i = 0; i < activeLimit; ++i) {
+        if (_activePrimitive[i])
+          primitiveResident[i] = 1;
+      }
 
-    if (_blasNodeCount > 0 && bvhSource &&
-        bvhSource->size() >= _blasNodeCount * 2) {
-      const auto &bvhNodes = *bvhSource;
-      const auto &primitiveIndices =
-          primitiveIndexSource ? *primitiveIndexSource : _cachedPrimitiveIndices;
+      if (sceneObjects) {
+        for (size_t objectIndex = 0;
+             objectIndex < sceneObjects->size(); ++objectIndex) {
+          if (objectIndex >= residentMask.size() ||
+              !residentMask[objectIndex])
+            continue;
+          const SceneObject &obj = (*sceneObjects)[objectIndex];
+          size_t first = obj.firstPrimitive;
+          size_t last = first + obj.primitiveCount;
+          for (size_t prim = first;
+               prim < last && prim < totalPrimitiveCount; ++prim) {
+            primitiveResident[prim] = 1;
+          }
+        }
+      }
+
+      const auto &bvhNodes = _cachedBVHNodes;
+      const auto &primitiveIndices = _cachedPrimitiveIndices;
       std::vector<uint8_t> processed(_blasNodeCount, 0);
       std::vector<uint8_t> nodeResident(_blasNodeCount, 0);
       std::vector<size_t> stack;
@@ -4963,9 +5001,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       residentBlasNodes = _blasNodeCount;
     }
 
-    if (_tlasNodeCount > 0 && tlasSource &&
-        tlasSource->size() >= _tlasNodeCount * 2) {
-      const auto &tlasNodes = *tlasSource;
+    if (hasTlasData) {
+      const auto &tlasNodes = _cachedTLASNodes;
       std::vector<uint8_t> processed(_tlasNodeCount, 0);
       std::vector<uint8_t> nodeResident(_tlasNodeCount, 0);
       std::vector<size_t> stack;
@@ -4995,8 +5032,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
         if (leftChild < 0) {
           size_t objectIndex = static_cast<size_t>(-leftChild - 1);
-          bool resident = objectIndex < objectShouldBeResident.size() &&
-                          objectShouldBeResident[objectIndex];
+          bool resident = objectIndex < residentMask.size() &&
+                          residentMask[objectIndex];
           nodeResident[nodeIdx] = resident ? 1 : 0;
           processed[nodeIdx] = 1;
           stack.pop_back();
@@ -5033,13 +5070,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   _residentNodeCount = residentBlasNodes + residentTlasNodes;
 
   size_t activeBlasNodes = 0;
-  if (_blasNodeCount > 0) {
-    if (useCompaction) {
-      activeBlasNodes = _blasNodeCount;
-    } else if (bvhSource && bvhSource->size() >= _blasNodeCount * 2) {
-      const auto &bvhNodes = *bvhSource;
-      const auto &primitiveIndices =
-          primitiveIndexSource ? *primitiveIndexSource : _cachedPrimitiveIndices;
+  if (_residentCompacted) {
+    activeBlasNodes = _blasNodeCount;
+  } else if (hasBlasData) {
+      const auto &bvhNodes = _cachedBVHNodes;
+      const auto &primitiveIndices = _cachedPrimitiveIndices;
       std::vector<uint8_t> processed(_blasNodeCount, 0);
       std::vector<uint8_t> nodeActive(_blasNodeCount, 0);
       std::vector<size_t> stack;
@@ -5119,9 +5154,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   }
 
   size_t activeTlasNodes = 0;
-  if (_tlasNodeCount > 0 && tlasSource &&
-      tlasSource->size() >= _tlasNodeCount * 2) {
-    const auto &tlasNodes = *tlasSource;
+  if (hasTlasData) {
+    const auto &tlasNodes = _cachedTLASNodes;
     std::vector<uint8_t> processed(_tlasNodeCount, 0);
     std::vector<uint8_t> nodeActive(_tlasNodeCount, 0);
     std::vector<size_t> stack;
@@ -5181,16 +5215,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
     activeTlasNodes =
         std::accumulate(nodeActive.begin(), nodeActive.end(), size_t(0));
+  } else if (_residentCompacted) {
+    activeTlasNodes = _tlasNodeCount;
   }
 
   _activeNodeCount = activeBlasNodes + activeTlasNodes;
-
-  _objectResidentState = objectShouldBeResident;
-  _dirtyResidentObjects.clear();
-  _recentlyActivated.clear();
-  _recentlyDeactivated.clear();
-
-  _needsAccumulationReset = true;
 }
 
 
@@ -9505,6 +9534,13 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   } else {
     _lastRaysPerSecond = 0.0;
   }
+  bool canRecalculateNodes =
+      (_blasNodeCount > 0 && _cachedBVHNodes.size() >= _blasNodeCount * 2) ||
+      (_tlasNodeCount > 0 && _cachedTLASNodes.size() >= _tlasNodeCount * 2) ||
+      (_residentCompacted && (_blasNodeCount > 0 || _tlasNodeCount > 0));
+  if (canRecalculateNodes)
+    recalculateNodeCounters(_objectResidentState);
+
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;

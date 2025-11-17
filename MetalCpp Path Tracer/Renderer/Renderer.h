@@ -131,6 +131,7 @@ public:
 private:
   struct BenchmarkSample;
   struct FrameCaptureRequest;
+  void recalculateNodeCounters(const std::vector<bool> &residentMask);
   void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                             size_t &currentCapacity,
