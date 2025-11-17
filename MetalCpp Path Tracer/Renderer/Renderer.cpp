@@ -4867,6 +4867,22 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   _needsAccumulationReset = true;
 }
 
+std::vector<bool> Renderer::buildResidentMaskFromGpuResources() const {
+  std::vector<bool> residentMask;
+  if (_residentObjectGpuResources.empty())
+    return residentMask;
+
+  size_t objectCount =
+      std::max(_residentObjectGpuResources.size(), _objectResidentState.size());
+  residentMask.assign(objectCount, false);
+  for (size_t objectIndex = 0; objectIndex < _residentObjectGpuResources.size();
+       ++objectIndex) {
+    residentMask[objectIndex] =
+        _residentObjectGpuResources[objectIndex].isResident();
+  }
+  return residentMask;
+}
+
 void Renderer::recalculateNodeCounters(
     const std::vector<bool> &residentMask) {
   bool hasBlasData =
@@ -9536,8 +9552,14 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       (_blasNodeCount > 0 && _cachedBVHNodes.size() >= _blasNodeCount * 2) ||
       (_tlasNodeCount > 0 && _cachedTLASNodes.size() >= _tlasNodeCount * 2) ||
       (_residentCompacted && (_blasNodeCount > 0 || _tlasNodeCount > 0));
-  if (canRecalculateNodes)
-    recalculateNodeCounters(_objectResidentState);
+  if (canRecalculateNodes) {
+    if (_residentObjectGpuResources.empty()) {
+      recalculateNodeCounters(_objectResidentState);
+    } else {
+      auto gpuResidentMask = buildResidentMaskFromGpuResources();
+      recalculateNodeCounters(gpuResidentMask);
+    }
+  }
 
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
