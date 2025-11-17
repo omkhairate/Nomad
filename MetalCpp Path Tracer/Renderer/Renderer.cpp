@@ -7921,24 +7921,54 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     size_t toggles = 0;
     bool changed = false;
     size_t maxToggles = _residencyConfig.probabilityMaxTogglesPerFrame;
-    for (size_t i = 0; i < primCount; ++i) {
-      bool shouldBeActive = desired[i];
-      if (shouldBeActive == _activePrimitive[i])
-        continue;
+#ifndef NDEBUG
+    assert(_probabilitySortedIndices.size() == primCount);
+#endif
+    auto tryToggle = [&](size_t idx) {
+      if (idx >= primCount)
+        return false;
+      bool shouldBeActive = desired[idx];
+      if (shouldBeActive == _activePrimitive[idx])
+        return false;
       if (!forceAllToggles) {
-        if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
-          continue;
+        if (idx < _primitiveCooldown.size() && _primitiveCooldown[idx] > 0)
+          return false;
         if (toggles >= maxToggles)
-          break;
+          return true;
       }
-      if (setPrimitiveActive(i, shouldBeActive)) {
+      if (setPrimitiveActive(idx, shouldBeActive)) {
         ++toggles;
         ++_frameProbabilisticToggles;
         changed = true;
-        if (!shouldBeActive && i < _primitiveExplorationScore.size())
-          _primitiveExplorationScore[i] = 0.0f;
+        if (!shouldBeActive && idx < _primitiveExplorationScore.size())
+          _primitiveExplorationScore[idx] = 0.0f;
       }
-    }
+      return false;
+    };
+
+    auto walkList = [&](const std::vector<size_t> &candidates) {
+      for (size_t idx : candidates) {
+        if (!forceAllToggles && toggles >= maxToggles)
+          return true;
+        if (tryToggle(idx))
+          return true;
+      }
+      return false;
+    };
+
+    // Walk probability-sorted primitives first so that we spend the toggle budget
+    // on the most-likely contributors and then fall back to the exploration order
+    // as needed.
+    bool budgetReached = walkList(_probabilitySortedIndices);
+    if (!budgetReached)
+      budgetReached = walkList(visibleExplore);
+    if (!budgetReached)
+      budgetReached = walkList(hiddenExplore);
+
+#ifndef NDEBUG
+    if (!forceAllToggles)
+      assert(toggles <= maxToggles);
+#endif
 
     size_t activeCount = 0;
     for (bool active : _activePrimitive)
