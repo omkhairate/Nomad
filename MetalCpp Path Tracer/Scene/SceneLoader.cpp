@@ -628,6 +628,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         } else if (value == "alwaysresident" || value == "always_resident" ||
                    value == "always" || value == "none" || value == "off") {
             scene->setResidencyStrategy(ResidencyStrategy::AlwaysResident);
+        } else if (value == "environment" || value == "environmenthit" ||
+                   value == "environment_hit" || value == "envhit" ||
+                   value == "env_hit" || value == "env") {
+            scene->setResidencyStrategy(ResidencyStrategy::EnvironmentHit);
         } else {
             printf("Unknown residency strategy '%s', defaulting to distance LOD.\n",
                    residencyAttr);
