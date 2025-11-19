@@ -695,6 +695,14 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.screenFootprintMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "screenToggleBudget",
         static_cast<uint64_t>(params.screenFootprintMaxTogglesPerFrame)));
+    params.environmentTargetEscapeFraction = root->FloatAttribute(
+        "environmentTargetEscapeFraction", params.environmentTargetEscapeFraction);
+    params.environmentMinActivePrimitives = static_cast<size_t>(root->Unsigned64Attribute(
+        "environmentMinActive",
+        static_cast<uint64_t>(params.environmentMinActivePrimitives)));
+    params.environmentMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
+        "environmentToggleBudget",
+        static_cast<uint64_t>(params.environmentMaxTogglesPerFrame)));
     params.enableBufferShrink = root->BoolAttribute(
         "enableBufferShrink", params.enableBufferShrink);
     params.bufferShrinkActiveRatio = root->FloatAttribute(

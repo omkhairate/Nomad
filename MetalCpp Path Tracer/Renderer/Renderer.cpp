@@ -1294,7 +1294,8 @@ void Renderer::writeBenchmarkHeader() {
          "lod_enter_distance,lod_exit_distance,lod_enter_view_margin,"
          "lod_exit_view_margin,energy_target_fraction,"
          "energy_min_active,energy_visibility_boost,screen_target_fraction,"
-         "screen_min_pixels,screen_min_active";
+         "screen_min_pixels,screen_min_active,environment_target_escape,"
+         "environment_min_active,environment_toggle_budget";
   _benchmarkStream << '\n';
   _benchmarkHeaderWritten = true;
 }
@@ -1371,7 +1372,10 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(_residencyConfig.energyVisibilityBoost, 3) << ','
       << formatFixed(_residencyConfig.screenFootprintTargetFraction, 3) << ','
       << formatFixed(_residencyConfig.screenFootprintMinPixelCoverage, 3) << ','
-      << _residencyConfig.screenFootprintMinActivePrimitives;
+      << _residencyConfig.screenFootprintMinActivePrimitives << ','
+      << formatFixed(_residencyConfig.environmentTargetEscapeFraction, 3) << ','
+      << _residencyConfig.environmentMinActivePrimitives << ','
+      << _residencyConfig.environmentMaxTogglesPerFrame;
 
   _benchmarkStream << row.str() << '\n';
   _benchmarkStream.flush();
@@ -6633,7 +6637,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     changed = updateScreenSpaceFootprint(forceAllToggles);
     break;
   case ResidencyStrategy::EnvironmentHit:
-    changed = updateEnvironmentHit(forceAllToggles);
+    changed = updateEnvironmentHitResidency(forceAllToggles);
     break;
   case ResidencyStrategy::AlwaysResident:
     changed = updateAlwaysResident(forceAllToggles);
@@ -8705,11 +8709,196 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   return changed;
 }
 
-bool Renderer::updateEnvironmentHit(bool forceAllToggles) {
-  // Placeholder until the environment-hit strategy is implemented.
-  // Fall back to distance-based heuristics so the renderer continues to
-  // activate content when the strategy is selected.
-  return updateLODByDistance(forceAllToggles);
+bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
+  size_t objectCount = _allSceneObjects.size();
+  size_t primitiveCount = _activePrimitive.size();
+  if (objectCount == 0 || primitiveCount == 0)
+    return false;
+
+  if (_objectProbabilitySortedIndices.size() != objectCount) {
+    _objectProbabilitySortedIndices.resize(objectCount);
+    std::iota(_objectProbabilitySortedIndices.begin(),
+              _objectProbabilitySortedIndices.end(), size_t(0));
+  }
+
+  if (_objectImportance.size() != objectCount)
+    _objectImportance.assign(objectCount, 0.0f);
+  else
+    std::fill(_objectImportance.begin(), _objectImportance.end(), 0.0f);
+
+  std::vector<uint8_t> desiredObjectState(objectCount, 0);
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    float hitProbability =
+        (objectIndex < _objectHitProbability.size())
+            ? std::clamp(_objectHitProbability[objectIndex], 0.0f, 1.0f)
+            : 0.0f;
+    bool hasEvidence =
+        (objectIndex < _objectRaysTestedLastFrame.size())
+            ? (_objectRaysTestedLastFrame[objectIndex] > 0)
+            : false;
+    bool currentlyActive =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    if (!hasEvidence && !currentlyActive)
+      hitProbability = 0.0f;
+    _objectImportance[objectIndex] = hitProbability;
+  }
+
+  auto &sortedIndices = _objectProbabilitySortedIndices;
+  std::sort(sortedIndices.begin(), sortedIndices.end(),
+            [&](size_t a, size_t b) {
+              float importanceA =
+                  (a < _objectImportance.size()) ? _objectImportance[a] : 0.0f;
+              float importanceB =
+                  (b < _objectImportance.size()) ? _objectImportance[b] : 0.0f;
+              if (importanceA == importanceB)
+                return a < b;
+              return importanceA > importanceB;
+            });
+
+  float targetEscape =
+      std::clamp(_residencyConfig.environmentTargetEscapeFraction, 0.0f, 1.0f);
+  size_t minActivePrimitives =
+      std::min(primitiveCount, _residencyConfig.environmentMinActivePrimitives);
+  if (minActivePrimitives == 0 && primitiveCount > 0)
+    minActivePrimitives = 1;
+
+  size_t desiredPrimitiveCount = 0;
+  float weightedEscape = 0.0f;
+  auto averageEscape = [](size_t primCount, float weighted) {
+    if (primCount == 0)
+      return 1.0f;
+    return weighted / static_cast<float>(primCount);
+  };
+
+  for (size_t objectIndex : sortedIndices) {
+    if (objectIndex >= _allSceneObjects.size())
+      continue;
+    const SceneObject &object = _allSceneObjects[objectIndex];
+    if (object.primitiveCount == 0)
+      continue;
+
+    bool needMorePrimitives = desiredPrimitiveCount < minActivePrimitives;
+    bool needsEscapeReduction =
+        averageEscape(desiredPrimitiveCount, weightedEscape) > targetEscape;
+    if (!needMorePrimitives && !needsEscapeReduction)
+      break;
+
+    desiredObjectState[objectIndex] = 1;
+    desiredPrimitiveCount += object.primitiveCount;
+    float escapeProbability =
+        1.0f - ((objectIndex < _objectImportance.size())
+                    ? _objectImportance[objectIndex]
+                    : 0.0f);
+    weightedEscape += escapeProbability * static_cast<float>(object.primitiveCount);
+  }
+
+  if (desiredPrimitiveCount == 0 && primitiveCount > 0) {
+    for (size_t objectIndex : sortedIndices) {
+      if (objectIndex >= _allSceneObjects.size())
+        continue;
+      const SceneObject &object = _allSceneObjects[objectIndex];
+      if (object.primitiveCount == 0)
+        continue;
+      desiredObjectState[objectIndex] = 1;
+      desiredPrimitiveCount = object.primitiveCount;
+      float escapeProbability =
+          1.0f - ((objectIndex < _objectImportance.size())
+                      ? _objectImportance[objectIndex]
+                      : 0.0f);
+      weightedEscape =
+          escapeProbability * static_cast<float>(object.primitiveCount);
+      break;
+    }
+  }
+
+  bool changed = false;
+  size_t toggledPrimitiveCount = 0;
+  size_t maxToggleBudget = _residencyConfig.environmentMaxTogglesPerFrame;
+
+  for (size_t objectIndex : sortedIndices) {
+    bool shouldBeActive =
+        (objectIndex < desiredObjectState.size()) ? desiredObjectState[objectIndex]
+                                                  : 0;
+    bool currentlyActive =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    if (shouldBeActive == currentlyActive)
+      continue;
+
+    if (!forceAllToggles && objectIndex < _objectCooldown.size() &&
+        _objectCooldown[objectIndex] > 0)
+      continue;
+
+    const SceneObject &object = _allSceneObjects[objectIndex];
+    size_t first = object.firstPrimitive;
+    size_t last = std::min(first + object.primitiveCount, _activePrimitive.size());
+    if (last <= first)
+      continue;
+
+    bool canToggle = true;
+    size_t pendingToggles = 0;
+    for (size_t prim = first; prim < last; ++prim) {
+      if (_activePrimitive[prim] == shouldBeActive)
+        continue;
+      if (!forceAllToggles && prim < _primitiveCooldown.size() &&
+          _primitiveCooldown[prim] > 0) {
+        canToggle = false;
+        break;
+      }
+      ++pendingToggles;
+    }
+
+    if (!canToggle || pendingToggles == 0)
+      continue;
+
+    if (!forceAllToggles && toggledPrimitiveCount >= maxToggleBudget)
+      continue;
+
+    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+    if (toggled > 0) {
+      changed = true;
+      if (!forceAllToggles) {
+        toggledPrimitiveCount =
+            std::min(toggledPrimitiveCount + toggled, maxToggleBudget);
+      }
+    }
+  }
+
+  bool anyActiveObject = false;
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (objectIndex >= _objectActive.size())
+      continue;
+    if (objectIndex >= _objectPrimitiveCounts.size())
+      continue;
+    if (_objectPrimitiveCounts[objectIndex] == 0)
+      continue;
+    if (_objectActive[objectIndex]) {
+      anyActiveObject = true;
+      break;
+    }
+  }
+
+  if (!anyActiveObject) {
+    for (size_t objectIndex : sortedIndices) {
+      if (objectIndex >= _objectPrimitiveCounts.size())
+        continue;
+      if (_objectPrimitiveCounts[objectIndex] == 0)
+        continue;
+      if (setObjectActive(objectIndex, true) > 0) {
+        changed = true;
+        anyActiveObject = true;
+      }
+      if (anyActiveObject)
+        break;
+    }
+  }
+
+  if (!anyActiveObject && !_activePrimitive.empty()) {
+    if (setPrimitiveActive(0, true))
+      changed = true;
+  }
+
+  return changed;
 }
 
 // Propagate any pending primitive/object toggles to GPU memory.  The method
