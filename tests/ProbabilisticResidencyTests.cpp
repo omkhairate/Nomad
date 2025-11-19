@@ -371,6 +371,71 @@ void testObjectFallbackOverridesToggleBudget() {
   assert(harness.toggledPrimitiveCount() == 0);
 }
 
+void testIdleResidencyCooldownClearsDesiredState() {
+  constexpr uint32_t kStateCooldownFrames = 3;
+  constexpr uint32_t kIdleCooldownFrames = 2;
+  constexpr float kThreshold = 0.55f;
+  constexpr float kHysteresis = 0.05f;
+  const float enterThreshold = std::clamp(kThreshold + kHysteresis, 0.0f, 1.0f);
+  const float exitThreshold = std::clamp(kThreshold - kHysteresis, 0.0f, 1.0f);
+  constexpr float kEvidenceWindow = 64.0f;
+  constexpr float kMinimalEvidenceThreshold = 1.0e-3f;
+
+  auto sanitizeProbability = [](float probability) {
+    if (!std::isfinite(probability))
+      return 0.5f;
+    return std::clamp(probability, 0.0f, 1.0f);
+  };
+
+  auto computeEvidenceFactor = [=](float mass) {
+    if (!(mass > 0.0f) || !std::isfinite(mass))
+      return 0.0f;
+    float window = std::max(kEvidenceWindow, 1.0e-3f);
+    float normalized = mass / window;
+    return std::clamp(normalized, 0.0f, 1.0f);
+  };
+
+  auto evaluateDesiredState = [&](float probability, float mass,
+                                  bool previousDesired,
+                                  uint32_t cooldown) {
+    float sanitizedProbability = sanitizeProbability(probability);
+    float evidence = computeEvidenceFactor(mass);
+    float regressedProbability = sanitizedProbability * evidence +
+                                 0.5f * (1.0f - evidence);
+    bool desired = previousDesired;
+    bool cooldownExpired = cooldown == 0;
+    if (evidence <= kMinimalEvidenceThreshold && cooldownExpired)
+      desired = false;
+    else if (sanitizedProbability >= enterThreshold)
+      desired = true;
+    else if (sanitizedProbability <= exitThreshold)
+      desired = false;
+    else if (cooldownExpired)
+      desired = regressedProbability >= kThreshold;
+    return desired;
+  };
+
+  bool desired = true;
+  uint32_t cooldown = kStateCooldownFrames;
+  const uint32_t totalIdleFrames = kStateCooldownFrames + kIdleCooldownFrames;
+  float probability = kThreshold;
+  float mass = kEvidenceWindow;
+
+  for (uint32_t frame = 0; frame < totalIdleFrames; ++frame) {
+    float frameMass = mass;
+    if (frame + 1 == totalIdleFrames)
+      frameMass = 1.0e-6f;
+    bool next = evaluateDesiredState(probability, frameMass, desired, cooldown);
+    if (frame + 1 < totalIdleFrames)
+      assert(next);
+    desired = next;
+    if (cooldown > 0)
+      --cooldown;
+  }
+
+  assert(!desired);
+}
+
 } // namespace
 
 void RunProbabilisticResidencyTests() {
@@ -378,4 +443,5 @@ void RunProbabilisticResidencyTests() {
   testAlternatingHitsRespectDecayAndFallback();
   testZeroActiveFallbackEnsuresOnePrimitive();
   testObjectFallbackOverridesToggleBudget();
+  testIdleResidencyCooldownClearsDesiredState();
 }
