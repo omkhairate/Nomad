@@ -7820,7 +7820,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                        ? _primitivePosteriorMass[i]
                        : 0.0f;
       float effectiveProbability = computeRegressedProbability(probability, mass);
-      if (effectiveProbability > threshold)
+      if (effectiveProbability >= threshold)
         desired[i] = true;
     }
 
@@ -8121,7 +8121,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                      : 0.0f;
     float effectiveProbability =
         computeRegressedProbability(probability, mass);
-    if (effectiveProbability > threshold) {
+    if (effectiveProbability >= threshold) {
       desiredObjects[i] = true;
       size_t contribution =
           (i < _objectPrimitiveCounts.size()) ? _objectPrimitiveCounts[i] : 0;
