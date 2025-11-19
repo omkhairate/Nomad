@@ -7767,6 +7767,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   const size_t objectCount = _allSceneObjects.size();
 
   constexpr float kPosteriorFloor = 1.0e-3f;
+  constexpr float kMinimalEvidenceThreshold = 1.0e-3f;
   const float configuredWindow = _residencyConfig.probabilityEvidenceWindow;
   const bool finiteEvidenceWindow =
       configuredWindow > 0.0f && std::isfinite(configuredWindow);
@@ -8145,15 +8146,20 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float mass = (i < _objectPosteriorMass.size())
                      ? _objectPosteriorMass[i]
                      : 0.0f;
-    float effectiveProbability =
-        computeRegressedProbability(probability, mass);
+    float sanitizedProbability = sanitizePosteriorProbability(probability);
+    float evidence = computeEvidenceFactor(mass);
+    float effectiveProbability = sanitizedProbability * evidence +
+                                 0.5f * (1.0f - evidence);
     bool previousDesired = desiredObjects[i] != 0;
     bool desired = previousDesired;
     bool cooldownExpired =
         (i >= _objectCooldown.size()) || _objectCooldown[i] == 0;
-    if (effectiveProbability >= enterThreshold)
+    bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
+    if (lowEvidence && cooldownExpired)
+      desired = false;
+    else if (sanitizedProbability >= enterThreshold)
       desired = true;
-    else if (effectiveProbability <= exitThreshold)
+    else if (sanitizedProbability <= exitThreshold)
       desired = false;
     else if (cooldownExpired)
       desired = effectiveProbability >= threshold;
