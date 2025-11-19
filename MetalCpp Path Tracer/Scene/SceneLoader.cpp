@@ -695,6 +695,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         root->FloatAttribute("probabilityDecay", params.probabilityDecay);
     params.probabilityThreshold = root->FloatAttribute(
         "probabilityThreshold", params.probabilityThreshold);
+    params.probabilityTargetFraction = root->FloatAttribute(
+        "probabilityTargetFraction", params.probabilityTargetFraction);
     params.probabilityMinActivePrimitives = static_cast<size_t>(root->Unsigned64Attribute(
         "probabilityMinActive",
         static_cast<uint64_t>(params.probabilityMinActivePrimitives)));

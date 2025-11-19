@@ -372,9 +372,15 @@ private:
     double avgHitProbability = 0.0;
     double p95HitProbability = 0.0;
     double probabilityThreshold = 0.0;
+    double probabilityTargetFraction = 0.0;
     std::string primitiveProbabilities;
     std::string objectProbabilities;
     size_t probabilisticToggles = 0;
+    size_t probabilityTargetPrimitives = 0;
+    size_t probabilityInitialDesiredPrimitives = 0;
+    size_t probabilityFinalDesiredPrimitives = 0;
+    size_t probabilityTrimmedPrimitives = 0;
+    bool probabilityBudgetHit = false;
     double environmentTargetActiveFraction = 0.0;
     double environmentEscapeThreshold = 0.0;
     std::string environmentDepthWeights;
@@ -422,6 +428,7 @@ private:
   std::vector<uint32_t> _objectCooldown;
   std::vector<uint8_t> _desiredObjectState;
   std::vector<uint64_t> _desiredObjectPromotionFrame;
+  std::vector<uint64_t> _desiredObjectDemotionFrame;
   std::vector<float> _primitiveImportance;
   std::vector<float> _objectImportance;
   std::vector<size_t> _energySortedIndices;
@@ -573,6 +580,11 @@ private:
   size_t _frameObjectActivations = 0;
   size_t _frameObjectDeactivations = 0;
   size_t _frameProbabilisticToggles = 0;
+  size_t _frameProbabilityTargetPrimitives = 0;
+  size_t _frameProbabilityInitialDesiredPrimitives = 0;
+  size_t _frameProbabilityFinalDesiredPrimitives = 0;
+  size_t _frameProbabilityTrimmedPrimitives = 0;
+  bool _frameProbabilityBudgetHit = false;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
   AlwaysResidentCache _alwaysResidentCache;
