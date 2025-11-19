@@ -6913,6 +6913,10 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
     _objectCooldown.resize(objectIndex + 1, 0);
   if (objectIndex >= _objectActivePrimitiveCounts.size())
     _objectActivePrimitiveCounts.resize(objectIndex + 1, 0);
+  if (objectIndex >= _desiredObjectState.size())
+    _desiredObjectState.resize(objectIndex + 1, 0);
+  if (objectIndex >= _desiredObjectPromotionFrame.size())
+    _desiredObjectPromotionFrame.resize(objectIndex + 1, 0);
 
   bool prevState = _objectActive[objectIndex];
 
@@ -6932,6 +6936,11 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
   bool fullyInactive = activeCount == 0;
 
   _objectActive[objectIndex] = newState;
+  if (objectIndex < _desiredObjectState.size()) {
+    _desiredObjectState[objectIndex] = newState ? 1 : 0;
+    if (newState && objectIndex < _desiredObjectPromotionFrame.size())
+      _desiredObjectPromotionFrame[objectIndex] = _renderedFrameCount;
+  }
 
   if (prevState != newState) {
     if (newState)
@@ -7797,6 +7806,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   };
 
   if (objectCount == 0) {
+    _desiredObjectState.clear();
+    _desiredObjectPromotionFrame.clear();
     if (_primitiveHitProbability.size() < primCount)
       _primitiveHitProbability.resize(primCount, 0.5f);
     if (_probabilitySortedIndices.size() != primCount) {
@@ -8109,8 +8120,23 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   if (_objectRaysTestedLastFrame.size() < objectCount)
     _objectRaysTestedLastFrame.resize(objectCount, 0u);
 
-  std::vector<bool> desiredObjects(objectCount, false);
+  if (_desiredObjectState.size() < objectCount)
+    _desiredObjectState.resize(objectCount, 0);
+  else if (_desiredObjectState.size() > objectCount)
+    _desiredObjectState.resize(objectCount);
+
+  if (_desiredObjectPromotionFrame.size() < objectCount)
+    _desiredObjectPromotionFrame.resize(objectCount, 0);
+  else if (_desiredObjectPromotionFrame.size() > objectCount)
+    _desiredObjectPromotionFrame.resize(objectCount);
+
+  auto &desiredObjects = _desiredObjectState;
   float threshold = _residencyConfig.probabilityThreshold;
+  float hysteresis =
+      std::clamp(_residencyConfig.probabilityDesiredHysteresis, 0.0f, 0.5f);
+  float enterThreshold = std::clamp(threshold + hysteresis, 0.0f, 1.0f);
+  float exitThreshold = std::clamp(threshold - hysteresis, 0.0f, 1.0f);
+
   size_t desiredPrimitiveCount = 0;
   for (size_t i = 0; i < objectCount; ++i) {
     float probability = (i < _objectHitProbability.size())
@@ -8121,8 +8147,21 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                      : 0.0f;
     float effectiveProbability =
         computeRegressedProbability(probability, mass);
-    if (effectiveProbability >= threshold) {
-      desiredObjects[i] = true;
+    bool previousDesired = desiredObjects[i] != 0;
+    bool desired = previousDesired;
+    bool cooldownExpired =
+        (i >= _objectCooldown.size()) || _objectCooldown[i] == 0;
+    if (effectiveProbability >= enterThreshold)
+      desired = true;
+    else if (effectiveProbability <= exitThreshold)
+      desired = false;
+    else if (cooldownExpired)
+      desired = effectiveProbability >= threshold;
+
+    if (desired && !previousDesired && i < _desiredObjectPromotionFrame.size())
+      _desiredObjectPromotionFrame[i] = _renderedFrameCount;
+    desiredObjects[i] = desired ? 1 : 0;
+    if (desired) {
       size_t contribution =
           (i < _objectPrimitiveCounts.size()) ? _objectPrimitiveCounts[i] : 0;
       if (contribution == 0)
@@ -8185,7 +8224,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         idx < _objectActive.size() ? _objectActive[idx] : false;
     if (currentlyActive)
       continue;
-    if (desiredObjects[idx])
+    if (desiredObjects[idx] != 0)
       continue;
     float probability = (idx < _objectHitProbability.size())
                             ? _objectHitProbability[idx]
@@ -8252,8 +8291,41 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     return std::max<size_t>(count, 1);
   };
 
+  auto isRecentlyPromoted = [&, window =
+                                   _residencyConfig
+                                       .probabilityRecentPromotionFrames](
+                                  size_t idx) {
+    if (window == 0 || idx >= _desiredObjectPromotionFrame.size())
+      return false;
+    uint64_t lastFrame = _desiredObjectPromotionFrame[idx];
+    if (lastFrame == 0)
+      return false;
+    uint64_t currentFrame = _renderedFrameCount;
+    if (currentFrame <= lastFrame)
+      return true;
+    return currentFrame - lastFrame < window;
+  };
+
+  auto markDesired = [&](size_t idx) {
+    desiredObjects[idx] = 1;
+    if (idx < _desiredObjectPromotionFrame.size())
+      _desiredObjectPromotionFrame[idx] = _renderedFrameCount;
+    size_t contribution = primitiveContribution(idx);
+    desiredPrimitiveCount += contribution;
+    bool wasVisible =
+        (idx < _objectVisible.size()) ? (_objectVisible[idx] != 0) : false;
+    bool idle =
+        (idx < _objectRaysTestedLastFrame.size())
+            ? (_objectRaysTestedLastFrame[idx] == 0)
+            : true;
+    if (wasVisible && idle && idx < _objectExplorationScore.size() &&
+        _objectExplorationScore[idx] < kIdleVisibleExploreSeed)
+      _objectExplorationScore[idx] = kIdleVisibleExploreSeed;
+    return contribution;
+  };
+
   auto promoteObjects = [&](const std::vector<size_t> &candidates,
-                            size_t &slots) {
+                            size_t &slots, bool allowSuppressed) {
     if (slots == 0)
       return;
     for (size_t idx : candidates) {
@@ -8261,24 +8333,15 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         break;
       if (idx >= objectCount)
         continue;
-      if (desiredObjects[idx])
+      if (desiredObjects[idx] != 0)
         continue;
-      desiredObjects[idx] = true;
-      size_t contribution = primitiveContribution(idx);
-      desiredPrimitiveCount += contribution;
+      if (!allowSuppressed && isRecentlyPromoted(idx))
+        continue;
+      size_t contribution = markDesired(idx);
       if (slots <= contribution)
         slots = 0;
       else
         slots -= contribution;
-      bool wasVisible =
-          (idx < _objectVisible.size()) ? (_objectVisible[idx] != 0) : false;
-      bool idle =
-          (idx < _objectRaysTestedLastFrame.size())
-              ? (_objectRaysTestedLastFrame[idx] == 0)
-              : true;
-      if (wasVisible && idle && idx < _objectExplorationScore.size() &&
-          _objectExplorationScore[idx] < kIdleVisibleExploreSeed)
-        _objectExplorationScore[idx] = kIdleVisibleExploreSeed;
     }
   };
 
@@ -8287,7 +8350,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     for (size_t idx : candidates) {
       if (idx >= objectCount)
         continue;
-      if (desiredObjects[idx])
+      if (desiredObjects[idx] != 0)
         continue;
       remaining += primitiveContribution(idx);
     }
@@ -8300,34 +8363,48 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                  primCount > desiredPrimitiveCount
                      ? primCount - desiredPrimitiveCount
                      : size_t(0));
-    promoteObjects(visibleExplore, slots);
-    promoteObjects(hiddenExplore, slots);
+    promoteObjects(visibleExplore, slots, false);
+    promoteObjects(hiddenExplore, slots, false);
+    if (slots > 0) {
+      promoteObjects(visibleExplore, slots, true);
+      promoteObjects(hiddenExplore, slots, true);
+    }
   }
 
   if (desiredPrimitiveCount < minActivePrimitives) {
-    for (size_t idx : _objectProbabilitySortedIndices) {
-      if (desiredPrimitiveCount >= minActivePrimitives)
-        break;
-      if (idx >= objectCount)
+    auto promoteByProbability = [&](bool allowSuppressed) {
+      for (size_t idx : _objectProbabilitySortedIndices) {
+        if (desiredPrimitiveCount >= minActivePrimitives)
+          break;
+        if (idx >= objectCount)
+          continue;
+      if (desiredObjects[idx] != 0)
         continue;
-      if (desiredObjects[idx])
-        continue;
-      desiredObjects[idx] = true;
-      desiredPrimitiveCount += primitiveContribution(idx);
-    }
+        if (!allowSuppressed && isRecentlyPromoted(idx))
+          continue;
+        markDesired(idx);
+      }
+    };
+    promoteByProbability(false);
+    if (desiredPrimitiveCount < minActivePrimitives)
+      promoteByProbability(true);
   }
 
   size_t remainingExplorePrimitives =
       countRemainingPrimitives(visibleExplore) +
       countRemainingPrimitives(hiddenExplore);
-  if (remainingExplorePrimitives > 0 && desiredPrimitiveCount < primCount) {
-    size_t slots = std::min({std::max<size_t>(size_t(1),
-                                              minActivePrimitives / 2),
-                             remainingExplorePrimitives,
-                             primCount - desiredPrimitiveCount});
-    promoteObjects(visibleExplore, slots);
-    promoteObjects(hiddenExplore, slots);
-  }
+    if (remainingExplorePrimitives > 0 && desiredPrimitiveCount < primCount) {
+      size_t slots = std::min({std::max<size_t>(size_t(1),
+                                                minActivePrimitives / 2),
+                               remainingExplorePrimitives,
+                               primCount - desiredPrimitiveCount});
+      promoteObjects(visibleExplore, slots, false);
+      promoteObjects(hiddenExplore, slots, false);
+      if (slots > 0) {
+        promoteObjects(visibleExplore, slots, true);
+        promoteObjects(hiddenExplore, slots, true);
+      }
+    }
 
   size_t fallbackObject = objectCount;
   if (!visibleExplore.empty())
@@ -8347,7 +8424,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         break;
     }
 
-    bool shouldBeActive = desiredObjects[objectIndex];
+    bool shouldBeActive = desiredObjects[objectIndex] != 0;
     bool currentlyActive =
         objectIndex < _objectActive.size() && _objectActive[objectIndex];
     if (shouldBeActive == currentlyActive)
@@ -8424,6 +8501,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       }
       _frameProbabilisticToggles += toggled;
       changed = true;
+    }
+    if (fallback < _desiredObjectState.size()) {
+      _desiredObjectState[fallback] = 1;
+      if (fallback < _desiredObjectPromotionFrame.size())
+        _desiredObjectPromotionFrame[fallback] = _renderedFrameCount;
     }
   }
 
