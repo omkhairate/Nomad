@@ -420,6 +420,8 @@ private:
   std::vector<BoundingSphere> _objectBounds;
   std::vector<bool> _objectActive;
   std::vector<uint32_t> _objectCooldown;
+  std::vector<uint8_t> _desiredObjectState;
+  std::vector<uint64_t> _desiredObjectPromotionFrame;
   std::vector<float> _primitiveImportance;
   std::vector<float> _objectImportance;
   std::vector<size_t> _energySortedIndices;

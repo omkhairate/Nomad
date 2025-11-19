@@ -705,6 +705,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "probabilityUncertaintyBoost", params.probabilityUncertaintyBoost);
     params.probabilityEvidenceWindow = root->FloatAttribute(
         "probabilityEvidenceWindow", params.probabilityEvidenceWindow);
+    params.probabilityDesiredHysteresis = root->FloatAttribute(
+        "probabilityDesiredHysteresis", params.probabilityDesiredHysteresis);
+    params.probabilityRecentPromotionFrames = root->UnsignedAttribute(
+        "probabilityRecentPromotionFrames", params.probabilityRecentPromotionFrames);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(
         "probabilityIdleCooldownFrames", params.probabilityIdleCooldownFrames);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(
