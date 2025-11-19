@@ -1387,6 +1387,8 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
     return "Screen-space footprint";
   case ResidencyStrategy::Probabilistic:
     return "Probabilistic";
+  case ResidencyStrategy::EnvironmentHit:
+    return "Environment hit";
   case ResidencyStrategy::AlwaysResident:
     return "Always resident";
   case ResidencyStrategy::DistanceLOD:
@@ -2209,6 +2211,9 @@ void Renderer::updateVisibleScene() {
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
     strategyName = "Screen-space footprint";
+    break;
+  case ResidencyStrategy::EnvironmentHit:
+    strategyName = "Environment hit";
     break;
   case ResidencyStrategy::AlwaysResident:
     strategyName = "Always resident";
@@ -6627,6 +6632,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
     break;
+  case ResidencyStrategy::EnvironmentHit:
+    changed = updateEnvironmentHit(forceAllToggles);
+    break;
   case ResidencyStrategy::AlwaysResident:
     changed = updateAlwaysResident(forceAllToggles);
     break;
@@ -8697,6 +8705,13 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   return changed;
 }
 
+bool Renderer::updateEnvironmentHit(bool forceAllToggles) {
+  // Placeholder until the environment-hit strategy is implemented.
+  // Fall back to distance-based heuristics so the renderer continues to
+  // activate content when the strategy is selected.
+  return updateLODByDistance(forceAllToggles);
+}
+
 // Propagate any pending primitive/object toggles to GPU memory.  The method
 // skips expensive repacks if nothing changed, otherwise it forwards to
 // rebuildResidentResources to patch only the dirty ranges (or rebuild
@@ -8987,7 +9002,8 @@ void Renderer::processRayHitCounters() {
               : ResidencyStrategy::DistanceLOD;
   bool strategyUsesHits =
       strategy == ResidencyStrategy::RayHitBudget ||
-      strategy == ResidencyStrategy::Probabilistic;
+      strategy == ResidencyStrategy::Probabilistic ||
+      strategy == ResidencyStrategy::EnvironmentHit;
   if (!strategyUsesHits) {
     std::memset(hitPtr, 0, bufferLength);
     _primitiveHitScores.clear();
