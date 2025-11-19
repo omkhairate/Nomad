@@ -20,6 +20,32 @@ Benchmark exports now include stochastic residency metrics alongside the existin
 
 These columns complement the existing residency memory statistics in `*_memory_mb` and allow the plotting tools to chart probability-driven residency behavior when comparing runs.
 
+## Environment-hit scene attributes
+
+Scenes that opt into the `environment` residency strategy can now tune how aggressively the renderer combats environment-map leaks. The `<Scene>` root accepts the following optional attributes:
+
+- `envTargetFraction` – fraction of total primitives that should remain active, even when the escape rate is low. Acts as a soft floor before the escape threshold kicks in. Defaults to `0.0` to preserve the previous "escape only" behavior.
+- `envEscapeThreshold` – maximum allowed average escape probability across the active set. Lower values keep more geometry resident to occlude environment rays.
+- `envMinActive` – minimum number of primitives that stay active regardless of the fraction/escape targets. Aliased to the older `environmentMinActive` attribute.
+- `envToggleBudget` – maximum number of primitives the environment strategy can flip per frame (`environmentToggleBudget` is still accepted).
+- `envDepthRadii` / `envDepthWeights` – comma-separated lists that bias which objects are prioritized. Each radius entry (world-space distance from the camera) pairs with a weight multiplier at the same index. Objects whose bounding-sphere centers fall within a radius use the corresponding weight when ranking environment leaks. When omitted, objects are ranked purely by their measured hit probability.
+
+All legacy `environment*` attribute names continue to work, and any `env*` overrides take precedence when both are present. Example configuration:
+
+```xml
+<Scene residencyStrategy="environment"
+       envTargetFraction="0.25"
+       envEscapeThreshold="0.35"
+       envMinActive="48"
+       envToggleBudget="96"
+       envDepthRadii="15,30,45"
+       envDepthWeights="1.5,1.0,0.5">
+    ...
+</Scene>
+```
+
+This snippet keeps at least 25% of the scene active, clamps the escape rate to 35%, and prioritizes geometry within 15 units of the camera 1.5× higher than distant occluders.
+
 ## Comparing EXR captures
 
 Use `compare_exr_ssim.cpp` to quantify the visual difference between two EXR frames with the Structural Similarity Index (SSIM). Build the tool with a C++17 compiler:

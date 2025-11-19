@@ -16,6 +16,7 @@
 #include <vector>
 #include <limits>
 #include <cmath>
+#include <cstdlib>
 #include "tiny_obj_loader.h"
 #include "TextureLoader.h"
 
@@ -29,6 +30,26 @@ static simd::float3 parseVec3(const char* str) {
     float x = 0, y = 0, z = 0;
     sscanf(str, "%f,%f,%f", &x, &y, &z);
     return simd::make_float3(x, y, z);
+}
+
+static std::vector<float> parseFloatList(const char *attr) {
+    std::vector<float> values;
+    if (!attr) {
+        return values;
+    }
+
+    std::stringstream stream(attr);
+    std::string token;
+    while (std::getline(stream, token, ',')) {
+        const char *start = token.c_str();
+        char *end = nullptr;
+        float parsed = std::strtof(start, &end);
+        if (end != start) {
+            values.push_back(parsed);
+        }
+    }
+
+    return values;
 }
 
 // Rotates a vector by Euler angles applied in X->Y->Z order.
@@ -695,14 +716,40 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.screenFootprintMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "screenToggleBudget",
         static_cast<uint64_t>(params.screenFootprintMaxTogglesPerFrame)));
-    params.environmentTargetEscapeFraction = root->FloatAttribute(
-        "environmentTargetEscapeFraction", params.environmentTargetEscapeFraction);
-    params.environmentMinActivePrimitives = static_cast<size_t>(root->Unsigned64Attribute(
+    params.environmentTargetActiveFraction = root->FloatAttribute(
+        "environmentTargetActiveFraction", params.environmentTargetActiveFraction);
+    params.environmentTargetActiveFraction = root->FloatAttribute(
+        "envTargetFraction", params.environmentTargetActiveFraction);
+
+    params.environmentEscapeThreshold = root->FloatAttribute(
+        "environmentTargetEscapeFraction", params.environmentEscapeThreshold);
+    params.environmentEscapeThreshold = root->FloatAttribute(
+        "envEscapeThreshold", params.environmentEscapeThreshold);
+
+    uint64_t minEnvActive = root->Unsigned64Attribute(
         "environmentMinActive",
-        static_cast<uint64_t>(params.environmentMinActivePrimitives)));
-    params.environmentMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
+        static_cast<uint64_t>(params.environmentMinActivePrimitives));
+    minEnvActive = root->Unsigned64Attribute("envMinActive", minEnvActive);
+    params.environmentMinActivePrimitives = static_cast<size_t>(minEnvActive);
+
+    uint64_t envToggleBudget = root->Unsigned64Attribute(
         "environmentToggleBudget",
-        static_cast<uint64_t>(params.environmentMaxTogglesPerFrame)));
+        static_cast<uint64_t>(params.environmentMaxTogglesPerFrame));
+    envToggleBudget = root->Unsigned64Attribute("envToggleBudget", envToggleBudget);
+    params.environmentMaxTogglesPerFrame = static_cast<size_t>(envToggleBudget);
+
+    if (const char *depthWeightsAttr = root->Attribute("environmentDepthWeights")) {
+        params.environmentDepthWeights = parseFloatList(depthWeightsAttr);
+    }
+    if (const char *depthWeightsAttr = root->Attribute("envDepthWeights")) {
+        params.environmentDepthWeights = parseFloatList(depthWeightsAttr);
+    }
+    if (const char *depthRadiiAttr = root->Attribute("environmentDepthRadii")) {
+        params.environmentDepthRadii = parseFloatList(depthRadiiAttr);
+    }
+    if (const char *depthRadiiAttr = root->Attribute("envDepthRadii")) {
+        params.environmentDepthRadii = parseFloatList(depthRadiiAttr);
+    }
     params.enableBufferShrink = root->BoolAttribute(
         "enableBufferShrink", params.enableBufferShrink);
     params.bufferShrinkActiveRatio = root->FloatAttribute(

@@ -375,6 +375,10 @@ private:
     std::string primitiveProbabilities;
     std::string objectProbabilities;
     size_t probabilisticToggles = 0;
+    double environmentTargetActiveFraction = 0.0;
+    double environmentEscapeThreshold = 0.0;
+    std::string environmentDepthWeights;
+    std::string environmentDepthRadii;
     ResidencyStrategy strategy = ResidencyStrategy::DistanceLOD;
     std::string strategyName;
     uint32_t minSamplesPerPixel = 1;
