@@ -1165,6 +1165,7 @@ void Renderer::setBenchmarkMode(bool enabled) {
     _pendingBenchmarkSamples.clear();
     _benchmarkStartTime = std::chrono::steady_clock::now();
     ensureBenchmarkStream();
+    resetProbabilisticResidencyState();
     if (_benchmarkStream.is_open()) {
       printf("Benchmark logging enabled: %s\n",
              _benchmarkFilePath.empty() ? "<memory>"
@@ -1175,6 +1176,32 @@ void Renderer::setBenchmarkMode(bool enabled) {
       _benchmarkStream.close();
     _pendingBenchmarkSamples.clear();
   }
+}
+
+void Renderer::resetProbabilisticResidencyState() {
+  std::fill(_primitiveHitScores.begin(), _primitiveHitScores.end(), 0.0f);
+  std::fill(_primitiveHitAlpha.begin(), _primitiveHitAlpha.end(), 1.0f);
+  std::fill(_primitiveHitBeta.begin(), _primitiveHitBeta.end(), 1.0f);
+  std::fill(_primitiveHitProbability.begin(), _primitiveHitProbability.end(),
+            0.5f);
+  std::fill(_primitiveHitVariance.begin(), _primitiveHitVariance.end(),
+            1.0f / 12.0f);
+  std::fill(_primitivePosteriorMass.begin(), _primitivePosteriorMass.end(),
+            2.0f);
+  std::fill(_primitiveExplorationScore.begin(),
+            _primitiveExplorationScore.end(), 0.0f);
+
+  std::fill(_objectHitAlpha.begin(), _objectHitAlpha.end(), 1.0f);
+  std::fill(_objectHitBeta.begin(), _objectHitBeta.end(), 1.0f);
+  std::fill(_objectHitProbability.begin(), _objectHitProbability.end(), 0.5f);
+  std::fill(_objectHitVariance.begin(), _objectHitVariance.end(), 1.0f / 12.0f);
+  std::fill(_objectPosteriorMass.begin(), _objectPosteriorMass.end(), 2.0f);
+  std::fill(_objectExplorationScore.begin(), _objectExplorationScore.end(),
+            0.0f);
+
+  std::fill(_primitiveCooldown.begin(), _primitiveCooldown.end(), 0u);
+  std::fill(_objectCooldown.begin(), _objectCooldown.end(), 0u);
+  _rayHitRebuildCooldown = 0;
 }
 
 void Renderer::setFrameCaptureEnabled(bool enabled) {
@@ -2110,6 +2137,7 @@ Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
 }
 
 void Renderer::updateVisibleScene() {
+  resetProbabilisticResidencyState();
   if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
         std::filesystem::path(__FILE__).parent_path() / "../scene_bunny_room.xml";

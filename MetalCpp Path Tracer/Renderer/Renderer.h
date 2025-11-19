@@ -153,6 +153,7 @@ private:
   bool updateEnergyImportance(bool forceAllToggles);
   bool updateRayHitBudget(bool forceAllToggles);
   bool updateProbabilisticResidency(bool forceAllToggles);
+  void resetProbabilisticResidencyState();
   bool updateScreenSpaceFootprint(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
