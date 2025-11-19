@@ -55,6 +55,7 @@ struct ResidencyParameters {
 
   float probabilityDecay = 0.9f;
   float probabilityThreshold = 0.5f;
+  float probabilityTargetFraction = 0.6f;
   size_t probabilityMinActivePrimitives = 16;
   size_t probabilityMaxTogglesPerFrame = 16;
   float probabilityUncertaintyBoost = 0.25f;

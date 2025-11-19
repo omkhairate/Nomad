@@ -1284,7 +1284,11 @@ void Renderer::writeBenchmarkHeader() {
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
          "resident_nodes,total_nodes,active_objects,resident_objects,"
          "avg_hit_probability,p95_hit_probability,probability_threshold,"
-         "primitive_probabilities,object_probabilities,probabilistic_toggles,"
+         "probability_target_fraction,probability_target_primitives,"
+         "probability_initial_desired_primitives,"
+         "probability_final_desired_primitives,probability_trimmed_primitives,"
+         "probability_budget_hit,primitive_probabilities,object_probabilities,"
+         "probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,"
          "over_memory_cap,residency_compacted,"
@@ -1356,7 +1360,13 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.residentObjectCount << ','
       << formatFixed(sample.avgHitProbability, 6) << ','
       << formatFixed(sample.p95HitProbability, 6) << ','
-      << formatFixed(sample.probabilityThreshold, 3) << ',';
+      << formatFixed(sample.probabilityThreshold, 3) << ','
+      << formatFixed(sample.probabilityTargetFraction, 3) << ','
+      << sample.probabilityTargetPrimitives << ','
+      << sample.probabilityInitialDesiredPrimitives << ','
+      << sample.probabilityFinalDesiredPrimitives << ','
+      << sample.probabilityTrimmedPrimitives << ','
+      << boolToInt(sample.probabilityBudgetHit) << ',';
   appendCsvEscaped(row, sample.primitiveProbabilities);
   row << ',';
   appendCsvEscaped(row, sample.objectProbabilities);
@@ -6917,6 +6927,8 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
     _desiredObjectState.resize(objectIndex + 1, 0);
   if (objectIndex >= _desiredObjectPromotionFrame.size())
     _desiredObjectPromotionFrame.resize(objectIndex + 1, 0);
+  if (objectIndex >= _desiredObjectDemotionFrame.size())
+    _desiredObjectDemotionFrame.resize(objectIndex + 1, 0);
 
   bool prevState = _objectActive[objectIndex];
 
@@ -6940,6 +6952,8 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
     _desiredObjectState[objectIndex] = newState ? 1 : 0;
     if (newState && objectIndex < _desiredObjectPromotionFrame.size())
       _desiredObjectPromotionFrame[objectIndex] = _renderedFrameCount;
+    if (!newState && objectIndex < _desiredObjectDemotionFrame.size())
+      _desiredObjectDemotionFrame[objectIndex] = _renderedFrameCount;
   }
 
   if (prevState != newState) {
@@ -7763,6 +7777,12 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
 
+  _frameProbabilityTargetPrimitives = 0;
+  _frameProbabilityInitialDesiredPrimitives = 0;
+  _frameProbabilityFinalDesiredPrimitives = 0;
+  _frameProbabilityTrimmedPrimitives = 0;
+  _frameProbabilityBudgetHit = false;
+
   const size_t primCount = _activePrimitive.size();
   const size_t objectCount = _allSceneObjects.size();
 
@@ -7809,6 +7829,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   if (objectCount == 0) {
     _desiredObjectState.clear();
     _desiredObjectPromotionFrame.clear();
+    _desiredObjectDemotionFrame.clear();
     if (_primitiveHitProbability.size() < primCount)
       _primitiveHitProbability.resize(primCount, 0.5f);
     if (_probabilitySortedIndices.size() != primCount) {
@@ -8130,6 +8151,10 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     _desiredObjectPromotionFrame.resize(objectCount, 0);
   else if (_desiredObjectPromotionFrame.size() > objectCount)
     _desiredObjectPromotionFrame.resize(objectCount);
+  if (_desiredObjectDemotionFrame.size() < objectCount)
+    _desiredObjectDemotionFrame.resize(objectCount, 0);
+  else if (_desiredObjectDemotionFrame.size() > objectCount)
+    _desiredObjectDemotionFrame.resize(objectCount);
 
   auto &desiredObjects = _desiredObjectState;
   float threshold = _residencyConfig.probabilityThreshold;
@@ -8166,6 +8191,9 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
     if (desired && !previousDesired && i < _desiredObjectPromotionFrame.size())
       _desiredObjectPromotionFrame[i] = _renderedFrameCount;
+    else if (!desired && previousDesired &&
+             i < _desiredObjectDemotionFrame.size())
+      _desiredObjectDemotionFrame[i] = _renderedFrameCount;
     desiredObjects[i] = desired ? 1 : 0;
     if (desired) {
       size_t contribution =
@@ -8175,6 +8203,15 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       desiredPrimitiveCount += contribution;
     }
   }
+
+  size_t minActivePrimitives =
+      std::min(_residencyConfig.probabilityMinActivePrimitives, primCount);
+
+  auto primitiveContribution = [this](size_t idx) {
+    size_t count =
+        (idx < _objectPrimitiveCounts.size()) ? _objectPrimitiveCounts[idx] : 0;
+    return std::max<size_t>(count, 1);
+  };
 
   std::sort(_objectProbabilitySortedIndices.begin(),
             _objectProbabilitySortedIndices.end(),
@@ -8205,6 +8242,48 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                 return a < b;
               return scoreA > scoreB;
             });
+
+  float targetFraction =
+      std::clamp(_residencyConfig.probabilityTargetFraction, 0.0f, 1.0f);
+  size_t targetPrimitiveBudget = static_cast<size_t>(std::ceil(
+      static_cast<float>(primCount) * targetFraction));
+  targetPrimitiveBudget = std::max(targetPrimitiveBudget, minActivePrimitives);
+  if (targetPrimitiveBudget == 0 && primCount > 0)
+    targetPrimitiveBudget = 1;
+  targetPrimitiveBudget = std::min(targetPrimitiveBudget, primCount);
+
+  _frameProbabilityTargetPrimitives = targetPrimitiveBudget;
+  _frameProbabilityInitialDesiredPrimitives = desiredPrimitiveCount;
+
+  size_t trimmedPrimitives = 0;
+  if (targetPrimitiveBudget > 0 &&
+      desiredPrimitiveCount > targetPrimitiveBudget) {
+    for (size_t position = _objectProbabilitySortedIndices.size();
+         position-- > 0;) {
+      if (desiredPrimitiveCount <= targetPrimitiveBudget)
+        break;
+      size_t idx = _objectProbabilitySortedIndices[position];
+      if (idx >= objectCount)
+        continue;
+      if (desiredObjects[idx] == 0)
+        continue;
+      size_t contribution = primitiveContribution(idx);
+      if (contribution == 0)
+        continue;
+      desiredObjects[idx] = 0;
+      trimmedPrimitives += contribution;
+      if (idx < _desiredObjectDemotionFrame.size())
+        _desiredObjectDemotionFrame[idx] = _renderedFrameCount;
+      desiredPrimitiveCount =
+          (desiredPrimitiveCount > contribution)
+              ? desiredPrimitiveCount - contribution
+              : size_t(0);
+    }
+  }
+
+  _frameProbabilityTrimmedPrimitives = trimmedPrimitives;
+  _frameProbabilityBudgetHit = trimmedPrimitives > 0;
+  _frameProbabilityFinalDesiredPrimitives = desiredPrimitiveCount;
 
   auto computeObjectVisibility = [this](size_t idx) {
     bool visible = false;
@@ -8288,22 +8367,21 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   std::sort(hiddenExplore.begin(), hiddenExplore.end(),
             objectExploreComparator);
 
-  size_t minActivePrimitives = std::min(
-      _residencyConfig.probabilityMinActivePrimitives, primCount);
-
-  auto primitiveContribution = [this](size_t idx) {
-    size_t count =
-        (idx < _objectPrimitiveCounts.size()) ? _objectPrimitiveCounts[idx] : 0;
-    return std::max<size_t>(count, 1);
-  };
-
   auto isRecentlyPromoted = [&, window =
                                    _residencyConfig
                                        .probabilityRecentPromotionFrames](
                                   size_t idx) {
-    if (window == 0 || idx >= _desiredObjectPromotionFrame.size())
+    if (window == 0)
       return false;
-    uint64_t lastFrame = _desiredObjectPromotionFrame[idx];
+    uint64_t lastPromotion =
+        idx < _desiredObjectPromotionFrame.size()
+            ? _desiredObjectPromotionFrame[idx]
+            : 0;
+    uint64_t lastDemotion =
+        idx < _desiredObjectDemotionFrame.size()
+            ? _desiredObjectDemotionFrame[idx]
+            : 0;
+    uint64_t lastFrame = std::max(lastPromotion, lastDemotion);
     if (lastFrame == 0)
       return false;
     uint64_t currentFrame = _renderedFrameCount;
@@ -9894,6 +9972,7 @@ void Renderer::beginFrameMetrics() {
     sample.avgHitProbability = 0.0;
     sample.p95HitProbability = 0.0;
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
+    sample.probabilityTargetFraction = _residencyConfig.probabilityTargetFraction;
     sample.environmentTargetActiveFraction =
         _residencyConfig.environmentTargetActiveFraction;
     sample.environmentEscapeThreshold =
@@ -9989,6 +10068,13 @@ void Renderer::beginFrameMetrics() {
       sample.objectProbabilities = objectStream.str();
     }
     sample.probabilisticToggles = _frameProbabilisticToggles;
+    sample.probabilityTargetPrimitives = _frameProbabilityTargetPrimitives;
+    sample.probabilityInitialDesiredPrimitives =
+        _frameProbabilityInitialDesiredPrimitives;
+    sample.probabilityFinalDesiredPrimitives =
+        _frameProbabilityFinalDesiredPrimitives;
+    sample.probabilityTrimmedPrimitives = _frameProbabilityTrimmedPrimitives;
+    sample.probabilityBudgetHit = _frameProbabilityBudgetHit;
     sample.deltaTimeSeconds = _deltaTimeSeconds;
     sample.wallSeconds = std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - _benchmarkStartTime)
