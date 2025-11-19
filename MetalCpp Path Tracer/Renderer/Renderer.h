@@ -155,7 +155,7 @@ private:
   bool updateProbabilisticResidency(bool forceAllToggles);
   void resetProbabilisticResidencyState();
   bool updateScreenSpaceFootprint(bool forceAllToggles);
-  bool updateEnvironmentHit(bool forceAllToggles);
+  bool updateEnvironmentHitResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();

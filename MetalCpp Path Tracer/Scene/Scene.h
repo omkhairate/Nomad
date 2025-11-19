@@ -65,6 +65,10 @@ struct ResidencyParameters {
   size_t screenFootprintMinActivePrimitives = 16;
   size_t screenFootprintMaxTogglesPerFrame = 10;
 
+  float environmentTargetEscapeFraction = 0.4f;
+  size_t environmentMinActivePrimitives = 16;
+  size_t environmentMaxTogglesPerFrame = 16;
+
   // Allows resident buffers to shrink when most primitives remain inactive.
   bool enableBufferShrink = true;
   float bufferShrinkActiveRatio = 0.3f;
