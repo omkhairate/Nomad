@@ -9319,6 +9319,8 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.resize(totalPrimitiveCount, 2.0f);
   if (_primitiveExplorationScore.size() < totalPrimitiveCount)
     _primitiveExplorationScore.resize(totalPrimitiveCount, 0.0f);
+  if (_primitiveIdleFrames.size() < totalPrimitiveCount)
+    _primitiveIdleFrames.resize(totalPrimitiveCount, 0u);
   if (_probabilitySortedIndices.size() != totalPrimitiveCount) {
     _probabilitySortedIndices.resize(totalPrimitiveCount);
     std::iota(_probabilitySortedIndices.begin(), _probabilitySortedIndices.end(),
@@ -9336,6 +9338,10 @@ void Renderer::processRayHitCounters() {
           : std::numeric_limits<float>::max();
   const bool clampPosteriorMass =
       maxPosteriorMass < std::numeric_limits<float>::max();
+  const uint32_t idleCooldownFrames =
+      _residencyConfig.probabilityIdleCooldownFrames;
+  const float idleGraceDecay =
+      std::clamp(_residencyConfig.probabilityIdleDecay, 0.0f, 1.0f);
   auto renormalizePosterior = [&](float &alpha, float &beta) {
     float sum = alpha + beta;
     if (!(sum > 0.0f)) {
@@ -9375,21 +9381,39 @@ void Renderer::processRayHitCounters() {
       float beta = _primitiveHitBeta[i] * probabilityDecay + failure;
       float sum = alpha + beta;
       float probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
+      bool wasVisible =
+          (i < _primitiveVisible.size()) ? (_primitiveVisible[i] != 0) : false;
+      bool wasActive =
+          (i < _activePrimitive.size()) ? (_activePrimitive[i] != 0) : false;
+      uint32_t idleFrames =
+          (i < _primitiveIdleFrames.size()) ? _primitiveIdleFrames[i] : 0u;
+      bool idleGraceActive =
+          (idleCooldownFrames > 0) && (wasVisible || wasActive) &&
+          (idleFrames < idleCooldownFrames);
       if (raysTested == 0) {
         // When no rays were fired this frame we still decay the posterior so
-        // idle primitives drift toward deactivation. We rescale the Beta
-        // parameters to match the cooled probability instead of just scaling
-        // both equally, which keeps the stored expectation in sync with the
-        // decay. Tuning `probabilityDecay` controls how aggressively the
-        // posterior cools, while `kMinPosteriorMass` keeps a trickle of
-        // pseudo-count mass so the distribution never fully collapses.
-        float cooledProbability =
-            std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
-        float cooledMass = std::max(sum, kMinPosteriorMass);
-        if (clampPosteriorMass && cooledMass > maxPosteriorMass)
-          cooledMass = maxPosteriorMass;
-        alpha = cooledProbability * cooledMass;
-        beta = std::max(cooledMass - alpha, 0.0f);
+        // idle primitives drift toward deactivation. Idle primitives that are
+        // still visible or were recently active are given a grace period
+        // before applying the full cooling decay. During the grace period the
+        // decay is either skipped entirely or uses a milder factor to avoid
+        // immediately dropping the exploration probability.
+        float coolingFactor = probabilityDecay;
+        bool applyCooling = true;
+        if (idleGraceActive) {
+          if (idleGraceDecay >= 0.999f)
+            applyCooling = false;
+          else
+            coolingFactor = idleGraceDecay;
+        }
+        if (applyCooling) {
+          float cooledProbability =
+              std::clamp(probability * coolingFactor, 0.0f, 1.0f);
+          float cooledMass = std::max(sum, kMinPosteriorMass);
+          if (clampPosteriorMass && cooledMass > maxPosteriorMass)
+            cooledMass = maxPosteriorMass;
+          alpha = cooledProbability * cooledMass;
+          beta = std::max(cooledMass - alpha, 0.0f);
+        }
       }
       sum = renormalizePosterior(alpha, beta);
       probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
@@ -9404,8 +9428,14 @@ void Renderer::processRayHitCounters() {
       _primitivePosteriorMass[i] = sum;
 
       float exploration = _primitiveExplorationScore[i] * probabilityDecay;
-      bool wasVisible =
-          (i < _primitiveVisible.size()) ? (_primitiveVisible[i] != 0) : false;
+      if (raysTested > 0)
+        _primitiveIdleFrames[i] = 0u;
+      else if (i < _primitiveIdleFrames.size()) {
+        uint32_t next = idleFrames;
+        if (next < std::numeric_limits<uint32_t>::max())
+          ++next;
+        _primitiveIdleFrames[i] = next;
+      }
       if (raysTested > 0) {
         if (clampedProbability < probabilityThreshold)
           exploration += static_cast<float>(raysTested);
@@ -9413,7 +9443,7 @@ void Renderer::processRayHitCounters() {
           exploration *= rayHitDecay;
       } else {
         exploration *= rayHitDecay;
-        if (wasVisible)
+        if (wasVisible || wasActive)
           exploration = std::max(exploration, kIdleVisibleExploreSeed);
       }
       _primitiveExplorationScore[i] = exploration;
@@ -9505,6 +9535,8 @@ void Renderer::processRayHitCounters() {
     _objectHitLastFrame.resize(objectCount, 0u);
   if (_objectRaysTestedLastFrame.size() < objectCount)
     _objectRaysTestedLastFrame.resize(objectCount, 0u);
+  if (_objectIdleFrames.size() < objectCount)
+    _objectIdleFrames.resize(objectCount, 0u);
   if (_objectVisible.size() < objectCount)
     _objectVisible.resize(objectCount, 0u);
   if (_objectProbabilitySortedIndices.size() != objectCount) {
@@ -9515,6 +9547,7 @@ void Renderer::processRayHitCounters() {
 
   std::vector<uint64_t> objectHits(objectCount, 0);
   std::vector<uint64_t> objectRays(objectCount, 0);
+  std::vector<uint8_t> objectActiveFlags(objectCount, 0);
   size_t processedPrimitiveCount = std::min(count, totalPrimitiveCount);
   for (size_t i = 0; i < processedPrimitiveCount; ++i) {
     size_t objectIndex =
@@ -9523,6 +9556,21 @@ void Renderer::processRayHitCounters() {
       continue;
     objectHits[objectIndex] += _primitiveHitLastFrame[i];
     objectRays[objectIndex] += _primitiveRaysTestedLastFrame[i];
+  }
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (objectIndex >= _allSceneObjects.size())
+      break;
+    const SceneObject &object = _allSceneObjects[objectIndex];
+    size_t start = object.firstPrimitive;
+    size_t end = std::min(start + object.primitiveCount, _activePrimitive.size());
+    bool active = false;
+    for (size_t prim = start; prim < end; ++prim) {
+      if (_activePrimitive[prim]) {
+        active = true;
+        break;
+      }
+    }
+    objectActiveFlags[objectIndex] = active ? 1u : 0u;
   }
 
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
@@ -9537,14 +9585,38 @@ void Renderer::processRayHitCounters() {
     float beta = _objectHitBeta[objectIndex] * probabilityDecay + failure;
     float sum = alpha + beta;
     float probability = (sum > 0.0f) ? (alpha / sum) : 0.5f;
+    uint32_t idleFrames =
+        (objectIndex < _objectIdleFrames.size()) ? _objectIdleFrames[objectIndex]
+                                                 : 0u;
+    bool hasActivePrimitive =
+        (objectIndex < objectActiveFlags.size()) &&
+        (objectActiveFlags[objectIndex] != 0);
+    bool visible =
+        (objectIndex < _objectBounds.size()) ? isInView(_objectBounds[objectIndex])
+                                             : false;
+    if (objectIndex < _objectVisible.size())
+      _objectVisible[objectIndex] = visible ? 1 : 0;
     if (raysTested == 0.0f) {
-      float cooledProbability =
-          std::clamp(probability * probabilityDecay, 0.0f, 1.0f);
-      float cooledMass = std::max(sum, kMinPosteriorMass);
-      if (clampPosteriorMass && cooledMass > maxPosteriorMass)
-        cooledMass = maxPosteriorMass;
-      alpha = cooledProbability * cooledMass;
-      beta = std::max(cooledMass - alpha, 0.0f);
+      bool idleGraceActive =
+          (idleCooldownFrames > 0) && (visible || hasActivePrimitive) &&
+          (idleFrames < idleCooldownFrames);
+      float coolingFactor = probabilityDecay;
+      bool applyCooling = true;
+      if (idleGraceActive) {
+        if (idleGraceDecay >= 0.999f)
+          applyCooling = false;
+        else
+          coolingFactor = idleGraceDecay;
+      }
+      if (applyCooling) {
+        float cooledProbability =
+            std::clamp(probability * coolingFactor, 0.0f, 1.0f);
+        float cooledMass = std::max(sum, kMinPosteriorMass);
+        if (clampPosteriorMass && cooledMass > maxPosteriorMass)
+          cooledMass = maxPosteriorMass;
+        alpha = cooledProbability * cooledMass;
+        beta = std::max(cooledMass - alpha, 0.0f);
+      }
     }
 
     sum = renormalizePosterior(alpha, beta);
@@ -9559,21 +9631,20 @@ void Renderer::processRayHitCounters() {
     _objectHitVariance[objectIndex] = std::max(variance, 0.0f);
     _objectPosteriorMass[objectIndex] = sum;
 
-    bool visible =
-        (objectIndex < _objectBounds.size()) ? isInView(_objectBounds[objectIndex])
-                                             : false;
-    if (objectIndex < _objectVisible.size())
-      _objectVisible[objectIndex] = visible ? 1 : 0;
-
     float exploration = _objectExplorationScore[objectIndex] * probabilityDecay;
     if (raysTested > 0.0f) {
+      _objectIdleFrames[objectIndex] = 0u;
       if (clampedProbability < probabilityThreshold)
         exploration += raysTested;
       else
         exploration *= rayHitDecay;
     } else {
+      uint32_t next = idleFrames;
+      if (next < std::numeric_limits<uint32_t>::max())
+        ++next;
+      _objectIdleFrames[objectIndex] = next;
       exploration *= rayHitDecay;
-      if (visible)
+      if (visible || hasActivePrimitive)
         exploration = std::max(exploration, kIdleVisibleExploreSeed);
     }
     _objectExplorationScore[objectIndex] = exploration;
