@@ -1294,8 +1294,9 @@ void Renderer::writeBenchmarkHeader() {
          "lod_enter_distance,lod_exit_distance,lod_enter_view_margin,"
          "lod_exit_view_margin,energy_target_fraction,"
          "energy_min_active,energy_visibility_boost,screen_target_fraction,"
-         "screen_min_pixels,screen_min_active,environment_target_escape,"
-         "environment_min_active,environment_toggle_budget";
+         "screen_min_pixels,screen_min_active,environment_target_fraction,"
+         "environment_escape_threshold,environment_min_active,environment_toggle_budget,"
+         "environment_depth_weights,environment_depth_radii";
   _benchmarkStream << '\n';
   _benchmarkHeaderWritten = true;
 }
@@ -1303,6 +1304,20 @@ void Renderer::writeBenchmarkHeader() {
 static std::string formatFixed(double value, int precision) {
   std::ostringstream ss;
   ss << std::fixed << std::setprecision(precision) << value;
+  return ss.str();
+}
+
+static std::string formatFloatList(const std::vector<float> &values,
+                                   int precision = 3) {
+  if (values.empty())
+    return "";
+
+  std::ostringstream ss;
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i > 0)
+      ss << '|';
+    ss << formatFixed(values[i], precision);
+  }
   return ss.str();
 }
 
@@ -1373,9 +1388,13 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(_residencyConfig.screenFootprintTargetFraction, 3) << ','
       << formatFixed(_residencyConfig.screenFootprintMinPixelCoverage, 3) << ','
       << _residencyConfig.screenFootprintMinActivePrimitives << ','
-      << formatFixed(_residencyConfig.environmentTargetEscapeFraction, 3) << ','
+      << formatFixed(sample.environmentTargetActiveFraction, 3) << ','
+      << formatFixed(sample.environmentEscapeThreshold, 3) << ','
       << _residencyConfig.environmentMinActivePrimitives << ','
-      << _residencyConfig.environmentMaxTogglesPerFrame;
+      << _residencyConfig.environmentMaxTogglesPerFrame << ',';
+  appendCsvEscaped(row, sample.environmentDepthWeights);
+  row << ',';
+  appendCsvEscaped(row, sample.environmentDepthRadii);
 
   _benchmarkStream << row.str() << '\n';
   _benchmarkStream.flush();
@@ -8727,6 +8746,34 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     std::fill(_objectImportance.begin(), _objectImportance.end(), 0.0f);
 
   std::vector<uint8_t> desiredObjectState(objectCount, 0);
+  std::vector<float> weightedImportance(objectCount, 0.0f);
+
+  auto computeDepthWeight = [&](size_t objectIndex) -> float {
+    const auto &weights = _residencyConfig.environmentDepthWeights;
+    if (weights.empty())
+      return 1.0f;
+    float fallbackWeight = weights.back();
+    const auto &radii = _residencyConfig.environmentDepthRadii;
+    if (radii.empty())
+      return fallbackWeight;
+    if (objectIndex >= _objectBounds.size())
+      return fallbackWeight;
+
+    simd::float3 toCenter = _objectBounds[objectIndex].center - Camera::position;
+    float distance = simd::length(toCenter);
+    if (!(distance > 0.0f))
+      return weights.front();
+
+    size_t pairCount = std::min(weights.size(), radii.size());
+    for (size_t i = 0; i < pairCount; ++i) {
+      float radius = radii[i];
+      if (!(radius > 0.0f))
+        continue;
+      if (distance <= radius)
+        return weights[i];
+    }
+    return fallbackWeight;
+  };
 
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     float hitProbability =
@@ -8742,26 +8789,49 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     if (!hasEvidence && !currentlyActive)
       hitProbability = 0.0f;
     _objectImportance[objectIndex] = hitProbability;
+
+    float depthWeight = computeDepthWeight(objectIndex);
+    float weighted = hitProbability * std::max(depthWeight, 0.0f);
+    weightedImportance[objectIndex] = std::isfinite(weighted) ? weighted : 0.0f;
   }
 
   auto &sortedIndices = _objectProbabilitySortedIndices;
   std::sort(sortedIndices.begin(), sortedIndices.end(),
             [&](size_t a, size_t b) {
-              float importanceA =
-                  (a < _objectImportance.size()) ? _objectImportance[a] : 0.0f;
-              float importanceB =
-                  (b < _objectImportance.size()) ? _objectImportance[b] : 0.0f;
-              if (importanceA == importanceB)
-                return a < b;
-              return importanceA > importanceB;
+              float scoreA =
+                  (a < weightedImportance.size()) ? weightedImportance[a] : 0.0f;
+              float scoreB =
+                  (b < weightedImportance.size()) ? weightedImportance[b] : 0.0f;
+              if (scoreA == scoreB) {
+                float importanceA =
+                    (a < _objectImportance.size()) ? _objectImportance[a] : 0.0f;
+                float importanceB =
+                    (b < _objectImportance.size()) ? _objectImportance[b] : 0.0f;
+                if (importanceA == importanceB)
+                  return a < b;
+                return importanceA > importanceB;
+              }
+              return scoreA > scoreB;
             });
 
-  float targetEscape =
-      std::clamp(_residencyConfig.environmentTargetEscapeFraction, 0.0f, 1.0f);
+  float escapeThreshold =
+      std::clamp(_residencyConfig.environmentEscapeThreshold, 0.0f, 1.0f);
   size_t minActivePrimitives =
       std::min(primitiveCount, _residencyConfig.environmentMinActivePrimitives);
   if (minActivePrimitives == 0 && primitiveCount > 0)
     minActivePrimitives = 1;
+
+  float targetFraction =
+      std::clamp(_residencyConfig.environmentTargetActiveFraction, 0.0f, 1.0f);
+  size_t targetPrimitiveCount = 0;
+  if (targetFraction > 0.0f && primitiveCount > 0) {
+    targetPrimitiveCount = static_cast<size_t>(std::ceil(
+        targetFraction * static_cast<float>(primitiveCount)));
+    targetPrimitiveCount = std::min(targetPrimitiveCount, primitiveCount);
+  }
+  size_t activationFloor = std::max(minActivePrimitives, targetPrimitiveCount);
+  if (activationFloor == 0 && primitiveCount > 0)
+    activationFloor = 1;
 
   size_t desiredPrimitiveCount = 0;
   float weightedEscape = 0.0f;
@@ -8778,9 +8848,9 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     if (object.primitiveCount == 0)
       continue;
 
-    bool needMorePrimitives = desiredPrimitiveCount < minActivePrimitives;
+    bool needMorePrimitives = desiredPrimitiveCount < activationFloor;
     bool needsEscapeReduction =
-        averageEscape(desiredPrimitiveCount, weightedEscape) > targetEscape;
+        averageEscape(desiredPrimitiveCount, weightedEscape) > escapeThreshold;
     if (!needMorePrimitives && !needsEscapeReduction)
       break;
 
@@ -9665,6 +9735,14 @@ void Renderer::beginFrameMetrics() {
     sample.avgHitProbability = 0.0;
     sample.p95HitProbability = 0.0;
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
+    sample.environmentTargetActiveFraction =
+        _residencyConfig.environmentTargetActiveFraction;
+    sample.environmentEscapeThreshold =
+        _residencyConfig.environmentEscapeThreshold;
+    sample.environmentDepthWeights =
+        formatFloatList(_residencyConfig.environmentDepthWeights);
+    sample.environmentDepthRadii =
+        formatFloatList(_residencyConfig.environmentDepthRadii);
     if (!_primitiveHitProbability.empty()) {
       size_t primitiveCount =
           std::min(_primitiveHitProbability.size(), _allPrimitives.size());
