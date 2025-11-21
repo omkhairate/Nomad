@@ -2275,6 +2275,7 @@ void Renderer::updateVisibleScene() {
   _primitiveBounds.resize(primCount);
   _primitiveImportance.assign(primCount, 0.0f);
   _objectImportance.clear();
+  _objectImportanceHistory.clear();
   _energySortedIndices.clear();
   _primitiveHitScores.assign(primCount, 0.0f);
   _primitiveHitLastFrame.assign(primCount, 0);
@@ -7199,6 +7200,12 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   else
     std::fill(_objectImportance.begin(), _objectImportance.end(), 0.0f);
 
+  bool resetImportanceHistory = false;
+  if (_objectImportanceHistory.size() != objectCount) {
+    _objectImportanceHistory.assign(objectCount, 0.0f);
+    resetImportanceHistory = true;
+  }
+
   if (_energySortedIndices.size() != objectCount)
     _energySortedIndices.resize(objectCount);
   std::iota(_energySortedIndices.begin(), _energySortedIndices.end(),
@@ -7286,17 +7293,40 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       boostedTotalImportance += std::max(_objectImportance[objectIndex], 0.0f);
   }
 
+  std::vector<float> energyImportance(objectCount, 0.0f);
+  float historyWeight = std::clamp(_residencyConfig.energyImportanceSmoothing,
+                                   0.0f, 0.999f);
+  float currentWeight = 1.0f - historyWeight;
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    float current = _objectImportance[objectIndex];
+    float smoothed = current;
+    if (historyWeight > 0.0f) {
+      float previous = resetImportanceHistory
+                           ? current
+                           : _objectImportanceHistory[objectIndex];
+      smoothed = previous * historyWeight + current * currentWeight;
+    }
+    _objectImportanceHistory[objectIndex] = smoothed;
+    energyImportance[objectIndex] = smoothed;
+  }
+
+  if (applyVisibilityBoost) {
+    boostedTotalImportance = 0.0f;
+    for (float importance : energyImportance)
+      boostedTotalImportance += std::max(importance, 0.0f);
+  }
+
   float targetImportanceBase = applyVisibilityBoost ? boostedTotalImportance
                                                     : _totalPrimitiveImportance;
 
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
             [this](size_t a, size_t b) {
               float scoreA = 0.0f;
-              if (a < _objectImportance.size())
-                scoreA = sanitizeSortValue(_objectImportance[a]);
+              if (a < _objectImportanceHistory.size())
+                scoreA = sanitizeSortValue(_objectImportanceHistory[a]);
               float scoreB = 0.0f;
-              if (b < _objectImportance.size())
-                scoreB = sanitizeSortValue(_objectImportance[b]);
+              if (b < _objectImportanceHistory.size())
+                scoreB = sanitizeSortValue(_objectImportanceHistory[b]);
               if (scoreA == scoreB)
                 return a < b;
               return scoreA > scoreB;
@@ -7330,8 +7360,9 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
         if (idx >= objectPrimitiveCounts.size())
           continue;
         size_t count = objectPrimitiveCounts[idx];
-        float importance =
-            (idx < _objectImportance.size()) ? _objectImportance[idx] : 0.0f;
+        float importance = (idx < energyImportance.size())
+                               ? energyImportance[idx]
+                               : 0.0f;
         if (count == 0 && importance <= 0.0f)
           continue;
         desiredObjectState[idx] = true;
@@ -7469,8 +7500,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     aggregate.info = &info;
     size_t fallbackPrimitiveCount = 0;
     for (size_t objectIndex : info.objectIndices) {
-      if (objectIndex < _objectImportance.size())
-        aggregate.importance += _objectImportance[objectIndex];
+      if (objectIndex < energyImportance.size())
+        aggregate.importance += energyImportance[objectIndex];
       if (objectIndex < objectPrimitiveCounts.size())
         fallbackPrimitiveCount += objectPrimitiveCounts[objectIndex];
     }

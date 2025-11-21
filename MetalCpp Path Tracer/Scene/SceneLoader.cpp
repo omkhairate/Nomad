@@ -683,6 +683,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "energyToggleBudget", static_cast<uint64_t>(params.energyMaxTogglesPerFrame)));
     params.energyVisibilityBoost =
         root->FloatAttribute("energyVisibilityBoost", params.energyVisibilityBoost);
+    params.energyImportanceSmoothing = root->FloatAttribute(
+        "energyImportanceSmoothing", params.energyImportanceSmoothing);
 
     params.unifiedEnergyWeight =
         root->FloatAttribute("unifiedEnergyWeight", params.unifiedEnergyWeight);

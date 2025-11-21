@@ -47,6 +47,7 @@ struct ResidencyParameters {
   size_t energyMinActivePrimitives = 16;
   size_t energyMaxTogglesPerFrame = 32;
   float energyVisibilityBoost = 1.75f;
+  float energyImportanceSmoothing = 0.85f;
 
   float unifiedEnergyWeight = 1.0f;
   float unifiedHitWeight = 1.0f;

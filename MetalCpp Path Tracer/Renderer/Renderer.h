@@ -433,6 +433,7 @@ private:
   std::vector<uint64_t> _desiredObjectDemotionFrame;
   std::vector<float> _primitiveImportance;
   std::vector<float> _objectImportance;
+  std::vector<float> _objectImportanceHistory;
   std::vector<size_t> _energySortedIndices;
   std::vector<float> _primitiveHitScores;
   std::vector<float> _primitiveHitScoresSnapshot;
