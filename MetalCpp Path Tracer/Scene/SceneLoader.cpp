@@ -631,6 +631,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         if (value == "energy" || value == "importance" || value == "energyimportance" ||
             value == "energy_importance") {
             scene->setResidencyStrategy(ResidencyStrategy::EnergyImportance);
+        } else if (value == "unified" || value == "hybrid" ||
+                   value == "unifiedscore" || value == "unified_score") {
+            scene->setResidencyStrategy(ResidencyStrategy::UnifiedScore);
         } else if (value == "distance" || value == "lod" || value == "distance_lod" ||
                    value == "distancelod" || value == "distancebased") {
             scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
@@ -680,6 +683,15 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "energyToggleBudget", static_cast<uint64_t>(params.energyMaxTogglesPerFrame)));
     params.energyVisibilityBoost =
         root->FloatAttribute("energyVisibilityBoost", params.energyVisibilityBoost);
+
+    params.unifiedEnergyWeight =
+        root->FloatAttribute("unifiedEnergyWeight", params.unifiedEnergyWeight);
+    params.unifiedHitWeight =
+        root->FloatAttribute("unifiedHitWeight", params.unifiedHitWeight);
+    params.unifiedCoverageWeight = root->FloatAttribute(
+        "unifiedCoverageWeight", params.unifiedCoverageWeight);
+    params.unifiedDistanceWeight = root->FloatAttribute(
+        "unifiedDistanceWeight", params.unifiedDistanceWeight);
 
     params.rayHitDecay = root->FloatAttribute("rayHitDecay", params.rayHitDecay);
     params.rayHitTargetFraction =

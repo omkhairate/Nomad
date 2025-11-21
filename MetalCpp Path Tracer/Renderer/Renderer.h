@@ -151,6 +151,7 @@ private:
                        bool forceFullRebuild = false);
   bool updateLODByDistance(bool forceAllToggles);
   bool updateEnergyImportance(bool forceAllToggles);
+  bool updateUnifiedResidency(bool forceAllToggles);
   bool updateRayHitBudget(bool forceAllToggles);
   bool updateProbabilisticResidency(bool forceAllToggles);
   void resetProbabilisticResidencyState();
@@ -165,6 +166,7 @@ private:
   bool waitForPendingFrameCommands(
       std::chrono::milliseconds timeout,
       std::chrono::steady_clock::time_point *waitSnapshot = nullptr);
+  std::vector<float> computeUnifiedImportance(float &outTotalScore);
   bool flushRayHitCopy();
   bool rayHitCopyReady() const;
   void processRayHitCounters();
