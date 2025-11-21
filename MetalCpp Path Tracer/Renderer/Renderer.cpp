@@ -7319,14 +7319,38 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   float targetImportanceBase = applyVisibilityBoost ? boostedTotalImportance
                                                     : _totalPrimitiveImportance;
 
+  std::vector<float> energyImportancePerPrimitive(objectCount, 0.0f);
+  float totalEnergyImportancePerPrimitive = 0.0f;
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    size_t count = objectIndex < objectPrimitiveCounts.size()
+                       ? objectPrimitiveCounts[objectIndex]
+                       : 0;
+    if (count == 0)
+      continue;
+    float avgImportance = energyImportance[objectIndex] /
+                          static_cast<float>(count);
+    energyImportancePerPrimitive[objectIndex] = avgImportance;
+    totalEnergyImportancePerPrimitive += std::max(avgImportance, 0.0f);
+  }
+
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
-            [this](size_t a, size_t b) {
-              float scoreA = 0.0f;
-              if (a < _objectImportanceHistory.size())
-                scoreA = sanitizeSortValue(_objectImportanceHistory[a]);
-              float scoreB = 0.0f;
-              if (b < _objectImportanceHistory.size())
-                scoreB = sanitizeSortValue(_objectImportanceHistory[b]);
+            [&](size_t a, size_t b) {
+              auto scoreFor = [&](size_t idx) {
+                float score = 0.0f;
+                if (idx < _objectImportanceHistory.size())
+                  score = sanitizeSortValue(_objectImportanceHistory[idx]);
+                if (!anyMeshGroups) {
+                  size_t count = idx < objectPrimitiveCounts.size()
+                                     ? objectPrimitiveCounts[idx]
+                                     : 0;
+                  if (count == 0)
+                    return 0.0f;
+                  score /= static_cast<float>(count);
+                }
+                return score;
+              };
+              float scoreA = scoreFor(a);
+              float scoreB = scoreFor(b);
               if (scoreA == scoreB)
                 return a < b;
               return scoreA > scoreB;
@@ -7339,6 +7363,10 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (!anyMeshGroups) {
     std::vector<bool> desiredObjectState(objectCount, false);
     size_t primitivesEnabled = 0;
+    float targetImportanceBaseSelection =
+        totalEnergyImportancePerPrimitive > 0.0f
+            ? totalEnergyImportancePerPrimitive
+            : targetImportanceBase;
 
     if (_totalPrimitiveImportance <= 0.0f) {
       for (size_t idx : _energySortedIndices) {
@@ -7355,13 +7383,14 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     } else {
       float cumulativeImportance = 0.0f;
       float targetImportance =
-          targetImportanceBase * _residencyConfig.energyTargetFraction;
+          targetImportanceBaseSelection *
+          _residencyConfig.energyTargetFraction;
       for (size_t idx : _energySortedIndices) {
         if (idx >= objectPrimitiveCounts.size())
           continue;
         size_t count = objectPrimitiveCounts[idx];
-        float importance = (idx < energyImportance.size())
-                               ? energyImportance[idx]
+        float importance = (idx < energyImportancePerPrimitive.size())
+                               ? energyImportancePerPrimitive[idx]
                                : 0.0f;
         if (count == 0 && importance <= 0.0f)
           continue;
