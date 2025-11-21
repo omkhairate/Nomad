@@ -428,6 +428,7 @@ private:
   std::vector<BoundingSphere> _objectBounds;
   std::vector<bool> _objectActive;
   std::vector<uint32_t> _objectCooldown;
+  std::vector<uint64_t> _objectLastToggleFrame;
   std::vector<uint8_t> _desiredObjectState;
   std::vector<uint64_t> _desiredObjectPromotionFrame;
   std::vector<uint64_t> _desiredObjectDemotionFrame;

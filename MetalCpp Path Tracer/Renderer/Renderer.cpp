@@ -1201,6 +1201,7 @@ void Renderer::resetProbabilisticResidencyState() {
 
   std::fill(_primitiveCooldown.begin(), _primitiveCooldown.end(), 0u);
   std::fill(_objectCooldown.begin(), _objectCooldown.end(), 0u);
+  std::fill(_objectLastToggleFrame.begin(), _objectLastToggleFrame.end(), 0u);
   _rayHitRebuildCooldown = 0;
 }
 
@@ -2369,6 +2370,7 @@ void Renderer::updateVisibleScene() {
   _objectBounds.resize(objectCount);
   _objectActive.assign(objectCount, false);
   _objectCooldown.assign(objectCount, 0);
+  _objectLastToggleFrame.assign(objectCount, 0);
   _objectImportance.assign(objectCount, 0.0f);
   _energySortedIndices.resize(objectCount);
   std::iota(_energySortedIndices.begin(), _energySortedIndices.end(), size_t(0));
@@ -6930,6 +6932,8 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
     _objectActive.resize(objectIndex + 1, false);
   if (objectIndex >= _objectCooldown.size())
     _objectCooldown.resize(objectIndex + 1, 0);
+  if (objectIndex >= _objectLastToggleFrame.size())
+    _objectLastToggleFrame.resize(objectIndex + 1, 0);
   if (objectIndex >= _objectActivePrimitiveCounts.size())
     _objectActivePrimitiveCounts.resize(objectIndex + 1, 0);
   if (objectIndex >= _desiredObjectState.size())
@@ -6966,6 +6970,7 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
   }
 
   if (prevState != newState) {
+    _objectLastToggleFrame[objectIndex] = _renderedFrameCount;
     if (newState)
       ++_frameObjectActivations;
     else
@@ -7360,6 +7365,25 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   const size_t minActivePrimitives =
       std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
+  if (_objectLastToggleFrame.size() < objectCount)
+    _objectLastToggleFrame.resize(objectCount, 0);
+
+  auto withinObjectStateCooldown = [&](size_t objectIndex) {
+    if (forceAllToggles)
+      return false;
+    uint64_t minDuration =
+        static_cast<uint64_t>(_residencyConfig.stateCooldownFrames);
+    if (minDuration == 0)
+      return false;
+    if (objectIndex >= _objectLastToggleFrame.size())
+      return false;
+    uint64_t lastFrame = _objectLastToggleFrame[objectIndex];
+    if (lastFrame == 0)
+      return false;
+    return (_renderedFrameCount >= lastFrame) &&
+           (_renderedFrameCount - lastFrame < minDuration);
+  };
+
   if (!anyMeshGroups) {
     std::vector<bool> desiredObjectState(objectCount, false);
     size_t primitivesEnabled = 0;
@@ -7421,12 +7445,22 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
 
     bool changed = false;
     size_t toggledPrimitiveCount = 0;
-    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-      bool shouldBeActive = desiredObjectState[objectIndex];
+    auto attemptToggleObject = [&](size_t objectIndex,
+                                   bool shouldBeActive) -> size_t {
+      if (objectIndex >= _allSceneObjects.size())
+        return 0;
       bool currentlyActive =
           objectIndex < _objectActive.size() && _objectActive[objectIndex];
       if (shouldBeActive == currentlyActive)
-        continue;
+        return 0;
+
+      if (!forceAllToggles) {
+        if (objectIndex < _objectCooldown.size() &&
+            _objectCooldown[objectIndex] > 0)
+          return 0;
+        if (withinObjectStateCooldown(objectIndex))
+          return 0;
+      }
 
       const SceneObject &obj = _allSceneObjects[objectIndex];
       size_t first = obj.firstPrimitive;
@@ -7446,21 +7480,25 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       }
 
       if (!canToggle || togglesNeeded == 0)
-        continue;
+        return 0;
 
-      // Allow large object toggles to saturate the frame budget instead of
-      // being rejected outright. We only stop once the current frame's budget
-      // has already been consumed, matching the behaviour of other residency
-      // passes.
       if (!forceAllToggles &&
           toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
-        continue;
+        return 0;
 
       size_t toggled = setObjectActive(objectIndex, shouldBeActive);
-      if (toggled > 0) {
+      if (toggled > 0 && !forceAllToggles) {
         toggledPrimitiveCount =
             std::min(toggledPrimitiveCount + toggled,
                      _residencyConfig.energyMaxTogglesPerFrame);
+      }
+      return toggled;
+    };
+
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+      bool shouldBeActive = desiredObjectState[objectIndex];
+      size_t toggled = attemptToggleObject(objectIndex, shouldBeActive);
+      if (toggled > 0) {
         changed = true;
       }
     }
@@ -7484,7 +7522,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
           continue;
         if (objectPrimitiveCounts[idx] == 0)
           continue;
-        if (setObjectActive(idx, true) > 0) {
+        if (attemptToggleObject(idx, true) > 0) {
           changed = true;
           anyActiveObject = true;
         }
@@ -7505,7 +7543,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       }
 
       if (fallbackObject < _allSceneObjects.size()) {
-        if (setObjectActive(fallbackObject, true) > 0)
+        if (attemptToggleObject(fallbackObject, true) > 0)
           changed = true;
       } else {
         if (setPrimitiveActive(0, true))
@@ -7705,6 +7743,54 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
 
   bool changed = false;
   size_t toggledPrimitiveCount = 0;
+  auto attemptToggleObject = [&](size_t objectIndex, bool shouldBeActive) {
+    if (objectIndex >= _allSceneObjects.size())
+      return size_t(0);
+    bool currentlyActive =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    if (currentlyActive == shouldBeActive)
+      return size_t(0);
+
+    if (!forceAllToggles) {
+      if (objectIndex < _objectCooldown.size() &&
+          _objectCooldown[objectIndex] > 0)
+        return size_t(0);
+      if (withinObjectStateCooldown(objectIndex))
+        return size_t(0);
+    }
+
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    size_t first = obj.firstPrimitive;
+    size_t last = first + obj.primitiveCount;
+    size_t togglesNeeded = 0;
+    bool canToggle = true;
+    for (size_t prim = first; prim < last && prim < _activePrimitive.size();
+         ++prim) {
+      if (_activePrimitive[prim] == shouldBeActive)
+        continue;
+      if (!forceAllToggles && prim < _primitiveCooldown.size() &&
+          _primitiveCooldown[prim] > 0) {
+        canToggle = false;
+        break;
+      }
+      ++togglesNeeded;
+    }
+
+    if (!canToggle || togglesNeeded == 0)
+      return size_t(0);
+    if (!forceAllToggles &&
+        toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
+      return size_t(0);
+
+    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+    if (toggled > 0 && !forceAllToggles) {
+      toggledPrimitiveCount =
+          std::min(toggledPrimitiveCount + toggled,
+                   _residencyConfig.energyMaxTogglesPerFrame);
+    }
+    return toggled;
+  };
+
   for (size_t groupIndex = 0; groupIndex < meshGroups.size(); ++groupIndex) {
     const MeshGroupAggregate &group = meshGroups[groupIndex];
     bool groupShouldBeActive = desiredGroupState[groupIndex];
@@ -7726,6 +7812,17 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
                                                : false;
       if (shouldBeActive == currentlyActive)
         continue;
+      if (!forceAllToggles) {
+        if (objectIndex < _objectCooldown.size() &&
+            _objectCooldown[objectIndex] > 0) {
+          groupCanToggle = false;
+          break;
+        }
+        if (withinObjectStateCooldown(objectIndex)) {
+          groupCanToggle = false;
+          break;
+        }
+      }
       groupNeedsToggle = true;
 
       const SceneObject &obj = _allSceneObjects[objectIndex];
@@ -7760,18 +7857,10 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
           (objectIndex < desiredObjectState.size())
               ? desiredObjectState[objectIndex]
               : groupShouldBeActive;
-      bool currentlyActive =
-          (objectIndex < _objectActive.size()) ? _objectActive[objectIndex]
-                                               : false;
-      if (shouldBeActive == currentlyActive)
-        continue;
-      toggledThisGroup += setObjectActive(objectIndex, shouldBeActive);
+      toggledThisGroup += attemptToggleObject(objectIndex, shouldBeActive);
     }
 
     if (toggledThisGroup > 0) {
-      toggledPrimitiveCount =
-          std::min(toggledPrimitiveCount + toggledThisGroup,
-                   _residencyConfig.energyMaxTogglesPerFrame);
       changed = true;
     }
   }
@@ -7801,7 +7890,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
         continue;
       size_t toggled = 0;
       for (size_t objectIndex : *objectIndices)
-        toggled += setObjectActive(objectIndex, true);
+        toggled += attemptToggleObject(objectIndex, true);
       if (toggled > 0) {
         changed = true;
         anyActiveObject = true;
@@ -7830,7 +7919,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
               : nullptr;
       if (objectIndices) {
         for (size_t objectIndex : *objectIndices)
-          toggled += setObjectActive(objectIndex, true);
+          toggled += attemptToggleObject(objectIndex, true);
       }
       if (toggled > 0)
         changed = true;
