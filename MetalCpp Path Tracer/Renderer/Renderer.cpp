@@ -7255,6 +7255,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
 
   const auto &objectPrimitiveCounts = _objectPrimitiveCounts;
   bool anyMeshGroups = _anyMeshGroups;
+  float boostedTotalImportance = 0.0f;
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const SceneObject &obj = _allSceneObjects[objectIndex];
     size_t first = obj.firstPrimitive;
@@ -7280,7 +7281,13 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     } else {
       _objectImportance[objectIndex] = totalImportance;
     }
+
+    if (applyVisibilityBoost)
+      boostedTotalImportance += std::max(_objectImportance[objectIndex], 0.0f);
   }
+
+  float targetImportanceBase = applyVisibilityBoost ? boostedTotalImportance
+                                                    : _totalPrimitiveImportance;
 
   std::sort(_energySortedIndices.begin(), _energySortedIndices.end(),
             [this](size_t a, size_t b) {
@@ -7318,7 +7325,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     } else {
       float cumulativeImportance = 0.0f;
       float targetImportance =
-          _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
+          targetImportanceBase * _residencyConfig.energyTargetFraction;
       for (size_t idx : _energySortedIndices) {
         if (idx >= objectPrimitiveCounts.size())
           continue;
@@ -7523,7 +7530,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   } else {
     float cumulativeImportance = 0.0f;
     float targetImportance =
-        _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
+        targetImportanceBase * _residencyConfig.energyTargetFraction;
     for (size_t sortedPos = 0; sortedPos < meshSortedIndices.size();
          ++sortedPos) {
       size_t idx = meshSortedIndices[sortedPos];
