@@ -7113,6 +7113,11 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
 
+  float recomputedTotalImportance = 0.0f;
+  for (float importance : _primitiveImportance)
+    recomputedTotalImportance += std::max(importance, 0.0f);
+  _totalPrimitiveImportance = recomputedTotalImportance;
+
   const size_t objectCount = _allSceneObjects.size();
   if (objectCount == 0) {
     // Fall back to primitive-level logic if no objects are available.
@@ -7776,7 +7781,9 @@ bool Renderer::updateUnifiedResidency(bool forceAllToggles) {
     return false;
 
   std::vector<float> originalImportance = _primitiveImportance;
-  float originalTotalImportance = _totalPrimitiveImportance;
+  float originalTotalImportance = 0.0f;
+  for (float importance : originalImportance)
+    originalTotalImportance += std::max(importance, 0.0f);
   float originalVisibilityBoost = _residencyConfig.energyVisibilityBoost;
 
   _primitiveImportance = std::move(unifiedScores);
