@@ -20,6 +20,7 @@ enum class ResidencyStrategy {
   Probabilistic = 4,
   AlwaysResident = 5,
   EnvironmentHit = 6,
+  UnifiedScore = 7,
 };
 
 struct SceneObject {
@@ -46,6 +47,11 @@ struct ResidencyParameters {
   size_t energyMinActivePrimitives = 16;
   size_t energyMaxTogglesPerFrame = 32;
   float energyVisibilityBoost = 1.75f;
+
+  float unifiedEnergyWeight = 1.0f;
+  float unifiedHitWeight = 1.0f;
+  float unifiedCoverageWeight = 1.0f;
+  float unifiedDistanceWeight = 1.0f;
 
   float rayHitDecay = 0.85f;
   float rayHitTargetFraction = 0.6f;
