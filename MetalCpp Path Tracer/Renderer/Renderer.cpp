@@ -8304,6 +8304,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
       if (visible && (raysTested == 0 || lowEvidence))
         effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
+      if (visible && raysTested > 0 && !lowEvidence)
+        effectiveExplore = std::max(effectiveExplore, kPosteriorFloor);
       if (idx < _primitiveExplorationScore.size())
         _primitiveExplorationScore[idx] = effectiveExplore;
       if (effectiveExplore <= 0.0f)
@@ -8757,6 +8759,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
     if (visible && (raysTested == 0 || lowEvidence))
       effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
+    if (visible && raysTested > 0 && !lowEvidence)
+      effectiveExplore = std::max(effectiveExplore, kPosteriorFloor);
     if (idx < _objectExplorationScore.size())
       _objectExplorationScore[idx] = effectiveExplore;
     if (effectiveExplore <= 0.0f)
