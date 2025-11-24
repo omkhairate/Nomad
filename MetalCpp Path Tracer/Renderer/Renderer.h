@@ -375,6 +375,7 @@ private:
     double p95HitProbability = 0.0;
     double probabilityThreshold = 0.0;
     double probabilityTargetFraction = 0.0;
+    double probabilityVisibleFloor = 0.0;
     std::string primitiveProbabilities;
     std::string objectProbabilities;
     size_t probabilisticToggles = 0;
