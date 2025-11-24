@@ -2268,6 +2268,10 @@ void Renderer::updateVisibleScene() {
 
   _alwaysResidentCache.reset();
 
+  ++_cameraVersion;
+  _coverageCameraVersion = 0;
+  _boundsVersionCounter = 1;
+
   // Store full primitive list and initialize tracking
   _allPrimitives = _pScene->getPrimitives();
   size_t primCount = _allPrimitives.size();
@@ -2276,6 +2280,7 @@ void Renderer::updateVisibleScene() {
   _primitiveToResidentIndex.assign(primCount, -1);
   _primitiveToObject.assign(primCount, std::numeric_limits<size_t>::max());
   _primitiveBounds.resize(primCount);
+  _primitiveBoundsVersion.assign(primCount, _boundsVersionCounter++);
   _primitiveImportance.assign(primCount, 0.0f);
   _objectImportance.clear();
   _objectImportanceHistory.clear();
@@ -2293,6 +2298,10 @@ void Renderer::updateVisibleScene() {
   _rayHitSortedIndices.resize(primCount);
   _probabilitySortedIndices.resize(primCount);
   _primitiveScreenCoverage.assign(primCount, 0.0f);
+  _primitiveDistanceFalloffCache.assign(primCount, 0.0f);
+  _primitiveCoverageDirty.assign(primCount, 1);
+  _primitiveCoverageBoundsVersion.assign(primCount, 0);
+  _primitiveCoverageVisibilityKey.assign(primCount, 0xFF);
   _screenCoverageSortedIndices.resize(primCount);
   _totalPrimitiveImportance = 0.0f;
 
@@ -2370,6 +2379,7 @@ void Renderer::updateVisibleScene() {
   _allSceneObjects = _pScene->getObjects();
   size_t objectCount = _allSceneObjects.size();
   _objectBounds.resize(objectCount);
+  _objectBoundsVersion.assign(objectCount, _boundsVersionCounter++);
   _objectActive.assign(objectCount, false);
   _objectCooldown.assign(objectCount, 0);
   _objectLastToggleFrame.assign(objectCount, 0);
@@ -6115,8 +6125,10 @@ bool Renderer::updateCameraStates() {
 
   bool viewChanged = toggled || cameraStatesDiffer(activeView, previousViewState) ||
                      hadObserver != _observerActive;
-  if (viewChanged)
+  if (viewChanged) {
+    ++_cameraVersion;
     recalculateViewport();
+  }
 
   return viewChanged;
 }
@@ -7002,6 +7014,14 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
 
   if (_primitiveScreenCoverage.size() != primCount)
     _primitiveScreenCoverage.assign(primCount, 0.0f);
+  if (_primitiveDistanceFalloffCache.size() != primCount)
+    _primitiveDistanceFalloffCache.assign(primCount, 0.0f);
+  if (_primitiveCoverageDirty.size() != primCount)
+    _primitiveCoverageDirty.assign(primCount, 1);
+  if (_primitiveCoverageBoundsVersion.size() != primCount)
+    _primitiveCoverageBoundsVersion.assign(primCount, 0);
+  if (_primitiveCoverageVisibilityKey.size() != primCount)
+    _primitiveCoverageVisibilityKey.assign(primCount, 0xFF);
 
   float screenArea = Camera::screenSize.x * Camera::screenSize.y;
   if (screenArea <= 0.0f)
@@ -7025,60 +7045,48 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
                      : 1.0f;
   float horizontalHalfFov = std::atan(tanHalfFov * aspect);
 
-  parallelChunkedAsync(0, primCount, [this, screenArea, forward, right,
-                                      horizontalHalfFov, tanHalfFov](
-                                         size_t chunkBegin, size_t chunkEnd) {
-    for (size_t i = chunkBegin; i < chunkEnd; ++i) {
-      float coverage = 0.0f;
-      if (i < _primitiveBounds.size() && isInView(_primitiveBounds[i])) {
-        const BoundingSphere &b = _primitiveBounds[i];
-        simd::float3 toCenter = b.center - Camera::position;
-        float depth = simd::dot(toCenter, forward);
-        if (depth > 1e-3f) {
-          float dist = simd::length(toCenter);
-          float cosAngle = depth / std::max(dist, 1e-3f);
-          float horiz = simd::dot(toCenter, right);
-          float horizAngle = std::atan2(std::fabs(horiz), depth);
-          if (horizAngle <= horizontalHalfFov + 0.1f) {
-            float radiusPixels = (b.radius / depth) / tanHalfFov *
-                                 (Camera::screenSize.y * 0.5f);
-            radiusPixels = std::max(radiusPixels, 0.0f);
-            float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
-            float angleFactor = std::max(cosAngle, 0.0f);
-            coverage = std::min(area * angleFactor, screenArea);
-          }
-        }
-      }
-      _primitiveScreenCoverage[i] = coverage;
-    }
-  });
-
-  if (_primitiveHitScoresSnapshot.size() < primCount)
-    _primitiveHitScoresSnapshot.resize(primCount, 0.0f);
-  size_t copyCount = std::min(_primitiveHitScores.size(), primCount);
-  std::copy_n(_primitiveHitScores.begin(), copyCount,
-              _primitiveHitScoresSnapshot.begin());
-  if (copyCount < primCount) {
-    std::fill(_primitiveHitScoresSnapshot.begin() + copyCount,
-              _primitiveHitScoresSnapshot.begin() + primCount, 0.0f);
+  bool cameraDirty = _coverageCameraVersion != _cameraVersion;
+  if (cameraDirty) {
+    _coverageCameraVersion = _cameraVersion;
+    std::fill(_primitiveCoverageDirty.begin(), _primitiveCoverageDirty.end(), 1);
   }
 
-  auto distanceFalloff = [&](size_t primIndex) -> float {
-    BoundingSphere sphere{};
-    bool haveSphere = false;
-    if (primIndex < _primitiveBounds.size()) {
-      sphere = _primitiveBounds[primIndex];
-      haveSphere = true;
-    } else {
-      size_t objectIndex =
-          primIndex < _primitiveToObject.size() ? _primitiveToObject[primIndex]
-                                                : std::numeric_limits<size_t>::max();
-      if (objectIndex < _objectBounds.size()) {
-        sphere = _objectBounds[objectIndex];
-        haveSphere = true;
-      }
-    }
-    if (!haveSphere || !isInView(sphere))
+  auto boundsVersionForPrimitive = [&](size_t primIndex) -> uint64_t {
+    if (primIndex < _primitiveBoundsVersion.size())
+      return _primitiveBoundsVersion[primIndex];
+    size_t objectIndex = primIndex < _primitiveToObject.size()
+                             ? _primitiveToObject[primIndex]
+                             : std::numeric_limits<size_t>::max();
+    if (objectIndex < _objectBoundsVersion.size())
+      return _objectBoundsVersion[objectIndex];
+    return 0;
+  };
+
+  auto coverageForSphere = [&](const BoundingSphere &b, bool &visible) -> float {
+    visible = isInView(b);
+    if (!visible)
+      return 0.0f;
+    simd::float3 toCenter = b.center - Camera::position;
+    float depth = simd::dot(toCenter, forward);
+    if (depth <= 1e-3f)
+      return 0.0f;
+    float dist = simd::length(toCenter);
+    float cosAngle = depth / std::max(dist, 1e-3f);
+    float horiz = simd::dot(toCenter, right);
+    float horizAngle = std::atan2(std::fabs(horiz), depth);
+    if (horizAngle > horizontalHalfFov + 0.1f)
+      return 0.0f;
+    float radiusPixels = (b.radius / depth) / tanHalfFov *
+                         (Camera::screenSize.y * 0.5f);
+    radiusPixels = std::max(radiusPixels, 0.0f);
+    float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
+    float angleFactor = std::max(cosAngle, 0.0f);
+    return std::min(area * angleFactor, screenArea);
+  };
+
+  auto distanceFalloff = [&](const BoundingSphere &sphere,
+                             bool sphereVisible) -> float {
+    if (!sphereVisible && !isInView(sphere))
       return 0.0f;
 
     simd::float3 toCenter = sphere.center - Camera::position;
@@ -7097,6 +7105,77 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     return angleFactor / (1.0f + depth);
   };
 
+  parallelChunkedAsync(0, primCount,
+                       [&, forward, right, horizontalHalfFov, tanHalfFov](
+                           size_t chunkBegin, size_t chunkEnd) {
+                         for (size_t i = chunkBegin; i < chunkEnd; ++i) {
+                           uint64_t boundsVersion = boundsVersionForPrimitive(i);
+                           if (i < _primitiveCoverageBoundsVersion.size() &&
+                               _primitiveCoverageBoundsVersion[i] != boundsVersion)
+                             _primitiveCoverageDirty[i] = 1;
+
+                           uint8_t activeKey =
+                               (i < _activePrimitive.size() && _activePrimitive[i])
+                                   ? 0x2
+                                   : 0x0;
+                           bool dirty = (i < _primitiveCoverageDirty.size())
+                                            ? (_primitiveCoverageDirty[i] != 0)
+                                            : true;
+                           if (i >= _primitiveCoverageVisibilityKey.size() ||
+                               ((_primitiveCoverageVisibilityKey[i] & 0x2) !=
+                                activeKey))
+                             dirty = true;
+
+                           if (!dirty)
+                             continue;
+
+                           BoundingSphere chosenSphere{};
+                           bool haveSphere = false;
+                           if (i < _primitiveBounds.size()) {
+                             chosenSphere = _primitiveBounds[i];
+                             haveSphere = true;
+                           } else {
+                             size_t objectIndex =
+                                 (i < _primitiveToObject.size())
+                                     ? _primitiveToObject[i]
+                                     : std::numeric_limits<size_t>::max();
+                             if (objectIndex < _objectBounds.size()) {
+                               chosenSphere = _objectBounds[objectIndex];
+                               haveSphere = true;
+                             }
+                           }
+
+                           bool visible = false;
+                           float coverage = 0.0f;
+                           if (i < _primitiveBounds.size())
+                             coverage = coverageForSphere(_primitiveBounds[i], visible);
+
+                           float distanceScore =
+                               haveSphere ? distanceFalloff(chosenSphere, visible)
+                                          : 0.0f;
+
+                           _primitiveScreenCoverage[i] = coverage;
+                           _primitiveDistanceFalloffCache[i] = distanceScore;
+                           if (i < _primitiveCoverageBoundsVersion.size())
+                             _primitiveCoverageBoundsVersion[i] = boundsVersion;
+                           if (i < _primitiveCoverageVisibilityKey.size())
+                             _primitiveCoverageVisibilityKey[i] =
+                                 (visible ? 1 : 0) | activeKey;
+                           if (i < _primitiveCoverageDirty.size())
+                             _primitiveCoverageDirty[i] = 0;
+                         }
+                       });
+
+  if (_primitiveHitScoresSnapshot.size() < primCount)
+    _primitiveHitScoresSnapshot.resize(primCount, 0.0f);
+  size_t copyCount = std::min(_primitiveHitScores.size(), primCount);
+  std::copy_n(_primitiveHitScores.begin(), copyCount,
+              _primitiveHitScoresSnapshot.begin());
+  if (copyCount < primCount) {
+    std::fill(_primitiveHitScoresSnapshot.begin() + copyCount,
+              _primitiveHitScoresSnapshot.begin() + primCount, 0.0f);
+  }
+
   const float alpha = _residencyConfig.unifiedEnergyWeight;
   const float beta = _residencyConfig.unifiedHitWeight;
   const float gamma = _residencyConfig.unifiedCoverageWeight;
@@ -7111,7 +7190,9 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     float coverage = (i < _primitiveScreenCoverage.size())
                          ? _primitiveScreenCoverage[i]
                          : 0.0f;
-    float distanceScore = distanceFalloff(i);
+    float distanceScore = (i < _primitiveDistanceFalloffCache.size())
+                              ? _primitiveDistanceFalloffCache[i]
+                              : 0.0f;
 
     float score = alpha * energy + beta * hit + gamma * coverage +
                   delta * distanceScore;
