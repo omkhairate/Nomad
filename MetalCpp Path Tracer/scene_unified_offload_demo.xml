@@ -1,10 +1,10 @@
 <Scene width="960" height="540" maxRayDepth="6" startCompacted="true"
        residencyStrategy="unified"
        textureResidencyMemoryCapMB="512"
-       unifiedEnergyWeight="0.75"
-       unifiedHitWeight="1.55"
-       unifiedCoverageWeight="1.2"
-       unifiedDistanceWeight="0.35">
+       unifiedEnergyWeight="0.85"
+       unifiedHitWeight="1.95"
+       unifiedCoverageWeight="1.55"
+       unifiedDistanceWeight="0.55">
     <CameraPath>
         <!-- Lateral sweep across offset occluders; meshes fade in/out as the unified scorer reprioritizes residency -->
         <Keyframe frame="0"   position="-55,12,20" lookAt="0,8,-40" />
