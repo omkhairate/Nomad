@@ -371,6 +371,66 @@ void testObjectFallbackOverridesToggleBudget() {
   assert(harness.toggledPrimitiveCount() == 0);
 }
 
+void testLowEvidenceHysteresisDemotion() {
+  constexpr float kThreshold = 0.6f;
+  constexpr float kHysteresis = 0.1f;
+  const float enterThreshold = std::clamp(kThreshold + kHysteresis, 0.0f, 1.0f);
+  const float exitThreshold = std::clamp(kThreshold - kHysteresis, 0.0f, 1.0f);
+  constexpr float kEvidenceWindow = 64.0f;
+  constexpr float kMinimalEvidenceThreshold = 1.0e-3f;
+
+  auto sanitizeProbability = [](float probability) {
+    if (!std::isfinite(probability))
+      return 0.5f;
+    return std::clamp(probability, 0.0f, 1.0f);
+  };
+
+  auto computeEvidenceFactor = [=](float mass) {
+    if (!(mass > 0.0f) || !std::isfinite(mass))
+      return 0.0f;
+    float window = std::max(kEvidenceWindow, 1.0e-3f);
+    float normalized = mass / window;
+    return std::clamp(normalized, 0.0f, 1.0f);
+  };
+
+  auto evaluateDesiredState = [&](float probability, float mass,
+                                  bool previousDesired,
+                                  uint32_t cooldown) {
+    float sanitizedProbability = sanitizeProbability(probability);
+    float evidence = computeEvidenceFactor(mass);
+    float regressedProbability = sanitizedProbability * evidence +
+                                 0.5f * (1.0f - evidence);
+    bool desired = previousDesired;
+    bool cooldownExpired = cooldown == 0;
+    bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
+    float evaluationProbability =
+        lowEvidence ? regressedProbability : sanitizedProbability;
+    if (sanitizedProbability >= enterThreshold)
+      desired = true;
+    else if (regressedProbability <= exitThreshold)
+      desired = false;
+    else if (cooldownExpired && !previousDesired)
+      desired = evaluationProbability >= kThreshold;
+    return desired;
+  };
+
+  bool desired = true;
+  uint32_t cooldown = 0;
+  constexpr float kLowEvidenceMass = kMinimalEvidenceThreshold * 0.5f;
+
+  desired = evaluateDesiredState(0.65f, kLowEvidenceMass, desired, cooldown);
+  assert(desired);
+
+  desired = evaluateDesiredState(0.4f, kLowEvidenceMass, desired, cooldown);
+  assert(!desired);
+
+  desired = evaluateDesiredState(0.75f, kLowEvidenceMass, desired, cooldown);
+  assert(desired);
+
+  desired = evaluateDesiredState(0.62f, kLowEvidenceMass, desired, cooldown);
+  assert(desired);
+}
+
 void testIdleResidencyCooldownClearsDesiredState() {
   constexpr uint32_t kStateCooldownFrames = 3;
   constexpr uint32_t kIdleCooldownFrames = 2;
@@ -404,14 +464,15 @@ void testIdleResidencyCooldownClearsDesiredState() {
                                  0.5f * (1.0f - evidence);
     bool desired = previousDesired;
     bool cooldownExpired = cooldown == 0;
-    if (evidence <= kMinimalEvidenceThreshold && cooldownExpired)
-      desired = false;
-    else if (sanitizedProbability >= enterThreshold)
+    bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
+    float evaluationProbability =
+        lowEvidence ? regressedProbability : sanitizedProbability;
+    if (sanitizedProbability >= enterThreshold)
       desired = true;
-    else if (sanitizedProbability <= exitThreshold)
+    else if (regressedProbability <= exitThreshold)
       desired = false;
-    else if (cooldownExpired)
-      desired = regressedProbability >= kThreshold;
+    else if (cooldownExpired && !previousDesired)
+      desired = evaluationProbability >= kThreshold;
     return desired;
   };
 
@@ -443,5 +504,6 @@ void RunProbabilisticResidencyTests() {
   testAlternatingHitsRespectDecayAndFallback();
   testZeroActiveFallbackEnsuresOnePrimitive();
   testObjectFallbackOverridesToggleBudget();
+  testLowEvidenceHysteresisDemotion();
   testIdleResidencyCooldownClearsDesiredState();
 }
