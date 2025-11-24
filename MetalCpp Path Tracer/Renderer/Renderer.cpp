@@ -8965,7 +8965,37 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   size_t toggledPrimitiveCount = 0;
   size_t maxPrimitiveToggles = _residencyConfig.probabilityMaxTogglesPerFrame;
 
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+  std::vector<size_t> toggleOrder;
+  toggleOrder.reserve(objectCount);
+  std::vector<uint8_t> added(objectCount, 0);
+
+  auto appendList = [&](const std::vector<size_t> &candidates) {
+    for (size_t idx : candidates) {
+      if (idx >= objectCount)
+        continue;
+      if (added[idx])
+        continue;
+      toggleOrder.push_back(idx);
+      added[idx] = 1;
+    }
+  };
+
+  std::vector<size_t> desiredByPriority;
+  desiredByPriority.reserve(objectCount);
+  for (size_t idx : _objectProbabilitySortedIndices) {
+    if (idx >= objectCount)
+      continue;
+    if (desiredObjects[idx] == 0)
+      continue;
+    desiredByPriority.push_back(idx);
+  }
+
+  appendList(desiredByPriority);
+  appendList(visibleExplore);
+  appendList(hiddenExplore);
+  appendList(_objectProbabilitySortedIndices);
+
+  for (size_t objectIndex : toggleOrder) {
     if (!forceAllToggles) {
       if (maxPrimitiveToggles == 0 || toggledPrimitiveCount >= maxPrimitiveToggles)
         break;
