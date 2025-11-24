@@ -461,6 +461,7 @@ private:
   std::vector<uint32_t> _objectRaysTestedLastFrame;
   std::vector<uint32_t> _objectIdleFrames;
   std::vector<uint8_t> _objectVisible;
+  std::vector<float> _objectVisibilityEvidence;
   std::vector<size_t> _objectProbabilitySortedIndices;
   std::vector<float> _primitiveScreenCoverage;
   std::vector<size_t> _screenCoverageSortedIndices;

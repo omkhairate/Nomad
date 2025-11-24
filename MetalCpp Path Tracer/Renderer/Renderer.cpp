@@ -2384,6 +2384,7 @@ void Renderer::updateVisibleScene() {
   _objectHitLastFrame.assign(objectCount, 0);
   _objectRaysTestedLastFrame.assign(objectCount, 0);
   _objectVisible.assign(objectCount, 0);
+  _objectVisibilityEvidence.assign(objectCount, 0.0f);
   _objectProbabilitySortedIndices.resize(objectCount);
   std::iota(_objectProbabilitySortedIndices.begin(),
             _objectProbabilitySortedIndices.end(), size_t(0));
@@ -8112,6 +8113,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   constexpr float kPosteriorFloor = 1.0e-3f;
   constexpr float kMinimalEvidenceThreshold = 1.0e-3f;
+  constexpr float kVisibleEvidenceFloor = 0.1f;
+  constexpr float kVisibilityEvidenceDecay = 0.9f;
   const float configuredWindow = _residencyConfig.probabilityEvidenceWindow;
   const bool finiteEvidenceWindow =
       configuredWindow > 0.0f && std::isfinite(configuredWindow);
@@ -8140,24 +8143,37 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       return 0.0f;
     return variance;
   };
+  auto computeRegressedProbabilityFromEvidence =
+      [&](float probability, float evidence) {
+        float clampedEvidence = std::clamp(evidence, 0.0f, 1.0f);
+        float sanitized = sanitizePosteriorProbability(probability);
+        return sanitized * clampedEvidence + 0.5f * (1.0f - clampedEvidence);
+      };
   auto computeRegressedProbability = [&](float probability, float mass,
                                          bool visible = true) {
     float evidence = computeEvidenceFactor(mass, visible);
-    float sanitized = sanitizePosteriorProbability(probability);
-    return sanitized * evidence + 0.5f * (1.0f - evidence);
+    return computeRegressedProbabilityFromEvidence(probability, evidence);
   };
+  auto computePosteriorScoreFromEvidence =
+      [&](float probability, float variance, float evidence) {
+        float regressed =
+            computeRegressedProbabilityFromEvidence(probability, evidence);
+        float sqrtVariance =
+            std::sqrt(std::max(sanitizePosteriorVariance(variance), 0.0f));
+        return regressed +
+               _residencyConfig.probabilityUncertaintyBoost * sqrtVariance;
+      };
   auto computePosteriorScore = [&](float probability, float variance, float mass,
                                    bool visible = true) {
-    float regressed = computeRegressedProbability(probability, mass, visible);
-    float sqrtVariance = std::sqrt(std::max(sanitizePosteriorVariance(variance), 0.0f));
-    return regressed +
-           _residencyConfig.probabilityUncertaintyBoost * sqrtVariance;
+    float evidence = computeEvidenceFactor(mass, visible);
+    return computePosteriorScoreFromEvidence(probability, variance, evidence);
   };
 
   if (objectCount == 0) {
     _desiredObjectState.clear();
     _desiredObjectPromotionFrame.clear();
     _desiredObjectDemotionFrame.clear();
+    _objectVisibilityEvidence.clear();
     if (_primitiveHitProbability.size() < primCount)
       _primitiveHitProbability.resize(primCount, 0.5f);
     if (_probabilitySortedIndices.size() != primCount) {
@@ -8465,6 +8481,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   }
   if (_objectVisible.size() < objectCount)
     _objectVisible.resize(objectCount, 0);
+  if (_objectVisibilityEvidence.size() < objectCount)
+    _objectVisibilityEvidence.resize(objectCount, 0.0f);
   if (_objectExplorationScore.size() < objectCount)
     _objectExplorationScore.resize(objectCount, 0.0f);
   if (_objectRaysTestedLastFrame.size() < objectCount)
@@ -8508,6 +8526,19 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       return objectVisibility[idx] != 0;
     return computeObjectVisibility(idx);
   };
+  auto bufferedEvidenceForIndex = [&](size_t idx, float rawEvidence,
+                                      bool visible) {
+    float previous =
+        (idx < _objectVisibilityEvidence.size()) ? _objectVisibilityEvidence[idx]
+                                                 : 0.0f;
+    float decayed = previous * kVisibilityEvidenceDecay;
+    float visibilityFloor = visible ? kVisibleEvidenceFloor : 0.0f;
+    float buffered =
+        std::max({std::clamp(rawEvidence, 0.0f, 1.0f), decayed, visibilityFloor});
+    if (idx < _objectVisibilityEvidence.size())
+      _objectVisibilityEvidence[idx] = buffered;
+    return buffered;
+  };
   float threshold = _residencyConfig.probabilityThreshold;
   float hysteresis =
       std::clamp(_residencyConfig.probabilityDesiredHysteresis, 0.0f, 0.5f);
@@ -8525,19 +8556,20 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                      ? _objectPosteriorMass[i]
                      : 0.0f;
     bool visible = visibilityForIndex(i);
+    float rawEvidence = computeEvidenceFactor(mass, visible);
+    float bufferedEvidence = bufferedEvidenceForIndex(i, rawEvidence, visible);
     float sanitizedProbability = sanitizePosteriorProbability(probability);
-    float evidence = computeEvidenceFactor(mass, visible);
-    float effectiveProbability = sanitizedProbability * evidence +
-                                 0.5f * (1.0f - evidence);
-    float boostedProbability =
-        computePosteriorScore(probability, variance, mass, visible);
+    float effectiveProbability = computeRegressedProbabilityFromEvidence(
+        sanitizedProbability, bufferedEvidence);
+    float boostedProbability = computePosteriorScoreFromEvidence(
+        probability, variance, bufferedEvidence);
     float enterScore = std::max(effectiveProbability, boostedProbability);
     float exitScore = effectiveProbability;
     bool previousDesired = desiredObjects[i] != 0;
     bool desired = previousDesired;
     bool cooldownExpired =
         (i >= _objectCooldown.size()) || _objectCooldown[i] == 0;
-    bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
+    bool lowEvidence = bufferedEvidence <= kMinimalEvidenceThreshold;
     float promotionProbability = enterScore;
     float demotionProbability = exitScore;
     float evaluationProbability = lowEvidence ? effectiveProbability
@@ -8670,8 +8702,12 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                      ? _objectPosteriorMass[idx]
                      : 0.0f;
     bool visible = visibilityForIndex(idx);
-    float effectiveProbability =
-        computeRegressedProbability(probability, mass, visible);
+    float rawEvidence = computeEvidenceFactor(mass, visible);
+    float bufferedEvidence = (idx < _objectVisibilityEvidence.size())
+                                 ? _objectVisibilityEvidence[idx]
+                                 : rawEvidence;
+    float effectiveProbability = computeRegressedProbabilityFromEvidence(
+        probability, bufferedEvidence);
     if (effectiveProbability > threshold)
       continue;
     float exploreScore = (idx < _objectExplorationScore.size())
@@ -9715,6 +9751,7 @@ void Renderer::processRayHitCounters() {
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
     _objectVisible.clear();
+    _objectVisibilityEvidence.clear();
     _objectProbabilitySortedIndices.clear();
     return;
   }
@@ -9743,6 +9780,7 @@ void Renderer::processRayHitCounters() {
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
     _objectVisible.clear();
+    _objectVisibilityEvidence.clear();
     _objectProbabilitySortedIndices.clear();
     return;
   }
@@ -9770,6 +9808,7 @@ void Renderer::processRayHitCounters() {
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
     _objectVisible.clear();
+    _objectVisibilityEvidence.clear();
     _objectProbabilitySortedIndices.clear();
     return;
   }
@@ -9804,6 +9843,7 @@ void Renderer::processRayHitCounters() {
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
     _objectVisible.clear();
+    _objectVisibilityEvidence.clear();
     _objectProbabilitySortedIndices.clear();
     return;
   }
