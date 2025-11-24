@@ -8705,7 +8705,6 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   _frameProbabilityTrimmedPrimitives = trimmedPrimitives;
   _frameProbabilityBudgetHit = trimmedPrimitives > 0;
-  _frameProbabilityFinalDesiredPrimitives = desiredPrimitiveCount;
 
   std::vector<size_t> visibleExplore;
   std::vector<size_t> hiddenExplore;
@@ -8951,7 +8950,6 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   _frameProbabilityTrimmedPrimitives = trimmedPrimitives;
   _frameProbabilityBudgetHit = trimmedPrimitives > 0;
-  _frameProbabilityFinalDesiredPrimitives = desiredPrimitiveCount;
 
   size_t fallbackObject = objectCount;
   if (!visibleExplore.empty())
@@ -8968,6 +8966,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   std::vector<size_t> toggleOrder;
   toggleOrder.reserve(objectCount);
   std::vector<uint8_t> added(objectCount, 0);
+  std::vector<uint8_t> appliedDesired(objectCount, 0);
+  size_t appliedDesiredPrimitiveCount = 0;
 
   auto appendList = [&](const std::vector<size_t> &candidates) {
     for (size_t idx : candidates) {
@@ -9051,6 +9051,10 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         applied = std::min(toggled, remainingBudget);
         toggledPrimitiveCount += applied;
       }
+      if (shouldBeActive && !appliedDesired[objectIndex]) {
+        appliedDesired[objectIndex] = 1;
+        appliedDesiredPrimitiveCount += primitiveContribution(objectIndex);
+      }
       _frameProbabilisticToggles += applied;
       changed = true;
       if (!shouldBeActive && objectIndex < _objectExplorationScore.size())
@@ -9088,6 +9092,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         _desiredObjectPromotionFrame[fallback] = _renderedFrameCount;
     }
   }
+
+  _frameProbabilityFinalDesiredPrimitives = appliedDesiredPrimitiveCount;
 
   return changed;
 }
