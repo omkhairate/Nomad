@@ -501,6 +501,68 @@ void testLowEvidenceStabilityWithRegressedProbability() {
   assert(desired);
 }
 
+void testObjectVisibilityRegressesEvidence() {
+  constexpr float kThreshold = 0.6f;
+  constexpr float kHysteresis = 0.05f;
+  const float enterThreshold = std::clamp(kThreshold + kHysteresis, 0.0f, 1.0f);
+  const float exitThreshold = std::clamp(kThreshold - kHysteresis, 0.0f, 1.0f);
+  constexpr float kEvidenceWindow = 32.0f;
+  constexpr float kMinimalEvidenceThreshold = 1.0e-3f;
+  constexpr float kUncertaintyBoost = 0.25f;
+
+  auto sanitizeProbability = [](float probability) {
+    if (!std::isfinite(probability))
+      return 0.5f;
+    return std::clamp(probability, 0.0f, 1.0f);
+  };
+
+  auto computeEvidenceFactor = [=](float mass, bool visible) {
+    if (!(mass > 0.0f) || !std::isfinite(mass))
+      return 0.0f;
+    if (!visible)
+      return 0.0f;
+    float window = std::max(kEvidenceWindow, kMinimalEvidenceThreshold);
+    float normalized = mass / window;
+    return std::clamp(normalized, 0.0f, 1.0f);
+  };
+
+  auto evaluateDesiredState = [&](float probability, float mass, float variance,
+                                  bool visible, bool previousDesired) {
+    float sanitizedProbability = sanitizeProbability(probability);
+    float evidence = computeEvidenceFactor(mass, visible);
+    float regressedProbability = sanitizedProbability * evidence +
+                                 0.5f * (1.0f - evidence);
+    float sqrtVariance = std::sqrt(std::max(variance, 0.0f));
+    float boostedProbability =
+        regressedProbability + kUncertaintyBoost * sqrtVariance;
+    float enterScore = std::max(regressedProbability, boostedProbability);
+    float exitScore = regressedProbability;
+    bool desired = previousDesired;
+    bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
+    float evaluationProbability =
+        lowEvidence ? regressedProbability : enterScore;
+    if (enterScore >= enterThreshold)
+      desired = true;
+    else if (exitScore <= exitThreshold)
+      desired = false;
+    else if (!previousDesired)
+      desired = evaluationProbability >= kThreshold;
+    return desired;
+  };
+
+  bool previousDesired = false;
+  constexpr float kMass = 16.0f;
+  constexpr float kVariance = 0.0f;
+
+  bool hiddenDesired =
+      evaluateDesiredState(0.95f, kMass, kVariance, false, previousDesired);
+  assert(!hiddenDesired);
+
+  bool visibleDesired =
+      evaluateDesiredState(0.95f, kMass, kVariance, true, previousDesired);
+  assert(visibleDesired);
+}
+
 void testIdleResidencyCooldownClearsDesiredState() {
   constexpr uint32_t kStateCooldownFrames = 3;
   constexpr uint32_t kIdleCooldownFrames = 2;
@@ -581,5 +643,6 @@ void RunProbabilisticResidencyTests() {
   testObjectFallbackOverridesToggleBudget();
   testLowEvidenceHysteresisDemotion();
   testLowEvidenceStabilityWithRegressedProbability();
+  testObjectVisibilityRegressesEvidence();
   testIdleResidencyCooldownClearsDesiredState();
 }
