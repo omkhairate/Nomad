@@ -8118,8 +8118,10 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   float scoringWindow = finiteEvidenceWindow
                             ? std::max(configuredWindow, kPosteriorFloor)
                             : std::max(64.0f, kPosteriorFloor);
-  auto computeEvidenceFactor = [&](float mass) {
+  auto computeEvidenceFactor = [&](float mass, bool visible = true) {
     if (!(mass > 0.0f) || !std::isfinite(mass))
+      return 0.0f;
+    if (!visible)
       return 0.0f;
     if (finiteEvidenceWindow) {
       float normalized = mass / scoringWindow;
@@ -8138,13 +8140,15 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       return 0.0f;
     return variance;
   };
-  auto computeRegressedProbability = [&](float probability, float mass) {
-    float evidence = computeEvidenceFactor(mass);
+  auto computeRegressedProbability = [&](float probability, float mass,
+                                         bool visible = true) {
+    float evidence = computeEvidenceFactor(mass, visible);
     float sanitized = sanitizePosteriorProbability(probability);
     return sanitized * evidence + 0.5f * (1.0f - evidence);
   };
-  auto computePosteriorScore = [&](float probability, float variance, float mass) {
-    float regressed = computeRegressedProbability(probability, mass);
+  auto computePosteriorScore = [&](float probability, float variance, float mass,
+                                   bool visible = true) {
+    float regressed = computeRegressedProbability(probability, mass, visible);
     float sqrtVariance = std::sqrt(std::max(sanitizePosteriorVariance(variance), 0.0f));
     return regressed +
            _residencyConfig.probabilityUncertaintyBoost * sqrtVariance;
@@ -8481,6 +8485,29 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     _desiredObjectDemotionFrame.resize(objectCount);
 
   auto &desiredObjects = _desiredObjectState;
+  auto computeObjectVisibility = [this](size_t idx) {
+    bool visible = false;
+    if (idx < _objectBounds.size()) {
+      visible = isInView(_objectBounds[idx]);
+      if (idx < _objectVisible.size())
+        _objectVisible[idx] = visible ? 1 : 0;
+    } else if (idx < _objectVisible.size()) {
+      visible = _objectVisible[idx] != 0;
+    }
+    return visible;
+  };
+
+  std::vector<uint8_t> objectVisibility(objectCount, 0);
+  for (size_t i = 0; i < objectCount; ++i) {
+    bool visible = computeObjectVisibility(i);
+    objectVisibility[i] = visible ? 1 : 0;
+  }
+
+  auto visibilityForIndex = [&](size_t idx) {
+    if (idx < objectVisibility.size())
+      return objectVisibility[idx] != 0;
+    return computeObjectVisibility(idx);
+  };
   float threshold = _residencyConfig.probabilityThreshold;
   float hysteresis =
       std::clamp(_residencyConfig.probabilityDesiredHysteresis, 0.0f, 0.5f);
@@ -8497,11 +8524,13 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float mass = (i < _objectPosteriorMass.size())
                      ? _objectPosteriorMass[i]
                      : 0.0f;
+    bool visible = visibilityForIndex(i);
     float sanitizedProbability = sanitizePosteriorProbability(probability);
-    float evidence = computeEvidenceFactor(mass);
+    float evidence = computeEvidenceFactor(mass, visible);
     float effectiveProbability = sanitizedProbability * evidence +
                                  0.5f * (1.0f - evidence);
-    float boostedProbability = computePosteriorScore(probability, variance, mass);
+    float boostedProbability =
+        computePosteriorScore(probability, variance, mass, visible);
     float enterScore = std::max(effectiveProbability, boostedProbability);
     float exitScore = effectiveProbability;
     bool previousDesired = desiredObjects[i] != 0;
@@ -8547,7 +8576,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   std::sort(_objectProbabilitySortedIndices.begin(),
             _objectProbabilitySortedIndices.end(),
-            [this, &computePosteriorScore](size_t a, size_t b) {
+            [this, &computePosteriorScore, &visibilityForIndex](size_t a,
+                                                               size_t b) {
               float probA = (a < _objectHitProbability.size())
                                 ? _objectHitProbability[a]
                                 : 0.5f;
@@ -8558,7 +8588,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                                 ? _objectPosteriorMass[a]
                                 : 0.0f;
               float scoreA =
-                  sanitizeSortValue(computePosteriorScore(probA, varA, massA));
+                  sanitizeSortValue(computePosteriorScore(
+                      probA, varA, massA, visibilityForIndex(a)));
               float probB = (b < _objectHitProbability.size())
                                 ? _objectHitProbability[b]
                                 : 0.5f;
@@ -8569,7 +8600,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
                                 ? _objectPosteriorMass[b]
                                 : 0.0f;
               float scoreB =
-                  sanitizeSortValue(computePosteriorScore(probB, varB, massB));
+                  sanitizeSortValue(computePosteriorScore(
+                      probB, varB, massB, visibilityForIndex(b)));
               if (scoreA == scoreB)
                 return a < b;
               return scoreA > scoreB;
@@ -8617,18 +8649,6 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   _frameProbabilityBudgetHit = trimmedPrimitives > 0;
   _frameProbabilityFinalDesiredPrimitives = desiredPrimitiveCount;
 
-  auto computeObjectVisibility = [this](size_t idx) {
-    bool visible = false;
-    if (idx < _objectBounds.size()) {
-      visible = isInView(_objectBounds[idx]);
-      if (idx < _objectVisible.size())
-        _objectVisible[idx] = visible ? 1 : 0;
-    } else if (idx < _objectVisible.size()) {
-      visible = _objectVisible[idx] != 0;
-    }
-    return visible;
-  };
-
   std::vector<size_t> visibleExplore;
   std::vector<size_t> hiddenExplore;
   visibleExplore.reserve(objectCount);
@@ -8649,11 +8669,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float mass = (idx < _objectPosteriorMass.size())
                      ? _objectPosteriorMass[idx]
                      : 0.0f;
+    bool visible = visibilityForIndex(idx);
     float effectiveProbability =
-        computeRegressedProbability(probability, mass);
+        computeRegressedProbability(probability, mass, visible);
     if (effectiveProbability > threshold)
       continue;
-    bool visible = computeObjectVisibility(idx);
     float exploreScore = (idx < _objectExplorationScore.size())
                              ? _objectExplorationScore[idx]
                              : 0.0f;
