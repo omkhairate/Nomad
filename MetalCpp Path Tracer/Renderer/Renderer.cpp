@@ -8535,6 +8535,10 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     _desiredObjectDemotionFrame.resize(objectCount, 0);
   else if (_desiredObjectDemotionFrame.size() > objectCount)
     _desiredObjectDemotionFrame.resize(objectCount);
+  if (_objectDemotionDwell.size() < objectCount)
+    _objectDemotionDwell.resize(objectCount, 0);
+  else if (_objectDemotionDwell.size() > objectCount)
+    _objectDemotionDwell.resize(objectCount);
 
   std::vector<uint8_t> desiredObjects = _desiredObjectState;
   auto &pendingDesiredObjects = _pendingDesiredObjects;
@@ -8582,6 +8586,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       std::clamp(_residencyConfig.probabilityDesiredHysteresis, 0.0f, 0.5f);
   float enterThreshold = std::clamp(threshold + hysteresis, 0.0f, 1.0f);
   float exitThreshold = std::clamp(threshold - hysteresis, 0.0f, 1.0f);
+  uint32_t demotionDwellFrames =
+      _residencyConfig.probabilityVisibleDemotionDwellFrames;
 
   size_t desiredPrimitiveCount = 0;
   for (size_t i = 0; i < objectCount; ++i) {
@@ -8615,6 +8621,10 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float evaluationProbability = lowEvidence ? effectiveProbability
                                               : enterScore;
 
+    bool dwellApplies = visible && demotionDwellFrames > 0;
+    if (!dwellApplies || demotionProbability > exitThreshold)
+      _objectDemotionDwell[i] = 0;
+
     if (visible) {
       demotionProbability =
           std::max(demotionProbability, probabilityVisibleFloor);
@@ -8622,12 +8632,27 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
           std::max(evaluationProbability, probabilityVisibleFloor);
     }
 
-    if (promotionProbability >= enterThreshold)
+    if (promotionProbability >= enterThreshold) {
       desired = true;
-    else if (demotionProbability <= exitThreshold)
-      desired = false;
-    else if (cooldownExpired && !previousDesired)
+      _objectDemotionDwell[i] = 0;
+    } else if (demotionProbability <= exitThreshold) {
+      if (dwellApplies && previousDesired) {
+        uint32_t &dwellCount = _objectDemotionDwell[i];
+        if (dwellCount < demotionDwellFrames)
+          ++dwellCount;
+        if (dwellCount >= demotionDwellFrames)
+          desired = false;
+        else
+          desired = true;
+      } else {
+        desired = false;
+        _objectDemotionDwell[i] = 0;
+      }
+    } else if (cooldownExpired && !previousDesired) {
       desired = evaluationProbability >= threshold;
+      if (desired)
+        _objectDemotionDwell[i] = 0;
+    }
 
     if (desired && !previousDesired && i < _desiredObjectPromotionFrame.size())
       _desiredObjectPromotionFrame[i] = _renderedFrameCount;

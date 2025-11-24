@@ -727,6 +727,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "probabilityVisibleFloor", params.probabilityVisibleFloor);
     params.probabilityRecentPromotionFrames = root->UnsignedAttribute(
         "probabilityRecentPromotionFrames", params.probabilityRecentPromotionFrames);
+    params.probabilityVisibleDemotionDwellFrames = root->UnsignedAttribute(
+        "probabilityVisibleDemotionDwellFrames",
+        params.probabilityVisibleDemotionDwellFrames);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(
         "probabilityIdleCooldownFrames", params.probabilityIdleCooldownFrames);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(

@@ -72,6 +72,7 @@ struct ResidencyParameters {
   uint32_t probabilityIdleCooldownFrames = 3;
   float probabilityIdleDecay = 0.98f;
   float probabilityVisibleFloor = 0.0f;
+  uint32_t probabilityVisibleDemotionDwellFrames = 0;
 
   float screenFootprintTargetFraction = 0.65f;
   float screenFootprintMinPixelCoverage = 32.0f;
