@@ -8504,14 +8504,17 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     bool cooldownExpired =
         (i >= _objectCooldown.size()) || _objectCooldown[i] == 0;
     bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
-    if (lowEvidence && cooldownExpired)
-      desired = false;
-    else if (sanitizedProbability >= enterThreshold)
+    float promotionProbability = sanitizedProbability;
+    float demotionProbability = effectiveProbability;
+    float evaluationProbability = lowEvidence ? effectiveProbability
+                                              : sanitizedProbability;
+
+    if (promotionProbability >= enterThreshold)
       desired = true;
-    else if (sanitizedProbability <= exitThreshold)
+    else if (demotionProbability <= exitThreshold)
       desired = false;
-    else if (cooldownExpired)
-      desired = effectiveProbability >= threshold;
+    else if (cooldownExpired && !previousDesired)
+      desired = evaluationProbability >= threshold;
 
     if (desired && !previousDesired && i < _desiredObjectPromotionFrame.size())
       _desiredObjectPromotionFrame[i] = _renderedFrameCount;
