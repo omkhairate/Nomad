@@ -8113,7 +8113,6 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   constexpr float kPosteriorFloor = 1.0e-3f;
   constexpr float kMinimalEvidenceThreshold = 1.0e-3f;
-  constexpr float kVisibleEvidenceFloor = 0.1f;
   constexpr float kVisibilityEvidenceDecay = 0.9f;
   const float configuredWindow = _residencyConfig.probabilityEvidenceWindow;
   const bool finiteEvidenceWindow =
@@ -8557,9 +8556,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         (idx < _objectVisibilityEvidence.size()) ? _objectVisibilityEvidence[idx]
                                                  : 0.0f;
     float decayed = previous * kVisibilityEvidenceDecay;
-    float visibilityFloor = visible ? kVisibleEvidenceFloor : 0.0f;
-    float buffered =
-        std::max({std::clamp(rawEvidence, 0.0f, 1.0f), decayed, visibilityFloor});
+    float buffered = std::max(std::clamp(rawEvidence, 0.0f, 1.0f), decayed);
     if (idx < _objectVisibilityEvidence.size())
       _objectVisibilityEvidence[idx] = buffered;
     return buffered;
@@ -8594,7 +8591,9 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     bool desired = previousDesired;
     bool cooldownExpired =
         (i >= _objectCooldown.size()) || _objectCooldown[i] == 0;
-    bool lowEvidence = bufferedEvidence <= kMinimalEvidenceThreshold;
+    float lowEvidenceMetric =
+        std::min(bufferedEvidence, std::clamp(rawEvidence, 0.0f, 1.0f));
+    bool lowEvidence = lowEvidenceMetric <= kMinimalEvidenceThreshold;
     float promotionProbability = enterScore;
     float demotionProbability = exitScore;
     float evaluationProbability = lowEvidence ? effectiveProbability
@@ -8736,7 +8735,9 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     bool visibilityBootstrap = (idx < objectBecameVisible.size()) &&
                                objectBecameVisible[idx] != 0 &&
                                mass <= kMinimalEvidenceThreshold;
-    bool lowEvidence = bufferedEvidence <= kMinimalEvidenceThreshold;
+    float lowEvidenceMetric =
+        std::min(bufferedEvidence, std::clamp(rawEvidence, 0.0f, 1.0f));
+    bool lowEvidence = lowEvidenceMetric <= kMinimalEvidenceThreshold;
     float visibilityAdjustedProbability =
         (visible && lowEvidence) ? std::min(effectiveProbability, threshold)
                                  : effectiveProbability;
