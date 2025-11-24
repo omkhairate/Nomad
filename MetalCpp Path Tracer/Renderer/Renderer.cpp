@@ -7245,59 +7245,74 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (objectCount == 0) {
     // Fall back to primitive-level logic if no objects are available.
     const size_t primCount = _activePrimitive.size();
-    std::vector<bool> desiredState(primCount, false);
+    std::vector<int8_t> desiredState(primCount, -1);
     std::vector<size_t> sortedIndices(primCount);
     std::iota(sortedIndices.begin(), sortedIndices.end(), size_t(0));
-    std::sort(sortedIndices.begin(), sortedIndices.end(),
-              [this](size_t a, size_t b) {
-                float scoreA = sanitizeSortValue(_primitiveImportance[a]);
-                float scoreB = sanitizeSortValue(_primitiveImportance[b]);
-                if (scoreA == scoreB)
-                  return a < b;
-                return scoreA > scoreB;
-              });
+    size_t targetActive = static_cast<size_t>(std::ceil(
+        static_cast<float>(primCount) * _residencyConfig.energyTargetFraction));
+    size_t sortCount =
+        std::min(primCount, std::max(minActive, targetActive));
+    if (sortCount > 0) {
+      auto comparator = [this](size_t a, size_t b) {
+        float scoreA = sanitizeSortValue(_primitiveImportance[a]);
+        float scoreB = sanitizeSortValue(_primitiveImportance[b]);
+        if (scoreA == scoreB)
+          return a < b;
+        return scoreA > scoreB;
+      };
+      std::partial_sort(sortedIndices.begin(),
+                        sortedIndices.begin() + sortCount,
+                        sortedIndices.end(), comparator);
+    }
 
     size_t minActive =
         std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
     if (_totalPrimitiveImportance <= 0.0f) {
       size_t enabledPrimitives = 0;
-      for (size_t index : sortedIndices) {
+      for (size_t i = 0; i < sortCount; ++i) {
+        size_t index = sortedIndices[i];
+        desiredState[index] = 1;
+        ++enabledPrimitives;
         if (enabledPrimitives >= minActive)
           break;
-        desiredState[index] = true;
-        ++enabledPrimitives;
       }
     } else {
       float cumulative = 0.0f;
       float targetImportance =
           _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
       size_t enabled = 0;
-      for (size_t index : sortedIndices) {
-        if (enabled >= minActive && cumulative >= targetImportance)
-          break;
-        desiredState[index] = true;
+      for (size_t i = 0; i < sortCount; ++i) {
+        size_t index = sortedIndices[i];
+        desiredState[index] = 1;
         cumulative += std::max(_primitiveImportance[index], 0.0f);
         ++enabled;
+        if (enabled >= minActive && cumulative >= targetImportance)
+          break;
       }
 
-      for (size_t i = 0; i < minActive && i < sortedIndices.size(); ++i)
-        desiredState[sortedIndices[i]] = true;
+      for (size_t i = 0; i < minActive && i < sortCount; ++i)
+        desiredState[sortedIndices[i]] = 1;
     }
 
     bool changed = false;
     size_t toggles = 0;
-    for (size_t i = 0; i < primCount; ++i) {
-      bool shouldBeActive = desiredState[i];
-      if (shouldBeActive == _activePrimitive[i])
+    for (size_t i = 0; i < sortCount; ++i) {
+      size_t primIndex = sortedIndices[i];
+      int8_t desired = desiredState[primIndex];
+      if (desired < 0)
+        continue;
+      bool shouldBeActive = desired != 0;
+      if (shouldBeActive == _activePrimitive[primIndex])
         continue;
       if (!forceAllToggles) {
-        if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+        if (primIndex < _primitiveCooldown.size() &&
+            _primitiveCooldown[primIndex] > 0)
           continue;
         if (toggles >= _residencyConfig.energyMaxTogglesPerFrame)
           break;
       }
-      if (setPrimitiveActive(i, shouldBeActive)) {
+      if (setPrimitiveActive(primIndex, shouldBeActive)) {
         changed = true;
         ++toggles;
       }
