@@ -8532,17 +8532,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   else if (_desiredObjectDemotionFrame.size() > objectCount)
     _desiredObjectDemotionFrame.resize(objectCount);
 
-  auto &desiredObjects = _desiredObjectState;
+  std::vector<uint8_t> desiredObjects = _desiredObjectState;
   auto &pendingDesiredObjects = _pendingDesiredObjects;
-  for (size_t i = 0; i < objectCount; ++i) {
-    bool pending = (i < pendingDesiredObjects.size())
-                       ? (pendingDesiredObjects[i] != 0)
-                       : false;
-    if (pending) {
-      if (i < desiredObjects.size())
-        desiredObjects[i] = 1;
-    }
-  }
   std::vector<uint8_t> objectBecameVisible(objectCount, 0);
   auto computeObjectVisibility = [this, &objectBecameVisible](size_t idx) {
     bool previousVisible =
@@ -8636,11 +8627,15 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     if (!desired && i < pendingDesiredObjects.size())
       pendingDesiredObjects[i] = 0;
     if (desired) {
+      bool pending =
+          (i < pendingDesiredObjects.size()) ? pendingDesiredObjects[i] != 0
+                                             : false;
       size_t contribution =
           (i < _objectPrimitiveCounts.size()) ? _objectPrimitiveCounts[i] : 0;
       if (contribution == 0)
         contribution = 1;
-      desiredPrimitiveCount += contribution;
+      if (!pending)
+        desiredPrimitiveCount += contribution;
     }
   }
 
@@ -8709,6 +8704,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       if (idx >= objectCount)
         continue;
       if (desiredObjects[idx] == 0)
+        continue;
+      bool pending =
+          (idx < pendingDesiredObjects.size()) ? pendingDesiredObjects[idx] != 0
+                                               : false;
+      if (pending)
         continue;
       size_t contribution = primitiveContribution(idx);
       if (contribution == 0)
@@ -8847,7 +8847,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     if (idx < _desiredObjectPromotionFrame.size())
       _desiredObjectPromotionFrame[idx] = _renderedFrameCount;
     size_t contribution = primitiveContribution(idx);
-    desiredPrimitiveCount += contribution;
+    bool pending =
+        (idx < pendingDesiredObjects.size()) ? pendingDesiredObjects[idx] != 0
+                                             : false;
+    if (!pending)
+      desiredPrimitiveCount += contribution;
     bool wasVisible =
         (idx < _objectVisible.size()) ? (_objectVisible[idx] != 0) : false;
     bool idle =
@@ -8887,6 +8891,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       if (idx >= objectCount)
         continue;
       if (desiredObjects[idx] != 0)
+        continue;
+      bool pending =
+          (idx < pendingDesiredObjects.size()) ? pendingDesiredObjects[idx] != 0
+                                               : false;
+      if (pending)
         continue;
       remaining += primitiveContribution(idx);
     }
@@ -8946,6 +8955,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   for (size_t idx = 0; idx < objectCount; ++idx) {
     if (desiredObjects[idx] == 0)
       continue;
+    bool pending =
+        (idx < pendingDesiredObjects.size()) ? pendingDesiredObjects[idx] != 0
+                                             : false;
+    if (pending)
+      continue;
     desiredPrimitiveCount += primitiveContribution(idx);
   }
 
@@ -8957,6 +8971,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       if (idx >= objectCount)
         continue;
       if (desiredObjects[idx] == 0)
+        continue;
+      bool pending =
+          (idx < pendingDesiredObjects.size()) ? pendingDesiredObjects[idx] != 0
+                                               : false;
+      if (pending)
         continue;
       size_t contribution = primitiveContribution(idx);
       if (contribution == 0)
@@ -9015,6 +9034,17 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     desiredByPriority.push_back(idx);
   }
 
+  std::vector<size_t> pendingCandidates;
+  pendingCandidates.reserve(objectCount);
+  for (size_t idx = 0; idx < objectCount; ++idx) {
+    bool pending =
+        (idx < pendingDesiredObjects.size()) ? pendingDesiredObjects[idx] != 0
+                                             : false;
+    if (pending)
+      pendingCandidates.push_back(idx);
+  }
+
+  appendList(pendingCandidates);
   appendList(desiredByPriority);
   appendList(visibleExplore);
   appendList(hiddenExplore);
@@ -9095,6 +9125,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         appliedDesiredPrimitiveCount += primitiveContribution(objectIndex);
         if (objectIndex < pendingDesiredObjects.size())
           pendingDesiredObjects[objectIndex] = 0;
+        if (objectIndex < _desiredObjectState.size())
+          _desiredObjectState[objectIndex] = 1;
       }
       _frameProbabilisticToggles += applied;
       changed = true;
@@ -9102,6 +9134,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         _objectExplorationScore[objectIndex] = 0.0f;
       if (!shouldBeActive && objectIndex < pendingDesiredObjects.size())
         pendingDesiredObjects[objectIndex] = 0;
+      if (!shouldBeActive && objectIndex < _desiredObjectState.size())
+        _desiredObjectState[objectIndex] = 0;
     }
   }
 
