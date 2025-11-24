@@ -8276,8 +8276,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       bool visible = computeVisibility(idx);
       float evidence = computeEvidenceFactor(mass, visible);
       bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
-      float effectiveProbability =
-          computeRegressedProbability(probability, mass);
+      float effectiveProbability = computeRegressedProbabilityFromEvidence(
+          probability, evidence);
       bool visibilityBootstrap = (idx < primitiveBecameVisible.size()) &&
                                  primitiveBecameVisible[idx] != 0 &&
                                  mass <= kMinimalEvidenceThreshold;
