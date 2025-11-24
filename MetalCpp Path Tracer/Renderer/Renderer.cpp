@@ -1285,7 +1285,8 @@ void Renderer::writeBenchmarkHeader() {
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
          "resident_nodes,total_nodes,active_objects,resident_objects,"
          "avg_hit_probability,p95_hit_probability,probability_threshold,"
-         "probability_target_fraction,probability_target_primitives,"
+         "probability_target_fraction,probability_visible_floor,"
+         "probability_target_primitives,"
          "probability_initial_desired_primitives,"
          "probability_final_desired_primitives,probability_trimmed_primitives,"
          "probability_budget_hit,primitive_probabilities,object_probabilities,"
@@ -1363,6 +1364,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.p95HitProbability, 6) << ','
       << formatFixed(sample.probabilityThreshold, 3) << ','
       << formatFixed(sample.probabilityTargetFraction, 3) << ','
+      << formatFixed(sample.probabilityVisibleFloor, 3) << ','
       << sample.probabilityTargetPrimitives << ','
       << sample.probabilityInitialDesiredPrimitives << ','
       << sample.probabilityFinalDesiredPrimitives << ','
@@ -8121,6 +8123,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   const float configuredWindow = _residencyConfig.probabilityEvidenceWindow;
   const bool finiteEvidenceWindow =
       configuredWindow > 0.0f && std::isfinite(configuredWindow);
+  float probabilityVisibleFloor =
+      std::clamp(_residencyConfig.probabilityVisibleFloor, 0.0f, 1.0f);
   float scoringWindow = finiteEvidenceWindow
                             ? std::max(configuredWindow, kPosteriorFloor)
                             : std::max(64.0f, kPosteriorFloor);
@@ -8610,6 +8614,13 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float demotionProbability = exitScore;
     float evaluationProbability = lowEvidence ? effectiveProbability
                                               : enterScore;
+
+    if (visible) {
+      demotionProbability =
+          std::max(demotionProbability, probabilityVisibleFloor);
+      evaluationProbability =
+          std::max(evaluationProbability, probabilityVisibleFloor);
+    }
 
     if (promotionProbability >= enterThreshold)
       desired = true;
@@ -10557,6 +10568,7 @@ void Renderer::beginFrameMetrics() {
     sample.p95HitProbability = 0.0;
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
     sample.probabilityTargetFraction = _residencyConfig.probabilityTargetFraction;
+    sample.probabilityVisibleFloor = _residencyConfig.probabilityVisibleFloor;
     sample.environmentTargetActiveFraction =
         _residencyConfig.environmentTargetActiveFraction;
     sample.environmentEscapeThreshold =
