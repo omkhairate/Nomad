@@ -8492,6 +8492,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float probability = (i < _objectHitProbability.size())
                             ? _objectHitProbability[i]
                             : 0.5f;
+    float variance = (i < _objectHitVariance.size()) ? _objectHitVariance[i]
+                                                     : 0.0f;
     float mass = (i < _objectPosteriorMass.size())
                      ? _objectPosteriorMass[i]
                      : 0.0f;
@@ -8499,15 +8501,18 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float evidence = computeEvidenceFactor(mass);
     float effectiveProbability = sanitizedProbability * evidence +
                                  0.5f * (1.0f - evidence);
+    float boostedProbability = computePosteriorScore(probability, variance, mass);
+    float enterScore = std::max(effectiveProbability, boostedProbability);
+    float exitScore = effectiveProbability;
     bool previousDesired = desiredObjects[i] != 0;
     bool desired = previousDesired;
     bool cooldownExpired =
         (i >= _objectCooldown.size()) || _objectCooldown[i] == 0;
     bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
-    float promotionProbability = sanitizedProbability;
-    float demotionProbability = effectiveProbability;
+    float promotionProbability = enterScore;
+    float demotionProbability = exitScore;
     float evaluationProbability = lowEvidence ? effectiveProbability
-                                              : sanitizedProbability;
+                                              : enterScore;
 
     if (promotionProbability >= enterThreshold)
       desired = true;
