@@ -8274,17 +8274,24 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       float mass = (idx < _primitivePosteriorMass.size())
                        ? _primitivePosteriorMass[idx]
                        : 0.0f;
+      bool visible = computeVisibility(idx);
+      float evidence = computeEvidenceFactor(mass, visible);
+      bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
       float effectiveProbability =
           computeRegressedProbability(probability, mass);
       bool visibilityBootstrap = (idx < primitiveBecameVisible.size()) &&
                                  primitiveBecameVisible[idx] != 0 &&
                                  mass <= kMinimalEvidenceThreshold;
-      float gatedProbability = visibilityBootstrap
-                                   ? std::min(effectiveProbability, threshold)
-                                   : effectiveProbability;
+      float visibilityAdjustedProbability =
+          (visible && lowEvidence)
+              ? std::min(effectiveProbability, threshold)
+              : effectiveProbability;
+      float gatedProbability =
+          visibilityBootstrap
+              ? std::min(visibilityAdjustedProbability, threshold)
+              : visibilityAdjustedProbability;
       if (gatedProbability > threshold)
         continue;
-      bool visible = computeVisibility(idx);
       float exploreScore =
           (idx < _primitiveExplorationScore.size())
               ? _primitiveExplorationScore[idx]
@@ -8296,7 +8303,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       float effectiveExplore = exploreScore;
       if (visibilityBootstrap)
         effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
-      if (visible && raysTested == 0)
+      if (visible && (raysTested == 0 || lowEvidence))
         effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
       if (idx < _primitiveExplorationScore.size())
         _primitiveExplorationScore[idx] = effectiveExplore;
@@ -8729,9 +8736,13 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     bool visibilityBootstrap = (idx < objectBecameVisible.size()) &&
                                objectBecameVisible[idx] != 0 &&
                                mass <= kMinimalEvidenceThreshold;
-    float gatedProbability =
-        visibilityBootstrap ? std::min(effectiveProbability, threshold)
-                             : effectiveProbability;
+    bool lowEvidence = bufferedEvidence <= kMinimalEvidenceThreshold;
+    float visibilityAdjustedProbability =
+        (visible && lowEvidence) ? std::min(effectiveProbability, threshold)
+                                 : effectiveProbability;
+    float gatedProbability = visibilityBootstrap
+                                 ? std::min(visibilityAdjustedProbability, threshold)
+                                 : visibilityAdjustedProbability;
     if (gatedProbability > threshold)
       continue;
     float exploreScore = (idx < _objectExplorationScore.size())
@@ -8743,7 +8754,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     float effectiveExplore = exploreScore;
     if (visibilityBootstrap)
       effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
-    if (visible && raysTested == 0)
+    if (visible && (raysTested == 0 || lowEvidence))
       effectiveExplore = std::max(effectiveExplore, kIdleVisibleExploreSeed);
     if (idx < _objectExplorationScore.size())
       _objectExplorationScore[idx] = effectiveExplore;
