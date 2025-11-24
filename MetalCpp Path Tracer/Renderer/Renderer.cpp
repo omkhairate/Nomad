@@ -8892,8 +8892,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
           break;
         if (idx >= objectCount)
           continue;
-      if (desiredObjects[idx] != 0)
-        continue;
+        if (desiredObjects[idx] != 0)
+          continue;
         if (!allowSuppressed && isRecentlyPromoted(idx))
           continue;
         markDesired(idx);
@@ -8919,6 +8919,39 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         promoteObjects(hiddenExplore, slots, true);
       }
     }
+
+  desiredPrimitiveCount = 0;
+  for (size_t idx = 0; idx < objectCount; ++idx) {
+    if (desiredObjects[idx] == 0)
+      continue;
+    desiredPrimitiveCount += primitiveContribution(idx);
+  }
+
+  if (targetPrimitiveBudget > 0 && desiredPrimitiveCount > targetPrimitiveBudget) {
+    for (size_t position = _objectProbabilitySortedIndices.size(); position-- > 0;) {
+      if (desiredPrimitiveCount <= targetPrimitiveBudget)
+        break;
+      size_t idx = _objectProbabilitySortedIndices[position];
+      if (idx >= objectCount)
+        continue;
+      if (desiredObjects[idx] == 0)
+        continue;
+      size_t contribution = primitiveContribution(idx);
+      if (contribution == 0)
+        continue;
+      desiredObjects[idx] = 0;
+      trimmedPrimitives += contribution;
+      if (idx < _desiredObjectDemotionFrame.size())
+        _desiredObjectDemotionFrame[idx] = _renderedFrameCount;
+      desiredPrimitiveCount =
+          (desiredPrimitiveCount > contribution) ? desiredPrimitiveCount - contribution
+                                                 : size_t(0);
+    }
+  }
+
+  _frameProbabilityTrimmedPrimitives = trimmedPrimitives;
+  _frameProbabilityBudgetHit = trimmedPrimitives > 0;
+  _frameProbabilityFinalDesiredPrimitives = desiredPrimitiveCount;
 
   size_t fallbackObject = objectCount;
   if (!visibleExplore.empty())
