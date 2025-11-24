@@ -7181,7 +7181,31 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
   const float gamma = _residencyConfig.unifiedCoverageWeight;
   const float delta = _residencyConfig.unifiedDistanceWeight;
 
+  std::vector<size_t> candidateIndices;
+  candidateIndices.reserve(primCount);
+
   for (size_t i = 0; i < primCount; ++i) {
+    float hit = (i < _primitiveHitScoresSnapshot.size())
+                    ? _primitiveHitScoresSnapshot[i]
+                    : 0.0f;
+    float coverage = (i < _primitiveScreenCoverage.size())
+                         ? _primitiveScreenCoverage[i]
+                         : 0.0f;
+    float distanceScore = (i < _primitiveDistanceFalloffCache.size())
+                              ? _primitiveDistanceFalloffCache[i]
+                              : 0.0f;
+    bool visible =
+        (i < _primitiveCoverageVisibilityKey.size())
+            ? ((_primitiveCoverageVisibilityKey[i] & 0x1) != 0)
+            : false;
+
+    if (hit == 0.0f && !visible && coverage == 0.0f && distanceScore == 0.0f)
+      continue;
+
+    candidateIndices.push_back(i);
+  }
+
+  for (size_t i : candidateIndices) {
     float energy = (i < _primitiveImportance.size()) ? _primitiveImportance[i]
                                                      : 0.0f;
     float hit = (i < _primitiveHitScoresSnapshot.size())
@@ -7193,6 +7217,11 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     float distanceScore = (i < _primitiveDistanceFalloffCache.size())
                               ? _primitiveDistanceFalloffCache[i]
                               : 0.0f;
+
+    if (hit == 0.0f && coverage == 0.0f && distanceScore == 0.0f &&
+        (i >= _primitiveCoverageVisibilityKey.size() ||
+         (_primitiveCoverageVisibilityKey[i] & 0x1) == 0))
+      continue;
 
     float score = alpha * energy + beta * hit + gamma * coverage +
                   delta * distanceScore;
