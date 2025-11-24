@@ -8979,15 +8979,16 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
     if (toggled > 0) {
+      size_t applied = toggled;
       if (!forceAllToggles) {
         size_t remainingBudget =
             (maxPrimitiveToggles > toggledPrimitiveCount)
                 ? (maxPrimitiveToggles - toggledPrimitiveCount)
                 : size_t(0);
-        size_t applied = std::min(toggled, remainingBudget);
+        applied = std::min(toggled, remainingBudget);
         toggledPrimitiveCount += applied;
       }
-      _frameProbabilisticToggles += toggled;
+      _frameProbabilisticToggles += applied;
       changed = true;
       if (!shouldBeActive && objectIndex < _objectExplorationScore.size())
         _objectExplorationScore[objectIndex] = 0.0f;
@@ -9007,13 +9008,15 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         (maxPrimitiveToggles > toggledPrimitiveCount)
             ? (maxPrimitiveToggles - toggledPrimitiveCount)
             : size_t(0);
-    size_t toggled = setObjectActive(fallback, true);
+    bool canToggleFallback = forceAllToggles || remainingBudget > 0;
+    size_t toggled = canToggleFallback ? setObjectActive(fallback, true) : 0;
     if (toggled > 0) {
+      size_t applied = toggled;
       if (!forceAllToggles) {
-        size_t applied = std::min(toggled, remainingBudget);
+        applied = std::min(toggled, remainingBudget);
         toggledPrimitiveCount += applied;
       }
-      _frameProbabilisticToggles += toggled;
+      _frameProbabilisticToggles += applied;
       changed = true;
     }
     if (fallback < _desiredObjectState.size()) {
