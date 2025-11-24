@@ -393,21 +393,25 @@ void testLowEvidenceHysteresisDemotion() {
     return std::clamp(normalized, 0.0f, 1.0f);
   };
 
-  auto evaluateDesiredState = [&](float probability, float mass,
-                                  bool previousDesired,
-                                  uint32_t cooldown) {
+  auto evaluateDesiredState = [&](float probability, float mass, float variance,
+                                  bool previousDesired, uint32_t cooldown) {
     float sanitizedProbability = sanitizeProbability(probability);
     float evidence = computeEvidenceFactor(mass);
     float regressedProbability = sanitizedProbability * evidence +
                                  0.5f * (1.0f - evidence);
+    float sqrtVariance = std::sqrt(std::max(variance, 0.0f));
+    float boostedProbability = regressedProbability +
+                               kUncertaintyBoost * sqrtVariance;
+    float enterScore = std::max(regressedProbability, boostedProbability);
+    float exitScore = regressedProbability;
     bool desired = previousDesired;
     bool cooldownExpired = cooldown == 0;
     bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
     float evaluationProbability =
-        lowEvidence ? regressedProbability : sanitizedProbability;
-    if (sanitizedProbability >= enterThreshold)
+        lowEvidence ? regressedProbability : enterScore;
+    if (enterScore >= enterThreshold)
       desired = true;
-    else if (regressedProbability <= exitThreshold)
+    else if (exitScore <= exitThreshold)
       desired = false;
     else if (cooldownExpired && !previousDesired)
       desired = evaluationProbability >= kThreshold;
@@ -418,16 +422,82 @@ void testLowEvidenceHysteresisDemotion() {
   uint32_t cooldown = 0;
   constexpr float kLowEvidenceMass = kMinimalEvidenceThreshold * 0.5f;
 
-  desired = evaluateDesiredState(0.65f, kLowEvidenceMass, desired, cooldown);
+  desired = evaluateDesiredState(0.65f, kLowEvidenceMass, 0.0f, desired,
+                                 cooldown);
   assert(desired);
 
-  desired = evaluateDesiredState(0.4f, kLowEvidenceMass, desired, cooldown);
+  desired = evaluateDesiredState(0.4f, 0.0f, 0.0f, desired, cooldown);
   assert(!desired);
 
-  desired = evaluateDesiredState(0.75f, kLowEvidenceMass, desired, cooldown);
+  desired = evaluateDesiredState(0.75f, kLowEvidenceMass, 0.0f, desired,
+                                 cooldown);
   assert(desired);
 
-  desired = evaluateDesiredState(0.62f, kLowEvidenceMass, desired, cooldown);
+  desired = evaluateDesiredState(0.62f, kLowEvidenceMass, 0.0f, desired,
+                                 cooldown);
+  assert(desired);
+}
+
+void testLowEvidenceStabilityWithRegressedProbability() {
+  constexpr float kThreshold = 0.55f;
+  constexpr float kHysteresis = 0.05f;
+  const float enterThreshold = std::clamp(kThreshold + kHysteresis, 0.0f, 1.0f);
+  const float exitThreshold = std::clamp(kThreshold - kHysteresis, 0.0f, 1.0f);
+  constexpr float kEvidenceWindow = 4.0f;
+  constexpr float kMinimalEvidenceThreshold = 1.0e-3f;
+  constexpr float kUncertaintyBoost = 0.25f;
+
+  auto sanitizeProbability = [](float probability) {
+    if (!std::isfinite(probability))
+      return 0.5f;
+    return std::clamp(probability, 0.0f, 1.0f);
+  };
+
+  auto computeEvidenceFactor = [=](float mass) {
+    if (!(mass > 0.0f) || !std::isfinite(mass))
+      return 0.0f;
+    float window = std::max(kEvidenceWindow, 1.0e-3f);
+    float normalized = mass / window;
+    return std::clamp(normalized, 0.0f, 1.0f);
+  };
+
+  auto evaluateDesiredState = [&](float probability, float mass, float variance,
+                                  bool previousDesired) {
+    float sanitizedProbability = sanitizeProbability(probability);
+    float evidence = computeEvidenceFactor(mass);
+    float regressedProbability = sanitizedProbability * evidence +
+                                 0.5f * (1.0f - evidence);
+    float sqrtVariance = std::sqrt(std::max(variance, 0.0f));
+    float boostedProbability = regressedProbability +
+                               kUncertaintyBoost * sqrtVariance;
+    float enterScore = std::max(regressedProbability, boostedProbability);
+    float exitScore = regressedProbability;
+    bool desired = previousDesired;
+    bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
+    float evaluationProbability =
+        lowEvidence ? regressedProbability : enterScore;
+    if (enterScore >= enterThreshold)
+      desired = true;
+    else if (exitScore <= exitThreshold)
+      desired = false;
+    else if (!previousDesired)
+      desired = evaluationProbability >= kThreshold;
+    return desired;
+  };
+
+  bool desired = false;
+  constexpr float kVariance = 0.04f;
+
+  desired =
+      evaluateDesiredState(0.85f, 1.5f, kVariance, desired /*previousDesired*/);
+  assert(desired);
+
+  desired =
+      evaluateDesiredState(0.68f, 1.5f, kVariance, desired /*previousDesired*/);
+  assert(desired);
+
+  desired =
+      evaluateDesiredState(0.64f, 1.6f, kVariance, desired /*previousDesired*/);
   assert(desired);
 }
 
@@ -455,21 +525,25 @@ void testIdleResidencyCooldownClearsDesiredState() {
     return std::clamp(normalized, 0.0f, 1.0f);
   };
 
-  auto evaluateDesiredState = [&](float probability, float mass,
-                                  bool previousDesired,
-                                  uint32_t cooldown) {
+  auto evaluateDesiredState = [&](float probability, float mass, float variance,
+                                  bool previousDesired, uint32_t cooldown) {
     float sanitizedProbability = sanitizeProbability(probability);
     float evidence = computeEvidenceFactor(mass);
     float regressedProbability = sanitizedProbability * evidence +
                                  0.5f * (1.0f - evidence);
+    float sqrtVariance = std::sqrt(std::max(variance, 0.0f));
+    float boostedProbability = regressedProbability +
+                               kUncertaintyBoost * sqrtVariance;
+    float enterScore = std::max(regressedProbability, boostedProbability);
+    float exitScore = regressedProbability;
     bool desired = previousDesired;
     bool cooldownExpired = cooldown == 0;
     bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
     float evaluationProbability =
-        lowEvidence ? regressedProbability : sanitizedProbability;
-    if (sanitizedProbability >= enterThreshold)
+        lowEvidence ? regressedProbability : enterScore;
+    if (enterScore >= enterThreshold)
       desired = true;
-    else if (regressedProbability <= exitThreshold)
+    else if (exitScore <= exitThreshold)
       desired = false;
     else if (cooldownExpired && !previousDesired)
       desired = evaluationProbability >= kThreshold;
@@ -486,7 +560,8 @@ void testIdleResidencyCooldownClearsDesiredState() {
     float frameMass = mass;
     if (frame + 1 == totalIdleFrames)
       frameMass = 1.0e-6f;
-    bool next = evaluateDesiredState(probability, frameMass, desired, cooldown);
+    bool next = evaluateDesiredState(probability, frameMass, 0.0f, desired,
+                                     cooldown);
     if (frame + 1 < totalIdleFrames)
       assert(next);
     desired = next;
@@ -505,5 +580,6 @@ void RunProbabilisticResidencyTests() {
   testZeroActiveFallbackEnsuresOnePrimitive();
   testObjectFallbackOverridesToggleBudget();
   testLowEvidenceHysteresisDemotion();
+  testLowEvidenceStabilityWithRegressedProbability();
   testIdleResidencyCooldownClearsDesiredState();
 }
