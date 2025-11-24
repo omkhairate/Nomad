@@ -434,6 +434,7 @@ private:
   std::vector<uint8_t> _pendingDesiredObjects;
   std::vector<uint64_t> _desiredObjectPromotionFrame;
   std::vector<uint64_t> _desiredObjectDemotionFrame;
+  std::vector<uint32_t> _objectDemotionDwell;
   std::vector<float> _primitiveImportance;
   std::vector<float> _objectImportance;
   std::vector<float> _objectImportanceHistory;
