@@ -6939,6 +6939,8 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
     _objectActivePrimitiveCounts.resize(objectIndex + 1, 0);
   if (objectIndex >= _desiredObjectState.size())
     _desiredObjectState.resize(objectIndex + 1, 0);
+  if (objectIndex >= _pendingDesiredObjects.size())
+    _pendingDesiredObjects.resize(objectIndex + 1, 0);
   if (objectIndex >= _desiredObjectPromotionFrame.size())
     _desiredObjectPromotionFrame.resize(objectIndex + 1, 0);
   if (objectIndex >= _desiredObjectDemotionFrame.size())
@@ -6969,6 +6971,8 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
     if (!newState && objectIndex < _desiredObjectDemotionFrame.size())
       _desiredObjectDemotionFrame[objectIndex] = _renderedFrameCount;
   }
+  if ((!newState || toggled > 0) && objectIndex < _pendingDesiredObjects.size())
+    _pendingDesiredObjects[objectIndex] = 0;
 
   if (prevState != newState) {
     _objectLastToggleFrame[objectIndex] = _renderedFrameCount;
@@ -8170,6 +8174,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   if (objectCount == 0) {
     _desiredObjectState.clear();
+    _pendingDesiredObjects.clear();
     _desiredObjectPromotionFrame.clear();
     _desiredObjectDemotionFrame.clear();
     _objectVisibilityEvidence.clear();
@@ -8513,6 +8518,10 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     _desiredObjectState.resize(objectCount, 0);
   else if (_desiredObjectState.size() > objectCount)
     _desiredObjectState.resize(objectCount);
+  if (_pendingDesiredObjects.size() < objectCount)
+    _pendingDesiredObjects.resize(objectCount, 0);
+  else if (_pendingDesiredObjects.size() > objectCount)
+    _pendingDesiredObjects.resize(objectCount);
 
   if (_desiredObjectPromotionFrame.size() < objectCount)
     _desiredObjectPromotionFrame.resize(objectCount, 0);
@@ -8524,6 +8533,16 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
     _desiredObjectDemotionFrame.resize(objectCount);
 
   auto &desiredObjects = _desiredObjectState;
+  auto &pendingDesiredObjects = _pendingDesiredObjects;
+  for (size_t i = 0; i < objectCount; ++i) {
+    bool pending = (i < pendingDesiredObjects.size())
+                       ? (pendingDesiredObjects[i] != 0)
+                       : false;
+    if (pending) {
+      if (i < desiredObjects.size())
+        desiredObjects[i] = 1;
+    }
+  }
   std::vector<uint8_t> objectBecameVisible(objectCount, 0);
   auto computeObjectVisibility = [this, &objectBecameVisible](size_t idx) {
     bool previousVisible =
@@ -8614,6 +8633,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
              i < _desiredObjectDemotionFrame.size())
       _desiredObjectDemotionFrame[i] = _renderedFrameCount;
     desiredObjects[i] = desired ? 1 : 0;
+    if (!desired && i < pendingDesiredObjects.size())
+      pendingDesiredObjects[i] = 0;
     if (desired) {
       size_t contribution =
           (i < _objectPrimitiveCounts.size()) ? _objectPrimitiveCounts[i] : 0;
@@ -8693,6 +8714,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       if (contribution == 0)
         continue;
       desiredObjects[idx] = 0;
+      if (idx < pendingDesiredObjects.size())
+        pendingDesiredObjects[idx] = 0;
       trimmedPrimitives += contribution;
       if (idx < _desiredObjectDemotionFrame.size())
         _desiredObjectDemotionFrame[idx] = _renderedFrameCount;
@@ -8939,6 +8962,8 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       if (contribution == 0)
         continue;
       desiredObjects[idx] = 0;
+      if (idx < pendingDesiredObjects.size())
+        pendingDesiredObjects[idx] = 0;
       trimmedPrimitives += contribution;
       if (idx < _desiredObjectDemotionFrame.size())
         _desiredObjectDemotionFrame[idx] = _renderedFrameCount;
@@ -8995,6 +9020,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   appendList(hiddenExplore);
   appendList(_objectProbabilitySortedIndices);
 
+  auto markPendingPromotion = [&](size_t idx) {
+    if (idx < pendingDesiredObjects.size())
+      pendingDesiredObjects[idx] = 1;
+  };
+
   for (size_t objectIndex : toggleOrder) {
     if (!forceAllToggles) {
       if (maxPrimitiveToggles == 0 || toggledPrimitiveCount >= maxPrimitiveToggles)
@@ -9009,8 +9039,11 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
     if (!forceAllToggles) {
       if (objectIndex < _objectCooldown.size() &&
-          _objectCooldown[objectIndex] > 0)
+          _objectCooldown[objectIndex] > 0) {
+        if (shouldBeActive)
+          markPendingPromotion(objectIndex);
         continue;
+      }
 
       const SceneObject &obj = _allSceneObjects[objectIndex];
       size_t first = obj.firstPrimitive;
@@ -9028,16 +9061,22 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
         }
       }
 
-      if (!canToggle)
+      if (!canToggle) {
+        if (shouldBeActive)
+          markPendingPromotion(objectIndex);
         continue;
+      }
       if (pendingToggles == 0)
         continue;
       size_t remainingBudget =
           (maxPrimitiveToggles > toggledPrimitiveCount)
               ? (maxPrimitiveToggles - toggledPrimitiveCount)
               : size_t(0);
-      if (pendingToggles > remainingBudget)
+      if (pendingToggles > remainingBudget) {
+        if (shouldBeActive)
+          markPendingPromotion(objectIndex);
         continue;
+      }
     }
 
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
@@ -9054,11 +9093,15 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
       if (shouldBeActive && !appliedDesired[objectIndex]) {
         appliedDesired[objectIndex] = 1;
         appliedDesiredPrimitiveCount += primitiveContribution(objectIndex);
+        if (objectIndex < pendingDesiredObjects.size())
+          pendingDesiredObjects[objectIndex] = 0;
       }
       _frameProbabilisticToggles += applied;
       changed = true;
       if (!shouldBeActive && objectIndex < _objectExplorationScore.size())
         _objectExplorationScore[objectIndex] = 0.0f;
+      if (!shouldBeActive && objectIndex < pendingDesiredObjects.size())
+        pendingDesiredObjects[objectIndex] = 0;
     }
   }
 
