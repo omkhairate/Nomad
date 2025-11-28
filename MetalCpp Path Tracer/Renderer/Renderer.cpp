@@ -2325,29 +2325,48 @@ void Renderer::updateVisibleScene() {
   _maxPrimitiveCount = std::max<size_t>(primCount, 1);
   _maxTriangleVertexCount = std::max<size_t>(totalTriangleCount * 3, 1);
   _maxTriangleIndexCount = std::max<size_t>(totalTriangleCount, 1);
-  for (size_t i = 0; i < primCount; ++i) {
-    const Primitive &p = _allPrimitives[i];
-    if (p.type == PrimitiveType::Sphere) {
-      _primitiveBounds[i] = {p.sphere.center, p.sphere.radius};
-    } else if (p.type == PrimitiveType::Triangle) {
-      simd::float3 c = (p.triangle.v0 + p.triangle.v1 + p.triangle.v2) / 3.0f;
-      float r = simd::length(p.triangle.v0 - c);
-      r = std::max(r, (float)simd::length(p.triangle.v1 - c));
-      r = std::max(r, (float)simd::length(p.triangle.v2 - c));
-      _primitiveBounds[i] = {c, r};
-    } else {
-      float r = simd::length(p.rectangle.u) + simd::length(p.rectangle.v);
-      _primitiveBounds[i] = {p.rectangle.center, r};
+  std::vector<float> importancePartials;
+  const unsigned int partialThreadCount =
+      std::max(1u, std::thread::hardware_concurrency());
+  importancePartials.reserve(partialThreadCount * 2);
+
+  std::mutex partialMutex;
+  parallelChunkedAsync(0, primCount, [&](size_t chunkBegin, size_t chunkEnd) {
+    float localImportance = 0.0f;
+    for (size_t i = chunkBegin; i < chunkEnd; ++i) {
+      const Primitive &p = _allPrimitives[i];
+      if (p.type == PrimitiveType::Sphere) {
+        _primitiveBounds[i] =
+            BoundingSphere{p.sphere.center, p.sphere.radius};
+      } else if (p.type == PrimitiveType::Triangle) {
+        simd::float3 c =
+            (p.triangle.v0 + p.triangle.v1 + p.triangle.v2) / 3.0f;
+        float r = simd::length(p.triangle.v0 - c);
+        r = std::max(r, (float)simd::length(p.triangle.v1 - c));
+        r = std::max(r, (float)simd::length(p.triangle.v2 - c));
+        _primitiveBounds[i] = {c, r};
+      } else {
+        float r = simd::length(p.rectangle.u) + simd::length(p.rectangle.v);
+        _primitiveBounds[i] = {p.rectangle.center, r};
+      }
+
+      _primitiveImportance[i] = primitiveImportance(p);
+      if (i < _rayHitSortedIndices.size())
+        _rayHitSortedIndices[i] = i;
+      if (i < _probabilitySortedIndices.size())
+        _probabilitySortedIndices[i] = i;
+      if (i < _screenCoverageSortedIndices.size())
+        _screenCoverageSortedIndices[i] = i;
+      localImportance += std::max(_primitiveImportance[i], 0.0f);
     }
-    _primitiveImportance[i] = primitiveImportance(p);
-    if (i < _rayHitSortedIndices.size())
-      _rayHitSortedIndices[i] = i;
-    if (i < _probabilitySortedIndices.size())
-      _probabilitySortedIndices[i] = i;
-    if (i < _screenCoverageSortedIndices.size())
-      _screenCoverageSortedIndices[i] = i;
-    _totalPrimitiveImportance += std::max(_primitiveImportance[i], 0.0f);
-  }
+
+    std::lock_guard<std::mutex> lock(partialMutex);
+    importancePartials.push_back(localImportance);
+  });
+
+  _totalPrimitiveImportance =
+      std::accumulate(importancePartials.begin(), importancePartials.end(),
+                      0.0f);
 
   constexpr size_t kStatsPerPrimitive = 2;
   size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
