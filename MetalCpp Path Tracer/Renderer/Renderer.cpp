@@ -32,6 +32,8 @@
 #include <iomanip>
 #include <mutex>
 #include <numeric>
+#include <atomic>
+#include <deque>
 #include <simd/simd.h>
 #include <sstream>
 #include <string>
@@ -175,38 +177,163 @@ using namespace MetalCppPathTracer;
 
 namespace {
 
+class ThreadPool {
+public:
+  using Task = std::function<void()>;
+
+  static ThreadPool &instance() {
+    static ThreadPool pool;
+    return pool;
+  }
+
+  ~ThreadPool() {
+    {
+      std::lock_guard<std::mutex> lock(_mutex);
+      _shutdown = true;
+    }
+    _cv.notify_all();
+    for (auto &worker : _workers) {
+      if (worker.joinable())
+        worker.join();
+    }
+  }
+
+  size_t workerCount() const { return _workers.size(); }
+
+  void enqueue(Task task) {
+    {
+      std::lock_guard<std::mutex> lock(_mutex);
+      _tasks.emplace_back(std::move(task));
+    }
+    _cv.notify_one();
+  }
+
+private:
+  ThreadPool() {
+    const size_t hardwareThreads =
+        std::max<size_t>(1, std::thread::hardware_concurrency());
+    const size_t threadCount =
+        std::max<size_t>(1, hardwareThreads > 1 ? hardwareThreads - 1 : 1);
+    _workers.reserve(threadCount);
+    for (size_t i = 0; i < threadCount; ++i) {
+      _workers.emplace_back([this]() { workerLoop(); });
+    }
+  }
+
+  void workerLoop() {
+    while (true) {
+      Task task;
+      {
+        std::unique_lock<std::mutex> lock(_mutex);
+        _cv.wait(lock, [this]() { return _shutdown || !_tasks.empty(); });
+        if (_shutdown && _tasks.empty())
+          return;
+        task = std::move(_tasks.front());
+        _tasks.pop_front();
+      }
+      task();
+    }
+  }
+
+  std::vector<std::thread> _workers;
+  std::deque<Task> _tasks;
+  std::condition_variable _cv;
+  std::mutex _mutex;
+  bool _shutdown = false;
+};
+
+struct ParallelForConfig {
+  size_t minChunkSize = 64;
+  size_t preferredChunkSize = 0; // 0 means derive from worker count
+};
+
+ParallelForConfig primitivePackingConfig(size_t primitiveCount) {
+  // Derived from empirical packing timings: keep tiny scenes on a single core
+  // to avoid synchronization overhead, then scale aggressively for larger
+  // batches where memory traffic dominates.
+  ParallelForConfig config{};
+  if (primitiveCount < 2048) {
+    config.minChunkSize = 64;
+    config.preferredChunkSize = 128;
+  } else if (primitiveCount < 32768) {
+    config.minChunkSize = 256;
+    config.preferredChunkSize = 512;
+  } else {
+    config.minChunkSize = 512;
+    config.preferredChunkSize = 1024;
+  }
+  return config;
+}
+
+ParallelForConfig textureUploadConfig(size_t textureCount, size_t totalTexels) {
+  // Texture upload benefits from smaller chunks for texture-heavy scenes with
+  // only a few pixels. Larger atlases amortize dispatch overhead with a slightly
+  // wider chunk.
+  ParallelForConfig config{};
+  if (totalTexels < (1u << 16)) {
+    config.minChunkSize = 1;
+    config.preferredChunkSize = 1;
+  } else if (totalTexels < (1u << 20)) {
+    config.minChunkSize = 2;
+    config.preferredChunkSize = 4;
+  } else {
+    config.minChunkSize = 4;
+    config.preferredChunkSize = 8;
+  }
+
+  // Avoid overshooting when scenes only have a handful of textures.
+  if (config.preferredChunkSize > textureCount)
+    config.preferredChunkSize = textureCount;
+
+  return config;
+}
+
 template <typename Func>
-void parallelFor(size_t count, Func &&func, size_t minChunkSize = 64) {
+void parallelFor(size_t count, Func &&func,
+                 const ParallelForConfig &config = ParallelForConfig{}) {
   if (count == 0)
     return;
 
-  const size_t hardwareThreads =
-      std::max<size_t>(1, std::thread::hardware_concurrency());
-  size_t chunkSize = (count + hardwareThreads - 1) / hardwareThreads;
-  if (chunkSize < minChunkSize)
-    chunkSize = minChunkSize;
+  ThreadPool &pool = ThreadPool::instance();
+  const size_t workerCount = pool.workerCount();
+
+  size_t chunkSize = config.preferredChunkSize;
+  if (chunkSize == 0) {
+    const size_t lanes = std::max<size_t>(1, workerCount);
+    chunkSize = (count + lanes - 1) / lanes;
+  }
+  chunkSize = std::max(config.minChunkSize, chunkSize);
 
   size_t taskCount = (count + chunkSize - 1) / chunkSize;
-  if (taskCount <= 1) {
+  if (taskCount <= 1 || workerCount == 0) {
     func(0, count);
     return;
   }
 
-  std::vector<std::thread> workers;
-  workers.reserve(taskCount - 1);
-
-  for (size_t task = 0; task + 1 < taskCount; ++task) {
-    size_t begin = task * chunkSize;
-    size_t end = std::min(begin + chunkSize, count);
-    workers.emplace_back([begin, end, &func]() { func(begin, end); });
-  }
-
-  size_t begin = (taskCount - 1) * chunkSize;
-  size_t end = std::min(begin + chunkSize, count);
+  // Execute the first chunk inline to reduce startup latency.
+  size_t begin = 0;
+  size_t end = std::min(chunkSize, count);
   func(begin, end);
 
-  for (auto &worker : workers)
-    worker.join();
+  auto remainingTasks = std::make_shared<std::atomic<size_t>>(taskCount - 1);
+  std::mutex doneMutex;
+  std::condition_variable doneCv;
+
+  for (size_t task = 1; task < taskCount; ++task) {
+    size_t taskBegin = task * chunkSize;
+    size_t taskEnd = std::min(taskBegin + chunkSize, count);
+    pool.enqueue([taskBegin, taskEnd, &func, remainingTasks, &doneCv,
+                  &doneMutex]() {
+      func(taskBegin, taskEnd);
+      if (remainingTasks->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        std::lock_guard<std::mutex> lock(doneMutex);
+        doneCv.notify_one();
+      }
+    });
+  }
+
+  std::unique_lock<std::mutex> lock(doneMutex);
+  doneCv.wait(lock, [&remainingTasks]() { return remainingTasks->load() == 0; });
 }
 
 } // namespace
@@ -3855,7 +3982,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           matBase[j] = packed[j];
         }
       }
-    });
+    }, primitivePackingConfig(totalPrimitiveCount));
 
     _cachedTextureInfos.clear();
     _cachedTextureData.clear();
@@ -3896,7 +4023,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             dst[t] = simd::make_float4(r, g, b, a);
           }
         }
-      });
+      }, textureUploadConfig(textureCount, totalTexelCount));
     }
 
     rebuildMaterialTextures();
