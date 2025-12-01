@@ -2702,28 +2702,95 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   size_t first = object.firstPrimitive;
   size_t last = std::min(first + object.primitiveCount, _allPrimitives.size());
 
+  const size_t primCount = last - first;
+  struct ChunkGeometry {
+    size_t offset = 0;
+    std::vector<simd::float3> vertices;
+    std::vector<uint32_t> indices;
+  };
+
+  std::vector<ChunkGeometry> chunks;
+  std::mutex chunkMutex;
+
+  parallelChunkedAsync(0, primCount, [&](size_t chunkBegin, size_t chunkEnd) {
+    ChunkGeometry local{};
+    local.offset = chunkBegin;
+    local.vertices.reserve((chunkEnd - chunkBegin) * 3);
+    local.indices.reserve((chunkEnd - chunkBegin) * 3);
+
+    for (size_t prim = first + chunkBegin; prim < first + chunkEnd &&
+                                        prim < _allPrimitives.size();
+         ++prim) {
+      const Primitive &p = _allPrimitives[prim];
+      if (p.type != PrimitiveType::Triangle)
+        continue;
+
+      uint32_t baseIndex = static_cast<uint32_t>(local.vertices.size());
+      local.vertices.push_back(p.triangle.v0);
+      local.vertices.push_back(p.triangle.v1);
+      local.vertices.push_back(p.triangle.v2);
+      local.indices.push_back(baseIndex + 0);
+      local.indices.push_back(baseIndex + 1);
+      local.indices.push_back(baseIndex + 2);
+    }
+
+    if (!local.indices.empty()) {
+      std::lock_guard<std::mutex> lock(chunkMutex);
+      chunks.emplace_back(std::move(local));
+    }
+  });
+
+  std::sort(chunks.begin(), chunks.end(),
+            [](const ChunkGeometry &a, const ChunkGeometry &b) {
+              return a.offset < b.offset;
+            });
+
+  size_t totalVertices = 0;
+  size_t totalIndices = 0;
+  for (const auto &chunk : chunks) {
+    totalVertices += chunk.vertices.size();
+    totalIndices += chunk.indices.size();
+  }
+
   std::vector<simd::float3> vertices;
   std::vector<uint32_t> indices;
-  vertices.reserve((last - first) * 3);
-  indices.reserve((last - first) * 3);
+  vertices.reserve(totalVertices);
+  indices.reserve(totalIndices);
 
-  for (size_t prim = first; prim < last; ++prim) {
-    if (prim >= _allPrimitives.size())
+  bool geometryValid = true;
+  size_t expectedTriangles = totalIndices / 3;
+
+  for (const auto &chunk : chunks) {
+    if (chunk.indices.size() % 3 != 0) {
+      geometryValid = false;
       break;
-    const Primitive &p = _allPrimitives[prim];
-    if (p.type != PrimitiveType::Triangle)
-      continue;
+    }
+    uint32_t baseOffset = static_cast<uint32_t>(vertices.size());
 
-    uint32_t baseIndex = static_cast<uint32_t>(vertices.size());
-    vertices.push_back(p.triangle.v0);
-    vertices.push_back(p.triangle.v1);
-    vertices.push_back(p.triangle.v2);
-    indices.push_back(baseIndex + 0);
-    indices.push_back(baseIndex + 1);
-    indices.push_back(baseIndex + 2);
+    uint32_t maxIndex = 0;
+    for (uint32_t idx : chunk.indices)
+      maxIndex = std::max(maxIndex, idx);
+
+    if (chunk.vertices.empty() && !chunk.indices.empty()) {
+      geometryValid = false;
+      break;
+    }
+    if (maxIndex >= chunk.vertices.size()) {
+      geometryValid = false;
+      break;
+    }
+
+    vertices.insert(vertices.end(), chunk.vertices.begin(), chunk.vertices.end());
+    indices.reserve(indices.size() + chunk.indices.size());
+    for (uint32_t idx : chunk.indices)
+      indices.push_back(baseOffset + idx);
   }
 
   size_t triangleCount = indices.size() / 3;
+  if (!geometryValid || triangleCount != expectedTriangles) {
+    cleanupPool();
+    return false;
+  }
 
   if (triangleCount == 0) {
     resident.resources.ensureAccelerationStructure(0, nullptr);
