@@ -7461,6 +7461,8 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     std::vector<int8_t> desiredState(primCount, -1);
     std::vector<size_t> sortedIndices(primCount);
     std::iota(sortedIndices.begin(), sortedIndices.end(), size_t(0));
+    size_t minActive =
+        std::min(primCount, _residencyConfig.energyMinActivePrimitives);
     size_t targetActive = static_cast<size_t>(std::ceil(
         static_cast<float>(primCount) * _residencyConfig.energyTargetFraction));
     size_t sortCount =
@@ -7477,9 +7479,6 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
                         sortedIndices.begin() + sortCount,
                         sortedIndices.end(), comparator);
     }
-
-    size_t minActive =
-        std::min(primCount, _residencyConfig.energyMinActivePrimitives);
 
     if (_totalPrimitiveImportance <= 0.0f) {
       size_t enabledPrimitives = 0;
