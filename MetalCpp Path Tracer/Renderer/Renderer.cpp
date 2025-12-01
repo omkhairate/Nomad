@@ -72,8 +72,11 @@ private:
 };
 
 TaskLimiter &sceneBvhTaskLimiter() {
-  constexpr size_t kMaxSceneBvhTasks = 2;
-  static TaskLimiter limiter(kMaxSceneBvhTasks);
+  const size_t hardwareThreads =
+      std::max<size_t>(std::thread::hardware_concurrency(), 2);
+  constexpr size_t kMinSceneBvhTasks = 4;
+  const size_t maxTasks = std::max<size_t>(hardwareThreads, kMinSceneBvhTasks);
+  static TaskLimiter limiter(maxTasks);
   return limiter;
 }
 } // namespace
@@ -2103,7 +2106,6 @@ Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
   }
 
   std::future<SceneAccelerationBuildResult> resultFuture;
-  std::thread worker;
   TaskLimiter *limiter = nullptr;
 
   if (_pScene) {
@@ -2111,15 +2113,13 @@ Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
     limiterRef.acquire();
     limiter = &limiterRef;
 
-    std::promise<SceneAccelerationBuildResult> promise;
-    resultFuture = promise.get_future();
     Scene *scene = _pScene;
     size_t primitiveCountCopy = primitiveCount;
 
     try {
-      worker = std::thread(
-          [scene, primitiveCountCopy, limiter, promise = std::move(promise)](
-              ) mutable {
+      resultFuture = std::async(
+          std::launch::async,
+          [scene, primitiveCountCopy, limiter]() {
             struct LimiterGuard {
               TaskLimiter *limiter;
               ~LimiterGuard() {
@@ -2129,25 +2129,18 @@ Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
             } guard{limiter};
 
             SceneAccelerationBuildResult threadResult{};
-            try {
-              if (scene) {
-                scene->buildBVH();
-                threadResult.blasNodeCount = scene->getBVHNodeCount();
-                size_t tlasCount = 0;
-                if (primitiveCountCopy > 0) {
-                  simd::float4 *tmp = scene->createTLASBuffer(tlasCount);
-                  if (tmp)
-                    delete[] tmp;
-                }
-                threadResult.tlasNodeCount = tlasCount;
+            if (scene) {
+              scene->buildBVH();
+              threadResult.blasNodeCount = scene->getBVHNodeCount();
+              size_t tlasCount = 0;
+              if (primitiveCountCopy > 0) {
+                simd::float4 *tmp = scene->createTLASBuffer(tlasCount);
+                if (tmp)
+                  delete[] tmp;
               }
-              promise.set_value(threadResult);
-            } catch (...) {
-              try {
-                promise.set_exception(std::current_exception());
-              } catch (...) {
-              }
+              threadResult.tlasNodeCount = tlasCount;
             }
+            return threadResult;
           });
     } catch (...) {
       limiterRef.release();
@@ -2164,14 +2157,9 @@ Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
     try {
       result = resultFuture.get();
     } catch (...) {
-      if (worker.joinable())
-        worker.join();
       throw;
     }
   }
-
-  if (worker.joinable())
-    worker.join();
 
   return result;
 }
