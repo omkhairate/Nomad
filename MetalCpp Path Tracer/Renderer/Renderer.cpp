@@ -7262,6 +7262,13 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
   if (cameraDirty) {
     _coverageCameraVersion = _cameraVersion;
     std::fill(_primitiveCoverageDirty.begin(), _primitiveCoverageDirty.end(), 1);
+
+    // When the camera changes, decay cached hit information so the unified
+    // score does not overly favor primitives that were visible from a previous
+    // viewpoint.
+    const float cameraHitDecay = 0.25f;
+    for (float &hit : _primitiveHitScores)
+      hit *= cameraHitDecay;
   }
 
   auto boundsVersionForPrimitive = [&](size_t primIndex) -> uint64_t {
@@ -7393,6 +7400,7 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
   const float beta = _residencyConfig.unifiedHitWeight;
   const float gamma = _residencyConfig.unifiedCoverageWeight;
   const float delta = _residencyConfig.unifiedDistanceWeight;
+  const float offscreenDecay = 0.1f;
 
   std::vector<size_t> candidateIndices;
   candidateIndices.reserve(primCount);
@@ -7412,6 +7420,10 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
             ? ((_primitiveCoverageVisibilityKey[i] & 0x1) != 0)
             : false;
 
+    bool offscreenNoFalloff = !visible && coverage == 0.0f && distanceScore == 0.0f;
+    if (offscreenNoFalloff)
+      hit *= offscreenDecay;
+
     if (hit == 0.0f && !visible && coverage == 0.0f && distanceScore == 0.0f)
       continue;
 
@@ -7430,11 +7442,21 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     float distanceScore = (i < _primitiveDistanceFalloffCache.size())
                               ? _primitiveDistanceFalloffCache[i]
                               : 0.0f;
+    bool visible =
+        (i < _primitiveCoverageVisibilityKey.size())
+            ? ((_primitiveCoverageVisibilityKey[i] & 0x1) != 0)
+            : false;
 
     if (hit == 0.0f && coverage == 0.0f && distanceScore == 0.0f &&
         (i >= _primitiveCoverageVisibilityKey.size() ||
          (_primitiveCoverageVisibilityKey[i] & 0x1) == 0))
       continue;
+
+    bool offscreenNoFalloff = !visible && coverage == 0.0f && distanceScore == 0.0f;
+    if (offscreenNoFalloff) {
+      hit *= offscreenDecay;
+      energy *= offscreenDecay;
+    }
 
     float score = alpha * energy + beta * hit + gamma * coverage +
                   delta * distanceScore;
