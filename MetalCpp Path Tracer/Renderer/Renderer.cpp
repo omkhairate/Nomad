@@ -2702,6 +2702,18 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   size_t first = object.firstPrimitive;
   size_t last = std::min(first + object.primitiveCount, _allPrimitives.size());
 
+  if (last <= first) {
+    resident.resources.ensureAccelerationStructure(0, nullptr);
+    resident.byteSize = 0;
+    resident.triangleCount = 0;
+    resident.vertexCount = 0;
+    resident.vertexBufferOffset = 0;
+    resident.indexBufferOffset = 0;
+    resident.geometryValid = false;
+    cleanupPool();
+    return true;
+  }
+
   const size_t primCount = last - first;
   struct ChunkGeometry {
     size_t offset = 0;
