@@ -736,15 +736,17 @@ simd::float4 *Scene::createTLASBuffer(size_t &outCount) const {
   outCount = tlasNodes.size();
   simd::float4 *buffer = new simd::float4[outCount * 2];
 
-  for (size_t i = 0; i < tlasNodes.size(); ++i) {
-    const TLASNode &node = tlasNodes[i];
-    float leftBits = 0.0f;
-    float rightBits = 0.0f;
-    std::memcpy(&leftBits, &node.leftChild, sizeof(int));
-    std::memcpy(&rightBits, &node.rightChild, sizeof(int));
-    buffer[2 * i] = simd::make_float4(node.boundsMin, leftBits);
-    buffer[2 * i + 1] = simd::make_float4(node.boundsMax, rightBits);
-  }
+  parallelFor(tlasNodes.size(), [&](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; ++i) {
+      const TLASNode &node = tlasNodes[i];
+      float leftBits = 0.0f;
+      float rightBits = 0.0f;
+      std::memcpy(&leftBits, &node.leftChild, sizeof(int));
+      std::memcpy(&rightBits, &node.rightChild, sizeof(int));
+      buffer[2 * i] = simd::make_float4(node.boundsMin, leftBits);
+      buffer[2 * i + 1] = simd::make_float4(node.boundsMax, rightBits);
+    }
+  });
 
   return buffer;
 }
