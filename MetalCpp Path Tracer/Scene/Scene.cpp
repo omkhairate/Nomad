@@ -2,6 +2,7 @@
 #include "SceneLoader.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -287,69 +288,134 @@ void Scene::buildBVH() {
   if (primitives.empty() || objects.empty())
     return;
 
-  bvhNodes.reserve(primitives.size() * 2);
-
-#ifdef METALCPPPATHTRACER_LOG_BVH_ALLOCATIONS
-  size_t totalScratchAllocations = 0;
-  size_t peakScratchSize = 0;
-#endif
-
-  for (size_t i = 0; i < objects.size(); ++i) {
-    auto &obj = objects[i];
-    if (obj.primitiveCount == 0)
-      continue;
-
+  for (auto &obj : objects) {
     obj.cachedBlasNodes.clear();
     obj.cachedPrimitiveIndices.clear();
     obj.cachedBlasRootIndex = -1;
+    obj.blasRootIndex = -1;
+  }
 
-    size_t nodeStart = bvhNodes.size();
-    BVHScratchBuffers scratch;
-    scratch.resetStatistics();
-    int root = buildBVHRecursive(obj.firstPrimitive,
-                                 obj.firstPrimitive + obj.primitiveCount,
-                                 scratch);
 #ifdef METALCPPPATHTRACER_LOG_BVH_ALLOCATIONS
-    totalScratchAllocations += scratch.allocationEvents;
-    peakScratchSize = std::max(peakScratchSize, scratch.maxScratchSize);
+  std::atomic<size_t> totalScratchAllocations{0};
+  std::atomic<size_t> peakScratchSize{0};
 #endif
-    size_t nodeEnd = bvhNodes.size();
-    obj.blasRootIndex = root;
-    if (root >= 0) {
-      const BVHNode &rootNode = bvhNodes[root];
-      obj.boundsMin = rootNode.boundsMin;
-      obj.boundsMax = rootNode.boundsMax;
-      objectIndices.push_back(i);
 
-      if (residencyParams.buildCachedBlas && nodeEnd > nodeStart) {
-        obj.cachedBlasNodes.reserve(nodeEnd - nodeStart);
-        for (size_t nodeIdx = nodeStart; nodeIdx < nodeEnd; ++nodeIdx) {
-          BVHNode node = bvhNodes[nodeIdx];
-          if (node.count > 0) {
-            node.leftFirst -= static_cast<int>(obj.firstPrimitive);
-          } else {
-            int leftChild = node.leftFirst - static_cast<int>(nodeStart);
-            int rightChild = -node.count - static_cast<int>(nodeStart);
-            node.leftFirst = leftChild;
-            node.count = -rightChild;
-          }
-          obj.cachedBlasNodes.push_back(node);
-        }
-        obj.cachedBlasRootIndex = 0;
+  struct BVHBuildResult {
+    size_t objectIndex = 0;
+    int rootIndex = -1;
+    simd::float3 boundsMin;
+    simd::float3 boundsMax;
+    std::vector<BVHNode> nodes;
+    std::vector<BVHNode> cachedNodes;
+    std::vector<size_t> cachedPrimitiveIndices;
+  };
 
-        obj.cachedPrimitiveIndices.resize(obj.primitiveCount);
-        for (size_t local = 0; local < obj.primitiveCount; ++local) {
-          size_t globalIndex =
-              primitiveIndices[obj.firstPrimitive + local];
-          obj.cachedPrimitiveIndices[local] = globalIndex;
-        }
+  std::vector<BVHBuildResult> results(objects.size());
+
+  ParallelForConfig config{};
+  config.minChunkSize = 1;
+  config.preferredChunkSize = 1;
+
+  parallelFor(objects.size(),
+              [&](size_t begin, size_t end) {
+                for (size_t i = begin; i < end; ++i) {
+                  const SceneObject &obj = objects[i];
+                  if (obj.primitiveCount == 0)
+                    continue;
+
+                  BVHBuildResult result;
+                  result.objectIndex = i;
+                  BVHScratchBuffers scratch;
+                  scratch.resetStatistics();
+                  result.nodes.reserve(obj.primitiveCount * 2);
+
+                  int root = buildBVHRecursive(
+                      obj.firstPrimitive, obj.firstPrimitive + obj.primitiveCount,
+                      scratch, result.nodes);
+                  result.rootIndex = root;
+
+                  if (root >= 0 && !result.nodes.empty()) {
+                    const BVHNode &rootNode = result.nodes[root];
+                    result.boundsMin = rootNode.boundsMin;
+                    result.boundsMax = rootNode.boundsMax;
+
+                    if (residencyParams.buildCachedBlas) {
+                      result.cachedNodes.reserve(result.nodes.size());
+                      for (BVHNode node : result.nodes) {
+                        if (node.count > 0) {
+                          node.leftFirst -= static_cast<int>(obj.firstPrimitive);
+                        } else {
+                          int leftChild = node.leftFirst;
+                          int rightChild = -node.count;
+                          node.leftFirst = leftChild;
+                          node.count = -rightChild;
+                        }
+                        result.cachedNodes.push_back(node);
+                      }
+
+                      result.cachedPrimitiveIndices.resize(obj.primitiveCount);
+                      for (size_t local = 0; local < obj.primitiveCount; ++local) {
+                        size_t globalIndex =
+                            primitiveIndices[obj.firstPrimitive + local];
+                        result.cachedPrimitiveIndices[local] = globalIndex;
+                      }
+                    }
+                  }
+
+#ifdef METALCPPPATHTRACER_LOG_BVH_ALLOCATIONS
+                  totalScratchAllocations.fetch_add(scratch.allocationEvents,
+                                                    std::memory_order_relaxed);
+                  size_t currentPeak = peakScratchSize.load(std::memory_order_relaxed);
+                  while (currentPeak < scratch.maxScratchSize &&
+                         !peakScratchSize.compare_exchange_weak(
+                             currentPeak, scratch.maxScratchSize,
+                             std::memory_order_relaxed)) {
+                  }
+#endif
+
+                  results[i] = std::move(result);
+                }
+              },
+              config);
+
+  size_t totalNodeCount = 0;
+  for (const auto &result : results)
+    totalNodeCount += result.nodes.size();
+  bvhNodes.reserve(totalNodeCount);
+
+  for (size_t i = 0; i < results.size(); ++i) {
+    const auto &result = results[i];
+    if (result.rootIndex < 0)
+      continue;
+
+    SceneObject &obj = objects[result.objectIndex];
+    size_t nodeStart = bvhNodes.size();
+
+    for (BVHNode node : result.nodes) {
+      if (node.count < 0) {
+        int leftChild = node.leftFirst + static_cast<int>(nodeStart);
+        int rightChild = -node.count + static_cast<int>(nodeStart);
+        node.leftFirst = leftChild;
+        node.count = -rightChild;
       }
+      bvhNodes.push_back(node);
+    }
+
+    obj.blasRootIndex = static_cast<int>(nodeStart + result.rootIndex);
+    obj.boundsMin = result.boundsMin;
+    obj.boundsMax = result.boundsMax;
+    objectIndices.push_back(result.objectIndex);
+
+    if (residencyParams.buildCachedBlas && !result.cachedNodes.empty()) {
+      obj.cachedBlasNodes = result.cachedNodes;
+      obj.cachedPrimitiveIndices = result.cachedPrimitiveIndices;
+      obj.cachedBlasRootIndex = 0;
     }
   }
 
 #ifdef METALCPPPATHTRACER_LOG_BVH_ALLOCATIONS
   printf("BVH build scratch allocations: %zu events (peak %zu primitives)\n",
-         totalScratchAllocations, peakScratchSize);
+         totalScratchAllocations.load(), peakScratchSize.load());
 #endif
 
   if (!objectIndices.empty())
@@ -743,7 +809,8 @@ void Scene::createTriangleBuffers(std::vector<simd::float3> &outVertices,
 }
 
 int Scene::buildBVHRecursive(size_t start, size_t end,
-                             BVHScratchBuffers &scratch) {
+                             BVHScratchBuffers &scratch,
+                             std::vector<BVHNode> &nodeBuffer) {
   BVHNode node;
   simd::float3 bMin(std::numeric_limits<float>::max());
   simd::float3 bMax(-std::numeric_limits<float>::max());
@@ -762,8 +829,8 @@ int Scene::buildBVHRecursive(size_t start, size_t end,
   size_t range = end - start;
   node.count = static_cast<int>(range);
 
-  int nodeIndex = static_cast<int>(bvhNodes.size());
-  bvhNodes.push_back(node);
+  int nodeIndex = static_cast<int>(nodeBuffer.size());
+  nodeBuffer.push_back(node);
 
   if (node.count <= 8)
     return nodeIndex;
@@ -808,11 +875,11 @@ int Scene::buildBVHRecursive(size_t start, size_t end,
 
   bestSplit = start + bestLeftCount;
 
-  int leftChild = buildBVHRecursive(start, bestSplit, scratch);
-  int rightChild = buildBVHRecursive(bestSplit, end, scratch);
+  int leftChild = buildBVHRecursive(start, bestSplit, scratch, nodeBuffer);
+  int rightChild = buildBVHRecursive(bestSplit, end, scratch, nodeBuffer);
 
-  bvhNodes[nodeIndex].leftFirst = leftChild;
-  bvhNodes[nodeIndex].count = -rightChild;
+  nodeBuffer[nodeIndex].leftFirst = leftChild;
+  nodeBuffer[nodeIndex].count = -rightChild;
 
   return nodeIndex;
 }

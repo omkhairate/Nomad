@@ -247,7 +247,8 @@ private:
 
   size_t addObjectInternal(const Primitive *prims, size_t count,
                           bool logPrimitives, int meshGroupId);
-  int buildBVHRecursive(size_t start, size_t end, BVHScratchBuffers &scratch);
+  int buildBVHRecursive(size_t start, size_t end, BVHScratchBuffers &scratch,
+                        std::vector<BVHNode> &nodeBuffer);
   int buildTLASRecursive(size_t start, size_t end);
   float surfaceArea(const simd::float3 &bmin, const simd::float3 &bmax) const;
   float primitiveAxisValue(const Primitive &p, int axis) const;
