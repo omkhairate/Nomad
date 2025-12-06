@@ -1,5 +1,6 @@
 #include "Scene.h"
 #include "SceneLoader.h"
+#include "../Renderer/ParallelFor.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
