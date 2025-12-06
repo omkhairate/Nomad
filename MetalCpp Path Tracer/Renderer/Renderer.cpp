@@ -9913,6 +9913,9 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     return fallbackWeight;
   };
 
+  constexpr float kExplorationPriorFloor = 1.0e-4f;
+  constexpr float kExplorationPriorScale = 0.5f;
+
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     float hitProbability =
         (objectIndex < _objectHitProbability.size())
@@ -9924,8 +9927,27 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
             : false;
     bool currentlyActive =
         (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
-    if (!hasEvidence && !currentlyActive)
-      hitProbability = 0.0f;
+
+    if (!hasEvidence && !currentlyActive) {
+      float exploration =
+          (objectIndex < _objectExplorationScore.size())
+              ? std::max(_objectExplorationScore[objectIndex], 0.0f)
+              : 0.0f;
+      float visibilityHint =
+          (objectIndex < _objectVisible.size()) ? _objectVisible[objectIndex] : 0u;
+      float explorationPrior = 1.0f -
+                               std::exp(-exploration * kExplorationPriorScale);
+      if (visibilityHint) {
+        float hintedPrior = 1.0f -
+                            std::exp(-kIdleVisibleExploreSeed *
+                                     kExplorationPriorScale);
+        explorationPrior = std::max(explorationPrior, hintedPrior);
+      }
+      explorationPrior =
+          std::clamp(explorationPrior, kExplorationPriorFloor, 1.0f);
+      hitProbability = std::max(hitProbability, explorationPrior);
+    }
+
     _objectImportance[objectIndex] = hitProbability;
 
     float depthWeight = computeDepthWeight(objectIndex);
