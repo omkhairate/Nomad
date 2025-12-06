@@ -91,36 +91,99 @@ constexpr float kIdleVisibleExploreSeed = 1.0f;
 namespace MetalCppPathTracer {
 
 void ResidentObjectGpuResources::clearPendingCommand() {
-  if (!pendingCommand)
-    return;
-
+  std::lock_guard<std::mutex> lock(pendingCommandsMutex);
   using Status = MTL::CommandBufferStatus;
-  auto status = pendingCommand->status();
 
-  if (status == Status::CommandBufferStatusNotEnqueued ||
-      status == Status::CommandBufferStatusEnqueued ||
-      status == Status::CommandBufferStatusCommitted ||
-      status == Status::CommandBufferStatusScheduled) {
-    pendingCommand->waitUntilCompleted();
-    status = pendingCommand->status();
-  }
+  auto isComplete = [](PendingCommand &pending) {
+    if (pending.completed.load(std::memory_order_relaxed) ||
+        pending.error.load(std::memory_order_relaxed))
+      return true;
 
-  if (status == Status::CommandBufferStatusCompleted ||
-      status == Status::CommandBufferStatusError) {
-    pendingCommand->release();
-    pendingCommand = nullptr;
-  }
+    if (!pending.command)
+      return true;
+
+    auto status = pending.command->status();
+    if (status == Status::CommandBufferStatusCompleted) {
+      pending.completed.store(true, std::memory_order_relaxed);
+      return true;
+    }
+    if (status == Status::CommandBufferStatusError) {
+      pending.error.store(true, std::memory_order_relaxed);
+      return true;
+    }
+    return false;
+  };
+
+  auto releaseCommand = [](PendingCommand &pending) {
+    if (pending.command) {
+      pending.command->release();
+      pending.command = nullptr;
+    }
+  };
+
+  pendingCommands.erase(
+      std::remove_if(pendingCommands.begin(), pendingCommands.end(),
+                     [&](PendingCommand &pending) {
+                       if (!isComplete(pending))
+                         return false;
+                       releaseCommand(pending);
+                       return true;
+                     }),
+      pendingCommands.end());
 }
 
 void ResidentObjectGpuResources::transitionToStreaming(
     MTL::CommandBuffer *pending) {
   clearPendingCommand();
   if (pending) {
-    pendingCommand = pending;
-    pendingCommand->retain();
+    PendingCommand pendingRecord{};
+    pendingRecord.command = pending;
+    pendingRecord.command->retain();
+
+    pendingRecord.command->addCompletedHandler(
+        [this](MTL::CommandBuffer *cmd) {
+          std::lock_guard<std::mutex> lock(pendingCommandsMutex);
+          for (auto &pending : pendingCommands) {
+            if (pending.command == cmd) {
+              auto status = cmd->status();
+              pending.completed.store(
+                  status == MTL::CommandBufferStatusCompleted,
+                  std::memory_order_relaxed);
+              pending.error.store(status == MTL::CommandBufferStatusError,
+                                  std::memory_order_relaxed);
+              break;
+            }
+          }
+        });
+
+    std::lock_guard<std::mutex> lock(pendingCommandsMutex);
+    pendingCommands.push_back(std::move(pendingRecord));
   }
   state = ResidencyState::Streaming;
   lastStateChange = std::chrono::steady_clock::now();
+}
+
+bool ResidentObjectGpuResources::hasPendingCommands() {
+  std::lock_guard<std::mutex> lock(pendingCommandsMutex);
+  for (auto &pending : pendingCommands) {
+    if (pending.completed.load(std::memory_order_relaxed) ||
+        pending.error.load(std::memory_order_relaxed))
+      continue;
+
+    auto status = pending.command ? pending.command->status()
+                                  : MTL::CommandBufferStatusCompleted;
+    if (status == MTL::CommandBufferStatusCompleted) {
+      pending.completed.store(true, std::memory_order_relaxed);
+      continue;
+    }
+    if (status == MTL::CommandBufferStatusError) {
+      pending.error.store(true, std::memory_order_relaxed);
+      continue;
+    }
+
+    return true;
+  }
+  return false;
 }
 
 void ResidentObjectGpuResources::transitionToCold(
@@ -3048,8 +3111,7 @@ void Renderer::handleCompletedBlasBuild(
 
   auto &resident = *buildRequest->resident;
 
-  if (resident.pendingCommand)
-    resident.clearPendingCommand();
+  resident.clearPendingCommand();
 
   if (success) {
     resident.byteSize = buildRequest->totalHeapBytes;
@@ -3121,9 +3183,7 @@ void Renderer::requestResidentEviction(size_t objectIndex,
   if (objectIndex >= _residentObjectGpuResources.size())
     return;
 
-  bool hasPendingCommand = resident.pendingCommand &&
-                           resident.pendingCommand->status() !=
-                               MTL::CommandBufferStatusCompleted;
+  bool hasPendingCommand = resident.hasPendingCommands();
   if (!resident.isResident() && !hasPendingCommand) {
     transitionResidentToCold(objectIndex, resident, instanceRecord);
     return;
@@ -10019,11 +10079,8 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
          objectIndex < _residentObjectGpuResources.size(); ++objectIndex) {
       auto &resident = _residentObjectGpuResources[objectIndex];
       auto &record = _instanceRecords[objectIndex];
-      bool pending = resident.pendingCommand &&
-                     resident.pendingCommand->status() !=
-                         MTL::CommandBufferStatusCompleted;
-      if (resident.pendingCommand && !pending)
-        resident.clearPendingCommand();
+      resident.clearPendingCommand();
+      bool pending = resident.hasPendingCommands();
 
       if (_frameStrategy != ResidencyStrategy::AlwaysResident &&
           !resident.isResident() && !pending) {
