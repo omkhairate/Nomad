@@ -64,6 +64,7 @@ struct ResidentObjectGpuResources {
   void transitionToStreaming(MTL::CommandBuffer *pending = nullptr);
   void transitionToCold(BlasInstanceRecord &instanceRecord);
   void clearPendingCommand();
+  bool hasPendingCommands();
   bool isResident() const { return state == ResidencyState::Resident; }
 
   GpuHeapResources resources;
@@ -75,7 +76,14 @@ struct ResidentObjectGpuResources {
   bool geometryValid = false;
   ResidencyState state = ResidencyState::Cold;
   std::chrono::steady_clock::time_point lastStateChange{};
-  MTL::CommandBuffer *pendingCommand = nullptr;
+  struct PendingCommand {
+    MTL::CommandBuffer *command = nullptr;
+    std::atomic<bool> completed{false};
+    std::atomic<bool> error{false};
+  };
+
+  std::vector<PendingCommand> pendingCommands;
+  std::mutex pendingCommandsMutex;
 };
 
 class Renderer {
