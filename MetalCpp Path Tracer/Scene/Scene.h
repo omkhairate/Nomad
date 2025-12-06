@@ -94,6 +94,8 @@ struct ResidencyParameters {
   // construction. Disabling this reduces build time at the cost of on-demand
   // rebuilds when residency streaming requires the data.
   bool buildCachedBlas = true;
+
+  void normalizeEnvironmentDepthSettings();
 };
 
 struct TLASNode {
