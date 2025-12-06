@@ -3939,21 +3939,19 @@ void Renderer::updateTopLevelAccelerationStructure(
           this->_tlasCompletedEventValue.store(signalValue,
                                                std::memory_order_release);
         });
+  } else {
+    commandBuffer->addCompletedHandler(
+        [this](MTL::CommandBuffer *cmd) {
+          bool success =
+              cmd->status() == MTL::CommandBufferStatusCompleted;
+          this->handleDeferredBlasEvictions(cmd, success);
+          this->finalizePendingTlasScratchResize(true);
+        });
   }
 
   _pendingBlasEvictions.assign(commandBuffer);
 
   commandBuffer->commit();
-
-  if (!_pTlasBuildEvent) {
-    commandBuffer->waitUntilCompleted();
-    bool success =
-        commandBuffer->status() == MTL::CommandBufferStatusCompleted;
-    handleDeferredBlasEvictions(commandBuffer, success);
-    _tlasCompletedEventValue.store(_tlasBuildEventValue,
-                                   std::memory_order_release);
-    finalizePendingTlasScratchResize(true);
-  }
 
   instanceDesc->release();
 
