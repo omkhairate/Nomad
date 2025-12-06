@@ -167,6 +167,7 @@ private:
   bool updateEnvironmentHitResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
+  void markPrimitiveRangeDirty(size_t start, size_t count);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   std::vector<bool> buildResidentMaskFromGpuResources() const;
@@ -495,6 +496,7 @@ private:
   std::vector<size_t> _recentlyActivated;
   std::vector<size_t> _recentlyDeactivated;
   std::vector<size_t> _dirtyResidentObjects;
+  std::vector<std::pair<size_t, size_t>> _dirtyPrimitiveRanges;
   std::vector<bool> _objectResidentState;
 
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;

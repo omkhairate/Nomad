@@ -2368,6 +2368,7 @@ void Renderer::updateVisibleScene() {
   _recentlyActivated.clear();
   _recentlyDeactivated.clear();
   _residentBuffersInitialized = false;
+  _dirtyPrimitiveRanges.clear();
   _cachedPrimitiveData.clear();
   _cachedMaterialData.clear();
   _cachedPrimitiveIndices.clear();
@@ -3928,8 +3929,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
             -1);
 
   bool sizeChanged = cachedTotalPrimitiveCount != totalPrimitiveCount;
-  bool needFullUpload =
-      forceFullRebuild || !_residentBuffersInitialized || sizeChanged;
+  bool needFullUpload = !_residentBuffersInitialized || sizeChanged;
+  bool repackAllPrimitives = forceFullRebuild || needFullUpload;
 
   const auto &sceneObjects = _pScene->getObjects();
   if (_objectResidentState.size() != sceneObjects.size()) {
@@ -3937,14 +3938,69 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     needFullUpload = true;
   }
 
+  auto mergeDirtyRanges = [](std::vector<std::pair<size_t, size_t>> &ranges) {
+    if (ranges.empty())
+      return;
+    std::sort(ranges.begin(), ranges.end(),
+              [](const auto &a, const auto &b) { return a.first < b.first; });
+    size_t write = 0;
+    for (size_t read = 1; read < ranges.size(); ++read) {
+      auto &current = ranges[write];
+      const auto &candidate = ranges[read];
+      if (candidate.first <= current.second) {
+        current.second = std::max(current.second, candidate.second);
+      } else {
+        ranges[++write] = candidate;
+      }
+    }
+    ranges.resize(write + 1);
+  };
+
+  std::vector<std::pair<size_t, size_t>> dirtyPrimitiveRanges =
+      _dirtyPrimitiveRanges;
+  if (repackAllPrimitives && totalPrimitiveCount > 0)
+    dirtyPrimitiveRanges.emplace_back(0, totalPrimitiveCount);
+  for (auto &range : dirtyPrimitiveRanges) {
+    range.first = std::min(range.first, totalPrimitiveCount);
+    range.second = std::min(range.second, totalPrimitiveCount);
+  }
+  dirtyPrimitiveRanges.erase(
+      std::remove_if(dirtyPrimitiveRanges.begin(), dirtyPrimitiveRanges.end(),
+                     [](const auto &range) { return range.first >= range.second; }),
+      dirtyPrimitiveRanges.end());
+  mergeDirtyRanges(dirtyPrimitiveRanges);
+
+  size_t primitiveStorage = totalPrimitiveCount * kPrimitiveFloat4Count;
+  size_t materialStorage = totalPrimitiveCount * kMaterialFloat4Count;
   if (needFullUpload) {
-    _cachedPrimitiveData.assign(totalPrimitiveCount * kPrimitiveFloat4Count,
+    _cachedPrimitiveData.assign(primitiveStorage,
                                 simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
-    _cachedMaterialData.assign(totalPrimitiveCount * kMaterialFloat4Count,
+    _cachedMaterialData.assign(materialStorage,
                                simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+  } else {
+    if (_cachedPrimitiveData.size() < primitiveStorage)
+      _cachedPrimitiveData.resize(primitiveStorage,
+                                  simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+    if (_cachedMaterialData.size() < materialStorage)
+      _cachedMaterialData.resize(materialStorage,
+                                 simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
+  }
+
+  if (!dirtyPrimitiveRanges.empty()) {
+    std::vector<uint8_t> dirtyMask;
+    if (!repackAllPrimitives) {
+      dirtyMask.assign(totalPrimitiveCount, 0);
+      for (const auto &range : dirtyPrimitiveRanges) {
+        for (size_t idx = range.first; idx < range.second; ++idx)
+          dirtyMask[idx] = 1;
+      }
+    }
 
     parallelFor(totalPrimitiveCount, [&](size_t begin, size_t end) {
       for (size_t i = begin; i < end; ++i) {
+        if (!repackAllPrimitives && (i >= dirtyMask.size() || !dirtyMask[i]))
+          continue;
+
         const Primitive &p = _allPrimitives[i];
         simd::float4 *primBase =
             &_cachedPrimitiveData[kPrimitiveFloat4Count * i];
@@ -4001,6 +4057,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       }
     }, primitivePackingConfig(totalPrimitiveCount));
 
+  if (needFullUpload) {
     _cachedTextureInfos.clear();
     _cachedTextureData.clear();
     if (_pScene) {
@@ -4809,6 +4866,25 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   bool uploadAll = needFullUpload || useCompaction || compactionStateChanged;
 
+  auto uploadDirtyFloat4Ranges = [](MTL::Buffer *buffer,
+                                    const std::vector<simd::float4> &source,
+                                    size_t stride, const auto &ranges) {
+    if (!buffer || stride == 0)
+      return;
+
+    auto *dst = static_cast<simd::float4 *>(buffer->contents());
+    for (const auto &range : ranges) {
+      size_t float4Offset = range.first * stride;
+      size_t float4Count = (range.second - range.first) * stride;
+      if (float4Count == 0)
+        continue;
+      std::memcpy(dst + float4Offset, source.data() + float4Offset,
+                  float4Count * sizeof(simd::float4));
+      markBufferModified(buffer, NS::Range::Make(float4Offset * sizeof(simd::float4),
+                                                float4Count * sizeof(simd::float4)));
+    }
+  };
+
   if (uploadAll) {
     size_t primitiveFloat4Count = primitiveSource->size();
     size_t primitiveCount =
@@ -4978,6 +5054,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     _residentBuffersInitialized = true;
+  } else {
+    if (!dirtyPrimitiveRanges.empty()) {
+      uploadDirtyFloat4Ranges(_pSphereBuffer, _cachedPrimitiveData,
+                              kPrimitiveFloat4Count, dirtyPrimitiveRanges);
+    }
+    if (!dirtyPrimitiveRanges.empty()) {
+      uploadDirtyFloat4Ranges(_pSphereMaterialBuffer, _cachedMaterialData,
+                              kMaterialFloat4Count, dirtyPrimitiveRanges);
+    }
   }
 
   size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
@@ -5099,6 +5184,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   _objectResidentState = objectShouldBeResident;
   _dirtyResidentObjects.clear();
+  _dirtyPrimitiveRanges.clear();
   _recentlyActivated.clear();
   _recentlyDeactivated.clear();
 
@@ -7214,8 +7300,10 @@ size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
   if (toggled > 0 || prevState != newState || fullyInactive)
     _objectCooldown[objectIndex] = _residencyConfig.stateCooldownFrames;
 
-  if (toggled > 0 || prevState != newState || fullyInactive)
+  if (toggled > 0 || prevState != newState || fullyInactive) {
     _dirtyResidentObjects.push_back(objectIndex);
+    markPrimitiveRangeDirty(first, obj.primitiveCount);
+  }
 
   return toggled;
 }
@@ -10156,6 +10244,18 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
   rebuildResidentResources(forceFullRebuild);
 }
 
+void Renderer::markPrimitiveRangeDirty(size_t start, size_t count) {
+  if (count == 0)
+    return;
+
+  size_t clampedStart = std::min(start, _allPrimitives.size());
+  size_t end = std::min(clampedStart + count, _allPrimitives.size());
+  if (clampedStart >= end)
+    return;
+
+  _dirtyPrimitiveRanges.emplace_back(clampedStart, end);
+}
+
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
   Camera::screenSize = {(float)size.width, (float)size.height};
 
@@ -10187,6 +10287,8 @@ bool Renderer::setPrimitiveActive(size_t index, bool active) {
     _recentlyDeactivated.push_back(index);
   if (index < _primitiveCooldown.size())
     _primitiveCooldown[index] = _residencyConfig.stateCooldownFrames;
+
+  markPrimitiveRangeDirty(index, 1);
 
   if (index < _primitiveToObject.size()) {
     size_t objectIndex = _primitiveToObject[index];
