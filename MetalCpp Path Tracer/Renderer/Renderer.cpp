@@ -5711,6 +5711,8 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
                                                MTL::BlitCommandEncoder *&blit) {
   if (slot.texture || !slot.descriptorValid || slot.width == 0 ||
       slot.height == 0) {
+    if (slot.texture)
+      slot.lastUsedFrame = _renderedFrameCount;
     if (slot.texture && slot.needsGpuRefresh &&
         slot.historyBacking != ManagedTextureSlot::HistoryBacking::None) {
       if (uploadHistoryToTexture(slot, cmd, blit)) {
@@ -5792,6 +5794,7 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
                 label);
   }
 
+  slot.lastUsedFrame = _renderedFrameCount;
   return slot.texture;
 }
 
@@ -5930,9 +5933,58 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
       &_sampleImportanceSlot, &_albedoSlot, &_normalSlot};
 
+  struct ResidencyCandidate {
+    ManagedTextureSlot *slot = nullptr;
+    double score = 0.0;
+    double bytesMB = 0.0;
+  };
+
+  auto scoreSlot = [&](ManagedTextureSlot *slot) {
+    ResidencyCandidate candidate{};
+    candidate.slot = slot;
+    size_t bytes = textureByteSize(*slot);
+    candidate.bytesMB = static_cast<double>(bytes) / (1024.0 * 1024.0);
+    uint64_t frameAge = _renderedFrameCount > slot->lastUsedFrame
+                            ? _renderedFrameCount - slot->lastUsedFrame
+                            : 0;
+    double recency = 1.0 / (1.0 + static_cast<double>(frameAge));
+    candidate.score = recency / (1.0 + candidate.bytesMB);
+    return candidate;
+  };
+
+  std::vector<ResidencyCandidate> candidates;
+  candidates.reserve(slots.size());
+  for (ManagedTextureSlot *slot : slots) {
+    if (!slot->texture)
+      continue;
+    candidates.push_back(scoreSlot(slot));
+  }
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const ResidencyCandidate &a, const ResidencyCandidate &b) {
+              if (a.score == b.score)
+                return a.bytesMB > b.bytesMB;
+              return a.score < b.score;
+            });
+
+  bool stopOnMemory = overMemory;
+  bool stopOnBudget = !belowBudget;
+  bool needMemoryEviction = overMemory;
+  bool primitiveBudgetSatisfied = belowBudget;
   MTL::BlitCommandEncoder *blit = nullptr;
-  for (ManagedTextureSlot *slot : slots)
-    evictTextureSlot(*slot, cmd, blit);
+  for (const ResidencyCandidate &candidate : candidates) {
+    bool needMoreEviction =
+        (stopOnMemory && needMemoryEviction) ||
+        (stopOnBudget && !primitiveBudgetSatisfied);
+    if (!needMoreEviction)
+      break;
+    if (!evictTextureSlot(*candidate.slot, cmd, blit))
+      continue;
+    residencyMB = std::max(0.0, residencyMB - candidate.bytesMB);
+    needMemoryEviction = residencyMB > _textureResidencyMemoryCapMB;
+    primitiveBudgetSatisfied =
+        _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
+  }
   if (blit)
     blit->endEncoding();
 }
@@ -6444,6 +6496,18 @@ void Renderer::draw(MTK::View *pView) {
   ensureSlotReady(_sampleImportanceSlot, sampleImportance);
   ensureSlotReady(_albedoSlot, albedoTexture);
   ensureSlotReady(_normalSlot, normalTexture);
+
+  auto markSlotUsed = [&](ManagedTextureSlot &slot, MTL::Texture *handle) {
+    if (handle)
+      slot.lastUsedFrame = _renderedFrameCount;
+  };
+
+  markSlotUsed(_accumulationSlots[0], accum0);
+  markSlotUsed(_accumulationSlots[1], accum1);
+  markSlotUsed(_sampleCountSlot, sampleCount);
+  markSlotUsed(_sampleImportanceSlot, sampleImportance);
+  markSlotUsed(_albedoSlot, albedoTexture);
+  markSlotUsed(_normalSlot, normalTexture);
 
   if (restoreBlit)
     restoreBlit->endEncoding();

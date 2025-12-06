@@ -312,6 +312,7 @@ private:
     NS::UInteger historyHeight = 0;
     size_t historyBytesPerRow = 0;
     std::vector<uint8_t> historyData;
+    uint64_t lastUsedFrame = 0;
   };
 
   // Accumulation framebuffers
