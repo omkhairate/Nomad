@@ -2333,6 +2333,7 @@ void Renderer::updateVisibleScene() {
          _pScene->getTriangleCount(), _pScene->getRectangleCount());
 
   _residencyConfig = _pScene->getResidencyParameters();
+  _residencyConfig.normalizeEnvironmentDepthSettings();
   bool requiresCachedBlas =
       _pScene->getResidencyStrategy() != ResidencyStrategy::AlwaysResident;
   if (_residencyConfig.buildCachedBlas != requiresCachedBlas) {
@@ -9890,10 +9891,11 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     const auto &weights = _residencyConfig.environmentDepthWeights;
     if (weights.empty())
       return 1.0f;
-    float fallbackWeight = weights.back();
     const auto &radii = _residencyConfig.environmentDepthRadii;
-    if (radii.empty())
-      return fallbackWeight;
+    size_t pairCount = std::min(weights.size(), radii.size());
+    if (pairCount == 0)
+      return weights.back();
+    float fallbackWeight = weights[pairCount - 1];
     if (objectIndex >= _objectBounds.size())
       return fallbackWeight;
 
@@ -9902,14 +9904,10 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     if (!(distance > 0.0f))
       return weights.front();
 
-    size_t pairCount = std::min(weights.size(), radii.size());
-    for (size_t i = 0; i < pairCount; ++i) {
-      float radius = radii[i];
-      if (!(radius > 0.0f))
-        continue;
-      if (distance <= radius)
-        return weights[i];
-    }
+    auto end = radii.begin() + pairCount;
+    auto lowerBound = std::lower_bound(radii.begin(), end, distance);
+    if (lowerBound != end)
+      return weights[std::distance(radii.begin(), lowerBound)];
     return fallbackWeight;
   };
 

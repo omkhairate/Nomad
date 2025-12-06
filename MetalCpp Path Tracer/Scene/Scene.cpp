@@ -11,6 +11,32 @@
 
 namespace MetalCppPathTracer {
 
+void ResidencyParameters::normalizeEnvironmentDepthSettings() {
+  size_t pairCount =
+      std::min(environmentDepthRadii.size(), environmentDepthWeights.size());
+  if (pairCount == 0) {
+    environmentDepthRadii.clear();
+    environmentDepthWeights.clear();
+    return;
+  }
+
+  std::vector<std::pair<float, float>> paired;
+  paired.reserve(pairCount);
+  for (size_t i = 0; i < pairCount; ++i) {
+    paired.emplace_back(environmentDepthRadii[i], environmentDepthWeights[i]);
+  }
+
+  std::sort(paired.begin(), paired.end(),
+            [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+
+  environmentDepthRadii.resize(pairCount);
+  environmentDepthWeights.resize(pairCount);
+  for (size_t i = 0; i < pairCount; ++i) {
+    environmentDepthRadii[i] = paired[i].first;
+    environmentDepthWeights[i] = paired[i].second;
+  }
+}
+
 Scene::Scene() { clear(); }
 
 void Scene::markTriangleCacheDirty() { triangleCacheDirty = true; }
@@ -224,6 +250,7 @@ const ResidencyParameters &Scene::getResidencyParameters() const {
 
 void Scene::setResidencyParameters(const ResidencyParameters &params) {
   residencyParams = params;
+  residencyParams.normalizeEnvironmentDepthSettings();
 }
 
 bool Scene::getStartCompacted() const { return startCompacted; }
