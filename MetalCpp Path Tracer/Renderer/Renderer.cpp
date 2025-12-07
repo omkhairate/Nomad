@@ -7605,6 +7605,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     float distanceScore = (i < _primitiveDistanceFalloffCache.size())
                               ? _primitiveDistanceFalloffCache[i]
                               : 0.0f;
+    float energy = (i < _primitiveImportance.size()) ? _primitiveImportance[i]
+                                                     : 0.0f;
     bool visible =
         (i < _primitiveCoverageVisibilityKey.size())
             ? ((_primitiveCoverageVisibilityKey[i] & 0x1) != 0)
@@ -7614,7 +7616,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     if (offscreenNoFalloff)
       hit *= offscreenDecay;
 
-    if (hit == 0.0f && !visible && coverage == 0.0f && distanceScore == 0.0f)
+    if (hit == 0.0f && energy == 0.0f && !visible && coverage == 0.0f &&
+        distanceScore == 0.0f)
       continue;
 
     candidateIndices.push_back(i);
@@ -7637,7 +7640,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
             ? ((_primitiveCoverageVisibilityKey[i] & 0x1) != 0)
             : false;
 
-    if (hit == 0.0f && coverage == 0.0f && distanceScore == 0.0f &&
+    if (hit == 0.0f && energy == 0.0f && coverage == 0.0f &&
+        distanceScore == 0.0f &&
         (i >= _primitiveCoverageVisibilityKey.size() ||
          (_primitiveCoverageVisibilityKey[i] & 0x1) == 0))
       continue;
