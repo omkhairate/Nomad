@@ -53,6 +53,8 @@ struct ResidencyParameters {
   float unifiedHitWeight = 1.0f;
   float unifiedCoverageWeight = 1.0f;
   float unifiedDistanceWeight = 1.0f;
+  float cameraHitDecay = 0.25f;
+  float unifiedOffscreenDecay = 0.1f;
 
   float rayHitDecay = 0.85f;
   float rayHitTargetFraction = 0.6f;

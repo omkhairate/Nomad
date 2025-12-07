@@ -7454,7 +7454,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     // When the camera changes, decay cached hit information so the unified
     // score does not overly favor primitives that were visible from a previous
     // viewpoint.
-    const float cameraHitDecay = 0.25f;
+    const float cameraHitDecay =
+        std::clamp(_residencyConfig.cameraHitDecay, 0.0f, 1.0f);
     for (float &hit : _primitiveHitScores)
       hit *= cameraHitDecay;
   }
@@ -7588,7 +7589,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
   const float beta = _residencyConfig.unifiedHitWeight;
   const float gamma = _residencyConfig.unifiedCoverageWeight;
   const float delta = _residencyConfig.unifiedDistanceWeight;
-  const float offscreenDecay = 0.1f;
+  const float offscreenDecay =
+      std::clamp(_residencyConfig.unifiedOffscreenDecay, 0.0f, 1.0f);
 
   std::vector<size_t> candidateIndices;
   candidateIndices.reserve(primCount);

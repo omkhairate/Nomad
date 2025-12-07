@@ -694,6 +694,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "unifiedCoverageWeight", params.unifiedCoverageWeight);
     params.unifiedDistanceWeight = root->FloatAttribute(
         "unifiedDistanceWeight", params.unifiedDistanceWeight);
+    params.cameraHitDecay =
+        root->FloatAttribute("cameraHitDecay", params.cameraHitDecay);
+    params.unifiedOffscreenDecay = root->FloatAttribute(
+        "unifiedOffscreenDecay", params.unifiedOffscreenDecay);
 
     params.rayHitDecay = root->FloatAttribute("rayHitDecay", params.rayHitDecay);
     params.rayHitTargetFraction =
