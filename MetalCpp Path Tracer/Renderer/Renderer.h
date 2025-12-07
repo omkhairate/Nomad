@@ -488,6 +488,8 @@ private:
   std::vector<uint64_t> _primitiveCoverageBoundsVersion;
   std::vector<uint8_t> _primitiveCoverageVisibilityKey;
   std::vector<uint8_t> _primitiveUnifiedPrevVisible;
+  std::vector<float> _primitiveUnifiedLastVisibleHit;
+  std::vector<float> _primitiveUnifiedLastVisibleEnergy;
   std::vector<uint64_t> _primitiveBoundsVersion;
   std::vector<uint64_t> _objectBoundsVersion;
   uint64_t _boundsVersionCounter = 1;
