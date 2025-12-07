@@ -67,6 +67,13 @@ struct ResidentObjectGpuResources {
   bool hasPendingCommands();
   bool isResident() const { return state == ResidencyState::Resident; }
 
+  ResidentObjectGpuResources() = default;
+  ResidentObjectGpuResources(const ResidentObjectGpuResources &) = delete;
+  ResidentObjectGpuResources &operator=(const ResidentObjectGpuResources &) = delete;
+  ResidentObjectGpuResources(ResidentObjectGpuResources &&other) noexcept;
+  ResidentObjectGpuResources &
+  operator=(ResidentObjectGpuResources &&other) noexcept;
+
   GpuHeapResources resources;
   size_t byteSize = 0;
   size_t triangleCount = 0;
@@ -78,8 +85,8 @@ struct ResidentObjectGpuResources {
   std::chrono::steady_clock::time_point lastStateChange{};
   struct PendingCommand {
     MTL::CommandBuffer *command = nullptr;
-    std::atomic<bool> completed{false};
-    std::atomic<bool> error{false};
+    bool completed = false;
+    bool error = false;
   };
 
   std::vector<PendingCommand> pendingCommands;
