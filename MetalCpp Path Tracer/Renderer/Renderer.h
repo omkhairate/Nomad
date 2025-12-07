@@ -506,9 +506,9 @@ private:
   std::vector<bool> _objectResidentState;
 
   // Defer resident rebuilds to batch small bursts of toggles.
-  uint32_t _residentFlushCooldownFrames = 2;
+  uint32_t _residentFlushCooldownFrames = 1;
   uint32_t _residentFlushCooldown = 0;
-  size_t _residentFlushToggleThreshold = 64;
+  size_t _residentFlushToggleThreshold = 16;
 
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
 
