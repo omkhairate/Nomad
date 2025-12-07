@@ -3972,8 +3972,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     needFullUpload = true;
   }
 
-  std::vector<std::pair<size_t, size_t>> dirtyPrimitiveRanges;
-
   if (needFullUpload) {
     _cachedPrimitiveData.assign(totalPrimitiveCount * kPrimitiveFloat4Count,
                                 simd::float4{0.0f, 0.0f, 0.0f, 0.0f});
@@ -4152,118 +4150,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         if (it != _recentlyActivated.end() && *it == idx)
           _recentlyActivated.erase(it);
       }
-    }
-  }
-
-  if (!needFullUpload) {
-    auto addDirtyRange = [&](size_t start, size_t count) {
-      if (count == 0 || start >= totalPrimitiveCount)
-        return;
-      size_t clampedCount = std::min(count, totalPrimitiveCount - start);
-      dirtyPrimitiveRanges.emplace_back(start, clampedCount);
-    };
-
-    for (size_t idx : _recentlyActivated)
-      addDirtyRange(idx, 1);
-    for (size_t idx : _recentlyDeactivated)
-      addDirtyRange(idx, 1);
-    for (size_t objectIndex : _dirtyResidentObjects) {
-      if (objectIndex >= sceneObjects.size())
-        continue;
-      const SceneObject &obj = sceneObjects[objectIndex];
-      addDirtyRange(obj.firstPrimitive, obj.primitiveCount);
-    }
-
-    if (!dirtyPrimitiveRanges.empty()) {
-      std::sort(dirtyPrimitiveRanges.begin(), dirtyPrimitiveRanges.end(),
-                [](const auto &a, const auto &b) { return a.first < b.first; });
-      std::vector<std::pair<size_t, size_t>> mergedRanges;
-      mergedRanges.reserve(dirtyPrimitiveRanges.size());
-      for (const auto &range : dirtyPrimitiveRanges) {
-        if (mergedRanges.empty()) {
-          mergedRanges.push_back(range);
-          continue;
-        }
-        auto &back = mergedRanges.back();
-        size_t backEnd = back.first + back.second;
-        if (range.first <= backEnd) {
-          size_t newEnd = std::max(backEnd, range.first + range.second);
-          back.second = newEnd - back.first;
-        } else {
-          mergedRanges.push_back(range);
-        }
-      }
-      dirtyPrimitiveRanges.swap(mergedRanges);
-    }
-  }
-
-  if (!needFullUpload && !dirtyPrimitiveRanges.empty()) {
-    auto packPrimitiveRange = [&](size_t begin, size_t end) {
-      for (size_t i = begin; i < end; ++i) {
-        if (i >= _allPrimitives.size())
-          break;
-        const Primitive &p = _allPrimitives[i];
-        simd::float4 *primBase =
-            &_cachedPrimitiveData[kPrimitiveFloat4Count * i];
-        simd::float4 *matBase = &_cachedMaterialData[kMaterialFloat4Count * i];
-
-        primBase[4] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        primBase[5] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-        primBase[6] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-
-        switch (p.type) {
-        case PrimitiveType::Sphere: {
-          primBase[0] =
-              simd::make_float4(p.sphere.center, static_cast<float>(p.type));
-          primBase[1] = simd::make_float4(
-              simd::make_float3(p.sphere.radius, 0.0f, 0.0f), 0.0f);
-          primBase[2] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-          primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-          primBase[6] = simd::make_float4(0.0f, 0.0f, 1.0f, 0.0f);
-          break;
-        }
-        case PrimitiveType::Rectangle: {
-          primBase[0] =
-              simd::make_float4(p.rectangle.center, static_cast<float>(p.type));
-          primBase[1] = simd::make_float4(p.rectangle.u, 0.0f);
-          primBase[2] = simd::make_float4(p.rectangle.v, 0.0f);
-          primBase[3] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
-          primBase[4] = simd::make_float4(p.rectangle.tangent, 0.0f);
-          primBase[5] = simd::make_float4(p.rectangle.bitangent, 0.0f);
-          primBase[6] = simd::make_float4(p.rectangle.normal,
-                                          p.rectangle.supportsNormalMap ? 1.0f
-                                                                        : 0.0f);
-          break;
-        }
-        case PrimitiveType::Triangle: {
-          primBase[0] =
-              simd::make_float4(p.triangle.v0, static_cast<float>(p.type));
-          primBase[1] = simd::make_float4(p.triangle.v1, p.triangle.uv0.x);
-          primBase[2] = simd::make_float4(p.triangle.v2, p.triangle.uv0.y);
-          primBase[3] = simd::make_float4(p.triangle.uv1.x, p.triangle.uv1.y,
-                                          p.triangle.uv2.x, p.triangle.uv2.y);
-          primBase[4] = simd::make_float4(p.triangle.tangent, 0.0f);
-          primBase[5] = simd::make_float4(p.triangle.bitangent, 0.0f);
-          primBase[6] = simd::make_float4(p.triangle.normal, 1.0f);
-          break;
-        }
-        }
-
-        const Material &m = p.material;
-        auto packed = encodeMaterial(m);
-        for (size_t j = 0; j < kMaterialFloat4Count; ++j) {
-          matBase[j] = packed[j];
-        }
-      }
-    };
-
-    for (const auto &range : dirtyPrimitiveRanges) {
-      parallelFor(range.second,
-                  [&](size_t begin, size_t end) {
-                    packPrimitiveRange(range.first + begin,
-                                       range.first + end);
-                  },
-                  primitivePackingConfig(range.second));
     }
   }
 
@@ -4968,7 +4854,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   _residentRemap = remapUpload;
 
-  bool hasDirtyPrimitiveRanges = !dirtyPrimitiveRanges.empty();
   bool uploadAll = needFullUpload || useCompaction || compactionStateChanged;
 
   if (uploadAll) {
@@ -5139,36 +5024,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                          NS::Range::Make(0, indexBytes));
     }
     _residentBuffersInitialized = true;
-  } else if (hasDirtyPrimitiveRanges) {
-    if (_pSphereBuffer && !_cachedPrimitiveData.empty()) {
-      simd::float4 *dst =
-          static_cast<simd::float4 *>(_pSphereBuffer->contents());
-      for (const auto &range : dirtyPrimitiveRanges) {
-        size_t float4Offset = range.first * kPrimitiveFloat4Count;
-        size_t float4Count = range.second * kPrimitiveFloat4Count;
-        size_t byteOffset = float4Offset * sizeof(simd::float4);
-        size_t byteLength = float4Count * sizeof(simd::float4);
-        std::memcpy(dst + float4Offset,
-                    _cachedPrimitiveData.data() + float4Offset, byteLength);
-        markBufferModified(_pSphereBuffer,
-                           NS::Range::Make(byteOffset, byteLength));
-      }
-    }
-
-    if (_pSphereMaterialBuffer && !_cachedMaterialData.empty()) {
-      simd::float4 *dst = static_cast<simd::float4 *>(
-          _pSphereMaterialBuffer->contents());
-      for (const auto &range : dirtyPrimitiveRanges) {
-        size_t float4Offset = range.first * kMaterialFloat4Count;
-        size_t float4Count = range.second * kMaterialFloat4Count;
-        size_t byteOffset = float4Offset * sizeof(simd::float4);
-        size_t byteLength = float4Count * sizeof(simd::float4);
-        std::memcpy(dst + float4Offset,
-                    _cachedMaterialData.data() + float4Offset, byteLength);
-        markBufferModified(_pSphereMaterialBuffer,
-                           NS::Range::Make(byteOffset, byteLength));
-      }
-    }
   }
 
   size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
