@@ -785,6 +785,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     if (const char *depthRadiiAttr = root->Attribute("envDepthRadii")) {
         params.environmentDepthRadii = parseFloatList(depthRadiiAttr);
     }
+    params.enableDistanceEnvPrior = root->BoolAttribute(
+        "enableDistanceEnvPrior", params.enableDistanceEnvPrior);
     params.enableBufferShrink = root->BoolAttribute(
         "enableBufferShrink", params.enableBufferShrink);
     params.bufferShrinkActiveRatio = root->FloatAttribute(
