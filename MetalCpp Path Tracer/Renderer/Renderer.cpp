@@ -7297,6 +7297,12 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     _primitiveCoverageBoundsVersion.assign(primCount, 0);
   if (_primitiveCoverageVisibilityKey.size() != primCount)
     _primitiveCoverageVisibilityKey.assign(primCount, 0xFF);
+  if (_primitiveUnifiedVisible.size() != primCount)
+    _primitiveUnifiedVisible.assign(primCount, 0);
+  if (_primitiveLastVisibleHit.size() != primCount)
+    _primitiveLastVisibleHit.assign(primCount, 0.0f);
+  if (_primitiveLastVisibleEnergy.size() != primCount)
+    _primitiveLastVisibleEnergy.assign(primCount, 0.0f);
 
   float screenArea = Camera::screenSize.x * Camera::screenSize.y;
   if (screenArea <= 0.0f)
@@ -7404,6 +7410,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
   const float delta = _residencyConfig.unifiedDistanceWeight;
   const float offscreenDecay =
       std::clamp(_residencyConfig.unifiedOffscreenDecay, 0.0f, 1.0f);
+  const float reentryBoost =
+      std::max(_residencyConfig.unifiedReentryBoost, 0.0f);
 
   for (size_t i = 0; i < primCount; ++i) {
     uint64_t boundsVersion = boundsVersionForPrimitive(i);
@@ -7466,6 +7474,16 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
                     ? _primitiveHitScoresSnapshot[i]
                     : 0.0f;
 
+    bool wasVisible =
+        (i < _primitiveUnifiedVisible.size()) ? (_primitiveUnifiedVisible[i] != 0)
+                                              : false;
+
+    float storedVisibleHit =
+        (i < _primitiveLastVisibleHit.size()) ? _primitiveLastVisibleHit[i] : hit;
+    float storedVisibleEnergy = (i < _primitiveLastVisibleEnergy.size())
+                                    ? _primitiveLastVisibleEnergy[i]
+                                    : energy;
+
     if (hit == 0.0f && energy == 0.0f && coverage == 0.0f &&
         distanceScore == 0.0f && !visible)
       continue;
@@ -7476,7 +7494,29 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
       energy *= offscreenDecay;
     }
 
-    float score = alpha * energy + beta * hit + gamma * coverage +
+    float boostedHit = hit;
+    float boostedEnergy = energy;
+    if (visible) {
+      bool reenteredView = !wasVisible;
+      if (reenteredView) {
+        boostedHit = std::max(boostedHit, storedVisibleHit);
+        boostedEnergy = std::max(boostedEnergy, storedVisibleEnergy);
+        if (reentryBoost != 1.0f) {
+          boostedHit *= reentryBoost;
+          boostedEnergy *= reentryBoost;
+        }
+      }
+
+      if (i < _primitiveLastVisibleHit.size())
+        _primitiveLastVisibleHit[i] = hit;
+      if (i < _primitiveLastVisibleEnergy.size())
+        _primitiveLastVisibleEnergy[i] = energy;
+    }
+
+    if (i < _primitiveUnifiedVisible.size())
+      _primitiveUnifiedVisible[i] = visible ? 1 : 0;
+
+    float score = alpha * boostedEnergy + beta * boostedHit + gamma * coverage +
                   delta * distanceScore;
     unifiedScores[i] = score;
     outTotalScore += std::max(score, 0.0f);

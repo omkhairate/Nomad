@@ -696,6 +696,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "unifiedDistanceWeight", params.unifiedDistanceWeight);
     params.cameraHitDecay =
         root->FloatAttribute("cameraHitDecay", params.cameraHitDecay);
+    params.unifiedReentryBoost =
+        root->FloatAttribute("unifiedReentryBoost", params.unifiedReentryBoost);
     params.unifiedOffscreenDecay = root->FloatAttribute(
         "unifiedOffscreenDecay", params.unifiedOffscreenDecay);
 
