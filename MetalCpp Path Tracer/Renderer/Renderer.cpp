@@ -7388,67 +7388,6 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     return angleFactor / (1.0f + depth);
   };
 
-  parallelChunkedAsync(0, primCount,
-                       [&, forward, right, horizontalHalfFov, tanHalfFov](
-                           size_t chunkBegin, size_t chunkEnd) {
-                         for (size_t i = chunkBegin; i < chunkEnd; ++i) {
-                           uint64_t boundsVersion = boundsVersionForPrimitive(i);
-                           if (i < _primitiveCoverageBoundsVersion.size() &&
-                               _primitiveCoverageBoundsVersion[i] != boundsVersion)
-                             _primitiveCoverageDirty[i] = 1;
-
-                           uint8_t activeKey =
-                               (i < _activePrimitive.size() && _activePrimitive[i])
-                                   ? 0x2
-                                   : 0x0;
-                           bool dirty = (i < _primitiveCoverageDirty.size())
-                                            ? (_primitiveCoverageDirty[i] != 0)
-                                            : true;
-                           if (i >= _primitiveCoverageVisibilityKey.size() ||
-                               ((_primitiveCoverageVisibilityKey[i] & 0x2) !=
-                                activeKey))
-                             dirty = true;
-
-                           if (!dirty)
-                             continue;
-
-                           BoundingSphere chosenSphere{};
-                           bool haveSphere = false;
-                           if (i < _primitiveBounds.size()) {
-                             chosenSphere = _primitiveBounds[i];
-                             haveSphere = true;
-                           } else {
-                             size_t objectIndex =
-                                 (i < _primitiveToObject.size())
-                                     ? _primitiveToObject[i]
-                                     : std::numeric_limits<size_t>::max();
-                             if (objectIndex < _objectBounds.size()) {
-                               chosenSphere = _objectBounds[objectIndex];
-                               haveSphere = true;
-                             }
-                           }
-
-                           bool visible = false;
-                           float coverage = 0.0f;
-                           if (i < _primitiveBounds.size())
-                             coverage = coverageForSphere(_primitiveBounds[i], visible);
-
-                           float distanceScore =
-                               haveSphere ? distanceFalloff(chosenSphere, visible)
-                                          : 0.0f;
-
-                           _primitiveScreenCoverage[i] = coverage;
-                           _primitiveDistanceFalloffCache[i] = distanceScore;
-                           if (i < _primitiveCoverageBoundsVersion.size())
-                             _primitiveCoverageBoundsVersion[i] = boundsVersion;
-                           if (i < _primitiveCoverageVisibilityKey.size())
-                             _primitiveCoverageVisibilityKey[i] =
-                                 (visible ? 1 : 0) | activeKey;
-                           if (i < _primitiveCoverageDirty.size())
-                             _primitiveCoverageDirty[i] = 0;
-                         }
-                       });
-
   if (_primitiveHitScoresSnapshot.size() < primCount)
     _primitiveHitScoresSnapshot.resize(primCount, 0.0f);
   size_t copyCount = std::min(_primitiveHitScores.size(), primCount);
@@ -7466,58 +7405,69 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
   const float offscreenDecay =
       std::clamp(_residencyConfig.unifiedOffscreenDecay, 0.0f, 1.0f);
 
-  std::vector<size_t> candidateIndices;
-  candidateIndices.reserve(primCount);
-
   for (size_t i = 0; i < primCount; ++i) {
+    uint64_t boundsVersion = boundsVersionForPrimitive(i);
+    if (i < _primitiveCoverageBoundsVersion.size() &&
+        _primitiveCoverageBoundsVersion[i] != boundsVersion)
+      _primitiveCoverageDirty[i] = 1;
+
+    uint8_t activeKey =
+        (i < _activePrimitive.size() && _activePrimitive[i]) ? 0x2 : 0x0;
+    bool dirty =
+        (i < _primitiveCoverageDirty.size()) ? (_primitiveCoverageDirty[i] != 0)
+                                             : true;
+    if (i >= _primitiveCoverageVisibilityKey.size() ||
+        ((_primitiveCoverageVisibilityKey[i] & 0x2) != activeKey))
+      dirty = true;
+
+    BoundingSphere chosenSphere{};
+    bool haveSphere = false;
+    if (i < _primitiveBounds.size()) {
+      chosenSphere = _primitiveBounds[i];
+      haveSphere = true;
+    } else {
+      size_t objectIndex = (i < _primitiveToObject.size())
+                               ? _primitiveToObject[i]
+                               : std::numeric_limits<size_t>::max();
+      if (objectIndex < _objectBounds.size()) {
+        chosenSphere = _objectBounds[objectIndex];
+        haveSphere = true;
+      }
+    }
+
+    bool visible = false;
+    float coverage = 0.0f;
+    float distanceScore = 0.0f;
+    if (dirty) {
+      if (i < _primitiveBounds.size())
+        coverage = coverageForSphere(_primitiveBounds[i], visible);
+
+      distanceScore = haveSphere ? distanceFalloff(chosenSphere, visible) : 0.0f;
+
+      _primitiveScreenCoverage[i] = coverage;
+      _primitiveDistanceFalloffCache[i] = distanceScore;
+      if (i < _primitiveCoverageBoundsVersion.size())
+        _primitiveCoverageBoundsVersion[i] = boundsVersion;
+      if (i < _primitiveCoverageVisibilityKey.size())
+        _primitiveCoverageVisibilityKey[i] = (visible ? 1 : 0) | activeKey;
+      if (i < _primitiveCoverageDirty.size())
+        _primitiveCoverageDirty[i] = 0;
+    } else {
+      coverage = _primitiveScreenCoverage[i];
+      distanceScore = _primitiveDistanceFalloffCache[i];
+      visible = (i < _primitiveCoverageVisibilityKey.size())
+                    ? ((_primitiveCoverageVisibilityKey[i] & 0x1) != 0)
+                    : false;
+    }
+
+    float energy = (i < _primitiveImportance.size()) ? _primitiveImportance[i]
+                                                     : 0.0f;
     float hit = (i < _primitiveHitScoresSnapshot.size())
                     ? _primitiveHitScoresSnapshot[i]
                     : 0.0f;
-    float coverage = (i < _primitiveScreenCoverage.size())
-                         ? _primitiveScreenCoverage[i]
-                         : 0.0f;
-    float distanceScore = (i < _primitiveDistanceFalloffCache.size())
-                              ? _primitiveDistanceFalloffCache[i]
-                              : 0.0f;
-    float energy = (i < _primitiveImportance.size()) ? _primitiveImportance[i]
-                                                     : 0.0f;
-    bool visible =
-        (i < _primitiveCoverageVisibilityKey.size())
-            ? ((_primitiveCoverageVisibilityKey[i] & 0x1) != 0)
-            : false;
-
-    bool offscreenNoFalloff = !visible && coverage == 0.0f && distanceScore == 0.0f;
-    if (offscreenNoFalloff)
-      hit *= offscreenDecay;
-
-    if (hit == 0.0f && energy == 0.0f && !visible && coverage == 0.0f &&
-        distanceScore == 0.0f)
-      continue;
-
-    candidateIndices.push_back(i);
-  }
-
-  for (size_t i : candidateIndices) {
-    float energy = (i < _primitiveImportance.size()) ? _primitiveImportance[i]
-                                                     : 0.0f;
-    float hit = (i < _primitiveHitScoresSnapshot.size())
-                    ? _primitiveHitScoresSnapshot[i]
-                    : 0.0f;
-    float coverage = (i < _primitiveScreenCoverage.size())
-                         ? _primitiveScreenCoverage[i]
-                         : 0.0f;
-    float distanceScore = (i < _primitiveDistanceFalloffCache.size())
-                              ? _primitiveDistanceFalloffCache[i]
-                              : 0.0f;
-    bool visible =
-        (i < _primitiveCoverageVisibilityKey.size())
-            ? ((_primitiveCoverageVisibilityKey[i] & 0x1) != 0)
-            : false;
 
     if (hit == 0.0f && energy == 0.0f && coverage == 0.0f &&
-        distanceScore == 0.0f &&
-        (i >= _primitiveCoverageVisibilityKey.size() ||
-         (_primitiveCoverageVisibilityKey[i] & 0x1) == 0))
+        distanceScore == 0.0f && !visible)
       continue;
 
     bool offscreenNoFalloff = !visible && coverage == 0.0f && distanceScore == 0.0f;
