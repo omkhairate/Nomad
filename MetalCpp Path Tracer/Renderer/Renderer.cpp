@@ -10409,6 +10409,14 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
                           !_recentlyDeactivated.empty() ||
                           !_dirtyResidentObjects.empty();
 
+  bool hasPendingToggles = !_recentlyActivated.empty() ||
+                           !_recentlyDeactivated.empty();
+  bool cameraAdvanced = _cameraVersion != _lastResidentFlushCameraVersion;
+  bool bypassCooldown = cameraAdvanced && hasPendingToggles;
+
+  if (cameraAdvanced && hasRecentChanges)
+    _residentFlushCooldown = 0;
+
   if (!forceFullRebuild && !hasRecentChanges) {
     for (size_t objectIndex = 0;
          objectIndex < _residentObjectGpuResources.size(); ++objectIndex) {
@@ -10429,7 +10437,7 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
                               _recentlyDeactivated.size() +
                               _dirtyResidentObjects.size();
 
-  if (!forceFullRebuild && hasRecentChanges) {
+  if (!forceFullRebuild && hasRecentChanges && !bypassCooldown) {
     if (pendingToggleCount < _residentFlushToggleThreshold &&
         _residentFlushCooldown == 0)
       _residentFlushCooldown = _residentFlushCooldownFrames;
@@ -10459,6 +10467,7 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
 
   rebuildResidentResources(forceFullRebuild);
   _residentFlushCooldown = _residentFlushCooldownFrames;
+  _lastResidentFlushCameraVersion = _cameraVersion;
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {

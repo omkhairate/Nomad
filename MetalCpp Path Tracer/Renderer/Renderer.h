@@ -491,6 +491,7 @@ private:
   std::vector<uint64_t> _objectBoundsVersion;
   uint64_t _boundsVersionCounter = 1;
   uint64_t _cameraVersion = 1;
+  uint64_t _lastResidentFlushCameraVersion = 0;
   uint64_t _coverageCameraVersion = 0;
   std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;
