@@ -7299,6 +7299,10 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     _primitiveCoverageVisibilityKey.assign(primCount, 0xFF);
   if (_primitiveUnifiedPrevVisible.size() != primCount)
     _primitiveUnifiedPrevVisible.assign(primCount, 0);
+  if (_primitiveUnifiedLastVisibleHit.size() != primCount)
+    _primitiveUnifiedLastVisibleHit.assign(primCount, 0.0f);
+  if (_primitiveUnifiedLastVisibleEnergy.size() != primCount)
+    _primitiveUnifiedLastVisibleEnergy.assign(primCount, 0.0f);
 
   float screenArea = Camera::screenSize.x * Camera::screenSize.y;
   if (screenArea <= 0.0f)
@@ -7468,6 +7472,15 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
                     ? _primitiveHitScoresSnapshot[i]
                     : 0.0f;
 
+    float lastVisibleHit =
+        (i < _primitiveUnifiedLastVisibleHit.size())
+            ? _primitiveUnifiedLastVisibleHit[i]
+            : 0.0f;
+    float lastVisibleEnergy =
+        (i < _primitiveUnifiedLastVisibleEnergy.size())
+            ? _primitiveUnifiedLastVisibleEnergy[i]
+            : 0.0f;
+
     bool wasVisible = (i < _primitiveUnifiedPrevVisible.size())
                           ? (_primitiveUnifiedPrevVisible[i] != 0)
                           : false;
@@ -7478,7 +7491,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
       continue;
     }
 
-    bool offscreenNoFalloff = !visible && coverage == 0.0f && distanceScore == 0.0f;
+    bool offscreenNoFalloff =
+        !visible && coverage == 0.0f && distanceScore == 0.0f;
     if (offscreenNoFalloff) {
       hit *= offscreenDecay;
       energy *= offscreenDecay;
@@ -7486,8 +7500,15 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
 
     bool becameVisible = visible && !wasVisible;
     if (becameVisible) {
+      hit = std::max(hit, lastVisibleHit);
+      energy = std::max(energy, lastVisibleEnergy);
       hit *= _residencyConfig.unifiedReentryBoost;
       energy *= _residencyConfig.unifiedReentryBoost;
+    }
+
+    if (visible && i < _primitiveUnifiedLastVisibleHit.size()) {
+      _primitiveUnifiedLastVisibleHit[i] = hit;
+      _primitiveUnifiedLastVisibleEnergy[i] = energy;
     }
 
     if (i < _primitiveUnifiedPrevVisible.size())
