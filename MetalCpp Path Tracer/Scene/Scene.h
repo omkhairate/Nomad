@@ -49,12 +49,14 @@ struct ResidencyParameters {
   float energyVisibilityBoost = 1.75f;
   float energyImportanceSmoothing = 0.85f;
 
-  float unifiedEnergyWeight = 1.0f;
-  float unifiedHitWeight = 1.0f;
-  float unifiedCoverageWeight = 1.0f;
-  float unifiedDistanceWeight = 1.0f;
-  float cameraHitDecay = 0.25f;
-  float unifiedOffscreenDecay = 0.1f;
+  // Favor immediate view cues over historical hit data so residency reacts
+  // quickly to camera motion.
+  float unifiedEnergyWeight = 0.4f;
+  float unifiedHitWeight = 0.35f;
+  float unifiedCoverageWeight = 1.4f;
+  float unifiedDistanceWeight = 1.2f;
+  float cameraHitDecay = 0.1f;
+  float unifiedOffscreenDecay = 0.05f;
 
   float rayHitDecay = 0.85f;
   float rayHitTargetFraction = 0.6f;
