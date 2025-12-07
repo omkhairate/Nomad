@@ -508,6 +508,7 @@ private:
   uint32_t _residentFlushCooldownFrames = 2;
   uint32_t _residentFlushCooldown = 0;
   size_t _residentFlushToggleThreshold = 64;
+  uint64_t _residentFlushCameraVersion = 0;
 
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
 
