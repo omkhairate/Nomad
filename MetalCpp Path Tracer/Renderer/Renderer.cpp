@@ -10461,17 +10461,6 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
                                    &frameWaitSnapshot))
     return;
 
-  {
-    std::unique_lock<std::mutex> lock(_frameCommandBufferMutex);
-    auto newerSubmission = std::find_if(
-        _frameCommandBuffers.begin(), _frameCommandBuffers.end(),
-        [frameWaitSnapshot](const FrameCommandBufferRecord &record) {
-          return record.trackedSince >= frameWaitSnapshot;
-        });
-    if (newerSubmission != _frameCommandBuffers.end())
-      return;
-  }
-
   rebuildResidentResources(forceFullRebuild);
   _lastResidentFlushCameraVersion = _cameraVersion;
 }
