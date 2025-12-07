@@ -7291,10 +7291,22 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
                               objectViewExit[objectIndex])
                            : (objectIndex < objectViewEnter.size() &&
                               objectViewEnter[objectIndex]);
+    float enterThreshold = _residencyConfig.lodEnterDistance;
+    float exitThreshold = _residencyConfig.lodExitDistance;
+    if (_residencyConfig.enableDistanceEnvPrior) {
+      float hitProbability =
+          (objectIndex < _objectHitProbability.size())
+              ? std::clamp(_objectHitProbability[objectIndex], 0.0f, 1.0f)
+              : 0.0f;
+      float escapeScore = 1.0f - hitProbability;
+      float priorWeight = 1.0f + (escapeScore - 0.5f) * 0.25f;
+      priorWeight = std::clamp(priorWeight, 0.25f, 4.0f);
+      enterThreshold *= priorWeight;
+      exitThreshold *= priorWeight;
+    }
     bool shouldBeActive = viewAllowed && !behind &&
-                          (currentlyActive
-                               ? (dist <= _residencyConfig.lodExitDistance)
-                               : (dist < _residencyConfig.lodEnterDistance));
+                          (currentlyActive ? (dist <= exitThreshold)
+                                           : (dist < enterThreshold));
     bool canToggle =
         forceAllToggles || objectIndex >= _objectCooldown.size() ||
         _objectCooldown[objectIndex] == 0;

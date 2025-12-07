@@ -89,6 +89,7 @@ struct ResidencyParameters {
   size_t environmentMaxTogglesPerFrame = 16;
   std::vector<float> environmentDepthWeights;
   std::vector<float> environmentDepthRadii;
+  bool enableDistanceEnvPrior = false;
 
   // Allows resident buffers to shrink when most primitives remain inactive.
   bool enableBufferShrink = true;
