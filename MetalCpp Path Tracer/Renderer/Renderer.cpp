@@ -10440,14 +10440,6 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
                           !_recentlyDeactivated.empty() ||
                           !_dirtyResidentObjects.empty();
 
-  bool hasPendingToggles = !_recentlyActivated.empty() ||
-                           !_recentlyDeactivated.empty();
-  bool cameraAdvanced = _cameraVersion != _lastResidentFlushCameraVersion;
-  bool bypassCooldown = cameraAdvanced && hasPendingToggles;
-
-  if (cameraAdvanced && hasRecentChanges)
-    _residentFlushCooldown = 0;
-
   if (!forceFullRebuild && !hasRecentChanges) {
     for (size_t objectIndex = 0;
          objectIndex < _residentObjectGpuResources.size(); ++objectIndex) {
@@ -10462,22 +10454,6 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
       }
     }
     return;
-  }
-
-  size_t pendingToggleCount = _recentlyActivated.size() +
-                              _recentlyDeactivated.size() +
-                              _dirtyResidentObjects.size();
-
-  if (!forceFullRebuild && hasRecentChanges && !bypassCooldown) {
-    if (pendingToggleCount < _residentFlushToggleThreshold &&
-        _residentFlushCooldown == 0)
-      _residentFlushCooldown = _residentFlushCooldownFrames;
-
-    if (_residentFlushCooldown > 0 &&
-        pendingToggleCount < _residentFlushToggleThreshold) {
-      --_residentFlushCooldown;
-      return;
-    }
   }
 
   std::chrono::steady_clock::time_point frameWaitSnapshot;
@@ -10497,7 +10473,6 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
   }
 
   rebuildResidentResources(forceFullRebuild);
-  _residentFlushCooldown = _residentFlushCooldownFrames;
   _lastResidentFlushCameraVersion = _cameraVersion;
 }
 
