@@ -90,13 +90,46 @@ constexpr float kIdleVisibleExploreSeed = 1.0f;
 
 namespace MetalCppPathTracer {
 
+ResidentObjectGpuResources::ResidentObjectGpuResources(
+    ResidentObjectGpuResources &&other) noexcept {
+  std::scoped_lock lock(other.pendingCommandsMutex);
+  resources = std::move(other.resources);
+  byteSize = other.byteSize;
+  triangleCount = other.triangleCount;
+  vertexCount = other.vertexCount;
+  vertexBufferOffset = other.vertexBufferOffset;
+  indexBufferOffset = other.indexBufferOffset;
+  geometryValid = other.geometryValid;
+  state = other.state;
+  lastStateChange = other.lastStateChange;
+  pendingCommands = std::move(other.pendingCommands);
+}
+
+ResidentObjectGpuResources &
+ResidentObjectGpuResources::operator=(ResidentObjectGpuResources &&other) noexcept {
+  if (this == &other)
+    return *this;
+
+  std::scoped_lock lock(pendingCommandsMutex, other.pendingCommandsMutex);
+  resources = std::move(other.resources);
+  byteSize = other.byteSize;
+  triangleCount = other.triangleCount;
+  vertexCount = other.vertexCount;
+  vertexBufferOffset = other.vertexBufferOffset;
+  indexBufferOffset = other.indexBufferOffset;
+  geometryValid = other.geometryValid;
+  state = other.state;
+  lastStateChange = other.lastStateChange;
+  pendingCommands = std::move(other.pendingCommands);
+  return *this;
+}
+
 void ResidentObjectGpuResources::clearPendingCommand() {
   std::lock_guard<std::mutex> lock(pendingCommandsMutex);
   using Status = MTL::CommandBufferStatus;
 
   auto isComplete = [](PendingCommand &pending) {
-    if (pending.completed.load(std::memory_order_relaxed) ||
-        pending.error.load(std::memory_order_relaxed))
+    if (pending.completed || pending.error)
       return true;
 
     if (!pending.command)
@@ -104,11 +137,11 @@ void ResidentObjectGpuResources::clearPendingCommand() {
 
     auto status = pending.command->status();
     if (status == Status::CommandBufferStatusCompleted) {
-      pending.completed.store(true, std::memory_order_relaxed);
+      pending.completed = true;
       return true;
     }
     if (status == Status::CommandBufferStatusError) {
-      pending.error.store(true, std::memory_order_relaxed);
+      pending.error = true;
       return true;
     }
     return false;
@@ -146,11 +179,9 @@ void ResidentObjectGpuResources::transitionToStreaming(
           for (auto &pending : pendingCommands) {
             if (pending.command == cmd) {
               auto status = cmd->status();
-              pending.completed.store(
-                  status == MTL::CommandBufferStatusCompleted,
-                  std::memory_order_relaxed);
-              pending.error.store(status == MTL::CommandBufferStatusError,
-                                  std::memory_order_relaxed);
+              pending.completed =
+                  status == MTL::CommandBufferStatusCompleted;
+              pending.error = status == MTL::CommandBufferStatusError;
               break;
             }
           }
@@ -166,18 +197,17 @@ void ResidentObjectGpuResources::transitionToStreaming(
 bool ResidentObjectGpuResources::hasPendingCommands() {
   std::lock_guard<std::mutex> lock(pendingCommandsMutex);
   for (auto &pending : pendingCommands) {
-    if (pending.completed.load(std::memory_order_relaxed) ||
-        pending.error.load(std::memory_order_relaxed))
+    if (pending.completed || pending.error)
       continue;
 
     auto status = pending.command ? pending.command->status()
                                   : MTL::CommandBufferStatusCompleted;
     if (status == MTL::CommandBufferStatusCompleted) {
-      pending.completed.store(true, std::memory_order_relaxed);
+      pending.completed = true;
       continue;
     }
     if (status == MTL::CommandBufferStatusError) {
-      pending.error.store(true, std::memory_order_relaxed);
+      pending.error = true;
       continue;
     }
 
