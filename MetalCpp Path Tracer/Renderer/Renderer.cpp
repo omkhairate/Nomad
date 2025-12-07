@@ -4063,14 +4063,26 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
           size_t base = textureOffsets[texIndex];
           simd::float4 *dst = _cachedTextureData.data() + base;
 
-          for (size_t t = 0; t < texelCount; ++t) {
-            size_t idx = t * 4;
+          auto packTexel = [&](size_t texelIndex) {
+            size_t idx = texelIndex * 4;
             float r = (idx < tex.pixels.size()) ? tex.pixels[idx + 0] : 0.0f;
-            float g = (idx + 1 < tex.pixels.size()) ? tex.pixels[idx + 1] : 0.0f;
-            float b = (idx + 2 < tex.pixels.size()) ? tex.pixels[idx + 2] : 0.0f;
-            float a = (idx + 3 < tex.pixels.size()) ? tex.pixels[idx + 3] : 1.0f;
-            dst[t] = simd::make_float4(r, g, b, a);
-          }
+            float g =
+                (idx + 1 < tex.pixels.size()) ? tex.pixels[idx + 1] : 0.0f;
+            float b =
+                (idx + 2 < tex.pixels.size()) ? tex.pixels[idx + 2] : 0.0f;
+            float a =
+                (idx + 3 < tex.pixels.size()) ? tex.pixels[idx + 3] : 1.0f;
+            return simd::make_float4(r, g, b, a);
+          };
+
+          auto packRange = [&](size_t begin, size_t end) {
+            for (size_t t = begin; t < end; ++t) {
+              dst[t] = packTexel(t);
+            }
+          };
+
+          parallelFor(texelCount, packRange,
+                      textureUploadConfig(1, texelCount));
         }
       }, textureUploadConfig(textureCount, totalTexelCount));
     }
