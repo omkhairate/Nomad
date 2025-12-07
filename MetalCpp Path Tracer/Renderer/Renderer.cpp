@@ -1406,7 +1406,8 @@ void Renderer::writeBenchmarkHeader() {
          "energy_min_active,energy_visibility_boost,screen_target_fraction,"
          "screen_min_pixels,screen_min_active,environment_target_fraction,"
          "environment_escape_threshold,environment_min_active,environment_toggle_budget,"
-         "environment_depth_weights,environment_depth_radii";
+         "unified_offscreen_decay,unified_offscreen_floor,environment_depth_weights,"
+         "environment_depth_radii";
   _benchmarkStream << '\n';
   _benchmarkHeaderWritten = true;
 }
@@ -1511,7 +1512,9 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.environmentTargetActiveFraction, 3) << ','
       << formatFixed(sample.environmentEscapeThreshold, 3) << ','
       << _residencyConfig.environmentMinActivePrimitives << ','
-      << _residencyConfig.environmentMaxTogglesPerFrame << ',';
+      << _residencyConfig.environmentMaxTogglesPerFrame << ','
+      << formatFixed(_residencyConfig.unifiedOffscreenDecay, 3) << ','
+      << formatFixed(_residencyConfig.unifiedOffscreenFloor, 3) << ',';
   appendCsvEscaped(row, sample.environmentDepthWeights);
   row << ',';
   appendCsvEscaped(row, sample.environmentDepthRadii);
@@ -7410,6 +7413,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
   const float delta = _residencyConfig.unifiedDistanceWeight;
   const float offscreenDecay =
       std::clamp(_residencyConfig.unifiedOffscreenDecay, 0.0f, 1.0f);
+  const float offscreenFloor =
+      std::max(_residencyConfig.unifiedOffscreenFloor, 0.0f);
 
   for (size_t i = 0; i < primCount; ++i) {
     uint64_t boundsVersion = boundsVersionForPrimitive(i);
@@ -7496,6 +7501,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     if (offscreenNoFalloff) {
       hit *= offscreenDecay;
       energy *= offscreenDecay;
+      hit = std::max(hit, offscreenFloor);
+      energy = std::max(energy, offscreenFloor);
     }
 
     bool becameVisible = visible && !wasVisible;
