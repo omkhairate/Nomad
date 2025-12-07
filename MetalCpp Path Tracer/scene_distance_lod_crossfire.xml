@@ -1,8 +1,8 @@
 <Scene width="960" height="540" maxRayDepth="4" startCompacted="true" residencyStrategy="distance"
        textureResidencyMemoryCapMB="512" enableDistanceEnvPrior="true"
-       lodEnterDistance="55" lodExitDistance="115" residencyCooldown="2" lodToggleBudget="14000">
+       lodEnterDistance="28" lodExitDistance="36" residencyCooldown="2" lodToggleBudget="14000">
     <CameraPath>
-        <!-- Strafe across staggered occluders to push clusters across the distance thresholds -->
+        <!-- Strafe across staggered occluders so rear clusters cross the exit threshold once the camera moves past -->
         <Keyframe frame="0" position="-40,8,20" lookAt="0,6,-20" />
         <Keyframe frame="45" position="-20,8,0" lookAt="0,6,-40" />
         <Keyframe frame="90" position="0,8,-20" lookAt="0,6,-60" />
