@@ -787,6 +787,11 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     }
     params.enableDistanceEnvPrior = root->BoolAttribute(
         "enableDistanceEnvPrior", params.enableDistanceEnvPrior);
+    params.distancePriorScale =
+        root->FloatAttribute("distancePriorScale", params.distancePriorScale);
+    params.distancePriorFavorHighProbability = root->BoolAttribute(
+        "distancePriorFavorHighProbability",
+        params.distancePriorFavorHighProbability);
     params.enableBufferShrink = root->BoolAttribute(
         "enableBufferShrink", params.enableBufferShrink);
     params.bufferShrinkActiveRatio = root->FloatAttribute(

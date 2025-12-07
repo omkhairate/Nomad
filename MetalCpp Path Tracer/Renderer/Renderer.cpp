@@ -7298,9 +7298,11 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
           (objectIndex < _objectHitProbability.size())
               ? std::clamp(_objectHitProbability[objectIndex], 0.0f, 1.0f)
               : 0.0f;
-      float escapeScore = 1.0f - hitProbability;
-      float priorWeight = 1.0f + (escapeScore - 0.5f) * 0.25f;
-      priorWeight = std::clamp(priorWeight, 0.25f, 4.0f);
+      float priorScale = std::max(_residencyConfig.distancePriorScale, 0.0f);
+      float bias = _residencyConfig.distancePriorFavorHighProbability ? -1.0f : 1.0f;
+      float priorWeight = 1.0f + (hitProbability - 0.5f) * priorScale * bias;
+      float maxPrior = _residencyConfig.distancePriorFavorHighProbability ? 4.0f : 1.0f;
+      priorWeight = std::clamp(priorWeight, 0.25f, maxPrior);
       enterThreshold *= priorWeight;
       exitThreshold *= priorWeight;
     }
