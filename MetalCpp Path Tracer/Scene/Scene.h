@@ -71,7 +71,7 @@ struct ResidencyParameters {
   size_t probabilityMaxTogglesPerFrame = 16;
   float probabilityUncertaintyBoost = 0.25f;
   float probabilityEvidenceWindow = 64.0f;
-  float probabilityDesiredHysteresis = 0.05f;
+  float probabilityDesiredHysteresis = 0.02f;
   uint32_t probabilityRecentPromotionFrames = 4;
   uint32_t probabilityIdleCooldownFrames = 3;
   float probabilityIdleDecay = 0.98f;
