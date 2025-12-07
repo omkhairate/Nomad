@@ -1399,6 +1399,8 @@ void Renderer::writeBenchmarkHeader() {
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
+         "rayhit_prior_enabled_low_hit_shrink,rayhit_prior_scale_low_hit_shrink,"
+         "rayhit_prior_bias_favors_hot,"
          "lod_enter_distance,lod_exit_distance,lod_enter_view_margin,"
          "lod_exit_view_margin,energy_target_fraction,"
          "energy_min_active,energy_visibility_boost,screen_target_fraction,"
@@ -1493,6 +1495,9 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(_residencyConfig.rayHitTargetFraction, 3) << ','
       << _residencyConfig.rayHitMinActivePrimitives << ','
       << _residencyConfig.rayHitRebuildCooldownFrames << ','
+      << boolToInt(_residencyConfig.enableRayHitPrior) << ','
+      << formatFixed(_residencyConfig.rayHitPriorScale, 3) << ','
+      << boolToInt(_residencyConfig.rayHitPriorFavorHighProbability) << ','
       << formatFixed(_residencyConfig.lodEnterDistance, 3) << ','
       << formatFixed(_residencyConfig.lodExitDistance, 3) << ','
       << formatFixed(_residencyConfig.lodEnterViewDegrees, 3) << ','
@@ -8588,6 +8593,28 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
         score = 1.0f;
       }
 
+      if (_residencyConfig.enableRayHitPrior) {
+        float probability = 0.5f;
+        if (i < _primitiveToObject.size()) {
+          size_t objectIndex = _primitiveToObject[i];
+          if (objectIndex < _objectHitProbability.size())
+            probability =
+                std::clamp(_objectHitProbability[objectIndex], 0.0f, 1.0f);
+        } else if (i < _primitiveHitProbability.size()) {
+          probability =
+              std::clamp(_primitiveHitProbability[i], 0.0f, 1.0f);
+        }
+
+        float priorScale = std::max(_residencyConfig.rayHitPriorScale, 0.0f);
+        float bias = _residencyConfig.rayHitPriorFavorHighProbability ? -1.0f
+                                                                       : 1.0f;
+        float priorWeight = 1.0f + (probability - 0.5f) * priorScale * bias;
+        float maxPrior =
+            _residencyConfig.rayHitPriorFavorHighProbability ? 4.0f : 1.0f;
+        priorWeight = std::clamp(priorWeight, 0.25f, maxPrior);
+        score *= priorWeight;
+      }
+
       if (i < hitScores.size())
         hitScores[i] = score;
     }
@@ -8635,6 +8662,8 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
   for (size_t i = 0; i < minActive && i < _rayHitSortedIndices.size(); ++i)
     desired[_rayHitSortedIndices[i]] = true;
 
+  // Enforce cooldowns and toggle budgets so prior-driven demotions cannot
+  // churn primitives faster than configured.
   size_t toggles = 0;
   bool changed = false;
   for (size_t i = 0; i < primCount; ++i) {

@@ -63,6 +63,11 @@ struct ResidencyParameters {
   size_t rayHitMinActivePrimitives = 16;
   size_t rayHitMaxTogglesPerFrame = 12;
   uint32_t rayHitRebuildCooldownFrames = 6;
+  // Shrinks hit scores when recent hit probability is low. Set the bias flag to
+  // true to favor high-probability primitives instead.
+  bool enableRayHitPrior = true;
+  float rayHitPriorScale = 0.5f;
+  bool rayHitPriorFavorHighProbability = false;
 
   float probabilityDecay = 0.9f;
   float probabilityThreshold = 0.5f;

@@ -708,6 +708,12 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "rayHitToggleBudget", static_cast<uint64_t>(params.rayHitMaxTogglesPerFrame)));
     params.rayHitRebuildCooldownFrames = root->UnsignedAttribute(
         "rayHitCooldown", params.rayHitRebuildCooldownFrames);
+    params.enableRayHitPrior =
+        root->BoolAttribute("enableRayHitPrior", params.enableRayHitPrior);
+    params.rayHitPriorScale =
+        root->FloatAttribute("rayHitPriorScale", params.rayHitPriorScale);
+    params.rayHitPriorFavorHighProbability = root->BoolAttribute(
+        "rayHitPriorFavorHighProbability", params.rayHitPriorFavorHighProbability);
 
     params.probabilityDecay =
         root->FloatAttribute("probabilityDecay", params.probabilityDecay);
