@@ -11247,3 +11247,5 @@ size_t Renderer::totalNodeCount() const { return _totalNodeCount; }
 bool Renderer::isAlwaysResidentStrategy() const {
   return _frameStrategy == ResidencyStrategy::AlwaysResident;
 }
+
+} // namespace MetalCppPathTracer
