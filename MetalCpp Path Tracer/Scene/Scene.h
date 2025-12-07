@@ -90,6 +90,10 @@ struct ResidencyParameters {
   std::vector<float> environmentDepthWeights;
   std::vector<float> environmentDepthRadii;
   bool enableDistanceEnvPrior = false;
+  // Shrinks distance thresholds when recent hit probability is low. Set the
+  // bias flag to true to preserve the original high-hit shrink direction.
+  float distancePriorScale = 0.5f;
+  bool distancePriorFavorHighProbability = false;
 
   // Allows resident buffers to shrink when most primitives remain inactive.
   bool enableBufferShrink = true;
