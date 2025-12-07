@@ -76,47 +76,11 @@ struct ResidentObjectGpuResources {
   bool geometryValid = false;
   ResidencyState state = ResidencyState::Cold;
   std::chrono::steady_clock::time_point lastStateChange{};
-    struct PendingCommand {
-      MTL::CommandBuffer *command = nullptr;
-      std::atomic<bool> completed{false};
-      std::atomic<bool> error{false};
-
-      PendingCommand() = default;
-      PendingCommand(const PendingCommand &) = delete;
-      PendingCommand &operator=(const PendingCommand &) = delete;
-
-      PendingCommand(PendingCommand &&other) noexcept
-          : command(other.command),
-            completed(other.completed.load(std::memory_order_relaxed)),
-            error(other.error.load(std::memory_order_relaxed)) {
-        other.command = nullptr;
-        other.completed.store(false, std::memory_order_relaxed);
-        other.error.store(false, std::memory_order_relaxed);
-      }
-
-      PendingCommand &operator=(PendingCommand &&other) noexcept {
-        if (this != &other) {
-          if (command)
-            command->release();
-
-          command = other.command;
-          completed.store(other.completed.load(std::memory_order_relaxed),
-                         std::memory_order_relaxed);
-          error.store(other.error.load(std::memory_order_relaxed),
-                     std::memory_order_relaxed);
-
-          other.command = nullptr;
-          other.completed.store(false, std::memory_order_relaxed);
-          other.error.store(false, std::memory_order_relaxed);
-        }
-        return *this;
-      }
-
-      ~PendingCommand() {
-        if (command)
-          command->release();
-      }
-    };
+  struct PendingCommand {
+    MTL::CommandBuffer *command = nullptr;
+    std::atomic<bool> completed{false};
+    std::atomic<bool> error{false};
+  };
 
   std::vector<PendingCommand> pendingCommands;
   std::mutex pendingCommandsMutex;
