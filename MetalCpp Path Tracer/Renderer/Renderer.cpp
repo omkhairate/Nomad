@@ -7297,6 +7297,8 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     _primitiveCoverageBoundsVersion.assign(primCount, 0);
   if (_primitiveCoverageVisibilityKey.size() != primCount)
     _primitiveCoverageVisibilityKey.assign(primCount, 0xFF);
+  if (_primitiveUnifiedPrevVisible.size() != primCount)
+    _primitiveUnifiedPrevVisible.assign(primCount, 0);
 
   float screenArea = Camera::screenSize.x * Camera::screenSize.y;
   if (screenArea <= 0.0f)
@@ -7466,15 +7468,30 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
                     ? _primitiveHitScoresSnapshot[i]
                     : 0.0f;
 
+    bool wasVisible = (i < _primitiveUnifiedPrevVisible.size())
+                          ? (_primitiveUnifiedPrevVisible[i] != 0)
+                          : false;
+
     if (hit == 0.0f && energy == 0.0f && coverage == 0.0f &&
-        distanceScore == 0.0f && !visible)
+        distanceScore == 0.0f && !visible) {
+      _primitiveUnifiedPrevVisible[i] = visible ? 1 : 0;
       continue;
+    }
 
     bool offscreenNoFalloff = !visible && coverage == 0.0f && distanceScore == 0.0f;
     if (offscreenNoFalloff) {
       hit *= offscreenDecay;
       energy *= offscreenDecay;
     }
+
+    bool becameVisible = visible && !wasVisible;
+    if (becameVisible) {
+      hit *= _residencyConfig.unifiedReentryBoost;
+      energy *= _residencyConfig.unifiedReentryBoost;
+    }
+
+    if (i < _primitiveUnifiedPrevVisible.size())
+      _primitiveUnifiedPrevVisible[i] = visible ? 1 : 0;
 
     float score = alpha * energy + beta * hit + gamma * coverage +
                   delta * distanceScore;

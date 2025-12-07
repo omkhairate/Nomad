@@ -487,6 +487,7 @@ private:
   std::vector<uint8_t> _primitiveCoverageDirty;
   std::vector<uint64_t> _primitiveCoverageBoundsVersion;
   std::vector<uint8_t> _primitiveCoverageVisibilityKey;
+  std::vector<uint8_t> _primitiveUnifiedPrevVisible;
   std::vector<uint64_t> _primitiveBoundsVersion;
   std::vector<uint64_t> _objectBoundsVersion;
   uint64_t _boundsVersionCounter = 1;
