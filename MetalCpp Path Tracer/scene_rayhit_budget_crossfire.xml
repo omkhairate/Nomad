@@ -1,7 +1,10 @@
 <Scene width="960" height="540" maxRayDepth="4" startCompacted="true" residencyStrategy="rayHitBudget"
        textureResidencyMemoryCapMB="512"
-       rayHitTargetFraction="0.84" rayHitMinActive="150" rayHitToggleBudget="15000"
-       rayHitCooldown="3" rayHitDecay="0.78">
+       rayHitTargetFraction="0.8" rayHitMinActive="150" rayHitToggleBudget="14000"
+       rayHitCooldown="3" rayHitDecay="0.76"
+       enableRayHitPrior="true" enableRayHitEnvPrior="true" rayHitPriorScale="0.5"
+       rayHitPriorFavorHighProbability="true">
+    <!-- Lean ray-hit target and env prior bias the sweep toward high-probability occluders to trim GPU load. -->
     <CameraPath>
         <!-- Strafe across staggered occluders so clusters drop when hits plummet -->
         <Keyframe frame="0" position="-40,8,20" lookAt="0,6,-20" />
