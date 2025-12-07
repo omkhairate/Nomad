@@ -10079,6 +10079,9 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
   else
     std::fill(_objectImportance.begin(), _objectImportance.end(), 0.0f);
 
+  if (_objectVisible.size() < objectCount)
+    _objectVisible.resize(objectCount, 0u);
+
   std::vector<uint8_t> desiredObjectState(objectCount, 0);
   std::vector<float> weightedImportance(objectCount, 0.0f);
 
@@ -10109,6 +10112,9 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
   constexpr float kExplorationPriorFloor = 1.0e-4f;
   constexpr float kExplorationPriorScale = 0.5f;
 
+  constexpr float kVisibleWeightBoost = 2.0f;
+  constexpr float kHiddenWeightPenalty = 0.05f;
+
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     float hitProbability =
         (objectIndex < _objectHitProbability.size())
@@ -10120,6 +10126,12 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
             : false;
     bool currentlyActive =
         (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+
+    bool visible =
+        (objectIndex < _objectBounds.size()) ? isInView(_objectBounds[objectIndex])
+                                             : false;
+    if (objectIndex < _objectVisible.size())
+      _objectVisible[objectIndex] = visible ? 1u : 0u;
 
     if (!hasEvidence && !currentlyActive) {
       float exploration =
@@ -10144,7 +10156,9 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     _objectImportance[objectIndex] = hitProbability;
 
     float depthWeight = computeDepthWeight(objectIndex);
-    float weighted = hitProbability * std::max(depthWeight, 0.0f);
+    float visibilityWeight = visible ? kVisibleWeightBoost : kHiddenWeightPenalty;
+    float weighted = hitProbability * std::max(depthWeight, 0.0f) *
+                     std::max(visibilityWeight, 0.0f);
     weightedImportance[objectIndex] = std::isfinite(weighted) ? weighted : 0.0f;
   }
 
