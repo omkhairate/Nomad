@@ -73,8 +73,8 @@ struct ResidencyParameters {
   float probabilityEvidenceWindow = 64.0f;
   float probabilityDesiredHysteresis = 0.02f;
   uint32_t probabilityRecentPromotionFrames = 4;
-  uint32_t probabilityIdleCooldownFrames = 3;
-  float probabilityIdleDecay = 0.98f;
+  uint32_t probabilityIdleCooldownFrames = 0;
+  float probabilityIdleDecay = 0.9f;
   float probabilityVisibleFloor = 0.0f;
   uint32_t probabilityVisibleDemotionDwellFrames = 0;
 
