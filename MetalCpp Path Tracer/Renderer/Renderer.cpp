@@ -10818,7 +10818,8 @@ void Renderer::processRayHitCounters() {
   const uint32_t idleCooldownFrames =
       _residencyConfig.probabilityIdleCooldownFrames;
   const float idleGraceDecay =
-      std::clamp(_residencyConfig.probabilityIdleDecay, 0.0f, 1.0f);
+      std::min(probabilityDecay,
+               std::clamp(_residencyConfig.probabilityIdleDecay, 0.0f, 1.0f));
   auto renormalizePosterior = [&](float &alpha, float &beta) {
     float sum = alpha + beta;
     if (!(sum > 0.0f)) {
