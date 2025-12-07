@@ -10250,8 +10250,41 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
   }
 
   bool changed = false;
+  size_t offscreenActivePrimitiveCount = 0;
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    bool active =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    bool visible = (objectIndex < _objectVisible.size())
+                       ? (_objectVisible[objectIndex] != 0)
+                       : false;
+    if (!active || visible)
+      continue;
+
+    size_t primitives = 0;
+    if (objectIndex < _objectPrimitiveCounts.size())
+      primitives = _objectPrimitiveCounts[objectIndex];
+    else if (objectIndex < _allSceneObjects.size())
+      primitives = _allSceneObjects[objectIndex].primitiveCount;
+
+    offscreenActivePrimitiveCount += primitives;
+  }
+
+  size_t baseToggleBudget = _residencyConfig.environmentMaxTogglesPerFrame;
+  size_t maxToggleBudget = baseToggleBudget;
+  if (offscreenActivePrimitiveCount > baseToggleBudget) {
+    size_t catchUpBudget = (offscreenActivePrimitiveCount + 1) / 2;
+    maxToggleBudget = std::max(baseToggleBudget, catchUpBudget);
+  }
+
+  size_t reservedOffscreenBudget =
+      (maxToggleBudget == 0) ? 0 : std::max<size_t>(1, maxToggleBudget / 4);
+  size_t generalBudget =
+      (maxToggleBudget > reservedOffscreenBudget)
+          ? (maxToggleBudget - reservedOffscreenBudget)
+          : 0;
+  size_t totalBudget = maxToggleBudget + reservedOffscreenBudget;
+
   size_t toggledPrimitiveCount = 0;
-  size_t maxToggleBudget = _residencyConfig.environmentMaxTogglesPerFrame;
 
   for (size_t objectIndex : sortedIndices) {
     bool shouldBeActive =
@@ -10262,7 +10295,17 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     if (shouldBeActive == currentlyActive)
       continue;
 
-    if (!forceAllToggles && objectIndex < _objectCooldown.size() &&
+    bool visible = (objectIndex < _objectVisible.size())
+                       ? (_objectVisible[objectIndex] != 0)
+                       : false;
+    float importance =
+        (objectIndex < _objectImportance.size()) ? _objectImportance[objectIndex]
+                                                 : 0.0f;
+    bool lowImportanceOffscreen = !visible && (importance < escapeThreshold);
+    bool bypassCooldowns = currentlyActive && !shouldBeActive &&
+                           lowImportanceOffscreen;
+
+    if (!forceAllToggles && !bypassCooldowns && objectIndex < _objectCooldown.size() &&
         _objectCooldown[objectIndex] > 0)
       continue;
 
@@ -10277,7 +10320,7 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     for (size_t prim = first; prim < last; ++prim) {
       if (_activePrimitive[prim] == shouldBeActive)
         continue;
-      if (!forceAllToggles && prim < _primitiveCooldown.size() &&
+      if (!forceAllToggles && !bypassCooldowns && prim < _primitiveCooldown.size() &&
           _primitiveCooldown[prim] > 0) {
         canToggle = false;
         break;
@@ -10288,18 +10331,25 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     if (!canToggle || pendingToggles == 0)
       continue;
 
-    if (!forceAllToggles && toggledPrimitiveCount >= maxToggleBudget)
-      continue;
-
-    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
-    if (toggled > 0) {
-      changed = true;
-      if (!forceAllToggles) {
-        toggledPrimitiveCount =
-            std::min(toggledPrimitiveCount + toggled, maxToggleBudget);
+    if (!forceAllToggles) {
+      if (bypassCooldowns) {
+        if (toggledPrimitiveCount >= totalBudget)
+          continue;
+      } else {
+        if (toggledPrimitiveCount >= generalBudget)
+          continue;
       }
     }
-  }
+
+      size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+      if (toggled > 0) {
+        changed = true;
+        if (!forceAllToggles) {
+          toggledPrimitiveCount =
+              std::min(toggledPrimitiveCount + toggled, totalBudget);
+        }
+      }
+    }
 
   bool anyActiveObject = false;
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
