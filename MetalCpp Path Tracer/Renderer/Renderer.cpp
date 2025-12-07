@@ -10323,8 +10323,11 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
 // rebuildResidentResources to patch only the dirty ranges (or rebuild
 // everything when forced).
 void Renderer::flushResidencyChanges(bool forceFullRebuild) {
-  if (!forceFullRebuild && _recentlyActivated.empty() &&
-      _recentlyDeactivated.empty() && _dirtyResidentObjects.empty()) {
+  bool hasRecentChanges = !_recentlyActivated.empty() ||
+                          !_recentlyDeactivated.empty() ||
+                          !_dirtyResidentObjects.empty();
+
+  if (!forceFullRebuild && !hasRecentChanges) {
     for (size_t objectIndex = 0;
          objectIndex < _residentObjectGpuResources.size(); ++objectIndex) {
       auto &resident = _residentObjectGpuResources[objectIndex];
@@ -10339,7 +10342,41 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
     }
     return;
   }
+
+  size_t pendingToggleCount = _recentlyActivated.size() +
+                              _recentlyDeactivated.size() +
+                              _dirtyResidentObjects.size();
+
+  if (!forceFullRebuild && hasRecentChanges) {
+    if (pendingToggleCount < _residentFlushToggleThreshold &&
+        _residentFlushCooldown == 0)
+      _residentFlushCooldown = _residentFlushCooldownFrames;
+
+    if (_residentFlushCooldown > 0 &&
+        pendingToggleCount < _residentFlushToggleThreshold) {
+      --_residentFlushCooldown;
+      return;
+    }
+  }
+
+  std::chrono::steady_clock::time_point frameWaitSnapshot;
+  if (!waitForPendingFrameCommands(kFrameCommandBufferWaitTimeout,
+                                   &frameWaitSnapshot))
+    return;
+
+  {
+    std::unique_lock<std::mutex> lock(_frameCommandBufferMutex);
+    auto newerSubmission = std::find_if(
+        _frameCommandBuffers.begin(), _frameCommandBuffers.end(),
+        [frameWaitSnapshot](const FrameCommandBufferRecord &record) {
+          return record.trackedSince >= frameWaitSnapshot;
+        });
+    if (newerSubmission != _frameCommandBuffers.end())
+      return;
+  }
+
   rebuildResidentResources(forceFullRebuild);
+  _residentFlushCooldown = _residentFlushCooldownFrames;
 }
 
 void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {

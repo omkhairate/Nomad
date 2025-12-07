@@ -504,6 +504,11 @@ private:
   std::vector<size_t> _dirtyResidentObjects;
   std::vector<bool> _objectResidentState;
 
+  // Defer resident rebuilds to batch small bursts of toggles.
+  uint32_t _residentFlushCooldownFrames = 2;
+  uint32_t _residentFlushCooldown = 0;
+  size_t _residentFlushToggleThreshold = 64;
+
   std::vector<ResidentObjectGpuResources> _residentObjectGpuResources;
 
   DeferredPurgeQueue<ResidentObjectGpuResources, MTL::CommandBuffer>
