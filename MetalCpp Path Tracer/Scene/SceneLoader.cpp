@@ -656,6 +656,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                    value == "environment_hit" || value == "envhit" ||
                    value == "env_hit" || value == "env") {
             scene->setResidencyStrategy(ResidencyStrategy::EnvironmentHit);
+        } else if (value == "predictive" || value == "predictive_environment" ||
+                   value == "predictive-env" || value == "predictive_env") {
+            scene->setResidencyStrategy(ResidencyStrategy::PredictiveEnvironment);
         } else {
             printf("Unknown residency strategy '%s', defaulting to distance LOD.\n",
                    residencyAttr);
@@ -770,6 +773,15 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "environmentTargetEscapeFraction", params.environmentEscapeThreshold);
     params.environmentEscapeThreshold = root->FloatAttribute(
         "envEscapeThreshold", params.environmentEscapeThreshold);
+
+    params.envHighEscapeThreshold = root->FloatAttribute(
+        "environmentHighEscapeThreshold", params.envHighEscapeThreshold);
+    params.envHighEscapeThreshold = root->FloatAttribute(
+        "envHighEscapeThreshold", params.envHighEscapeThreshold);
+    params.envLowEscapeThreshold = root->FloatAttribute(
+        "environmentLowEscapeThreshold", params.envLowEscapeThreshold);
+    params.envLowEscapeThreshold = root->FloatAttribute(
+        "envLowEscapeThreshold", params.envLowEscapeThreshold);
 
     uint64_t minEnvActive = root->Unsigned64Attribute(
         "environmentMinActive",

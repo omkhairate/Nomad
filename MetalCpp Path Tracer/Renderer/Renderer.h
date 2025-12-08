@@ -172,6 +172,7 @@ private:
   void resetProbabilisticResidencyState();
   bool updateScreenSpaceFootprint(bool forceAllToggles);
   bool updateEnvironmentHitResidency(bool forceAllToggles);
+  bool updatePredictiveResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
@@ -404,6 +405,10 @@ private:
     double environmentEscapeThreshold = 0.0;
     std::string environmentDepthWeights;
     std::string environmentDepthRadii;
+    double envHighEscapeThreshold = 0.0;
+    double envLowEscapeThreshold = 0.0;
+    double globalEnvEscape = 0.0;
+    size_t environmentActivationFloor = 0;
     ResidencyStrategy strategy = ResidencyStrategy::DistanceLOD;
     std::string strategyName;
     uint32_t minSamplesPerPixel = 1;
@@ -476,6 +481,7 @@ private:
   std::vector<float> _objectHitVariance;
   std::vector<float> _objectPosteriorMass;
   std::vector<float> _objectExplorationScore;
+  std::vector<float> _objectRayHitScore;
   std::vector<uint32_t> _objectHitLastFrame;
   std::vector<uint32_t> _objectRaysTestedLastFrame;
   std::vector<uint32_t> _objectIdleFrames;
@@ -537,6 +543,7 @@ private:
   size_t _lightCount = 0;
   float _lightTotalWeight = 0.0f;
   float _lastActivePrimitiveRatio = 1.0f;
+  float _lastFrameGlobalEnvEscape = 0.0f;
 
   bool _residentBuffersInitialized = false;
   bool _residentCompacted = false;
@@ -622,6 +629,7 @@ private:
   size_t _frameProbabilityFinalDesiredPrimitives = 0;
   size_t _frameProbabilityTrimmedPrimitives = 0;
   bool _frameProbabilityBudgetHit = false;
+  size_t _frameEnvironmentActivationFloor = 0;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
   AlwaysResidentCache _alwaysResidentCache;

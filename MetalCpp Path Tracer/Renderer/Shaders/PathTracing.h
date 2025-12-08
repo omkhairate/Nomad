@@ -681,7 +681,16 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
   float4 absorption = float4(1.0);
   float4 light = float4(0.0);
 
+  uint globalStatsBase = totalPrimitiveCount * 2u;
+  uint envHitIndex = globalStatsBase;
+  uint totalRayIndex = globalStatsBase + 1u;
+
   for (uint depth = 0; depth < maxRayDepth; ++depth) {
+    if (primitiveRayStats) {
+      atomic_fetch_add_explicit(&primitiveRayStats[totalRayIndex], 1u,
+                                memory_order_relaxed);
+    }
+
     TlasLeafCache bounceCache;
     bounceCache.valid = false;
     intersection bestHit = firstHitTLAS(
@@ -690,6 +699,11 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         totalPrimitiveCount, primitiveRayStats, &bounceCache);
 
     if (bestHit.primitiveId == -1) {
+      if (primitiveRayStats) {
+        atomic_fetch_add_explicit(&primitiveRayStats[envHitIndex], 1u,
+                                  memory_order_relaxed);
+      }
+
       float3 unitDir = normalize(r.direction);
       if (environmentEnabled > 0 && environmentIntensity > 0.0f) {
         uint envWidth = environmentMap.get_width();

@@ -20,7 +20,8 @@ enum class ResidencyStrategy {
   Probabilistic = 4,
   AlwaysResident = 5,
   EnvironmentHit = 6,
-  UnifiedScore = 7,
+  PredictiveEnvironment = 7,
+  UnifiedScore = 8,
 };
 
 struct SceneObject {
@@ -92,6 +93,8 @@ struct ResidencyParameters {
 
   float environmentTargetActiveFraction = 0.0f;
   float environmentEscapeThreshold = 0.4f;
+  float envHighEscapeThreshold = 0.6f;
+  float envLowEscapeThreshold = 0.3f;
   size_t environmentMinActivePrimitives = 16;
   size_t environmentMaxTogglesPerFrame = 16;
   std::vector<float> environmentDepthWeights;
