@@ -216,9 +216,11 @@ bool ResidentObjectGpuResources::hasPendingCommands() {
   return false;
 }
 
-void ResidentObjectGpuResources::transitionToCold(
+bool ResidentObjectGpuResources::transitionToCold(
     BlasInstanceRecord &instanceRecord) {
   clearPendingCommand();
+  if (hasPendingCommands())
+    return false;
   resources.makeResourcesPurgeable();
   resources.releaseAllAllocations();
   byteSize = 0;
@@ -233,6 +235,7 @@ void ResidentObjectGpuResources::transitionToCold(
   instanceRecord.primitiveIndexBase = 0;
   instanceRecord.blasRootIndex = -1;
   instanceRecord.primitiveCount = 0;
+  return true;
 }
 
 bool ResidentObjectGpuResources::ensureResident(
@@ -3206,8 +3209,14 @@ bool Renderer::transitionResidentToCold(size_t objectIndex,
     return false;
   }
 
-  resident.transitionToCold(instanceRecord);
+  bool transitioned = resident.transitionToCold(instanceRecord);
   lock.unlock();
+
+  if (!transitioned) {
+    if (removePending)
+      _pendingBlasEvictions.enqueue(objectIndex, resident);
+    return false;
+  }
 
   if (removePending)
     _pendingBlasEvictions.cancel(objectIndex, resident);
