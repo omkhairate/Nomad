@@ -1408,7 +1408,8 @@ void Renderer::writeBenchmarkHeader() {
          "lod_exit_view_margin,energy_target_fraction,"
          "energy_min_active,energy_visibility_boost,screen_target_fraction,"
          "screen_min_pixels,screen_min_active,environment_target_fraction,"
-         "environment_escape_threshold,environment_min_active,environment_toggle_budget,"
+         "environment_escape_threshold,env_high_escape,env_low_escape,global_env_escape,"
+         "environment_activation_floor,environment_min_active,environment_toggle_budget,"
          "unified_offscreen_decay,unified_offscreen_floor,environment_depth_weights,"
          "environment_depth_radii";
   _benchmarkStream << '\n';
@@ -1514,6 +1515,10 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << _residencyConfig.screenFootprintMinActivePrimitives << ','
       << formatFixed(sample.environmentTargetActiveFraction, 3) << ','
       << formatFixed(sample.environmentEscapeThreshold, 3) << ','
+      << formatFixed(sample.envHighEscapeThreshold, 3) << ','
+      << formatFixed(sample.envLowEscapeThreshold, 3) << ','
+      << formatFixed(sample.globalEnvEscape, 6) << ','
+      << sample.environmentActivationFloor << ','
       << _residencyConfig.environmentMinActivePrimitives << ','
       << _residencyConfig.environmentMaxTogglesPerFrame << ','
       << formatFixed(_residencyConfig.unifiedOffscreenDecay, 3) << ','
@@ -2473,8 +2478,11 @@ void Renderer::updateVisibleScene() {
                       0.0f);
 
   constexpr size_t kStatsPerPrimitive = 2;
+  constexpr size_t kGlobalRayStatsCount = 2;
   size_t hitCount = std::max<size_t>(_maxPrimitiveCount, 1);
-  size_t hitBytes = hitCount * kStatsPerPrimitive * sizeof(uint32_t);
+  size_t hitBytes =
+      hitCount * kStatsPerPrimitive * sizeof(uint32_t) +
+      kGlobalRayStatsCount * sizeof(uint32_t);
   flushRayHitCopy();
   ensureBufferCapacity(_pPrimitiveHitBufferGPU, hitBytes,
                        _primitiveHitBufferCapacity, false,
@@ -6935,6 +6943,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameObjectActivations = 0;
   _frameObjectDeactivations = 0;
   _frameProbabilisticToggles = 0;
+  _frameEnvironmentActivationFloor = 0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
   if (strategy != _lastResidencyStrategy) {
     if (strategy == ResidencyStrategy::AlwaysResident)
@@ -10318,6 +10327,8 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
   if (objectCount == 0 || primitiveCount == 0)
     return false;
 
+  _frameEnvironmentActivationFloor = 0;
+
   if (_objectProbabilitySortedIndices.size() != objectCount) {
     _objectProbabilitySortedIndices.resize(objectCount);
     std::iota(_objectProbabilitySortedIndices.begin(),
@@ -10447,8 +10458,22 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     targetPrimitiveCount = std::min(targetPrimitiveCount, primitiveCount);
   }
   size_t activationFloor = std::max(minActivePrimitives, targetPrimitiveCount);
+
+  float globalEscape = _lastFrameGlobalEnvEscape;
+  float high = std::clamp(_residencyConfig.envHighEscapeThreshold, 0.0f, 1.0f);
+  float low = std::clamp(_residencyConfig.envLowEscapeThreshold, 0.0f, high);
+
+  if (globalEscape > high) {
+    activationFloor = std::min(
+        primitiveCount, static_cast<size_t>(activationFloor * 1.5f));
+  } else if (globalEscape < low) {
+    activationFloor = std::max(
+        minActivePrimitives, static_cast<size_t>(activationFloor * 0.8f));
+  }
+
   if (activationFloor == 0 && primitiveCount > 0)
     activationFloor = 1;
+  _frameEnvironmentActivationFloor = activationFloor;
 
   size_t desiredPrimitiveCount = 0;
   float weightedEscape = 0.0f;
@@ -10847,6 +10872,8 @@ bool Renderer::flushRayHitCopy() {
 }
 
 void Renderer::processRayHitCounters() {
+  _lastFrameGlobalEnvEscape = 0.0f;
+
   if (!flushRayHitCopy())
     return;
 
@@ -10977,9 +11004,22 @@ void Renderer::processRayHitCounters() {
     return;
 
   constexpr size_t kStatsPerPrimitive = 2;
+  constexpr size_t kGlobalRayStatsCount = 2;
   size_t bufferCount = bufferLength / sizeof(uint32_t);
-  size_t count = std::min(totalPrimitiveCount, bufferCount / kStatsPerPrimitive);
-  if (count == 0)
+  size_t availableForPrimitives =
+      (bufferCount >= kGlobalRayStatsCount)
+          ? (bufferCount - kGlobalRayStatsCount)
+          : size_t(0);
+  size_t count =
+      std::min(totalPrimitiveCount, availableForPrimitives / kStatsPerPrimitive);
+  size_t globalStatsBase = count * kStatsPerPrimitive;
+  uint32_t envHitCount = 0;
+  uint32_t totalRayCount = 0;
+  if (bufferCount >= globalStatsBase + kGlobalRayStatsCount) {
+    envHitCount = hitPtr[globalStatsBase + 0];
+    totalRayCount = hitPtr[globalStatsBase + 1];
+  }
+  if (count == 0 && totalRayCount == 0)
     return;
 
   if (_primitiveHitScores.size() < totalPrimitiveCount)
@@ -11183,10 +11223,21 @@ void Renderer::processRayHitCounters() {
                              if (wasVisible)
                                exploration =
                                    std::max(exploration, kIdleVisibleExploreSeed);
-                             _primitiveExplorationScore[i] = exploration;
-                           }
-                         });
+                           _primitiveExplorationScore[i] = exploration;
+                         }
+                       });
   }
+
+  if (bufferCount >= globalStatsBase + kGlobalRayStatsCount) {
+    hitPtr[globalStatsBase + 0] = 0;
+    hitPtr[globalStatsBase + 1] = 0;
+  }
+
+  _lastFrameGlobalEnvEscape =
+      (totalRayCount > 0)
+          ? static_cast<float>(envHitCount) /
+                static_cast<float>(std::max(totalRayCount, 1u))
+          : 0.0f;
 
   size_t objectCount = _allSceneObjects.size();
   if (objectCount == 0) {
@@ -11502,6 +11553,10 @@ void Renderer::beginFrameMetrics() {
         _residencyConfig.environmentTargetActiveFraction;
     sample.environmentEscapeThreshold =
         _residencyConfig.environmentEscapeThreshold;
+    sample.envHighEscapeThreshold = _residencyConfig.envHighEscapeThreshold;
+    sample.envLowEscapeThreshold = _residencyConfig.envLowEscapeThreshold;
+    sample.globalEnvEscape = _lastFrameGlobalEnvEscape;
+    sample.environmentActivationFloor = _frameEnvironmentActivationFloor;
     sample.environmentDepthWeights =
         formatFloatList(_residencyConfig.environmentDepthWeights);
     sample.environmentDepthRadii =

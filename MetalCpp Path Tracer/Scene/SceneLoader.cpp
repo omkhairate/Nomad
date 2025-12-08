@@ -774,6 +774,15 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.environmentEscapeThreshold = root->FloatAttribute(
         "envEscapeThreshold", params.environmentEscapeThreshold);
 
+    params.envHighEscapeThreshold = root->FloatAttribute(
+        "environmentHighEscapeThreshold", params.envHighEscapeThreshold);
+    params.envHighEscapeThreshold = root->FloatAttribute(
+        "envHighEscapeThreshold", params.envHighEscapeThreshold);
+    params.envLowEscapeThreshold = root->FloatAttribute(
+        "environmentLowEscapeThreshold", params.envLowEscapeThreshold);
+    params.envLowEscapeThreshold = root->FloatAttribute(
+        "envLowEscapeThreshold", params.envLowEscapeThreshold);
+
     uint64_t minEnvActive = root->Unsigned64Attribute(
         "environmentMinActive",
         static_cast<uint64_t>(params.environmentMinActivePrimitives));
