@@ -62,7 +62,7 @@ struct ResidentObjectGpuResources {
                       BlasInstanceRecord &instanceRecord,
                       bool forceRebuild);
   void transitionToStreaming(MTL::CommandBuffer *pending = nullptr);
-  void transitionToCold(BlasInstanceRecord &instanceRecord);
+  bool transitionToCold(BlasInstanceRecord &instanceRecord);
   void clearPendingCommand();
   bool hasPendingCommands();
   bool isResident() const { return state == ResidencyState::Resident; }
