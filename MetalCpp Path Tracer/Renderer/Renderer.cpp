@@ -9987,8 +9987,6 @@ bool Renderer::updatePredictiveResidency(bool forceAllToggles) {
   if (objectCount == 0 || primitiveCount == 0)
     return false;
 
-  _frameEnvironmentActivationFloor = 0;
-
   if (_objectProbabilitySortedIndices.size() != objectCount) {
     _objectProbabilitySortedIndices.resize(objectCount);
     std::iota(_objectProbabilitySortedIndices.begin(),
@@ -10132,22 +10130,8 @@ bool Renderer::updatePredictiveResidency(bool forceAllToggles) {
     targetPrimitiveCount = std::min(targetPrimitiveCount, primitiveCount);
   }
   size_t activationFloor = std::max(minActivePrimitives, targetPrimitiveCount);
-
-  float globalEscape = _lastFrameGlobalEnvEscape;
-  float high = std::clamp(_residencyConfig.envHighEscapeThreshold, 0.0f, 1.0f);
-  float low = std::clamp(_residencyConfig.envLowEscapeThreshold, 0.0f, high);
-
-  if (globalEscape > high) {
-    activationFloor = std::min(
-        primitiveCount, static_cast<size_t>(activationFloor * 1.5f));
-  } else if (globalEscape < low) {
-    activationFloor = std::max(
-        minActivePrimitives, static_cast<size_t>(activationFloor * 0.8f));
-  }
-
   if (activationFloor == 0 && primitiveCount > 0)
     activationFloor = 1;
-  _frameEnvironmentActivationFloor = activationFloor;
 
   size_t desiredPrimitiveCount = 0;
   float weightedEscape = 0.0f;
