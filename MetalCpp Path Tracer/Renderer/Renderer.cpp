@@ -1538,6 +1538,8 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
     return "Probabilistic";
   case ResidencyStrategy::UnifiedScore:
     return "Unified score";
+  case ResidencyStrategy::PredictiveEnvironment:
+    return "Predictive environment";
   case ResidencyStrategy::EnvironmentHit:
     return "Environment hit";
   case ResidencyStrategy::AlwaysResident:
@@ -2351,6 +2353,9 @@ void Renderer::updateVisibleScene() {
     break;
   case ResidencyStrategy::UnifiedScore:
     strategyName = "Unified score";
+    break;
+  case ResidencyStrategy::PredictiveEnvironment:
+    strategyName = "Predictive environment";
     break;
   case ResidencyStrategy::EnvironmentHit:
     strategyName = "Environment hit";
@@ -6964,6 +6969,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
     break;
+  case ResidencyStrategy::PredictiveEnvironment:
+    changed = updatePredictiveResidency(forceAllToggles);
+    break;
   case ResidencyStrategy::EnvironmentHit:
     changed = updateEnvironmentHitResidency(forceAllToggles);
     break;
@@ -9964,6 +9972,346 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   return changed;
 }
 
+bool Renderer::updatePredictiveResidency(bool forceAllToggles) {
+  size_t objectCount = _allSceneObjects.size();
+  size_t primitiveCount = _activePrimitive.size();
+  if (objectCount == 0 || primitiveCount == 0)
+    return false;
+
+  if (_objectProbabilitySortedIndices.size() != objectCount) {
+    _objectProbabilitySortedIndices.resize(objectCount);
+    std::iota(_objectProbabilitySortedIndices.begin(),
+              _objectProbabilitySortedIndices.end(), size_t(0));
+  }
+
+  if (_objectImportance.size() != objectCount)
+    _objectImportance.assign(objectCount, 0.0f);
+  else
+    std::fill(_objectImportance.begin(), _objectImportance.end(), 0.0f);
+
+  if (_objectVisible.size() < objectCount)
+    _objectVisible.resize(objectCount, 0u);
+
+  std::vector<uint8_t> desiredObjectState(objectCount, 0);
+  std::vector<float> weightedPredictive(objectCount, 0.0f);
+
+  auto computeDepthWeight = [&](size_t objectIndex) -> float {
+    const auto &weights = _residencyConfig.environmentDepthWeights;
+    if (weights.empty())
+      return 1.0f;
+    const auto &radii = _residencyConfig.environmentDepthRadii;
+    size_t pairCount = std::min(weights.size(), radii.size());
+    if (pairCount == 0)
+      return weights.back();
+    float fallbackWeight = weights[pairCount - 1];
+    if (objectIndex >= _objectBounds.size())
+      return fallbackWeight;
+
+    simd::float3 toCenter = _objectBounds[objectIndex].center - Camera::position;
+    float distance = simd::length(toCenter);
+    if (!(distance > 0.0f))
+      return weights.front();
+
+    auto end = radii.begin() + pairCount;
+    auto lowerBound = std::lower_bound(radii.begin(), end, distance);
+    if (lowerBound != end)
+      return weights[std::distance(radii.begin(), lowerBound)];
+    return fallbackWeight;
+  };
+
+  constexpr float kExplorationPriorFloor = 1.0e-4f;
+  constexpr float kExplorationPriorScale = 0.5f;
+
+  constexpr float kVisibleWeightBoost = 2.0f;
+  constexpr float kHiddenWeightPenalty = 0.05f;
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    float hitProbability =
+        (objectIndex < _objectHitProbability.size())
+            ? std::clamp(_objectHitProbability[objectIndex], 0.0f, 1.0f)
+            : 0.0f;
+    bool hasEvidence =
+        (objectIndex < _objectRaysTestedLastFrame.size())
+            ? (_objectRaysTestedLastFrame[objectIndex] > 0)
+            : false;
+    bool currentlyActive =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+
+    bool visible =
+        (objectIndex < _objectBounds.size()) ? isInView(_objectBounds[objectIndex])
+                                             : false;
+    if (objectIndex < _objectVisible.size())
+      _objectVisible[objectIndex] = visible ? 1u : 0u;
+
+    if (!hasEvidence && !currentlyActive) {
+      float exploration =
+          (objectIndex < _objectExplorationScore.size())
+              ? std::max(_objectExplorationScore[objectIndex], 0.0f)
+              : 0.0f;
+      float visibilityHint =
+          (objectIndex < _objectVisible.size()) ? _objectVisible[objectIndex] : 0u;
+      float explorationPrior = 1.0f -
+                               std::exp(-exploration * kExplorationPriorScale);
+      if (visibilityHint) {
+        float hintedPrior = 1.0f -
+                            std::exp(-kIdleVisibleExploreSeed *
+                                     kExplorationPriorScale);
+        explorationPrior = std::max(explorationPrior, hintedPrior);
+      }
+      explorationPrior =
+          std::clamp(explorationPrior, kExplorationPriorFloor, 1.0f);
+      hitProbability = std::max(hitProbability, explorationPrior);
+    }
+
+    float rayHitScore =
+        (objectIndex < _objectRayHitScore.size()) ? _objectRayHitScore[objectIndex]
+                                                  : 0.0f;
+    size_t primitiveBudget =
+        (objectIndex < _allSceneObjects.size())
+            ? _allSceneObjects[objectIndex].primitiveCount
+            : size_t(0);
+    float normalizedHitScore = rayHitScore;
+    if (primitiveBudget > 0)
+      normalizedHitScore /= static_cast<float>(primitiveBudget);
+    if (normalizedHitScore <= 0.0f && (currentlyActive || visible))
+      normalizedHitScore = 1.0f;
+
+    _objectImportance[objectIndex] = hitProbability;
+
+    float predictiveScore = normalizedHitScore * hitProbability;
+    float depthWeight = computeDepthWeight(objectIndex);
+    float visibilityWeight = visible ? kVisibleWeightBoost : kHiddenWeightPenalty;
+    float weighted = predictiveScore * std::max(depthWeight, 0.0f) *
+                     std::max(visibilityWeight, 0.0f);
+    weightedPredictive[objectIndex] = std::isfinite(weighted) ? weighted : 0.0f;
+  }
+
+  auto &sortedIndices = _objectProbabilitySortedIndices;
+  std::sort(sortedIndices.begin(), sortedIndices.end(),
+            [&](size_t a, size_t b) {
+              float scoreA =
+                  (a < weightedPredictive.size()) ? weightedPredictive[a] : 0.0f;
+              float scoreB =
+                  (b < weightedPredictive.size()) ? weightedPredictive[b] : 0.0f;
+              if (scoreA == scoreB) {
+                float importanceA =
+                    (a < _objectImportance.size()) ? _objectImportance[a] : 0.0f;
+                float importanceB =
+                    (b < _objectImportance.size()) ? _objectImportance[b] : 0.0f;
+                if (importanceA == importanceB)
+                  return a < b;
+                return importanceA > importanceB;
+              }
+              return scoreA > scoreB;
+            });
+
+  float escapeThreshold =
+      std::clamp(_residencyConfig.environmentEscapeThreshold, 0.0f, 1.0f);
+  size_t minActivePrimitives =
+      std::min(primitiveCount, _residencyConfig.environmentMinActivePrimitives);
+  if (minActivePrimitives == 0 && primitiveCount > 0)
+    minActivePrimitives = 1;
+
+  float targetFraction =
+      std::clamp(_residencyConfig.environmentTargetActiveFraction, 0.0f, 1.0f);
+  size_t targetPrimitiveCount = 0;
+  if (targetFraction > 0.0f && primitiveCount > 0) {
+    targetPrimitiveCount = static_cast<size_t>(std::ceil(
+        targetFraction * static_cast<float>(primitiveCount)));
+    targetPrimitiveCount = std::min(targetPrimitiveCount, primitiveCount);
+  }
+  size_t activationFloor = std::max(minActivePrimitives, targetPrimitiveCount);
+  if (activationFloor == 0 && primitiveCount > 0)
+    activationFloor = 1;
+
+  size_t desiredPrimitiveCount = 0;
+  float weightedEscape = 0.0f;
+  auto averageEscape = [](size_t primCount, float weighted) {
+    if (primCount == 0)
+      return 1.0f;
+    return weighted / static_cast<float>(primCount);
+  };
+
+  for (size_t objectIndex : sortedIndices) {
+    if (objectIndex >= _allSceneObjects.size())
+      continue;
+    const SceneObject &object = _allSceneObjects[objectIndex];
+    if (object.primitiveCount == 0)
+      continue;
+
+    bool needMorePrimitives = desiredPrimitiveCount < activationFloor;
+    bool needsEscapeReduction =
+        averageEscape(desiredPrimitiveCount, weightedEscape) > escapeThreshold;
+    if (!needMorePrimitives && !needsEscapeReduction)
+      break;
+
+    desiredObjectState[objectIndex] = 1;
+    desiredPrimitiveCount += object.primitiveCount;
+    float escapeProbability =
+        1.0f - ((objectIndex < _objectImportance.size())
+                    ? _objectImportance[objectIndex]
+                    : 0.0f);
+    weightedEscape += escapeProbability * static_cast<float>(object.primitiveCount);
+  }
+
+  if (desiredPrimitiveCount == 0 && primitiveCount > 0) {
+    for (size_t objectIndex : sortedIndices) {
+      if (objectIndex >= _allSceneObjects.size())
+        continue;
+      const SceneObject &object = _allSceneObjects[objectIndex];
+      if (object.primitiveCount == 0)
+        continue;
+      desiredObjectState[objectIndex] = 1;
+      desiredPrimitiveCount = object.primitiveCount;
+      float escapeProbability =
+          1.0f - ((objectIndex < _objectImportance.size())
+                      ? _objectImportance[objectIndex]
+                      : 0.0f);
+      weightedEscape =
+          escapeProbability * static_cast<float>(object.primitiveCount);
+      break;
+    }
+  }
+
+  bool changed = false;
+  size_t offscreenActivePrimitiveCount = 0;
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    bool active =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    bool visible = (objectIndex < _objectVisible.size())
+                       ? (_objectVisible[objectIndex] != 0)
+                       : false;
+    if (!active || visible)
+      continue;
+
+    size_t primitives = 0;
+    if (objectIndex < _objectPrimitiveCounts.size())
+      primitives = _objectPrimitiveCounts[objectIndex];
+    else if (objectIndex < _allSceneObjects.size())
+      primitives = _allSceneObjects[objectIndex].primitiveCount;
+
+    offscreenActivePrimitiveCount += primitives;
+  }
+
+  size_t baseToggleBudget = _residencyConfig.environmentMaxTogglesPerFrame;
+  size_t maxToggleBudget = baseToggleBudget;
+  if (offscreenActivePrimitiveCount > baseToggleBudget) {
+    size_t catchUpBudget = (offscreenActivePrimitiveCount + 1) / 2;
+    maxToggleBudget = std::max(baseToggleBudget, catchUpBudget);
+  }
+
+  size_t reservedOffscreenBudget =
+      (maxToggleBudget == 0) ? 0 : std::max<size_t>(1, maxToggleBudget / 4);
+  size_t generalBudget =
+      (maxToggleBudget > reservedOffscreenBudget)
+          ? (maxToggleBudget - reservedOffscreenBudget)
+          : 0;
+  size_t totalBudget = maxToggleBudget + reservedOffscreenBudget;
+
+  size_t toggledPrimitiveCount = 0;
+
+  for (size_t objectIndex : sortedIndices) {
+    bool shouldBeActive =
+        (objectIndex < desiredObjectState.size()) ? desiredObjectState[objectIndex]
+                                                  : 0;
+    bool currentlyActive =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    if (shouldBeActive == currentlyActive)
+      continue;
+
+    bool visible = (objectIndex < _objectVisible.size())
+                       ? (_objectVisible[objectIndex] != 0)
+                       : false;
+    float importance =
+        (objectIndex < _objectImportance.size()) ? _objectImportance[objectIndex]
+                                                 : 0.0f;
+    bool lowImportanceOffscreen = !visible && (importance < escapeThreshold);
+    bool bypassCooldowns = currentlyActive && !shouldBeActive &&
+                           lowImportanceOffscreen;
+
+    if (!forceAllToggles && !bypassCooldowns && objectIndex < _objectCooldown.size() &&
+        _objectCooldown[objectIndex] > 0)
+      continue;
+
+    const SceneObject &object = _allSceneObjects[objectIndex];
+    size_t first = object.firstPrimitive;
+    size_t last = std::min(first + object.primitiveCount, _activePrimitive.size());
+    if (last <= first)
+      continue;
+
+    bool canToggle = true;
+    size_t pendingToggles = 0;
+    for (size_t prim = first; prim < last; ++prim) {
+      if (_activePrimitive[prim] == shouldBeActive)
+        continue;
+      if (!forceAllToggles && !bypassCooldowns && prim < _primitiveCooldown.size() &&
+          _primitiveCooldown[prim] > 0) {
+        canToggle = false;
+        break;
+      }
+      ++pendingToggles;
+    }
+
+    if (!canToggle || pendingToggles == 0)
+      continue;
+
+    if (!forceAllToggles) {
+      if (bypassCooldowns) {
+        if (toggledPrimitiveCount >= totalBudget)
+          continue;
+      } else {
+        if (toggledPrimitiveCount >= generalBudget)
+          continue;
+      }
+    }
+
+    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+    if (toggled > 0) {
+      changed = true;
+      if (!forceAllToggles) {
+        toggledPrimitiveCount =
+            std::min(toggledPrimitiveCount + toggled, totalBudget);
+      }
+    }
+  }
+
+  bool anyActiveObject = false;
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (objectIndex >= _objectActive.size())
+      continue;
+    if (objectIndex >= _objectPrimitiveCounts.size())
+      continue;
+    if (_objectPrimitiveCounts[objectIndex] == 0)
+      continue;
+    if (_objectActive[objectIndex]) {
+      anyActiveObject = true;
+      break;
+    }
+  }
+
+  if (!anyActiveObject) {
+    for (size_t objectIndex : sortedIndices) {
+      if (objectIndex >= _objectPrimitiveCounts.size())
+        continue;
+      if (_objectPrimitiveCounts[objectIndex] == 0)
+        continue;
+      if (setObjectActive(objectIndex, true) > 0) {
+        changed = true;
+        anyActiveObject = true;
+      }
+      if (anyActiveObject)
+        break;
+    }
+  }
+
+  if (!anyActiveObject && !_activePrimitive.empty()) {
+    if (setPrimitiveActive(0, true))
+      changed = true;
+  }
+
+  return changed;
+}
+
 bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
   size_t objectCount = _allSceneObjects.size();
   size_t primitiveCount = _activePrimitive.size();
@@ -10520,6 +10868,7 @@ void Renderer::processRayHitCounters() {
     _objectHitVariance.clear();
     _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
+    _objectRayHitScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
     _objectVisible.clear();
@@ -10549,6 +10898,7 @@ void Renderer::processRayHitCounters() {
     _objectHitVariance.clear();
     _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
+    _objectRayHitScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
     _objectVisible.clear();
@@ -10577,6 +10927,7 @@ void Renderer::processRayHitCounters() {
     _objectHitVariance.clear();
     _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
+    _objectRayHitScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
     _objectVisible.clear();
@@ -10592,6 +10943,7 @@ void Renderer::processRayHitCounters() {
       strategy == ResidencyStrategy::RayHitBudget ||
       strategy == ResidencyStrategy::Probabilistic ||
       strategy == ResidencyStrategy::EnvironmentHit ||
+      strategy == ResidencyStrategy::PredictiveEnvironment ||
       strategy == ResidencyStrategy::UnifiedScore;
   if (!strategyUsesHits) {
     std::memset(hitPtr, 0, bufferLength);
@@ -10844,6 +11196,7 @@ void Renderer::processRayHitCounters() {
     _objectHitVariance.clear();
     _objectPosteriorMass.clear();
     _objectExplorationScore.clear();
+    _objectRayHitScore.clear();
     _objectHitLastFrame.clear();
     _objectRaysTestedLastFrame.clear();
     _objectVisible.clear();
@@ -10863,6 +11216,8 @@ void Renderer::processRayHitCounters() {
     _objectPosteriorMass.resize(objectCount, 2.0f);
   if (_objectExplorationScore.size() < objectCount)
     _objectExplorationScore.resize(objectCount, 0.0f);
+  if (_objectRayHitScore.size() < objectCount)
+    _objectRayHitScore.resize(objectCount, 0.0f);
   if (_objectHitLastFrame.size() < objectCount)
     _objectHitLastFrame.resize(objectCount, 0u);
   if (_objectRaysTestedLastFrame.size() < objectCount)
@@ -10911,6 +11266,9 @@ void Renderer::processRayHitCounters() {
     _objectHitLastFrame[objectIndex] = static_cast<uint32_t>(success);
     _objectRaysTestedLastFrame[objectIndex] =
         static_cast<uint32_t>(raysTested);
+    float decayedHits =
+        (_objectRayHitScore[objectIndex] * rayHitDecay) + success;
+    _objectRayHitScore[objectIndex] = decayedHits;
 
     float failure = std::max(raysTested - success, 0.0f);
     float alpha = _objectHitAlpha[objectIndex] * probabilityDecay + success;
