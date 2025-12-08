@@ -656,6 +656,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                    value == "environment_hit" || value == "envhit" ||
                    value == "env_hit" || value == "env") {
             scene->setResidencyStrategy(ResidencyStrategy::EnvironmentHit);
+        } else if (value == "predictive" || value == "predictive_environment" ||
+                   value == "predictive-env" || value == "predictive_env") {
+            scene->setResidencyStrategy(ResidencyStrategy::PredictiveEnvironment);
         } else {
             printf("Unknown residency strategy '%s', defaulting to distance LOD.\n",
                    residencyAttr);

@@ -172,6 +172,7 @@ private:
   void resetProbabilisticResidencyState();
   bool updateScreenSpaceFootprint(bool forceAllToggles);
   bool updateEnvironmentHitResidency(bool forceAllToggles);
+  bool updatePredictiveResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
@@ -476,6 +477,7 @@ private:
   std::vector<float> _objectHitVariance;
   std::vector<float> _objectPosteriorMass;
   std::vector<float> _objectExplorationScore;
+  std::vector<float> _objectRayHitScore;
   std::vector<uint32_t> _objectHitLastFrame;
   std::vector<uint32_t> _objectRaysTestedLastFrame;
   std::vector<uint32_t> _objectIdleFrames;
