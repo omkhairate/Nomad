@@ -1491,15 +1491,15 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << boolToInt(sample.overMemoryCap) << ','
       << boolToInt(sample.residentCompacted) << ','
       << boolToInt(sample.accumulationReset) << ','
-      << formatFixed(_residencyConfig.rayHitDecay, 3) << ','
+      << formatFixed(sample.rayHitDecay, 3) << ','
       << _residencyConfig.stateCooldownFrames << ','
       << _residencyConfig.lodMaxTogglesPerFrame << ','
       << _residencyConfig.energyMaxTogglesPerFrame << ','
       << _residencyConfig.screenFootprintMaxTogglesPerFrame << ','
-      << _residencyConfig.rayHitMaxTogglesPerFrame << ','
-      << formatFixed(_residencyConfig.rayHitTargetFraction, 3) << ','
-      << _residencyConfig.rayHitMinActivePrimitives << ','
-      << _residencyConfig.rayHitRebuildCooldownFrames << ','
+      << sample.rayHitMaxTogglesPerFrame << ','
+      << formatFixed(sample.rayHitTargetFraction, 3) << ','
+      << sample.rayHitMinActivePrimitives << ','
+      << sample.rayHitRebuildCooldownFrames << ','
       << boolToInt(_residencyConfig.enableRayHitPrior) << ','
       << formatFixed(_residencyConfig.rayHitPriorScale, 3) << ','
       << boolToInt(_residencyConfig.rayHitPriorFavorHighProbability) << ','
@@ -2324,6 +2324,7 @@ void Renderer::updateVisibleScene() {
 
   _residencyConfig = _pScene->getResidencyParameters();
   _residencyConfig.normalizeEnvironmentDepthSettings();
+  _baseResidencyConfig = _residencyConfig;
   bool requiresCachedBlas =
       _pScene->getResidencyStrategy() != ResidencyStrategy::AlwaysResident;
   if (_residencyConfig.buildCachedBlas != requiresCachedBlas) {
@@ -6957,6 +6958,12 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   }
   _frameStrategy = strategy;
 
+  _frameRayHitTargetFraction = _baseResidencyConfig.rayHitTargetFraction;
+  _frameRayHitMinActivePrimitives = _baseResidencyConfig.rayHitMinActivePrimitives;
+  _frameRayHitMaxTogglesPerFrame = _baseResidencyConfig.rayHitMaxTogglesPerFrame;
+  _frameRayHitRebuildCooldownFrames = _baseResidencyConfig.rayHitRebuildCooldownFrames;
+  _frameRayHitDecay = _baseResidencyConfig.rayHitDecay;
+
   for (uint32_t &cooldown : _primitiveCooldown)
     if (cooldown > 0)
       --cooldown;
@@ -8503,10 +8510,72 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
 
   const auto &adjustedScores = hitScores;
 
+  auto lerp = [](float a, float b, float t) { return a + (b - a) * t; };
+  auto clampScaled = [&](float base, float conservativeScale,
+                         float aggressiveScale, float minClamp,
+                         float maxClamp, float weight) {
+    float scaled = lerp(base * conservativeScale, base * aggressiveScale, weight);
+    float lower = std::min(base * conservativeScale, base * aggressiveScale);
+    float upper = std::max(base * conservativeScale, base * aggressiveScale);
+    float clamped = std::clamp(scaled, lower, upper);
+    return std::clamp(clamped, minClamp, maxClamp);
+  };
+
+  auto computeAverageObjectHitProbability = [&]() {
+    double probabilitySum = 0.0;
+    size_t count = 0;
+    for (float probability : _objectHitProbability) {
+      if (!std::isfinite(probability))
+        continue;
+      probabilitySum += std::clamp(probability, 0.0f, 1.0f);
+      ++count;
+    }
+    if (count == 0)
+      return 0.5f;
+    return static_cast<float>(probabilitySum / static_cast<double>(count));
+  };
+
+  float globalEscape = std::clamp(_lastFrameGlobalEnvEscape, 0.0f, 1.0f);
+  float averageHitProbability = computeAverageObjectHitProbability();
+
+  float highEscape = std::clamp(_residencyConfig.envHighEscapeThreshold, 0.0f, 1.0f);
+  float lowEscape = std::clamp(_residencyConfig.envLowEscapeThreshold, 0.0f, highEscape);
+  float escapeRange = std::max(highEscape - lowEscape, 1.0e-3f);
+  float escapePressure = std::clamp((globalEscape - lowEscape) / escapeRange, 0.0f, 1.0f);
+  float hitPressure = std::clamp(1.0f - averageHitProbability, 0.0f, 1.0f);
+  float pressure = std::clamp(0.65f * escapePressure + 0.35f * hitPressure, 0.0f, 1.0f);
+
+  float targetFraction = clampScaled(_baseResidencyConfig.rayHitTargetFraction, 0.85f,
+                                     1.25f, 0.05f, 0.95f, pressure);
+  size_t minActiveDynamic = static_cast<size_t>(std::round(clampScaled(
+      static_cast<float>(_baseResidencyConfig.rayHitMinActivePrimitives), 0.85f,
+      1.5f, 1.0f, static_cast<float>(primCount), pressure)));
+  size_t toggleBudget = static_cast<size_t>(std::round(clampScaled(
+      static_cast<float>(_baseResidencyConfig.rayHitMaxTogglesPerFrame), 0.5f,
+      2.0f, 1.0f,
+      static_cast<float>(_baseResidencyConfig.rayHitMaxTogglesPerFrame * 3),
+      pressure)));
+  uint32_t rebuildCooldownFrames = static_cast<uint32_t>(std::round(clampScaled(
+      static_cast<float>(_baseResidencyConfig.rayHitRebuildCooldownFrames), 1.25f,
+      0.5f, 1.0f,
+      static_cast<float>(_baseResidencyConfig.rayHitRebuildCooldownFrames * 2),
+      pressure)));
+  float rayHitDecay = clampScaled(_baseResidencyConfig.rayHitDecay, 1.05f, 0.85f,
+                                  0.5f, 0.995f, pressure);
+
+  minActiveDynamic = std::max<size_t>(1, minActiveDynamic);
+  toggleBudget = std::max<size_t>(1, toggleBudget);
+  rebuildCooldownFrames = std::max<uint32_t>(1u, rebuildCooldownFrames);
+
+  _frameRayHitTargetFraction = targetFraction;
+  _frameRayHitMinActivePrimitives = minActiveDynamic;
+  _frameRayHitMaxTogglesPerFrame = toggleBudget;
+  _frameRayHitRebuildCooldownFrames = rebuildCooldownFrames;
+  _frameRayHitDecay = rayHitDecay;
+
   const size_t minActive =
-      std::min(primCount, _residencyConfig.rayHitMinActivePrimitives);
-  size_t targetActive = static_cast<size_t>(
-      std::ceil(primCount * _residencyConfig.rayHitTargetFraction));
+      std::min(primCount, minActiveDynamic);
+  size_t targetActive = static_cast<size_t>(std::ceil(primCount * targetFraction));
   targetActive = std::max(targetActive, minActive);
   targetActive = std::min(targetActive, primCount);
 
@@ -8554,7 +8623,7 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
     if (!forceAllToggles) {
       if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
         continue;
-      if (toggles >= _residencyConfig.rayHitMaxTogglesPerFrame)
+      if (toggles >= toggleBudget)
         break;
     }
     if (setPrimitiveActive(i, shouldBeActive)) {
@@ -8576,7 +8645,7 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
   }
 
   if (changed)
-    _rayHitRebuildCooldown = _residencyConfig.rayHitRebuildCooldownFrames;
+    _rayHitRebuildCooldown = rebuildCooldownFrames;
 
   return changed;
 }
@@ -11584,6 +11653,11 @@ void Renderer::beginFrameMetrics() {
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
     sample.probabilityTargetFraction = _residencyConfig.probabilityTargetFraction;
     sample.probabilityVisibleFloor = _residencyConfig.probabilityVisibleFloor;
+    sample.rayHitDecay = _frameRayHitDecay;
+    sample.rayHitTargetFraction = _frameRayHitTargetFraction;
+    sample.rayHitMinActivePrimitives = _frameRayHitMinActivePrimitives;
+    sample.rayHitMaxTogglesPerFrame = _frameRayHitMaxTogglesPerFrame;
+    sample.rayHitRebuildCooldownFrames = _frameRayHitRebuildCooldownFrames;
     sample.environmentTargetActiveFraction =
         _residencyConfig.environmentTargetActiveFraction;
     sample.environmentEscapeThreshold =

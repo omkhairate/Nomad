@@ -393,6 +393,11 @@ private:
     double probabilityThreshold = 0.0;
     double probabilityTargetFraction = 0.0;
     double probabilityVisibleFloor = 0.0;
+    double rayHitDecay = 0.0;
+    double rayHitTargetFraction = 0.0;
+    size_t rayHitMinActivePrimitives = 0;
+    size_t rayHitMaxTogglesPerFrame = 0;
+    uint32_t rayHitRebuildCooldownFrames = 0;
     std::string primitiveProbabilities;
     std::string objectProbabilities;
     size_t probabilisticToggles = 0;
@@ -614,7 +619,14 @@ private:
 
   size_t _animationFrame = 0;
 
+  ResidencyParameters _baseResidencyConfig;
   ResidencyParameters _residencyConfig;
+
+  float _frameRayHitTargetFraction = 0.0f;
+  size_t _frameRayHitMinActivePrimitives = 0;
+  size_t _frameRayHitMaxTogglesPerFrame = 0;
+  uint32_t _frameRayHitRebuildCooldownFrames = 0;
+  float _frameRayHitDecay = 0.0f;
 
   bool _benchmarkEnabled = false;
   bool _benchmarkHeaderWritten = false;
