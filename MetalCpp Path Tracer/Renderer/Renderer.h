@@ -488,6 +488,8 @@ private:
   std::vector<uint8_t> _objectVisible;
   std::vector<float> _objectVisibilityEvidence;
   std::vector<size_t> _objectProbabilitySortedIndices;
+  std::vector<float> _objectDepthWeight;
+  std::vector<uint64_t> _objectDepthWeightVersion;
   std::vector<float> _primitiveScreenCoverage;
   std::vector<float> _primitiveDistanceFalloffCache;
   std::vector<uint8_t> _primitiveCoverageDirty;
@@ -500,6 +502,7 @@ private:
   std::vector<uint64_t> _objectBoundsVersion;
   uint64_t _boundsVersionCounter = 1;
   uint64_t _cameraVersion = 1;
+  uint64_t _depthWeightCameraVersion = 0;
   uint64_t _lastResidentFlushCameraVersion = 0;
   uint64_t _coverageCameraVersion = 0;
   std::vector<size_t> _screenCoverageSortedIndices;
