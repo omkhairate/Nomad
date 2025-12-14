@@ -2378,6 +2378,7 @@ void Renderer::updateVisibleScene() {
   _alwaysResidentCache.reset();
 
   ++_cameraVersion;
+  _depthWeightCameraVersion = 0;
   _coverageCameraVersion = 0;
   _boundsVersionCounter = 1;
 
@@ -2531,6 +2532,9 @@ void Renderer::updateVisibleScene() {
   _objectProbabilitySortedIndices.resize(objectCount);
   std::iota(_objectProbabilitySortedIndices.begin(),
             _objectProbabilitySortedIndices.end(), size_t(0));
+  _objectDepthWeight.assign(objectCount, 1.0f);
+  _objectDepthWeightVersion.assign(objectCount, 0);
+  _depthWeightCameraVersion = 0;
 
   _meshGroups.clear();
   _meshGroups.reserve(objectCount);
@@ -6401,6 +6405,7 @@ bool Renderer::updateCameraStates() {
                      hadObserver != _observerActive;
   if (viewChanged) {
     ++_cameraVersion;
+    _depthWeightCameraVersion = 0;
     recalculateViewport();
   }
 
@@ -10346,6 +10351,13 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
   std::vector<uint8_t> desiredObjectState(objectCount, 0);
   std::vector<float> weightedImportance(objectCount, 0.0f);
 
+  if (_objectDepthWeight.size() < objectCount)
+    _objectDepthWeight.resize(objectCount, 1.0f);
+  if (_objectDepthWeightVersion.size() < objectCount)
+    _objectDepthWeightVersion.resize(objectCount, 0);
+
+  bool cameraChanged = _depthWeightCameraVersion != _cameraVersion;
+
   auto computeDepthWeight = [&](size_t objectIndex) -> float {
     const auto &weights = _residencyConfig.environmentDepthWeights;
     if (weights.empty())
@@ -10368,6 +10380,27 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     if (lowerBound != end)
       return weights[std::distance(radii.begin(), lowerBound)];
     return fallbackWeight;
+  };
+
+  auto depthWeightForObject = [&](size_t objectIndex) -> float {
+    uint64_t objectVersion =
+        (objectIndex < _objectBoundsVersion.size()) ? _objectBoundsVersion[objectIndex] : 0;
+    uint64_t cachedVersion =
+        (objectIndex < _objectDepthWeightVersion.size()) ? _objectDepthWeightVersion[objectIndex]
+                                                         : 0;
+
+    if (cameraChanged || cachedVersion != objectVersion) {
+      float depthWeight = computeDepthWeight(objectIndex);
+      if (objectIndex < _objectDepthWeight.size())
+        _objectDepthWeight[objectIndex] = depthWeight;
+      if (objectIndex < _objectDepthWeightVersion.size())
+        _objectDepthWeightVersion[objectIndex] = objectVersion;
+      return depthWeight;
+    }
+
+    if (objectIndex < _objectDepthWeight.size())
+      return _objectDepthWeight[objectIndex];
+    return 1.0f;
   };
 
   constexpr float kExplorationPriorFloor = 1.0e-4f;
@@ -10416,12 +10449,14 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
 
     _objectImportance[objectIndex] = hitProbability;
 
-    float depthWeight = computeDepthWeight(objectIndex);
+    float depthWeight = depthWeightForObject(objectIndex);
     float visibilityWeight = visible ? kVisibleWeightBoost : kHiddenWeightPenalty;
     float weighted = hitProbability * std::max(depthWeight, 0.0f) *
                      std::max(visibilityWeight, 0.0f);
     weightedImportance[objectIndex] = std::isfinite(weighted) ? weighted : 0.0f;
   }
+
+  _depthWeightCameraVersion = _cameraVersion;
 
   auto &sortedIndices = _objectProbabilitySortedIndices;
   std::sort(sortedIndices.begin(), sortedIndices.end(),
