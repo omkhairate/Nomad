@@ -394,6 +394,8 @@ private:
     double probabilityThreshold = 0.0;
     double probabilityTargetFraction = 0.0;
     double probabilityVisibleFloor = 0.0;
+    double restirReuseRate = 0.0;
+    double restirCandidateAcceptance = 0.0;
     std::string primitiveProbabilities;
     std::string objectProbabilities;
     size_t probabilisticToggles = 0;
@@ -448,6 +450,8 @@ private:
   std::vector<size_t> _primitiveToObject;
   std::vector<BoundingSphere> _primitiveBounds;
   std::vector<SceneObject> _allSceneObjects;
+  double _frameRestirReuseRate = 0.0;
+  double _frameRestirCandidateAcceptance = 0.0;
   std::vector<BoundingSphere> _objectBounds;
   std::vector<bool> _objectActive;
   std::vector<uint32_t> _objectCooldown;
