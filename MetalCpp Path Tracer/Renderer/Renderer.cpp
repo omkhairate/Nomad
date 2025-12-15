@@ -1541,6 +1541,8 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
     return "Screen-space footprint";
   case ResidencyStrategy::Probabilistic:
     return "Probabilistic";
+  case ResidencyStrategy::ReSTIR:
+    return "ReSTIR RIS";
   case ResidencyStrategy::UnifiedScore:
     return "Unified score";
   case ResidencyStrategy::PredictiveEnvironment:
@@ -2358,6 +2360,9 @@ void Renderer::updateVisibleScene() {
     break;
   case ResidencyStrategy::UnifiedScore:
     strategyName = "Unified score";
+    break;
+  case ResidencyStrategy::ReSTIR:
+    strategyName = "ReSTIR RIS";
     break;
   case ResidencyStrategy::PredictiveEnvironment:
     strategyName = "Predictive environment";
@@ -6980,6 +6985,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   case ResidencyStrategy::Probabilistic:
     changed = updateProbabilisticResidency(forceAllToggles);
     break;
+  case ResidencyStrategy::ReSTIR:
+    changed = updateProbabilisticResidency(forceAllToggles);
+    break;
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
     break;
@@ -11004,6 +11012,7 @@ void Renderer::processRayHitCounters() {
   bool strategyUsesHits =
       strategy == ResidencyStrategy::RayHitBudget ||
       strategy == ResidencyStrategy::Probabilistic ||
+      strategy == ResidencyStrategy::ReSTIR ||
       strategy == ResidencyStrategy::EnvironmentHit ||
       strategy == ResidencyStrategy::PredictiveEnvironment ||
       strategy == ResidencyStrategy::UnifiedScore;

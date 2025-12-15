@@ -649,6 +649,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                    value == "probabilistic_residency" ||
                    value == "probability_residency") {
             scene->setResidencyStrategy(ResidencyStrategy::Probabilistic);
+        } else if (value == "restir" || value == "restir_ris" ||
+                   value == "ris") {
+            scene->setResidencyStrategy(ResidencyStrategy::ReSTIR);
         } else if (value == "alwaysresident" || value == "always_resident" ||
                    value == "always" || value == "none" || value == "off") {
             scene->setResidencyStrategy(ResidencyStrategy::AlwaysResident);

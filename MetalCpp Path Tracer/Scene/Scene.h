@@ -22,6 +22,7 @@ enum class ResidencyStrategy {
   EnvironmentHit = 6,
   PredictiveEnvironment = 7,
   UnifiedScore = 8,
+  ReSTIR = 9,
 };
 
 struct SceneObject {
