@@ -1399,7 +1399,8 @@ void Renderer::writeBenchmarkHeader() {
          "probability_initial_desired_primitives,"
          "probability_final_desired_primitives,probability_trimmed_primitives,"
          "probability_budget_hit,restir_reservoir_size,restir_reuse_weight,"
-         "restir_candidate_count,restir_toggle_budget,primitive_probabilities,"
+        "restir_candidate_count,restir_toggle_budget,restir_reuse_rate,"
+        "restir_candidate_acceptance,primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,"
@@ -1487,7 +1488,9 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << _residencyConfig.restirReservoirSize << ','
       << formatFixed(_residencyConfig.restirReuseWeight, 3) << ','
       << _residencyConfig.restirCandidateCount << ','
-      << _residencyConfig.restirMaxTogglesPerFrame << ',';
+      << _residencyConfig.restirMaxTogglesPerFrame << ','
+      << formatFixed(sample.restirReuseRate, 3) << ','
+      << formatFixed(sample.restirCandidateAcceptance, 3) << ',';
   appendCsvEscaped(row, sample.primitiveProbabilities);
   row << ',';
   appendCsvEscaped(row, sample.objectProbabilities);
@@ -6969,6 +6972,8 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameObjectDeactivations = 0;
   _frameProbabilisticToggles = 0;
   _frameEnvironmentActivationFloor = 0;
+  _frameRestirReuseRate = 0.0;
+  _frameRestirCandidateAcceptance = 0.0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
   if (strategy != _lastResidencyStrategy) {
     if (strategy == ResidencyStrategy::AlwaysResident)
@@ -9733,6 +9738,9 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
   const float hysteresis =
       std::max(0.0f, _residencyConfig.probabilityDesiredHysteresis);
 
+  double reuseWeightSum = 0.0;
+  double candidateWeightSum = 0.0;
+
   if (_restirReservoirWeight.size() < primCount)
     _restirReservoirWeight.resize(primCount, 0.0f);
   if (_restirReservoirSampleCount.size() < primCount)
@@ -9778,6 +9786,9 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
         prevWeight + candidateWeight * static_cast<float>(candidateCount);
     float accumulatedCount =
         prevCount + static_cast<float>(candidateCount);
+    reuseWeightSum += static_cast<double>(prevWeight);
+    candidateWeightSum +=
+        static_cast<double>(candidateWeight) * static_cast<double>(candidateCount);
     if (accumulatedCount > static_cast<float>(reservoirSize)) {
       float scale = static_cast<float>(reservoirSize) / accumulatedCount;
       accumulatedCount = static_cast<float>(reservoirSize);
@@ -9873,6 +9884,19 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
     if (setPrimitiveActive(fallback, true))
       changed = true;
   }
+
+  activeCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activeCount;
+
+  double totalWeight = reuseWeightSum + candidateWeightSum;
+  _frameRestirReuseRate =
+      (totalWeight > 0.0) ? (reuseWeightSum / totalWeight) : 0.0;
+  _frameRestirCandidateAcceptance =
+      primCount > 0 ? static_cast<double>(activeCount) /
+                          static_cast<double>(primCount)
+                    : 0.0;
 
   return changed;
 }
@@ -11800,6 +11824,8 @@ void Renderer::beginFrameMetrics() {
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
     sample.probabilityTargetFraction = _residencyConfig.probabilityTargetFraction;
     sample.probabilityVisibleFloor = _residencyConfig.probabilityVisibleFloor;
+    sample.restirReuseRate = _frameRestirReuseRate;
+    sample.restirCandidateAcceptance = _frameRestirCandidateAcceptance;
     sample.environmentTargetActiveFraction =
         _residencyConfig.environmentTargetActiveFraction;
     sample.environmentEscapeThreshold =
@@ -11910,8 +11936,12 @@ void Renderer::beginFrameMetrics() {
     sample.wallSeconds = std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - _benchmarkStartTime)
                             .count();
-    sample.strategy = _frameStrategy;
-    sample.strategyName = residencyStrategyName(_frameStrategy);
+    ResidencyStrategy currentStrategy = _frameStrategy;
+    if (_pScene)
+      currentStrategy = _pScene->getResidencyStrategy();
+    _frameStrategy = currentStrategy;
+    sample.strategy = currentStrategy;
+    sample.strategyName = residencyStrategyName(currentStrategy);
     sample.minSamplesPerPixel = _minSamplesPerPixel;
     sample.maxSamplesPerPixel = _maxSamplesPerPixel;
     sample.accumulationReset = _needsAccumulationReset;
