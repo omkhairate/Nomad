@@ -169,6 +169,7 @@ private:
   bool updateUnifiedResidency(bool forceAllToggles);
   bool updateRayHitBudget(bool forceAllToggles);
   bool updateProbabilisticResidency(bool forceAllToggles);
+  bool updateReSTIRResidency(bool forceAllToggles);
   void resetProbabilisticResidencyState();
   bool updateScreenSpaceFootprint(bool forceAllToggles);
   bool updateEnvironmentHitResidency(bool forceAllToggles);
@@ -475,6 +476,10 @@ private:
   std::vector<uint8_t> _primitiveVisible;
   std::vector<size_t> _rayHitSortedIndices;
   std::vector<size_t> _probabilitySortedIndices;
+  std::vector<float> _restirReservoirWeight;
+  std::vector<float> _restirReservoirSampleCount;
+  std::vector<float> _restirTemporalScore;
+  std::vector<size_t> _restirSortedIndices;
   std::vector<float> _objectHitAlpha;
   std::vector<float> _objectHitBeta;
   std::vector<float> _objectHitProbability;

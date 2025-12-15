@@ -1295,6 +1295,10 @@ void Renderer::resetProbabilisticResidencyState() {
             2.0f);
   std::fill(_primitiveExplorationScore.begin(),
             _primitiveExplorationScore.end(), 0.0f);
+  std::fill(_restirReservoirWeight.begin(), _restirReservoirWeight.end(), 0.0f);
+  std::fill(_restirReservoirSampleCount.begin(),
+            _restirReservoirSampleCount.end(), 0.0f);
+  std::fill(_restirTemporalScore.begin(), _restirTemporalScore.end(), 0.0f);
 
   std::fill(_objectHitAlpha.begin(), _objectHitAlpha.end(), 1.0f);
   std::fill(_objectHitBeta.begin(), _objectHitBeta.end(), 1.0f);
@@ -1394,8 +1398,9 @@ void Renderer::writeBenchmarkHeader() {
          "probability_target_primitives,"
          "probability_initial_desired_primitives,"
          "probability_final_desired_primitives,probability_trimmed_primitives,"
-         "probability_budget_hit,primitive_probabilities,object_probabilities,"
-         "probabilistic_toggles,"
+         "probability_budget_hit,restir_reservoir_size,restir_reuse_weight,"
+         "restir_candidate_count,restir_toggle_budget,primitive_probabilities,"
+         "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,"
          "over_memory_cap,residency_compacted,"
@@ -1478,7 +1483,11 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.probabilityInitialDesiredPrimitives << ','
       << sample.probabilityFinalDesiredPrimitives << ','
       << sample.probabilityTrimmedPrimitives << ','
-      << boolToInt(sample.probabilityBudgetHit) << ',';
+      << boolToInt(sample.probabilityBudgetHit) << ','
+      << _residencyConfig.restirReservoirSize << ','
+      << formatFixed(_residencyConfig.restirReuseWeight, 3) << ','
+      << _residencyConfig.restirCandidateCount << ','
+      << _residencyConfig.restirMaxTogglesPerFrame << ',';
   appendCsvEscaped(row, sample.primitiveProbabilities);
   row << ',';
   appendCsvEscaped(row, sample.objectProbabilities);
@@ -2412,6 +2421,10 @@ void Renderer::updateVisibleScene() {
   _primitiveVisible.assign(primCount, 0);
   _rayHitSortedIndices.resize(primCount);
   _probabilitySortedIndices.resize(primCount);
+  _restirReservoirWeight.assign(primCount, 0.0f);
+  _restirReservoirSampleCount.assign(primCount, 0.0f);
+  _restirTemporalScore.assign(primCount, 0.0f);
+  _restirSortedIndices.resize(primCount);
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _primitiveDistanceFalloffCache.assign(primCount, 0.0f);
   _primitiveCoverageDirty.assign(primCount, 1);
@@ -2470,6 +2483,8 @@ void Renderer::updateVisibleScene() {
         _rayHitSortedIndices[i] = i;
       if (i < _probabilitySortedIndices.size())
         _probabilitySortedIndices[i] = i;
+      if (i < _restirSortedIndices.size())
+        _restirSortedIndices[i] = i;
       if (i < _screenCoverageSortedIndices.size())
         _screenCoverageSortedIndices[i] = i;
       localImportance += std::max(_primitiveImportance[i], 0.0f);
@@ -6986,7 +7001,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     changed = updateProbabilisticResidency(forceAllToggles);
     break;
   case ResidencyStrategy::ReSTIR:
-    changed = updateProbabilisticResidency(forceAllToggles);
+    changed = updateReSTIRResidency(forceAllToggles);
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
@@ -9695,6 +9710,172 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   return changed;
 }
+
+bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
+  if (_activePrimitive.empty())
+    return false;
+
+  _frameProbabilityTargetPrimitives = 0;
+  _frameProbabilityInitialDesiredPrimitives = 0;
+  _frameProbabilityFinalDesiredPrimitives = 0;
+  _frameProbabilityTrimmedPrimitives = 0;
+  _frameProbabilityBudgetHit = false;
+  _frameProbabilisticToggles = 0;
+
+  const size_t primCount = _activePrimitive.size();
+  const size_t reservoirSize =
+      std::max<size_t>(1, _residencyConfig.restirReservoirSize);
+  const size_t candidateCount =
+      std::max<size_t>(1, _residencyConfig.restirCandidateCount);
+  const float reuseWeight =
+      std::clamp(_residencyConfig.restirReuseWeight, 0.0f, 1.0f);
+  const size_t toggleBudget = _residencyConfig.restirMaxTogglesPerFrame;
+  const float hysteresis =
+      std::max(0.0f, _residencyConfig.probabilityDesiredHysteresis);
+
+  if (_restirReservoirWeight.size() < primCount)
+    _restirReservoirWeight.resize(primCount, 0.0f);
+  if (_restirReservoirSampleCount.size() < primCount)
+    _restirReservoirSampleCount.resize(primCount, 0.0f);
+  if (_restirTemporalScore.size() < primCount)
+    _restirTemporalScore.resize(primCount, 0.0f);
+  if (_restirSortedIndices.size() != primCount) {
+    _restirSortedIndices.resize(primCount);
+    std::iota(_restirSortedIndices.begin(), _restirSortedIndices.end(), size_t(0));
+  }
+
+  size_t minActive =
+      std::min(_residencyConfig.probabilityMinActivePrimitives, primCount);
+  size_t targetActive = static_cast<size_t>(std::ceil(
+      _residencyConfig.probabilityTargetFraction * static_cast<float>(primCount)));
+  targetActive = std::max(targetActive, minActive);
+  targetActive = std::min(targetActive, primCount);
+  _frameProbabilityTargetPrimitives = targetActive;
+
+  for (size_t i = 0; i < primCount; ++i) {
+    float probability = (i < _primitiveHitProbability.size())
+                            ? _primitiveHitProbability[i]
+                            : 0.5f;
+    float variance =
+        (i < _primitiveHitVariance.size()) ? _primitiveHitVariance[i] : 1.0f / 12.0f;
+    float exploration = (i < _primitiveExplorationScore.size())
+                            ? _primitiveExplorationScore[i]
+                            : 0.0f;
+    bool visible = (i < _primitiveVisible.size())
+                       ? (_primitiveVisible[i] != 0)
+                       : ((i < _primitiveBounds.size()) ? isInView(_primitiveBounds[i])
+                                                       : true);
+    float visibilityWeight = visible ? 1.25f : 0.85f;
+    float candidateWeight = probability * visibilityWeight;
+    candidateWeight += std::sqrt(std::max(variance, 0.0f)) * 0.25f;
+    if (exploration > 0.0f)
+      candidateWeight += std::min(exploration, 8.0f) * 0.05f;
+    candidateWeight = std::max(candidateWeight, 0.0f);
+
+    float prevWeight = _restirReservoirWeight[i] * reuseWeight;
+    float prevCount = _restirReservoirSampleCount[i] * reuseWeight;
+    float accumulatedWeight =
+        prevWeight + candidateWeight * static_cast<float>(candidateCount);
+    float accumulatedCount =
+        prevCount + static_cast<float>(candidateCount);
+    if (accumulatedCount > static_cast<float>(reservoirSize)) {
+      float scale = static_cast<float>(reservoirSize) / accumulatedCount;
+      accumulatedCount = static_cast<float>(reservoirSize);
+      accumulatedWeight *= scale;
+    }
+    float normalized =
+        (accumulatedCount > 0.0f) ? (accumulatedWeight / accumulatedCount) : 0.0f;
+    if (!visible)
+      normalized *= 0.9f;
+
+    _restirReservoirWeight[i] = accumulatedWeight;
+    _restirReservoirSampleCount[i] = accumulatedCount;
+    _restirTemporalScore[i] = normalized;
+  }
+
+  size_t sortCount = std::max<size_t>(1, targetActive);
+  sortCount = std::min(sortCount, primCount);
+  auto comparator = [this](size_t a, size_t b) {
+    float scoreA = (a < _restirTemporalScore.size()) ? _restirTemporalScore[a] : 0.0f;
+    float scoreB = (b < _restirTemporalScore.size()) ? _restirTemporalScore[b] : 0.0f;
+    float sanA = sanitizeSortValue(scoreA);
+    float sanB = sanitizeSortValue(scoreB);
+    if (sanA == sanB)
+      return a < b;
+    return sanA > sanB;
+  };
+  std::partial_sort(_restirSortedIndices.begin(),
+                    _restirSortedIndices.begin() + sortCount,
+                    _restirSortedIndices.end(), comparator);
+
+  std::vector<bool> desired(primCount, false);
+  size_t enabled = 0;
+  float thresholdScore = 0.0f;
+  for (size_t idx : _restirSortedIndices) {
+    if (enabled >= targetActive)
+      break;
+    desired[idx] = true;
+    thresholdScore =
+        (idx < _restirTemporalScore.size()) ? _restirTemporalScore[idx] : 0.0f;
+    ++enabled;
+  }
+  _frameProbabilityInitialDesiredPrimitives = enabled;
+
+  if (targetActive > 0) {
+    for (size_t i = 0; i < primCount; ++i) {
+      if (desired[i])
+        continue;
+      if (i >= _restirTemporalScore.size())
+        continue;
+      if (!_activePrimitive[i])
+        continue;
+      float score = _restirTemporalScore[i];
+      if (score + hysteresis >= thresholdScore) {
+        desired[i] = true;
+        ++enabled;
+      }
+    }
+  }
+
+  _frameProbabilityFinalDesiredPrimitives = enabled;
+  if (enabled > targetActive)
+    _frameProbabilityTrimmedPrimitives = enabled - targetActive;
+
+  size_t toggles = 0;
+  bool changed = false;
+  for (size_t i = 0; i < primCount; ++i) {
+    bool shouldBeActive = desired[i];
+    if (shouldBeActive == _activePrimitive[i])
+      continue;
+    if (!forceAllToggles) {
+      if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
+        continue;
+      if (toggleBudget > 0 && toggles >= toggleBudget) {
+        _frameProbabilityBudgetHit = true;
+        break;
+      }
+    }
+    if (setPrimitiveActive(i, shouldBeActive)) {
+      ++toggles;
+      changed = true;
+    }
+  }
+  _frameProbabilisticToggles = toggles;
+
+  size_t activeCount = 0;
+  for (bool active : _activePrimitive)
+    if (active)
+      ++activeCount;
+
+  if (activeCount == 0 && !_activePrimitive.empty()) {
+    size_t fallback = !_restirSortedIndices.empty() ? _restirSortedIndices.front()
+                                                    : size_t(0);
+    if (setPrimitiveActive(fallback, true))
+      changed = true;
+  }
+
+  return changed;
+}
 bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
@@ -10932,6 +11113,10 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
+    _restirReservoirWeight.clear();
+    _restirReservoirSampleCount.clear();
+    _restirTemporalScore.clear();
+    _restirSortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
@@ -10962,6 +11147,10 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
+    _restirReservoirWeight.clear();
+    _restirReservoirSampleCount.clear();
+    _restirTemporalScore.clear();
+    _restirSortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
@@ -10990,6 +11179,10 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
+    _restirReservoirWeight.clear();
+    _restirReservoirSampleCount.clear();
+    _restirTemporalScore.clear();
+    _restirSortedIndices.clear();
     _rayHitCopyError = false;
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
@@ -11029,6 +11222,10 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
+    _restirReservoirWeight.clear();
+    _restirReservoirSampleCount.clear();
+    _restirTemporalScore.clear();
+    _restirSortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
@@ -11092,6 +11289,16 @@ void Renderer::processRayHitCounters() {
     _probabilitySortedIndices.resize(totalPrimitiveCount);
     std::iota(_probabilitySortedIndices.begin(), _probabilitySortedIndices.end(),
               size_t(0));
+  }
+  if (_restirReservoirWeight.size() < totalPrimitiveCount)
+    _restirReservoirWeight.resize(totalPrimitiveCount, 0.0f);
+  if (_restirReservoirSampleCount.size() < totalPrimitiveCount)
+    _restirReservoirSampleCount.resize(totalPrimitiveCount, 0.0f);
+  if (_restirTemporalScore.size() < totalPrimitiveCount)
+    _restirTemporalScore.resize(totalPrimitiveCount, 0.0f);
+  if (_restirSortedIndices.size() != totalPrimitiveCount) {
+    _restirSortedIndices.resize(totalPrimitiveCount);
+    std::iota(_restirSortedIndices.begin(), _restirSortedIndices.end(), size_t(0));
   }
 
   float rayHitDecay = _residencyConfig.rayHitDecay;
