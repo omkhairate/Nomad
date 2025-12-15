@@ -750,6 +750,14 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.probabilityVisibleDemotionDwellFrames = root->UnsignedAttribute(
         "probabilityVisibleDemotionDwellFrames",
         params.probabilityVisibleDemotionDwellFrames);
+    params.restirReservoirSize = static_cast<size_t>(root->Unsigned64Attribute(
+        "restirReservoirSize", static_cast<uint64_t>(params.restirReservoirSize)));
+    params.restirReuseWeight =
+        root->FloatAttribute("restirReuseWeight", params.restirReuseWeight);
+    params.restirCandidateCount = static_cast<size_t>(root->Unsigned64Attribute(
+        "restirCandidateCount", static_cast<uint64_t>(params.restirCandidateCount)));
+    params.restirMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
+        "restirToggleBudget", static_cast<uint64_t>(params.restirMaxTogglesPerFrame)));
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(
         "probabilityIdleCooldownFrames", params.probabilityIdleCooldownFrames);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(
