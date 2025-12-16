@@ -57,8 +57,9 @@ void ApplicationDelegate::applicationDidFinishLaunching(
   _pMtkView->setPaused(false);
 
   _pWindow->setContentView(_pMtkView);
-  _pWindow->setTitle(NS::String::string(
-      "MetalCpp Path Tracer", NS::StringEncoding::UTF8StringEncoding));
+  // Window title updated to reflect the new application name.
+  _pWindow->setTitle(
+      NS::String::string("Nomad", NS::StringEncoding::UTF8StringEncoding));
   _pWindow->makeKeyAndOrderFront(nullptr);
 
   NS::Application *pApp =
