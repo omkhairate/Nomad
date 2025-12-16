@@ -1,7 +1,21 @@
-import math
+import mathutils
 from .utils import *
 from .registry import SceneRegistry
 from .xml_node import XMLNode
+
+
+def _get_camera_frames(camera, scene):
+    frames = set()
+
+    if camera.animation_data and camera.animation_data.action:
+        for fcurve in camera.animation_data.action.fcurves:
+            for keyframe_point in fcurve.keyframe_points:
+                frames.add(int(keyframe_point.co[0]))
+
+    if len(frames) == 0:
+        frames.add(scene.frame_current)
+
+    return sorted(frames)
 
 
 def export_camera(registry: SceneRegistry):
@@ -10,25 +24,25 @@ def export_camera(registry: SceneRegistry):
         registry.error("Your scene needs a camera!")
         return []
 
-    matrix = orient_camera(camera.matrix_world, skip_scale=True)
+    camera_path = XMLNode("CameraPath")
 
-    render = registry.scene.render
-    res_x = int(render.resolution_x * render.resolution_percentage * 0.01)
-    res_y = int(render.resolution_y * render.resolution_percentage * 0.01)
+    current_frame = registry.scene.frame_current
+    for frame in _get_camera_frames(camera, registry.scene):
+        registry.scene.frame_set(frame)
 
-    # TODO: Other types?
-    camera_node = XMLNode("camera", type="perspective")
+        cam_eval = camera.evaluated_get(registry.depsgraph)
+        matrix = orient_camera(cam_eval.matrix_world, skip_scale=True)
 
-    camera_node.add("integer", name="width", value=res_x)
-    camera_node.add("integer", name="height", value=res_y)
+        position = matrix.to_translation()
+        rotation = matrix.to_quaternion()
+        forward = rotation @ mathutils.Vector((0.0, 0.0, -1.0))
+        look_at = position + forward
 
-    camera_node.add("float", name="fov", value=math.degrees(
-        2 * math.atan(camera.data.sensor_width / (2 * camera.data.lens))))
-    camera_node.add("string", name="fovAxis", value="x" if render.resolution_x > render.resolution_y else "y")
+        camera_path.add("Keyframe",
+                        frame=frame,
+                        position=str_flat_array(position),
+                        lookAt=str_flat_array(look_at))
 
-    # camera_node.add("float", name="nearClip", value=camera.data.clip_start)
-    # camera_node.add("float", name="farClip", value=camera.data.clip_end)
+    registry.scene.frame_set(current_frame)
 
-    camera_node.add("transform").add("matrix", value=str_flat_matrix(matrix))
-
-    return [camera_node]
+    return [camera_path]
