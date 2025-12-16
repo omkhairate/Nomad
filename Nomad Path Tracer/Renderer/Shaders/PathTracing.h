@@ -282,7 +282,6 @@ inline intersection firstHitBVH(thread const Ray &r,
         float4 p0 = primitives[base + 0];
         float4 p1 = primitives[base + 1];
         float4 p2 = primitives[base + 2];
-        float4 p3 = primitives[base + 3];
 
         int primitiveType = int(p0.w);
         float tHit = INFINITY;
