@@ -48,7 +48,6 @@ static void updateRayDepthLabel(uint32_t depth) {
         [maxRayDepthLabel setStringValue:[NSString stringWithFormat:@"Max Ray Depth: %u", depth]];
     }
 }
-@end
 
 ViewBridge *adapter;
 NSTextField *fpsLabel;
