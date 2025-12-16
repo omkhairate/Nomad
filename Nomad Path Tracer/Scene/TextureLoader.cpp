@@ -119,22 +119,32 @@ bool LoadTextureImage(const std::string &path, LoadedTextureImage &outImage,
 
     TextureColorSpace targetSpace = DetermineTextureColorSpace(path, usage);
     CGColorSpaceRef colorSpace = nullptr;
-#if defined(kCGColorSpaceGenericRGBLinear)
     if (targetSpace == TextureColorSpace::Linear) {
+#if defined(kCGColorSpaceGenericRGBLinear)
         colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceGenericRGBLinear);
-    }
 #endif
+    } else if (targetSpace == TextureColorSpace::sRGB) {
 #if defined(kCGColorSpaceSRGB)
-    if (!colorSpace && targetSpace == TextureColorSpace::sRGB) {
         colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    }
 #endif
+    }
+
+    if (!colorSpace) {
+        CGColorSpaceRef imageSpace = CGImageGetColorSpace(image);
+        if (imageSpace) {
+            colorSpace = CGColorSpaceRetain(imageSpace);
+        }
+    }
+
     if (!colorSpace) {
         colorSpace = CGColorSpaceCreateDeviceRGB();
     }
+
+    CGBitmapInfo bitmapInfo =
+        kCGBitmapByteOrder32Big |
+        static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedLast);
     CGContextRef context = CGBitmapContextCreate(
-        rawData.data(), width, height, 8, width * 4, colorSpace,
-        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+        rawData.data(), width, height, 8, width * 4, colorSpace, bitmapInfo);
 
     if (!context) {
         std::printf("Failed to create bitmap context for texture '%s'\n", path.c_str());
