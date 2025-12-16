@@ -1,0 +1,42 @@
+<Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="alwaysresident" textureResidencyMemoryCapMB="512"
+       lodEnterDistance="50" lodExitDistance="75" residencyCooldown="1" lodToggleBudget="10000">
+    <CameraPath>
+        <Keyframe frame="0" position="0,2,16" lookAt="0,2,2" />
+        <Keyframe frame="36" position="0,2,6" lookAt="0,2,0" />
+        <Keyframe frame="72" position="0,2,1" lookAt="0,2,-8" />
+        <Keyframe frame="108" position="0,2,-6" lookAt="0,2,-20" />
+        <Keyframe frame="144" position="0,2,-14" lookAt="0,2,-30" />
+    </CameraPath>
+
+    <!-- Floor, mezzanine, and ceiling -->
+    <Rectangle position="0,0,-14" u="10,0,0" v="0,0,-16" albedo="0.75,0.75,0.78"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="0,4,-14" u="10,0,0" v="0,0,-16" albedo="0.76,0.76,0.79"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="0,8,-14" u="10,0,0" v="0,0,-16" albedo="0.78,0.78,0.8"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Walls -->
+    <Rectangle position="0,4,0" u="10,0,0" v="0,4,0" rotation="0,0,0"
+               albedo="0.8,0.8,0.83" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="0,4,-28" u="10,0,0" v="0,4,0" rotation="0,180,0"
+               albedo="0.8,0.8,0.83" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="-10,4,-14" u="16,0,0" v="0,4,0" rotation="0,90,0"
+               albedo="0.76,0.78,0.82" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="10,4,-14" u="16,0,0" v="0,4,0" rotation="0,-90,0"
+               albedo="0.76,0.78,0.82" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Ceiling light -->
+    <Rectangle position="0,7.5,-16" u="1.5,0,0" v="0,0,-1.5" rotation="180,0,0"
+               albedo="1,1,1" emission="1,0.95,0.9" materialType="-1" emissionPower="35" />
+
+    <!-- Doorway mesh aligned with front wall -->
+    <Mesh file="assets/Door.obj" position="0,-0.1,0" scale="1"
+          basisX="0.2,0,0" basisY="0,0.2,0" basisZ="0,0,0.1" rotation="0,0,0"
+          albedo="0.85,0,0" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Furniture display -->
+    <Mesh file="assets/Mebel_Edvard.obj" position="0,0,-22" scale="0.0015"
+          rotation="0,0,0" albedo="0.78,0.74,0.7" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+</Scene>

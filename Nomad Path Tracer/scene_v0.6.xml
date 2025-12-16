@@ -1,0 +1,46 @@
+<Scene width="1280" height="720" maxRayDepth="17" startCompacted="false" residencyStrategy="alwaysResident">
+    <!-- Converted from Mitsuba-style scene_v0.6.xml to the custom loader schema -->
+    <ObserverCamera position="58.206,24.9284,52.9501" lookAt="58.921531,25.156785,53.610294" verticalFov="35" />
+
+    <!-- Ground and environment pieces -->
+    <Mesh file="assets/Mesh011.obj" position="0,0,0" scale="1"
+          albedo="0.456263,0.456263,0.456263" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh010.obj" position="0,0,0" scale="1"
+          albedo="0.456263,0.456263,0.456263" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh005.obj" position="0,0,0" scale="1"
+          albedo="0.456263,0.456263,0.456263" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh006.obj" position="0,0,0" scale="1"
+          albedo="0.456263,0.456263,0.456263" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh012.obj" position="0,0,0" scale="1"
+          albedo="0.456263,0.456263,0.456263" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh007.obj" position="0,0,0" scale="1"
+          albedo="0.456263,0.456263,0.456263" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Hero object cluster -->
+    <Mesh file="assets/Mesh008.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh013.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh014.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh015.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Sword and decorative props -->
+    <Mesh file="assets/Mesh004.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh009.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh003.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh002.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh001.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/Mesh000.obj" position="0,0,0" scale="1"
+          albedo="0.79311,0.79311,0.79311" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Soft fill light approximating the original sun emitter -->
+    <Rectangle position="0,50,0" u="30,0,0" v="0,0,30" albedo="1,1,1"
+               emission="0.9,0.92,0.94" materialType="-1" emissionPower="25" />
+</Scene>

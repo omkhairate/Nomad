@@ -1,0 +1,59 @@
+<Scene width="960" height="540" maxRayDepth="4" startCompacted="true" residencyStrategy="screenSpaceFootprint"
+       textureResidencyMemoryCapMB="512"
+       screenTargetFraction="1" screenMinActive="25000" screenToggleBudget="40000"
+       screenMinPixelCoverage="2">
+    <CameraPath>
+        <!-- Pan across a wide stage so objects shrink on screen and release residency -->
+        <Keyframe frame="0" position="-90,18,20" lookAt="0,10,0" />
+        <Keyframe frame="45" position="-45,18,20" lookAt="0,10,-30" />
+        <Keyframe frame="90" position="0,18,20" lookAt="0,10,-60" />
+        <Keyframe frame="135" position="45,18,20" lookAt="0,10,-90" />
+        <Keyframe frame="180" position="90,18,20" lookAt="0,10,-120" />
+    </CameraPath>
+
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.74,0.74,0.74" emission="0,0,0"
+            materialType="0" emissionPower="0" />
+
+    <Rectangle position="0,52,-40" u="35,0,0" v="0,0,35" albedo="1.0,1.0,1.0"
+               emission="0.88,0.9,0.92" materialType="-1" emissionPower="26" />
+
+    <!-- Long ribbon of meshes that only briefly cover significant screen area -->
+    <Mesh file="assets/bunny.obj" position="-80,0,-10" scale="8.2"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.66,0.64,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-60,0,-20" scale="8.6"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.64,0.6,0.66" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-40,0,-30" scale="9.0"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.6,0.66,0.64" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-20,0,-40" scale="9.4"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.65,0.6,0.64" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="0,0,-50" scale="9.8"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.64,0.65,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="20,0,-60" scale="10.2"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.6,0.64,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="40,0,-70" scale="10.6"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.65,0.6,0.64" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="60,0,-80" scale="11.0"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.64,0.6,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="80,0,-90" scale="11.4"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.6,0.64,0.64" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Clusters at different heights emphasize footprint reduction as they crest the horizon -->
+    <Mesh file="assets/bunny.obj" position="-60,12,-60" scale="7.6"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.6,0.62,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="0,14,-90" scale="8.0"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.62,0.6,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="60,16,-120" scale="8.4"
+          clusterMaxTriangles="960" clusterMaxExtent="26"
+          albedo="0.68,0.6,0.62" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>

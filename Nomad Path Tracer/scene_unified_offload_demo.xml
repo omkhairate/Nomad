@@ -1,0 +1,94 @@
+<Scene width="960" height="540" maxRayDepth="6" startCompacted="true"
+       residencyStrategy="unified"
+       textureResidencyMemoryCapMB="512"
+       unifiedEnergyWeight="0.85"
+       unifiedHitWeight="1.95"
+       unifiedCoverageWeight="1.55"
+       unifiedDistanceWeight="0.55">
+    <CameraPath>
+        <!-- Lateral sweep across offset occluders; meshes fade in/out as the unified scorer reprioritizes residency -->
+        <Keyframe frame="0"   position="-55,12,20" lookAt="0,8,-40" />
+        <Keyframe frame="60"  position="-25,12,-5" lookAt="0,8,-60" />
+        <Keyframe frame="120" position="5,12,-25"  lookAt="0,8,-80" />
+        <Keyframe frame="180" position="35,12,-45" lookAt="0,8,-100" />
+    </CameraPath>
+
+    <!-- Watch the residency overlay: clusters behind each occluder onload as they fill the screen, then offload when swept aside -->
+    <Sphere position="0,-10000,0" radius="10000"
+            albedo="0.68,0.68,0.68" emission="0,0,0"
+            materialType="0" emissionPower="0" />
+
+    <Rectangle position="-15,15,-25" u="0,0,32" v="0,26,0"
+               albedo="0.52,0.52,0.55" emission="0,0,0"
+               materialType="0" emissionPower="0" />
+    <Rectangle position="10,17,-50" u="0,0,32" v="0,26,0"
+               albedo="0.55,0.52,0.52" emission="0,0,0"
+               materialType="0" emissionPower="0" />
+    <Rectangle position="-10,19,-75" u="0,0,32" v="0,26,0"
+               albedo="0.52,0.55,0.52" emission="0,0,0"
+               materialType="0" emissionPower="0" />
+
+    <Rectangle position="0,30,-90" u="24,0,0" v="0,0,36"
+               albedo="1.0,1.0,1.0" emission="0.95,0.92,0.88"
+               materialType="-1" emissionPower="22" />
+
+    <!-- Shallow cluster revealed early -->
+    <Mesh file="assets/bunny.obj" position="-28,0,-18" scale="8.4"
+          clusterMaxTriangles="1280" clusterMaxExtent="28"
+          albedo="0.66,0.62,0.58" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-10,0,-18" scale="8.4"
+          clusterMaxTriangles="1280" clusterMaxExtent="28"
+          albedo="0.58,0.66,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="8,0,-18" scale="8.4"
+          clusterMaxTriangles="1280" clusterMaxExtent="28"
+          albedo="0.62,0.6,0.64" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+
+    <!-- Mid-depth cluster that fills the frame as the camera crosses the center occluder -->
+    <Mesh file="assets/bunny.obj" position="-30,0,-42" scale="9.6"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.64,0.6,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-8,0,-42" scale="9.6"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.6,0.64,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="14,0,-42" scale="9.6"
+          clusterMaxTriangles="1280" clusterMaxExtent="30"
+          albedo="0.62,0.64,0.6" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+
+    <!-- Deeper cluster that briefly dominates screen space near the last keyframe -->
+    <Mesh file="assets/bunny.obj" position="-26,0,-66" scale="10.8"
+          clusterMaxTriangles="1280" clusterMaxExtent="32"
+          albedo="0.6,0.62,0.64" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-4,0,-66" scale="10.8"
+          clusterMaxTriangles="1280" clusterMaxExtent="32"
+          albedo="0.64,0.6,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="18,0,-66" scale="10.8"
+          clusterMaxTriangles="1280" clusterMaxExtent="32"
+          albedo="0.6,0.64,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+
+    <!-- Far cluster keeps the primitive count above the residency buffer, forcing unified streaming decisions -->
+    <Mesh file="assets/bunny.obj" position="-32,0,-92" scale="12.0"
+          clusterMaxTriangles="1280" clusterMaxExtent="34"
+          albedo="0.62,0.6,0.64" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-10,0,-92" scale="12.0"
+          clusterMaxTriangles="1280" clusterMaxExtent="34"
+          albedo="0.6,0.62,0.64" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="12,0,-92" scale="12.0"
+          clusterMaxTriangles="1280" clusterMaxExtent="34"
+          albedo="0.64,0.62,0.6" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="34,0,-92" scale="12.0"
+          clusterMaxTriangles="1280" clusterMaxExtent="34"
+          albedo="0.6,0.64,0.62" emission="0,0,0"
+          materialType="0" emissionPower="0" />
+</Scene>

@@ -1,0 +1,61 @@
+<Scene width="960" height="540" maxRayDepth="8" startCompacted="true" residencyStrategy="distance"
+       textureResidencyMemoryCapMB="16"
+       lodEnterDistance="50" lodExitDistance="75" residencyCooldown="1" lodToggleBudget="10000">
+    <!-- Materials support texture paths via diffuseTexture/albedoTexture, specularTexture, and normalTexture. -->
+    <!-- Normal maps flagged this way are imported in linear color space so tangent data is preserved. -->
+    <!-- Example: <Mesh file="assets/statue.obj" normalTexture="assets/statue_normal.png" /> -->
+    <CameraPath>
+        <!-- Default regression path: retreat over a bridge of geometry so far clusters are unloaded -->
+        <Keyframe frame="0" position="0,8,15" lookAt="0,5,-25" />
+        <Keyframe frame="35" position="-12,9,0" lookAt="0,5,-45" />
+        <Keyframe frame="90" position="-24,10,-30" lookAt="0,5,-80" />
+        <Keyframe frame="140" position="-36,12,-60" lookAt="0,6,-120" />
+    </CameraPath>
+
+    <Sphere position="0,-10000,0" radius="10000" albedo="0.76,0.76,0.78" emission="0,0,0"
+            materialType="0" emissionPower="0" />
+
+    <Rectangle position="0,40,-40" u="28,0,0" v="0,0,28" albedo="1.0,1.0,1.0"
+               emission="0.9,0.92,0.94" materialType="-1" emissionPower="30" />
+
+    <!-- Bridge railings funnel the view so the camera rapidly sheds distant clusters -->
+    <Rectangle position="-14,6,-30" u="0,0,40" v="0,6,0" albedo="0.6,0.6,0.63"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="14,6,-30" u="0,0,40" v="0,6,0" albedo="0.63,0.6,0.6"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Dense stair-step of meshes generates a heavy acceleration structure footprint -->
+    <Mesh file="assets/bunny.obj" position="0,0,-10" scale="9.5"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.7,0.65,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-10,1,-22" scale="10.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.68,0.6,0.65" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="10,1,-22" scale="10.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.65,0.68,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="0,2,-34" scale="10.5"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.64,0.62,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-12,3,-46" scale="11.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.62,0.68,0.64" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="12,3,-46" scale="11.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.68,0.64,0.62" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="0,4,-58" scale="11.5"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.6,0.64,0.66" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="-14,5,-70" scale="12.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.64,0.6,0.66" emission="0,0,0" materialType="0" emissionPower="0" />
+    <Mesh file="assets/bunny.obj" position="14,5,-70" scale="12.0"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.66,0.64,0.6" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <Mesh file="assets/bunny.obj" position="0,6,-82" scale="12.5"
+          clusterMaxTriangles="1024" clusterMaxExtent="28"
+          albedo="0.6,0.62,0.68" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
