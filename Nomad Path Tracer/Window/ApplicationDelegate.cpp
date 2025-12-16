@@ -53,6 +53,7 @@ void ApplicationDelegate::applicationDidFinishLaunching(
   _pMtkView->setPreferredFramesPerSecond(60);
   _pMtkView->setEnableSetNeedsDisplay(false);
   _pViewDelegate = new ViewDelegate(_pDevice);
+  _controllerView.setViewDelegate(_pViewDelegate);
   _pMtkView->setDelegate(_pViewDelegate);
   _pMtkView->setPaused(false);
 

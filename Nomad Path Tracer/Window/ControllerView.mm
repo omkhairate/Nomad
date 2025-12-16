@@ -1,8 +1,10 @@
 #import "ControllerView.hpp"
 #import <MetalKit/MetalKit.h>
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include "InputSystem.h"
+#include "ViewDelegate.h"
 
 @interface ViewBridge : MTKView {
 }
@@ -10,6 +12,42 @@
 + (ViewBridge *)get;
 + (void)updateFPS:(double)fps;
 + (void)updateMemory:(double)mem;
++ (void)setDelegate:(NomadPathTracer::ViewDelegate *)delegate;
+ + (void)updateControlValues;
+ + (void)refreshRateChanged:(NSSlider *)sender;
+ + (void)maxRayDepthChanged:(NSSlider *)sender;
+@end
+
+static NomadPathTracer::ViewDelegate *renderDelegate = nullptr;
+
+static NSSlider *refreshRateSlider;
+static NSTextField *refreshRateLabel;
+static NSSlider *maxRayDepthSlider;
+static NSTextField *maxRayDepthLabel;
+
+static NSTextField *createLabel(NSRect frame, NSString *text) {
+    NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
+    [label setBezeled:NO];
+    [label setDrawsBackground:NO];
+    [label setEditable:NO];
+    [label setSelectable:NO];
+    [label setTextColor:[NSColor whiteColor]];
+    [label setFont:[NSFont systemFontOfSize:12.0]];
+    [label setStringValue:text];
+    return label;
+}
+
+static void updateRefreshLabel(NSInteger fps) {
+    if (refreshRateLabel) {
+        [refreshRateLabel setStringValue:[NSString stringWithFormat:@"Refresh: %ld FPS", (long)fps]];
+    }
+}
+
+static void updateRayDepthLabel(uint32_t depth) {
+    if (maxRayDepthLabel) {
+        [maxRayDepthLabel setStringValue:[NSString stringWithFormat:@"Max Ray Depth: %u", depth]];
+    }
+}
 @end
 
 ViewBridge *adapter;
@@ -19,6 +57,10 @@ NSTextField *memoryLabel;
 MTK::View *NomadPathTracer::ControllerView::get(CGRect frame) {
     [ViewBridge load: frame];
     return (__bridge MTK::View *)[ViewBridge get];
+}
+
+void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
+    [ViewBridge setDelegate:delegate];
 }
 
 @implementation ViewBridge
@@ -45,6 +87,34 @@ MTK::View *NomadPathTracer::ControllerView::get(CGRect frame) {
     [memoryLabel setTextColor:[NSColor whiteColor]];
     [memoryLabel setStringValue:@"GPU: 0.0 MB"];
     [adapter addSubview:memoryLabel];
+
+    NSView *controlPanel = [[NSView alloc] initWithFrame:NSMakeRect(10, 10, 220, 120)];
+    [controlPanel setWantsLayer:YES];
+    controlPanel.layer.backgroundColor = [[NSColor colorWithCalibratedWhite:0 alpha:0.5] CGColor];
+    controlPanel.layer.cornerRadius = 6.0;
+
+    refreshRateLabel = createLabel(NSMakeRect(10, 80, 180, 18), @"Refresh: 60 FPS");
+    [controlPanel addSubview:refreshRateLabel];
+    refreshRateSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 58, 200, 20)];
+    [refreshRateSlider setMinValue:24];
+    [refreshRateSlider setMaxValue:240];
+    [refreshRateSlider setIntValue:60];
+    [refreshRateSlider setTarget:self];
+    [refreshRateSlider setAction:@selector(refreshRateChanged:)];
+    [controlPanel addSubview:refreshRateSlider];
+
+    maxRayDepthLabel = createLabel(NSMakeRect(10, 32, 180, 18), @"Max Ray Depth: 8");
+    [controlPanel addSubview:maxRayDepthLabel];
+    maxRayDepthSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 10, 200, 20)];
+    [maxRayDepthSlider setMinValue:1];
+    [maxRayDepthSlider setMaxValue:64];
+    [maxRayDepthSlider setIntValue:8];
+    [maxRayDepthSlider setTarget:self];
+    [maxRayDepthSlider setAction:@selector(maxRayDepthChanged:)];
+    [controlPanel addSubview:maxRayDepthSlider];
+
+    [adapter addSubview:controlPanel];
+    [self updateControlValues];
     [pool release];
 }
 
@@ -58,6 +128,40 @@ MTK::View *NomadPathTracer::ControllerView::get(CGRect frame) {
 
 + (void)updateMemory:(double)mem {
     [memoryLabel setStringValue:[NSString stringWithFormat:@"GPU: %.1f MB", mem]];
+}
+
++ (void)setDelegate:(NomadPathTracer::ViewDelegate *)delegate {
+    renderDelegate = delegate;
+    [self updateControlValues];
+}
+
++ (void)updateControlValues {
+    if (adapter && refreshRateSlider) {
+        NSInteger fps = adapter.preferredFramesPerSecond;
+        [refreshRateSlider setIntValue:fps];
+        updateRefreshLabel(fps);
+    }
+    if (renderDelegate && maxRayDepthSlider) {
+        uint32_t depth = renderDelegate->maxRayDepth();
+        [maxRayDepthSlider setIntValue:static_cast<NSInteger>(depth)];
+        updateRayDepthLabel(depth);
+    }
+}
+
++ (void)refreshRateChanged:(NSSlider *)sender {
+    NSInteger fps = sender.integerValue;
+    updateRefreshLabel(fps);
+    if (adapter) {
+        adapter.preferredFramesPerSecond = fps;
+    }
+}
+
++ (void)maxRayDepthChanged:(NSSlider *)sender {
+    uint32_t depth = static_cast<uint32_t>(sender.integerValue);
+    updateRayDepthLabel(depth);
+    if (renderDelegate) {
+        renderDelegate->setMaxRayDepth(depth);
+    }
 }
 
 - (id)init {

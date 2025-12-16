@@ -18,6 +18,8 @@ public:
   virtual ~ViewDelegate() override;
   virtual void drawInMTKView(MTK::View *pView) override;
   virtual void drawableSizeWillChange(MTK::View *pView, CGSize size) override;
+  void setMaxRayDepth(uint32_t depth);
+  uint32_t maxRayDepth() const;
 
 private:
   Renderer *_pRenderer;

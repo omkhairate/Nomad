@@ -110,3 +110,9 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
 void ViewDelegate::drawableSizeWillChange(MTK::View *pView, CGSize size) {
   _pRenderer->drawableSizeWillChange(pView, size);
 }
+
+void ViewDelegate::setMaxRayDepth(uint32_t depth) {
+  _pRenderer->setMaxRayDepth(depth);
+}
+
+uint32_t ViewDelegate::maxRayDepth() const { return _pRenderer->maxRayDepth(); }
