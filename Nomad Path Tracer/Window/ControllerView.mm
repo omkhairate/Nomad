@@ -97,7 +97,7 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     refreshRateSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 58, 200, 20)];
     [refreshRateSlider setMinValue:24];
     [refreshRateSlider setMaxValue:240];
-    [refreshRateSlider setIntValue:60];
+    [refreshRateSlider setIntegerValue:60];
     [refreshRateSlider setTarget:self];
     [refreshRateSlider setAction:@selector(refreshRateChanged:)];
     [controlPanel addSubview:refreshRateSlider];
@@ -107,7 +107,7 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     maxRayDepthSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 10, 200, 20)];
     [maxRayDepthSlider setMinValue:1];
     [maxRayDepthSlider setMaxValue:64];
-    [maxRayDepthSlider setIntValue:8];
+    [maxRayDepthSlider setIntegerValue:8];
     [maxRayDepthSlider setTarget:self];
     [maxRayDepthSlider setAction:@selector(maxRayDepthChanged:)];
     [controlPanel addSubview:maxRayDepthSlider];
@@ -137,12 +137,12 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
 + (void)updateControlValues {
     if (adapter && refreshRateSlider) {
         NSInteger fps = adapter.preferredFramesPerSecond;
-        [refreshRateSlider setIntValue:fps];
+        [refreshRateSlider setIntegerValue:fps];
         updateRefreshLabel(fps);
     }
     if (renderDelegate && maxRayDepthSlider) {
         uint32_t depth = renderDelegate->maxRayDepth();
-        [maxRayDepthSlider setIntValue:static_cast<NSInteger>(depth)];
+        [maxRayDepthSlider setIntegerValue:static_cast<NSInteger>(depth)];
         updateRayDepthLabel(depth);
     }
 }
