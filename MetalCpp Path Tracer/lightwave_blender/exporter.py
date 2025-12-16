@@ -1,84 +1,36 @@
 import bpy
+import mathutils
 import os
 
-from .light import export_light
 from .shape import export_shape
-from .camera import export_camera
-from .materials import export_material, export_default_bsdf
-from .utils import *
-from .defaults import *
+from .utils import str_flat_array
 from .addon_preferences import get_prefs
 from .xml_node import XMLNode, XMLRootNode
 from .registry import SceneRegistry
 from .world import export_world_background
 
 
-def export_technique(registry: SceneRegistry):
-    if getattr(registry.scene, 'cycles', None) is not None and bpy.context.engine == 'CYCLES':
-        cycles = registry.scene.cycles
-        max_depth = cycles.max_bounces + 1
-        clamp = max(cycles.sample_clamp_direct, cycles.sample_clamp_indirect)
-        spp = cycles.samples
+def _default_material_attributes(inst, mat_id: int):
+    mat = None
+    if mat_id < len(inst.object.material_slots):
+        mat = inst.object.material_slots[mat_id].material
+
+    if mat is not None and hasattr(mat, "diffuse_color"):
+        color = mat.diffuse_color
+        albedo = (color[0], color[1], color[2])
     else:
-        max_depth = 10
-        clamp = 0
-        spp = 64
+        albedo = (0.7, 0.7, 0.7)
 
-    pt = XMLNode("integrator", type="pathtracer", depth=max_depth)
-    pt.add("ref", id="scene")
-    pt.add("image", id="noisy")
-    pt.add("sampler", type="independent", count=spp)
-
-    if False:
-        alb = XMLNode("integrator", type="aov", variable="albedo")
-        alb.add("ref", id="scene")
-        alb.add("image", id="albedo")
-        alb.add("sampler", type="halton", count=32)
-
-        norm = XMLNode("integrator", type="aov", variable="normals")
-        norm.add("ref", id="scene")
-        norm.add("image", id="normals")
-        norm.add("sampler", type="halton", count=32)
-
-        denoising = XMLNode("postprocess", type="denoising")
-        denoising.add("ref", name="input", id="noisy")
-        denoising.add("ref", name="albedo", id="albedo")
-        denoising.add("ref", name="normals", id="normals")
-        denoising.add("image", id="denoised")
-
-        return [norm,albedo,pt,denoising]
-    
-    return [pt]
-
-
-def export_entity(registry: SceneRegistry, inst, shape: XMLNode, mat_id: int) -> XMLNode:
-    instance_node = XMLNode("instance")
-
-    inst_mat = None
-    if registry.settings.export_materials:
-        if mat_id < len(inst.object.material_slots):
-            inst_mat = inst.object.material_slots[mat_id].material
-            if inst_mat is not None:
-                instance_node.add_children(registry.export(inst_mat, lambda unique_name: export_material(registry, inst_mat)))
-            else:
-                registry.warn(f"Obsolete material slot {mat_id} with instance {inst.object.data.name}. Maybe missing a material?")
-                instance_node.add_children(export_default_bsdf())
-        else:
-            #registry.warn(f"Entity {inst.object.name} has no material")
-            instance_node.add_children(export_default_bsdf())
-    else:
-        instance_node.add_children(export_default_bsdf())
-
-    instance_node.add_child(shape)
-    instance_node.add("transform").add("matrix", value=str_flat_matrix(inst.matrix_world))
-    
-    return instance_node
+    return {
+        "albedo": str_flat_array(albedo),
+        "emission": str_flat_array((0.0, 0.0, 0.0)),
+        "materialType": 0,
+        "emissionPower": 0,
+    }
 
 def export_objects(registry: SceneRegistry):
-    # Export all given objects
-    result = []
+    result: list[XMLNode] = []
 
-    # Export entities & shapes
     for inst in registry.depsgraph.object_instances:
         object_eval = inst.object
         if object_eval is None:
@@ -88,18 +40,48 @@ def export_objects(registry: SceneRegistry):
         if not registry.settings.use_selection and not inst.show_self:
             continue
 
-        objType = object_eval.type
-        if objType in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'CURVES'}:
-            shapes: list[XMLNode] = registry.export(object_eval.original.data,
-                lambda unique_name: export_shape(registry, object_eval))
-            if len(shapes) == 0:
-                registry.warn(f"Entity {object_eval.name} has no material or shape and will be ignored")
+        if object_eval.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'CURVES'}:
+            continue
 
-            for (mat_id, shape) in enumerate(shapes):
-                result.append(export_entity(registry, inst, shape, mat_id))
-        elif objType == "LIGHT" and registry.settings.export_lights:
-            result += export_light(registry, inst)
-    
+        shapes: list[XMLNode] = registry.export(
+            object_eval.original.data, lambda unique_name: export_shape(registry, object_eval))
+        if len(shapes) == 0:
+            registry.warn(f"Entity {object_eval.name} has no material or shape and will be ignored")
+            continue
+
+        basis = inst.matrix_world.to_3x3()
+        basis_x = basis.col[0]
+        basis_y = basis.col[1]
+        basis_z = basis.col[2]
+        location = inst.matrix_world.to_translation()
+        rotation = inst.matrix_world.to_euler('XYZ')
+
+        for (mat_id, shape) in enumerate(shapes):
+            filename = shape.attributes.get("filename")
+            if filename is None:
+                continue
+
+            mesh_node = XMLNode(
+                "Mesh",
+                file=filename,
+                position=str_flat_array(location),
+                basisX=str_flat_array(basis_x),
+                basisY=str_flat_array(basis_y),
+                basisZ=str_flat_array(basis_z),
+                rotation=str_flat_array((
+                    mathutils.rad2deg(rotation.x),
+                    mathutils.rad2deg(rotation.y),
+                    mathutils.rad2deg(rotation.z)
+                )),
+                clusterMaxTriangles=0,
+                clusterMaxExtent=0.0,
+            )
+
+            for key, value in _default_material_attributes(inst, mat_id).items():
+                mesh_node.attributes[key] = value
+
+            result.append(mesh_node)
+
     return result
 
 
@@ -109,7 +91,30 @@ def export_scene(op, filepath, context, settings):
 
     # Root
     root = XMLRootNode()
-    scene = XMLNode("scene", id="scene")
+    scene = XMLNode("Scene")
+
+    render = depsgraph.scene.render
+    res_x = int(render.resolution_x * render.resolution_percentage * 0.01)
+    res_y = int(render.resolution_y * render.resolution_percentage * 0.01)
+
+    if getattr(depsgraph.scene, 'cycles', None) is not None and bpy.context.engine == 'CYCLES':
+        cycles = depsgraph.scene.cycles
+        max_depth = cycles.max_bounces + 1
+    else:
+        max_depth = 8
+
+    scene.attributes.update({
+        "width": res_x,
+        "height": res_y,
+        "maxRayDepth": max_depth,
+        "startCompacted": True,
+        "residencyStrategy": "distance",
+        "textureResidencyMemoryCapMB": 16,
+        "lodEnterDistance": 50,
+        "lodExitDistance": 75,
+        "residencyCooldown": 1,
+        "lodToggleBudget": 10000,
+    })
 
     # Create a path for meshes & textures
     rootPath = os.path.dirname(filepath)
@@ -119,14 +124,26 @@ def export_scene(op, filepath, context, settings):
     os.makedirs(texDir, exist_ok=True)
 
     registry = SceneRegistry(rootPath, depsgraph, settings, op)
-    scene.add_children(export_camera(registry))
+
+    if settings.enable_camera and depsgraph.scene.camera is not None:
+        camera = depsgraph.scene.camera
+        cam_matrix = camera.matrix_world
+        cam_pos = cam_matrix.to_translation()
+        cam_forward = cam_matrix.to_quaternion() @ mathutils.Vector((0.0, 0.0, -1.0))
+        look_at = cam_pos + cam_forward
+
+        camera_path = XMLNode("CameraPath")
+        camera_path.add("Keyframe", frame=depsgraph.scene.frame_current,
+                        position=str_flat_array(cam_pos),
+                        lookAt=str_flat_array(look_at))
+        scene.add_child(camera_path)
+
     scene.add_children(export_objects(registry))
 
     if settings.enable_background:
         scene.add_children(export_world_background(registry, depsgraph.scene))
 
     root.add_child(scene)
-    root.add_children(export_technique(registry))
 
     # Remove mesh & texture directory if empty
     try:
