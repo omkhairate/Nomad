@@ -3,30 +3,81 @@ import mathutils
 import os
 
 from .shape import export_shape
-from .utils import str_flat_array
+from .utils import str_flat_array, str_float
 from .addon_preferences import get_prefs
 from .xml_node import XMLNode, XMLRootNode
 from .registry import SceneRegistry
 from .world import export_world_background
+from .node import _handle_image
 
 
-def _default_material_attributes(inst, mat_id: int):
+def _material_attributes(registry: SceneRegistry, inst, mat_id: int):
     mat = None
     if mat_id < len(inst.object.material_slots):
         mat = inst.object.material_slots[mat_id].material
 
-    if mat is not None and hasattr(mat, "diffuse_color"):
-        color = mat.diffuse_color
-        albedo = (color[0], color[1], color[2])
-    else:
-        albedo = (0.7, 0.7, 0.7)
-
-    return {
-        "albedo": str_flat_array(albedo),
+    attrs = {
+        "albedo": str_flat_array((0.7, 0.7, 0.7)),
         "emission": str_flat_array((0.0, 0.0, 0.0)),
         "materialType": 0,
         "emissionPower": 0,
     }
+
+    if mat is None or not getattr(registry.settings, "export_materials", True):
+        return attrs
+
+    if hasattr(mat, "diffuse_color"):
+        color = mat.diffuse_color
+        attrs["albedo"] = str_flat_array((color[0], color[1], color[2]))
+
+    def _image_from_socket(socket):
+        if socket is None or not socket.is_linked:
+            return None
+        node = socket.links[0].from_node
+        if isinstance(node, bpy.types.ShaderNodeTexImage):
+            return node.image
+        if isinstance(node, bpy.types.ShaderNodeNormalMap):
+            return _image_from_socket(node.inputs.get("Color"))
+        return None
+
+    if mat.use_nodes and mat.node_tree is not None:
+        principled = next((n for n in mat.node_tree.nodes
+                           if isinstance(n, bpy.types.ShaderNodeBsdfPrincipled)), None)
+        if principled is not None:
+            base_color = principled.inputs.get("Base Color")
+            if base_color and base_color.default_value is not None:
+                attrs["albedo"] = str_flat_array(base_color.default_value[0:3])
+
+            emission = principled.inputs.get("Emission")
+            if emission and emission.default_value is not None:
+                attrs["emission"] = str_flat_array(emission.default_value[0:3])
+
+            emission_strength = principled.inputs.get("Emission Strength")
+            if emission_strength is not None:
+                attrs["emissionPower"] = emission_strength.default_value
+
+            diffuse_image = _image_from_socket(base_color)
+            if diffuse_image is not None:
+                diffuse_path = _handle_image(registry, diffuse_image)
+                if diffuse_path:
+                    attrs["diffuseTexture"] = diffuse_path
+
+            specular_image = _image_from_socket(principled.inputs.get("Specular"))
+            if specular_image is not None:
+                specular_path = _handle_image(registry, specular_image)
+                if specular_path:
+                    attrs["specularTexture"] = specular_path
+
+            normal_image = None
+            normal_socket = principled.inputs.get("Normal")
+            if normal_socket is not None:
+                normal_image = _image_from_socket(normal_socket)
+            if normal_image is not None:
+                normal_path = _handle_image(registry, normal_image)
+                if normal_path:
+                    attrs["normalTexture"] = normal_path
+
+    return attrs
 
 def export_objects(registry: SceneRegistry):
     result: list[XMLNode] = []
@@ -43,8 +94,7 @@ def export_objects(registry: SceneRegistry):
         if object_eval.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'CURVES'}:
             continue
 
-        shapes: list[XMLNode] = registry.export(
-            object_eval.original.data, lambda unique_name: export_shape(registry, object_eval))
+        shapes: list[XMLNode] = export_shape(registry, object_eval)
         if len(shapes) == 0:
             registry.warn(f"Entity {object_eval.name} has no material or shape and will be ignored")
             continue
@@ -53,13 +103,16 @@ def export_objects(registry: SceneRegistry):
         basis_x = basis.col[0]
         basis_y = basis.col[1]
         basis_z = basis.col[2]
-        location = inst.matrix_world.to_translation()
-        rotation = inst.matrix_world.to_euler('XYZ')
 
-        for (mat_id, shape) in enumerate(shapes):
+        location, rotation, scale = inst.matrix_world.decompose()
+        rotation_euler = rotation.to_euler('XYZ')
+
+        for shape in shapes:
             filename = shape.attributes.get("filename")
             if filename is None:
                 continue
+
+            mat_id = shape.attributes.get("material_index", 0)
 
             mesh_node = XMLNode(
                 "Mesh",
@@ -69,15 +122,16 @@ def export_objects(registry: SceneRegistry):
                 basisY=str_flat_array(basis_y),
                 basisZ=str_flat_array(basis_z),
                 rotation=str_flat_array((
-                    mathutils.rad2deg(rotation.x),
-                    mathutils.rad2deg(rotation.y),
-                    mathutils.rad2deg(rotation.z)
+                    mathutils.rad2deg(rotation_euler.x),
+                    mathutils.rad2deg(rotation_euler.y),
+                    mathutils.rad2deg(rotation_euler.z)
                 )),
+                scale=str_float((scale.x + scale.y + scale.z) / 3.0),
                 clusterMaxTriangles=0,
                 clusterMaxExtent=0.0,
             )
 
-            for key, value in _default_material_attributes(inst, mat_id).items():
+            for key, value in _material_attributes(registry, inst, mat_id).items():
                 mesh_node.attributes[key] = value
 
             result.append(mesh_node)
