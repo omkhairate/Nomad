@@ -1,10 +1,10 @@
-#include "MetalCpp Path Tracer/Renderer/ResidencyBudget.h"
+#include "Nomad Path Tracer/Renderer/ResidencyBudget.h"
 
 #include <cassert>
 #include <cmath>
 #include <cstddef>
 
-using MetalCppPathTracer::ResidencyBudget;
+using NomadPathTracer::ResidencyBudget;
 
 void RunResidencyBudgetTests() {
   ResidencyBudget budget;

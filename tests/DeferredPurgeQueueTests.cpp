@@ -1,4 +1,4 @@
-#include "MetalCpp Path Tracer/Renderer/DeferredPurgeQueue.h"
+#include "Nomad Path Tracer/Renderer/DeferredPurgeQueue.h"
 
 #include <cassert>
 

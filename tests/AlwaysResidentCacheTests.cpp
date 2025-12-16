@@ -1,8 +1,8 @@
-#include "MetalCpp Path Tracer/Renderer/AlwaysResidentCache.h"
+#include "Nomad Path Tracer/Renderer/AlwaysResidentCache.h"
 
 #include <cassert>
 
-using MetalCppPathTracer::AlwaysResidentCache;
+using NomadPathTracer::AlwaysResidentCache;
 
 namespace {
 

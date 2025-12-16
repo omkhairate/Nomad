@@ -1,8 +1,8 @@
-#include "MetalCpp Path Tracer/Renderer/TlasScratchTracker.h"
+#include "Nomad Path Tracer/Renderer/TlasScratchTracker.h"
 
 #include <cassert>
 
-using MetalCppPathTracer::TlasScratchTracker;
+using NomadPathTracer::TlasScratchTracker;
 
 int main() {
   TlasScratchTracker tracker;
