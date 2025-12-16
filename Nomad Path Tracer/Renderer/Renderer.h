@@ -115,6 +115,8 @@ public:
   bool benchmarkModeEnabled() const { return _benchmarkEnabled; }
   void setFrameCaptureEnabled(bool enabled);
   void setFrameCaptureInterval(size_t interval);
+  void setMaxRayDepth(uint32_t depth);
+  uint32_t maxRayDepth() const;
 
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);

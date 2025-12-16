@@ -6,10 +6,13 @@
 namespace NomadPathTracer
 {
 
+class ViewDelegate;
+
 class ControllerView
 {
 public:
   virtual MTK::View* get(CGRect frame);
+  void setViewDelegate(ViewDelegate *delegate);
 };
 
 // Update the FPS text overlay on the rendering view.

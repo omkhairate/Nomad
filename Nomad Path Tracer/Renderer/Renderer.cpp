@@ -1331,6 +1331,14 @@ void Renderer::setFrameCaptureInterval(size_t interval) {
   _frameCaptureInterval = interval;
 }
 
+void Renderer::setMaxRayDepth(uint32_t depth) {
+  if (depth == 0)
+    depth = 1;
+  _pScene->maxRayDepth = depth;
+}
+
+uint32_t Renderer::maxRayDepth() const { return _pScene ? _pScene->maxRayDepth : 0; }
+
 void Renderer::initializeBenchmarking() {
   const char *primaryEnv = std::getenv("METALPT_BENCH");
   const char *legacyEnv = std::getenv("METALAPT_BENCH");
