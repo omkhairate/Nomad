@@ -678,8 +678,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         root->FloatAttribute("lodExitViewDegrees", params.lodExitViewDegrees);
     params.stateCooldownFrames =
         root->UnsignedAttribute("residencyCooldown", params.stateCooldownFrames);
-    params.lodMaxTogglesPerFrame =
-        root->UnsignedAttribute("lodToggleBudget", params.lodMaxTogglesPerFrame);
+    params.lodMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
+        "lodToggleBudget", static_cast<uint64_t>(params.lodMaxTogglesPerFrame)));
 
     params.energyTargetFraction =
         root->FloatAttribute("energyTargetFraction", params.energyTargetFraction);
