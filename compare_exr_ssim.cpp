@@ -14,7 +14,7 @@
 #include <vector>
 
 #define TINYEXR_IMPLEMENTATION
-#include "MetalCpp Path Tracer/tinyexr.h"
+#include "Nomad Path Tracer/tinyexr.h"
 
 namespace {
 

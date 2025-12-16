@@ -1,9 +1,9 @@
-#include "MetalCpp Path Tracer/Renderer/IncrementalUpdateUtils.h"
+#include "Nomad Path Tracer/Renderer/IncrementalUpdateUtils.h"
 
 #include <cassert>
 #include <vector>
 
-using MetalCppPathTracer::computeChangedRanges;
+using NomadPathTracer::computeChangedRanges;
 
 int main() {
   std::vector<int> baseline{1, 2, 3, 4, 5};
