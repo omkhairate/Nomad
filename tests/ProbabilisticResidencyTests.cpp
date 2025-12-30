@@ -410,7 +410,8 @@ void testLowEvidenceHysteresisDemotion() {
     bool cooldownExpired = cooldown == 0;
     bool lowEvidence = evidence <= kMinimalEvidenceThreshold;
     float evaluationProbability =
-        lowEvidence ? regressedProbability : enterScore;
+        lowEvidence ? std::max(regressedProbability, sanitizedProbability)
+                    : enterScore;
     if (enterScore >= enterThreshold)
       desired = true;
     else if (exitScore <= exitThreshold)
