@@ -197,7 +197,10 @@ def export_scene(op, filepath, context, settings):
     scene.add_children(export_lights(registry))
 
     if settings.enable_background:
-        scene.add_children(export_world_background(registry, depsgraph.scene))
+        environment = export_world_background(registry, depsgraph.scene)
+        if environment:
+            scene.attributes["environmentTexture"] = environment.texture
+            scene.attributes["environmentBrightness"] = environment.brightness
 
     root.add_child(scene)
 
