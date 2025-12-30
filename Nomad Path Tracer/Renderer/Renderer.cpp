@@ -9754,9 +9754,6 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
       std::max(0.0f, _residencyConfig.probabilityDesiredHysteresis);
   const float explorationFloor = 1.0e-3f;
 
-  double reuseWeightSum = 0.0;
-  double candidateWeightSum = 0.0;
-
   if (_restirReservoirWeight.size() < primCount)
     _restirReservoirWeight.resize(primCount, 0.0f);
   if (_restirReservoirSampleCount.size() < primCount)
@@ -9777,6 +9774,7 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
   _frameProbabilityTargetPrimitives = targetActive;
 
   std::vector<float> candidateWeights(primCount, 0.0f);
+  std::vector<float> combinedWeights(primCount, 0.0f);
   std::vector<float> sortJitter(primCount, 0.0f);
 
   for (float &j : sortJitter)
@@ -9810,6 +9808,9 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
     totalCandidateWeight += candidateWeight;
   }
 
+  double reuseWeightSum = 0.0;
+  double candidateWeightSum = 0.0;
+
   struct ReservoirCandidate {
     float key = 0.0f;
     float weight = 0.0f;
@@ -9825,6 +9826,36 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
     }
     return candidateWeights.empty() ? size_t(0) : candidateWeights.size() - 1;
   };
+
+  if (reuseWeight > 0.0f) {
+    for (size_t i = 0; i < primCount; ++i) {
+      float prevWeight = _restirReservoirWeight[i];
+      if (!(prevWeight > 0.0f))
+        continue;
+      float reused = prevWeight * reuseWeight;
+      if (!(reused > 0.0f))
+        continue;
+      reuseWeightSum += static_cast<double>(reused);
+      combinedWeights[i] += reused;
+    }
+  }
+
+  if (totalCandidateWeight <= 0.0f)
+    totalCandidateWeight = static_cast<float>(primCount) * explorationFloor;
+
+  for (size_t c = 0; c < candidateCount; ++c) {
+    float r = randomPositive() * totalCandidateWeight;
+    size_t sampled = sampleIndex(r);
+    float weight = (sampled < candidateWeights.size()) ? candidateWeights[sampled]
+                                                       : explorationFloor;
+    candidateWeightSum += static_cast<double>(weight);
+    combinedWeights[sampled] += weight;
+  }
+
+  std::fill(_restirReservoirWeight.begin(), _restirReservoirWeight.end(), 0.0f);
+  std::fill(_restirReservoirSampleCount.begin(), _restirReservoirSampleCount.end(),
+            0.0f);
+  std::fill(_restirTemporalScore.begin(), _restirTemporalScore.end(), 0.0f);
 
   using Heap =
       std::priority_queue<ReservoirCandidate, std::vector<ReservoirCandidate>,
@@ -9851,34 +9882,8 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
     }
   };
 
-  if (reuseWeight > 0.0f) {
-    for (size_t i = 0; i < primCount; ++i) {
-      float prevWeight = _restirReservoirWeight[i];
-      float prevCount = _restirReservoirSampleCount[i];
-      if (prevCount <= 0.0f || !(prevWeight > 0.0f))
-        continue;
-      float reused = prevWeight * reuseWeight;
-      reuseWeightSum += static_cast<double>(reused);
-      considerCandidate(heap, i, reused);
-    }
-  }
-
-  if (totalCandidateWeight <= 0.0f)
-    totalCandidateWeight = static_cast<float>(primCount) * explorationFloor;
-
-  for (size_t c = 0; c < candidateCount; ++c) {
-    float r = randomPositive() * totalCandidateWeight;
-    size_t sampled = sampleIndex(r);
-    float weight = (sampled < candidateWeights.size()) ? candidateWeights[sampled]
-                                                       : explorationFloor;
-    candidateWeightSum += static_cast<double>(weight);
-    considerCandidate(heap, sampled, weight);
-  }
-
-  std::fill(_restirReservoirWeight.begin(), _restirReservoirWeight.end(), 0.0f);
-  std::fill(_restirReservoirSampleCount.begin(), _restirReservoirSampleCount.end(),
-            0.0f);
-  std::fill(_restirTemporalScore.begin(), _restirTemporalScore.end(), 0.0f);
+  for (size_t i = 0; i < primCount; ++i)
+    considerCandidate(heap, i, combinedWeights[i]);
 
   std::vector<ReservoirCandidate> selected;
   selected.reserve(heap.size());
@@ -9902,7 +9907,7 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
     if (!visible)
       normalized *= 0.9f;
     _restirReservoirWeight[idx] = entry.weight;
-    _restirReservoirSampleCount[idx] = 1.0f;
+    _restirReservoirSampleCount[idx] = entry.weight;
     _restirTemporalScore[idx] = normalized;
   }
 
@@ -9911,14 +9916,14 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
   auto comparator = [this, &sortJitter](size_t a, size_t b) {
     float scoreA = (a < _restirTemporalScore.size()) ? _restirTemporalScore[a] : 0.0f;
     float scoreB = (b < _restirTemporalScore.size()) ? _restirTemporalScore[b] : 0.0f;
-    if (a < sortJitter.size())
-      scoreA += sortJitter[a];
-    if (b < sortJitter.size())
-      scoreB += sortJitter[b];
+    float jitterA = (a < sortJitter.size()) ? sortJitter[a] : 0.0f;
+    float jitterB = (b < sortJitter.size()) ? sortJitter[b] : 0.0f;
+    scoreA += jitterA;
+    scoreB += jitterB;
     float sanA = sanitizeSortValue(scoreA);
     float sanB = sanitizeSortValue(scoreB);
     if (sanA == sanB)
-      return a < b;
+      return jitterA == jitterB ? a < b : jitterA > jitterB;
     return sanA > sanB;
   };
   std::partial_sort(_restirSortedIndices.begin(),

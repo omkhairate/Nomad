@@ -24,6 +24,7 @@ public:
     assert(weights.size() == _primitiveCount);
 
     std::vector<float> adjusted(weights.size(), 0.0f);
+    std::vector<float> combined(weights.size(), 0.0f);
     float totalWeight = 0.0f;
     for (std::size_t i = 0; i < weights.size(); ++i) {
       float w = std::max(weights[i], 0.0f) + 1.0e-3f;
@@ -52,36 +53,36 @@ public:
       return adjusted.size() - 1;
     };
 
+    std::size_t reuseCount =
+        std::min(_reservoirWeights.size(), _reservoirIndices.size());
+    for (std::size_t i = 0; i < reuseCount; ++i) {
+      float reuseContribution = _reservoirWeights[i] * _reuseWeight;
+      if (reuseContribution > 0.0f)
+        combined[_reservoirIndices[i]] += reuseContribution;
+    }
+
+    for (std::size_t c = 0; c < _candidateCount; ++c) {
+      float r = _dist(_rng) * totalWeight;
+      std::size_t idx = sampleIndex(r);
+      combined[idx] += adjusted[idx];
+    }
+
     using HeapEntry = std::pair<float, std::pair<std::size_t, float>>;
     auto cmp = [](const HeapEntry &a, const HeapEntry &b) {
       return a.first > b.first;
     };
     std::priority_queue<HeapEntry, std::vector<HeapEntry>, decltype(cmp)> heap(cmp);
 
-    for (std::size_t i = 0; i < _reservoirIndices.size(); ++i) {
-      std::size_t idx = _reservoirIndices[i];
-      float weight = _reservoirWeights[i] * _reuseWeight;
+    for (std::size_t i = 0; i < combined.size(); ++i) {
+      float weight = combined[i];
       if (!(weight > 0.0f))
         continue;
       float key = drawKey(weight);
       if (heap.size() < _reservoirSize)
-        heap.push({key, {idx, weight}});
+        heap.push({key, {i, weight}});
       else if (key > heap.top().first) {
         heap.pop();
-        heap.push({key, {idx, weight}});
-      }
-    }
-
-    for (std::size_t c = 0; c < _candidateCount; ++c) {
-      float r = _dist(_rng) * totalWeight;
-      std::size_t idx = sampleIndex(r);
-      float weight = adjusted[idx];
-      float key = drawKey(weight);
-      if (heap.size() < _reservoirSize)
-        heap.push({key, {idx, weight}});
-      else if (key > heap.top().first) {
-        heap.pop();
-        heap.push({key, {idx, weight}});
+        heap.push({key, {i, weight}});
       }
     }
 
@@ -144,5 +145,31 @@ void RunReSTIRResidencyTests() {
                              static_cast<float>(totalSelections)
                        : 0.0f;
   assert(maxShare < 0.35f);
-}
 
+  {
+    constexpr std::size_t kPrimCount = 24;
+    RestirReservoirSimulator stickySimulator(kPrimCount, 3, 1, 0.85f, 424242u);
+    std::vector<float> uniform(kPrimCount, 1.0f);
+    std::vector<std::size_t> counts(kPrimCount, 0);
+    constexpr std::size_t kFramesSimulated = 240;
+    for (std::size_t frame = 0; frame < kFramesSimulated; ++frame) {
+      stickySimulator.step(uniform);
+      for (std::size_t idx : stickySimulator.reservoir()) {
+        assert(idx < counts.size());
+        ++counts[idx];
+      }
+    }
+
+    std::size_t uniqueTouched = 0;
+    for (std::size_t c : counts)
+      if (c > 0)
+        ++uniqueTouched;
+    assert(uniqueTouched >= kPrimCount * 2 / 3);
+
+    std::size_t upperHalfTouched = 0;
+    for (std::size_t i = kPrimCount / 2; i < kPrimCount; ++i)
+      if (counts[i] > 0)
+        ++upperHalfTouched;
+    assert(upperHalfTouched > kPrimCount / 3);
+  }
+}
