@@ -9,6 +9,11 @@
 #include <fstream>
 #include <limits>
 
+@class ViewBridge;
+@interface ViewBridge (ControlUpdates)
++ (void)updateControlValues;
+@end
+
 using namespace NomadPathTracer;
 
 ViewDelegate::ViewDelegate(MTL::Device *pDevice)
