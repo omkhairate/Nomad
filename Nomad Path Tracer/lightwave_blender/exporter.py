@@ -9,6 +9,7 @@ from .xml_node import XMLNode, XMLRootNode
 from .registry import SceneRegistry
 from .world import export_world_background
 from .node import _handle_image
+from .light import export_lights
 
 
 def _material_attributes(registry: SceneRegistry, inst, mat_id: int):
@@ -193,6 +194,7 @@ def export_scene(op, filepath, context, settings):
         scene.add_child(camera_path)
 
     scene.add_children(export_objects(registry))
+    scene.add_children(export_lights(registry))
 
     if settings.enable_background:
         scene.add_children(export_world_background(registry, depsgraph.scene))
