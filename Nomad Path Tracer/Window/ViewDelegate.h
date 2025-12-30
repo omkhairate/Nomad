@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <fstream>
 #include <string>
-#include <simd/simd.h>
 
 #include "Renderer.h"
 
@@ -21,9 +20,6 @@ public:
   virtual void drawableSizeWillChange(MTK::View *pView, CGSize size) override;
   void setMaxRayDepth(uint32_t depth);
   uint32_t maxRayDepth() const;
-  void setCameraPosition(simd::float3 position);
-  simd::float3 activeCameraPosition() const;
-  bool hasCameraKeyframes() const;
 
 private:
   Renderer *_pRenderer;
