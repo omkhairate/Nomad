@@ -18,6 +18,8 @@ struct ProbabilityResidencyConfig {
   float evidenceWindow = 64.0f;
 };
 
+constexpr float kUncertaintyBoost = 0.25f;
+
 class ProbabilityResidencyHarness {
 public:
   explicit ProbabilityResidencyHarness(std::size_t primitiveCount)
