@@ -118,6 +118,9 @@ public:
   void setMaxRayDepth(uint32_t depth);
   uint32_t maxRayDepth() const;
 
+  void setCameraPosition(simd::float3 position);
+  simd::float3 activeCameraPosition() const;
+
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);
 
@@ -138,6 +141,7 @@ public:
   Camera::State _primaryCameraState{};
   Camera::State _observerCameraState{};
   bool _observerActive = false;
+  bool _cameraStateDirty = false;
 
   struct Chunk {
     std::vector<std::pair<simd::float4, simd::float4>>

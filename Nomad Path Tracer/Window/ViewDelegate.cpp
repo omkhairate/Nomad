@@ -105,6 +105,8 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
   ++_frameCount;
   if (_maxFrames > 0 && _pRenderer->hasKeyframes() && _frameCount >= _maxFrames)
     NS::Application::sharedApplication()->terminate(nullptr);
+
+  [ViewBridge updateControlValues];
 }
 
 void ViewDelegate::drawableSizeWillChange(MTK::View *pView, CGSize size) {
@@ -116,3 +118,17 @@ void ViewDelegate::setMaxRayDepth(uint32_t depth) {
 }
 
 uint32_t ViewDelegate::maxRayDepth() const { return _pRenderer->maxRayDepth(); }
+
+void ViewDelegate::setCameraPosition(simd::float3 position) {
+  if (_pRenderer)
+    _pRenderer->setCameraPosition(position);
+}
+
+simd::float3 ViewDelegate::activeCameraPosition() const {
+  return _pRenderer ? _pRenderer->activeCameraPosition()
+                    : simd::float3{0.0f, 0.0f, 0.0f};
+}
+
+bool ViewDelegate::hasCameraKeyframes() const {
+  return _pRenderer ? _pRenderer->hasKeyframes() : false;
+}

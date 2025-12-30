@@ -2,6 +2,7 @@
 #import <MetalKit/MetalKit.h>
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
+#include <algorithm>
 
 #include "InputSystem.h"
 #include "ViewDelegate.h"
@@ -13,9 +14,11 @@
 + (void)updateFPS:(double)fps;
 + (void)updateMemory:(double)mem;
 + (void)setDelegate:(NomadPathTracer::ViewDelegate *)delegate;
- + (void)updateControlValues;
- + (void)refreshRateChanged:(NSSlider *)sender;
++ (void)updateControlValues;
++ (void)refreshRateChanged:(NSSlider *)sender;
  + (void)maxRayDepthChanged:(NSSlider *)sender;
+ + (void)cameraPositionChanged:(NSSlider *)sender;
+ + (void)updateCameraControlValues;
 @end
 
 static NomadPathTracer::ViewDelegate *renderDelegate = nullptr;
@@ -24,6 +27,11 @@ static NSSlider *refreshRateSlider;
 static NSTextField *refreshRateLabel;
 static NSSlider *maxRayDepthSlider;
 static NSTextField *maxRayDepthLabel;
+static NSSlider *cameraPositionSliders[3];
+static NSTextField *cameraPositionLabels[3];
+
+static constexpr float kCameraMinPosition = -1000.0f;
+static constexpr float kCameraMaxPosition = 1000.0f;
 
 static NSTextField *createLabel(NSRect frame, NSString *text) {
     NSTextField *label = [[NSTextField alloc] initWithFrame:frame];
@@ -46,6 +54,21 @@ static void updateRefreshLabel(NSInteger fps) {
 static void updateRayDepthLabel(uint32_t depth) {
     if (maxRayDepthLabel) {
         [maxRayDepthLabel setStringValue:[NSString stringWithFormat:@"Max Ray Depth: %u", depth]];
+    }
+}
+
+static float clampCameraPosition(float value) {
+    return std::clamp(value, kCameraMinPosition, kCameraMaxPosition);
+}
+
+static void updateCameraLabel(NSInteger axis, float value) {
+    if (axis < 0 || axis > 2)
+        return;
+    static const char *axisNames[] = {"X", "Y", "Z"};
+    if (cameraPositionLabels[axis]) {
+        [cameraPositionLabels[axis]
+            setStringValue:[NSString stringWithFormat:@"Camera %s: %.1f",
+                                                     axisNames[axis], value]];
     }
 }
 
@@ -87,14 +110,41 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     [memoryLabel setStringValue:@"GPU: 0.0 MB"];
     [adapter addSubview:memoryLabel];
 
-    NSView *controlPanel = [[NSView alloc] initWithFrame:NSMakeRect(10, 10, 220, 120)];
+    NSView *controlPanel = [[NSView alloc] initWithFrame:NSMakeRect(10, 10, 240, 240)];
     [controlPanel setWantsLayer:YES];
     controlPanel.layer.backgroundColor = [[NSColor colorWithCalibratedWhite:0 alpha:0.5] CGColor];
     controlPanel.layer.cornerRadius = 6.0;
 
-    refreshRateLabel = createLabel(NSMakeRect(10, 80, 180, 18), @"Refresh: 60 FPS");
+    CGFloat labelWidth = 200;
+    CGFloat sliderWidth = 200;
+    CGFloat xOffset = 10;
+    CGFloat labelHeight = 18;
+    CGFloat sliderHeight = 20;
+    CGFloat yOffset = 210;
+
+    static const char *axisNames[] = {"X", "Y", "Z"};
+    for (NSInteger axis = 0; axis < 3; ++axis) {
+        cameraPositionLabels[axis] = createLabel(
+            NSMakeRect(xOffset, yOffset, labelWidth, labelHeight),
+            [NSString stringWithFormat:@"Camera %s: 0.0", axisNames[axis]]);
+        [controlPanel addSubview:cameraPositionLabels[axis]];
+
+        cameraPositionSliders[axis] = [[NSSlider alloc] initWithFrame:
+                                           NSMakeRect(xOffset, yOffset - 22, sliderWidth, sliderHeight)];
+        [cameraPositionSliders[axis] setMinValue:kCameraMinPosition];
+        [cameraPositionSliders[axis] setMaxValue:kCameraMaxPosition];
+        [cameraPositionSliders[axis] setFloatValue:0.0f];
+        [cameraPositionSliders[axis] setTag:axis];
+        [cameraPositionSliders[axis] setTarget:self];
+        [cameraPositionSliders[axis] setAction:@selector(cameraPositionChanged:)];
+        [controlPanel addSubview:cameraPositionSliders[axis]];
+
+        yOffset -= 48;
+    }
+
+    refreshRateLabel = createLabel(NSMakeRect(xOffset, yOffset, labelWidth, labelHeight), @"Refresh: 60 FPS");
     [controlPanel addSubview:refreshRateLabel];
-    refreshRateSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 58, 200, 20)];
+    refreshRateSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(xOffset, yOffset - 22, sliderWidth, sliderHeight)];
     [refreshRateSlider setMinValue:24];
     [refreshRateSlider setMaxValue:240];
     [refreshRateSlider setIntegerValue:60];
@@ -102,9 +152,9 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     [refreshRateSlider setAction:@selector(refreshRateChanged:)];
     [controlPanel addSubview:refreshRateSlider];
 
-    maxRayDepthLabel = createLabel(NSMakeRect(10, 32, 180, 18), @"Max Ray Depth: 8");
+    maxRayDepthLabel = createLabel(NSMakeRect(xOffset, yOffset - 48, labelWidth, labelHeight), @"Max Ray Depth: 8");
     [controlPanel addSubview:maxRayDepthLabel];
-    maxRayDepthSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 10, 200, 20)];
+    maxRayDepthSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(xOffset, yOffset - 70, sliderWidth, sliderHeight)];
     [maxRayDepthSlider setMinValue:1];
     [maxRayDepthSlider setMaxValue:64];
     [maxRayDepthSlider setIntegerValue:8];
@@ -145,6 +195,7 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
         [maxRayDepthSlider setIntegerValue:static_cast<NSInteger>(depth)];
         updateRayDepthLabel(depth);
     }
+    [self updateCameraControlValues];
 }
 
 + (void)refreshRateChanged:(NSSlider *)sender {
@@ -161,6 +212,44 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     if (renderDelegate) {
         renderDelegate->setMaxRayDepth(depth);
     }
+}
+
++ (void)updateCameraControlValues {
+    bool cameraControlsEnabled = renderDelegate && !renderDelegate->hasCameraKeyframes();
+
+    simd::float3 position = {0.0f, 0.0f, 0.0f};
+    if (cameraControlsEnabled) {
+        position = renderDelegate->activeCameraPosition();
+    }
+
+    for (NSInteger axis = 0; axis < 3; ++axis) {
+        if (cameraPositionLabels[axis])
+            [cameraPositionLabels[axis] setHidden:!cameraControlsEnabled];
+        if (cameraPositionSliders[axis]) {
+            [cameraPositionSliders[axis] setHidden:!cameraControlsEnabled];
+            [cameraPositionSliders[axis] setEnabled:cameraControlsEnabled];
+            if (cameraControlsEnabled) {
+                float clampedValue = clampCameraPosition(position[axis]);
+                [cameraPositionSliders[axis] setFloatValue:clampedValue];
+                updateCameraLabel(axis, clampedValue);
+            }
+        }
+    }
+}
+
++ (void)cameraPositionChanged:(NSSlider *)sender {
+    if (!renderDelegate || renderDelegate->hasCameraKeyframes())
+        return;
+
+    NSInteger axis = sender.tag;
+    if (axis < 0 || axis > 2)
+        return;
+
+    simd::float3 position = renderDelegate->activeCameraPosition();
+    float clampedValue = clampCameraPosition(sender.floatValue);
+    position[axis] = clampedValue;
+    renderDelegate->setCameraPosition(position);
+    updateCameraLabel(axis, clampedValue);
 }
 
 - (id)init {

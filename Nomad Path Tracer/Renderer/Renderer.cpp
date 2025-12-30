@@ -6434,11 +6434,15 @@ bool Renderer::updateCameraStates() {
 
   bool viewChanged = toggled || cameraStatesDiffer(activeView, previousViewState) ||
                      hadObserver != _observerActive;
+  if (_cameraStateDirty)
+    viewChanged = true;
   if (viewChanged) {
     ++_cameraVersion;
     _depthWeightCameraVersion = 0;
     recalculateViewport();
   }
+
+  _cameraStateDirty = false;
 
   return viewChanged;
 }
@@ -10958,6 +10962,36 @@ void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 
   buildTextures();
   recalculateViewport();
+}
+
+simd::float3 Renderer::activeCameraPosition() const {
+  return _observerActive ? _observerCameraState.position
+                         : _primaryCameraState.position;
+}
+
+void Renderer::setCameraPosition(simd::float3 position) {
+  if (hasKeyframes())
+    return;
+
+  constexpr float kMinPosition = -1000.0f;
+  constexpr float kMaxPosition = 1000.0f;
+  const simd::float3 defaultPosition{0.0f, 20.0f, 50.0f};
+
+  simd::float3 sanitized = position;
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(sanitized[i]))
+      sanitized[i] = defaultPosition[i];
+  }
+
+  simd::float3 clamped = simd::clamp(sanitized, simd::float3{kMinPosition},
+                                     simd::float3{kMaxPosition});
+
+  Camera::State &target =
+      _observerActive ? _observerCameraState : _primaryCameraState;
+  if (simd::any(target.position != clamped)) {
+    target.position = clamped;
+    _cameraStateDirty = true;
+  }
 }
 
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
