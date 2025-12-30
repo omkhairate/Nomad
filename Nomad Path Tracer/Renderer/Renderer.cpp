@@ -33,6 +33,7 @@
 #include <iomanip>
 #include <mutex>
 #include <numeric>
+#include <queue>
 #include <atomic>
 #include <deque>
 #include <simd/simd.h>
@@ -9732,6 +9733,12 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
 
+  auto randomPositive = []() {
+    float r = randomFloat();
+    constexpr float kEpsilon = 1e-6f;
+    return (r <= 0.0f) ? kEpsilon : r;
+  };
+
   _frameProbabilityTargetPrimitives = 0;
   _frameProbabilityInitialDesiredPrimitives = 0;
   _frameProbabilityFinalDesiredPrimitives = 0;
@@ -9749,6 +9756,7 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
   const size_t toggleBudget = _residencyConfig.restirMaxTogglesPerFrame;
   const float hysteresis =
       std::max(0.0f, _residencyConfig.probabilityDesiredHysteresis);
+  const float explorationFloor = 1.0e-3f;
 
   double reuseWeightSum = 0.0;
   double candidateWeightSum = 0.0;
@@ -9772,6 +9780,13 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
   targetActive = std::min(targetActive, primCount);
   _frameProbabilityTargetPrimitives = targetActive;
 
+  std::vector<float> candidateWeights(primCount, 0.0f);
+  std::vector<float> sortJitter(primCount, 0.0f);
+
+  for (float &j : sortJitter)
+    j = (randomFloat() - 0.5f) * 1e-3f;
+
+  float totalCandidateWeight = 0.0f;
   for (size_t i = 0; i < primCount; ++i) {
     float probability = (i < _primitiveHitProbability.size())
                             ? _primitiveHitProbability[i]
@@ -9792,35 +9807,118 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
       candidateWeight += std::min(exploration, 8.0f) * 0.05f;
     candidateWeight = std::max(candidateWeight, 0.0f);
 
-    float prevWeight = _restirReservoirWeight[i] * reuseWeight;
-    float prevCount = _restirReservoirSampleCount[i] * reuseWeight;
-    float accumulatedWeight =
-        prevWeight + candidateWeight * static_cast<float>(candidateCount);
-    float accumulatedCount =
-        prevCount + static_cast<float>(candidateCount);
-    reuseWeightSum += static_cast<double>(prevWeight);
-    candidateWeightSum +=
-        static_cast<double>(candidateWeight) * static_cast<double>(candidateCount);
-    if (accumulatedCount > static_cast<float>(reservoirSize)) {
-      float scale = static_cast<float>(reservoirSize) / accumulatedCount;
-      accumulatedCount = static_cast<float>(reservoirSize);
-      accumulatedWeight *= scale;
+    candidateWeight = std::max(candidateWeight + explorationFloor,
+                               explorationFloor);
+    candidateWeight += explorationFloor * (randomFloat() * 0.25f);
+    candidateWeights[i] = candidateWeight;
+    totalCandidateWeight += candidateWeight;
+  }
+
+  struct ReservoirCandidate {
+    float key = 0.0f;
+    float weight = 0.0f;
+    size_t index = 0;
+  };
+
+  auto sampleIndex = [&](float r) {
+    float accum = 0.0f;
+    for (size_t i = 0; i < candidateWeights.size(); ++i) {
+      accum += candidateWeights[i];
+      if (r <= accum)
+        return i;
     }
-    float normalized =
-        (accumulatedCount > 0.0f) ? (accumulatedWeight / accumulatedCount) : 0.0f;
+    return candidateWeights.empty() ? size_t(0) : candidateWeights.size() - 1;
+  };
+
+  using Heap =
+      std::priority_queue<ReservoirCandidate, std::vector<ReservoirCandidate>,
+                          std::function<bool(const ReservoirCandidate &,
+                                             const ReservoirCandidate &)>>;
+  auto cmp = [](const ReservoirCandidate &a, const ReservoirCandidate &b) {
+    return a.key > b.key;
+  };
+  Heap heap(cmp);
+
+  auto considerCandidate = [&](Heap &heap, size_t index, float weight) {
+    if (!(weight > 0.0f))
+      return;
+    float key = std::pow(randomPositive(), 1.0f / std::max(weight, 1e-6f));
+    key += (randomFloat() - 0.5f) * 1e-4f;
+    ReservoirCandidate candidate{key, weight, index};
+    if (heap.size() < reservoirSize) {
+      heap.push(candidate);
+      return;
+    }
+    if (key > heap.top().key) {
+      heap.pop();
+      heap.push(candidate);
+    }
+  };
+
+  if (reuseWeight > 0.0f) {
+    for (size_t i = 0; i < primCount; ++i) {
+      float prevWeight = _restirReservoirWeight[i];
+      float prevCount = _restirReservoirSampleCount[i];
+      if (prevCount <= 0.0f || !(prevWeight > 0.0f))
+        continue;
+      float reused = prevWeight * reuseWeight;
+      reuseWeightSum += static_cast<double>(reused);
+      considerCandidate(heap, i, reused);
+    }
+  }
+
+  if (totalCandidateWeight <= 0.0f)
+    totalCandidateWeight = static_cast<float>(primCount) * explorationFloor;
+
+  for (size_t c = 0; c < candidateCount; ++c) {
+    float r = randomPositive() * totalCandidateWeight;
+    size_t sampled = sampleIndex(r);
+    float weight = (sampled < candidateWeights.size()) ? candidateWeights[sampled]
+                                                       : explorationFloor;
+    candidateWeightSum += static_cast<double>(weight);
+    considerCandidate(heap, sampled, weight);
+  }
+
+  std::fill(_restirReservoirWeight.begin(), _restirReservoirWeight.end(), 0.0f);
+  std::fill(_restirReservoirSampleCount.begin(), _restirReservoirSampleCount.end(),
+            0.0f);
+  std::fill(_restirTemporalScore.begin(), _restirTemporalScore.end(), 0.0f);
+
+  std::vector<ReservoirCandidate> selected;
+  selected.reserve(heap.size());
+  while (!heap.empty()) {
+    selected.push_back(heap.top());
+    heap.pop();
+  }
+
+  float selectedWeightSum = 0.0f;
+  for (const auto &entry : selected)
+    selectedWeightSum += entry.weight;
+
+  for (const auto &entry : selected) {
+    size_t idx = entry.index;
+    if (idx >= _restirReservoirWeight.size() || selectedWeightSum <= 0.0f)
+      continue;
+    float normalized = entry.weight / selectedWeightSum;
+    bool visible = (idx < _primitiveVisible.size())
+                       ? (_primitiveVisible[idx] != 0)
+                       : true;
     if (!visible)
       normalized *= 0.9f;
-
-    _restirReservoirWeight[i] = accumulatedWeight;
-    _restirReservoirSampleCount[i] = accumulatedCount;
-    _restirTemporalScore[i] = normalized;
+    _restirReservoirWeight[idx] = entry.weight;
+    _restirReservoirSampleCount[idx] = 1.0f;
+    _restirTemporalScore[idx] = normalized;
   }
 
   size_t sortCount = std::max<size_t>(1, targetActive);
   sortCount = std::min(sortCount, primCount);
-  auto comparator = [this](size_t a, size_t b) {
+  auto comparator = [this, &sortJitter](size_t a, size_t b) {
     float scoreA = (a < _restirTemporalScore.size()) ? _restirTemporalScore[a] : 0.0f;
     float scoreB = (b < _restirTemporalScore.size()) ? _restirTemporalScore[b] : 0.0f;
+    if (a < sortJitter.size())
+      scoreA += sortJitter[a];
+    if (b < sortJitter.size())
+      scoreB += sortJitter[b];
     float sanA = sanitizeSortValue(scoreA);
     float sanB = sanitizeSortValue(scoreB);
     if (sanA == sanB)
