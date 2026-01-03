@@ -13,6 +13,72 @@ from .node import _handle_image
 from .light import export_lights
 from .camera import export_camera
 
+_RESIDENCY_PRESETS: dict[str, dict] = {
+    "distance": {
+        "strategy": "distance",
+        "attributes": {
+            "textureResidencyMemoryCapMB": 16,
+            "lodEnterDistance": 50,
+            "lodExitDistance": 75,
+            "residencyCooldown": 1,
+            "lodToggleBudget": 10000,
+        },
+    },
+    "environment": {
+        "strategy": "environment",
+        "attributes": {
+            "textureResidencyMemoryCapMB": 512,
+            "envTargetFraction": 0.78,
+            "envEscapeThreshold": 0.18,
+            "envMinActive": 150,
+            "envToggleBudget": 15000,
+            "envDepthRadii": (18, 36, 60),
+            "envDepthWeights": (1.4, 1.0, 0.6),
+        },
+    },
+    "predictive": {
+        "strategy": "predictive",
+        "attributes": {
+            "textureResidencyMemoryCapMB": 512,
+            "envTargetFraction": 0.72,
+            "envEscapeThreshold": 0.16,
+            "envMinActive": 150,
+            "envToggleBudget": 15000,
+            "envDepthRadii": (18, 36, 60),
+            "envDepthWeights": (1.4, 1.0, 0.6),
+        },
+    },
+    "probabilistic": {
+        "strategy": "probabilistic",
+        "attributes": {
+            "textureResidencyMemoryCapMB": 512,
+            "probabilityDecay": 0.92,
+            "probabilityThreshold": 0.42,
+            "probabilityMinActive": 150,
+            "probabilityToggleBudget": 14000,
+        },
+    },
+    "unified": {
+        "strategy": "unified",
+        "attributes": {
+            "textureResidencyMemoryCapMB": 512,
+            "unifiedEnergyWeight": 0.85,
+            "unifiedHitWeight": 1.95,
+            "unifiedCoverageWeight": 1.55,
+            "unifiedDistanceWeight": 0.55,
+        },
+    },
+}
+
+_SUPPORTED_NODE_NAMES = {
+    "Scene",
+    "CameraPath",
+    "Keyframe",
+    "Mesh",
+    "Sphere",
+    "Rectangle",
+}
+
 
 def _material_attributes(registry: SceneRegistry, inst, mat_id: int):
     mat = None
@@ -80,6 +146,35 @@ def _material_attributes(registry: SceneRegistry, inst, mat_id: int):
                 if normal_path:
                     attrs["normalTexture"] = normal_path
 
+    return attrs
+
+
+def _prune_unsupported_nodes(node):
+    """Drop any nodes the SceneLoader will not understand (e.g., Mitsuba-style bsdf/integrator tags)."""
+    filtered_children = []
+    for child in getattr(node, "children", []):
+        if child.name not in _SUPPORTED_NODE_NAMES:
+            continue
+        _prune_unsupported_nodes(child)
+        filtered_children.append(child)
+    node.children = filtered_children
+
+
+def _residency_attributes(settings) -> dict:
+    if not getattr(settings, "enable_residency_settings", False):
+        return {}
+
+    preset_key = getattr(settings, "residency_preset", "none")
+    preset = _RESIDENCY_PRESETS.get(preset_key)
+    if preset is None:
+        return {}
+
+    attrs: dict = {"residencyStrategy": preset["strategy"]}
+    for key, value in preset["attributes"].items():
+        if isinstance(value, (tuple, list)):
+            attrs[key] = str_flat_array(value)
+        else:
+            attrs[key] = value
     return attrs
 
 def export_objects(registry: SceneRegistry):
@@ -194,13 +289,8 @@ def export_scene(op, filepath, context, settings):
         "height": res_y,
         "maxRayDepth": max_depth,
         "startCompacted": True,
-        "residencyStrategy": "distance",
-        "textureResidencyMemoryCapMB": 16,
-        "lodEnterDistance": 50,
-        "lodExitDistance": 75,
-        "residencyCooldown": 1,
-        "lodToggleBudget": 10000,
     })
+    scene.attributes.update(_residency_attributes(settings))
 
     # Create a path for meshes & textures
     rootPath = os.path.dirname(filepath)
@@ -224,6 +314,7 @@ def export_scene(op, filepath, context, settings):
             scene.attributes["environmentBrightness"] = environment.brightness
 
     root.add_child(scene)
+    _prune_unsupported_nodes(root)
 
     # Remove mesh & texture directory if empty
     try:
