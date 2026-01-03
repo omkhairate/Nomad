@@ -35,7 +35,25 @@ def _write_constant_environment_texture(registry: SceneRegistry, color):
         image_name, width=1, height=1, alpha=False, float_buffer=True)
     image.generated_color = (*normalized, 1.0)
     image.use_generated_float = True
-    image.colorspace_settings.name = "Linear"
+    colorspace_settings = image.colorspace_settings
+    available_colorspaces = [
+        item.identifier for item in colorspace_settings.bl_rna.properties["name"].enum_items
+    ]
+
+    preferred_colorspaces = ["Linear Rec.709", "Non-Color"]
+    selected_colorspace = next(
+        (cs for cs in preferred_colorspaces if cs in available_colorspaces),
+        None,
+    )
+
+    if selected_colorspace is None:
+        selected_colorspace = next(
+            (cs for cs in available_colorspaces if "linear" in cs.lower()),
+            available_colorspaces[0] if available_colorspaces else "",
+        )
+
+    if selected_colorspace:
+        colorspace_settings.name = selected_colorspace
     try:
         tex_dir_name = get_prefs().tex_dir_name
         os.makedirs(os.path.join(registry.path, tex_dir_name), exist_ok=True)
