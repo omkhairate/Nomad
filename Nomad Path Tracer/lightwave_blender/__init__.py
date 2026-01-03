@@ -1,9 +1,9 @@
 from . import exporter_ui, addon_preferences
 
 bl_info = {
-    "name": "Metal Scene",
+    "name": "Nomad Scene",
     "author": "Ömercan Yazici, Alexander Rath",
-    "description": "Export scene to MetalPathtracer",
+    "description": "Export scene to Nomad Pathtracer",
     "version": (0, 2, 5),
     "blender": (3, 0, 0),
     "location": "File > Import-Export",

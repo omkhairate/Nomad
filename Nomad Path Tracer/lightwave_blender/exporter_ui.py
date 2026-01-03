@@ -16,11 +16,11 @@ from .exporter import *
 
 
 class ExportLightwave(bpy.types.Operator, ExportHelper):
-    """Export scene to Lightwave"""
+    """Export scene to Nomad Scene"""
 
     bl_idname = "export_scene.lightwave"
-    bl_label = "Export Lightwave Scene"
-    bl_description = "Export scene to Lightwave"
+    bl_label = "Export Nomad Scene"
+    bl_description = "Export scene to Nomad Scene"
     bl_options = {'PRESET'}
 
     filename_ext = ".xml"
@@ -180,7 +180,7 @@ class LIGHTWAVE_PT_export_include(bpy.types.Panel):
 
 
 def menu_func_export(self, context):
-    self.layout.operator(ExportLightwave.bl_idname, text="Lightwave (.xml)")
+    self.layout.operator(ExportLightwave.bl_idname, text="Nomad Scene (.xml)")
 
 
 classes = (
