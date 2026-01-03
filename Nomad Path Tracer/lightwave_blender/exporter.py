@@ -84,6 +84,26 @@ def _material_attributes(registry: SceneRegistry, inst, mat_id: int):
 def export_objects(registry: SceneRegistry):
     result: list[XMLNode] = []
 
+    def _is_uniform_scale(scale_vec: mathutils.Vector, epsilon: float = 1.0e-4) -> bool:
+        return (abs(scale_vec.x - scale_vec.y) <= epsilon and
+                abs(scale_vec.x - scale_vec.z) <= epsilon)
+
+    def _basis_matches_rotation(basis_matrix: mathutils.Matrix,
+                                rotation: mathutils.Quaternion,
+                                scale_vec: mathutils.Vector,
+                                epsilon: float = 1.0e-4) -> bool:
+        rot_matrix = rotation.to_matrix().to_3x3()
+        expected_basis_x = rot_matrix.col[0] * scale_vec.x
+        expected_basis_y = rot_matrix.col[1] * scale_vec.y
+        expected_basis_z = rot_matrix.col[2] * scale_vec.z
+
+        def _close(a: mathutils.Vector, b: mathutils.Vector) -> bool:
+            return (a - b).length <= epsilon * max(1.0, a.length, b.length)
+
+        return (_close(basis_matrix.col[0], expected_basis_x) and
+                _close(basis_matrix.col[1], expected_basis_y) and
+                _close(basis_matrix.col[2], expected_basis_z))
+
     for inst in registry.depsgraph.object_instances:
         object_eval = inst.object
         if object_eval is None:
@@ -108,6 +128,11 @@ def export_objects(registry: SceneRegistry):
 
         location, rotation, scale = inst.matrix_world.decompose()
         rotation_euler = rotation.to_euler('XYZ')
+        has_uniform_scale = _is_uniform_scale(scale)
+        uses_rotation_attributes = has_uniform_scale and _basis_matches_rotation(
+            basis, rotation, scale)
+        scale_value = (scale.x + scale.y + scale.z) / 3.0 if uses_rotation_attributes \
+            else (basis_x.length + basis_y.length + basis_z.length) / 3.0
 
         for shape in shapes:
             filename = shape.attributes.get("filename")
@@ -116,22 +141,26 @@ def export_objects(registry: SceneRegistry):
 
             mat_id = shape.attributes.get("material_index", 0)
 
-            mesh_node = XMLNode(
-                "Mesh",
-                file=filename,
-                position=str_flat_array(location),
-                basisX=str_flat_array(basis_x),
-                basisY=str_flat_array(basis_y),
-                basisZ=str_flat_array(basis_z),
-                rotation=str_flat_array((
+            mesh_attributes = {
+                "file": filename,
+                "position": str_flat_array(location),
+                "scale": str_float(scale_value),
+                "clusterMaxTriangles": 0,
+                "clusterMaxExtent": 0.0,
+            }
+
+            if uses_rotation_attributes:
+                mesh_attributes["rotation"] = str_flat_array((
                     math.degrees(rotation_euler.x),
                     math.degrees(rotation_euler.y),
                     math.degrees(rotation_euler.z)
-                )),
-                scale=str_float((scale.x + scale.y + scale.z) / 3.0),
-                clusterMaxTriangles=0,
-                clusterMaxExtent=0.0,
-            )
+                ))
+            else:
+                mesh_attributes["basisX"] = str_flat_array(basis_x)
+                mesh_attributes["basisY"] = str_flat_array(basis_y)
+                mesh_attributes["basisZ"] = str_flat_array(basis_z)
+
+            mesh_node = XMLNode("Mesh", **mesh_attributes)
 
             for key, value in _material_attributes(registry, inst, mat_id).items():
                 mesh_node.attributes[key] = value
