@@ -1,4 +1,5 @@
 import bpy
+import math
 import mathutils
 import os
 
@@ -123,9 +124,9 @@ def export_objects(registry: SceneRegistry):
                 basisY=str_flat_array(basis_y),
                 basisZ=str_flat_array(basis_z),
                 rotation=str_flat_array((
-                    mathutils.rad2deg(rotation_euler.x),
-                    mathutils.rad2deg(rotation_euler.y),
-                    mathutils.rad2deg(rotation_euler.z)
+                    math.degrees(rotation_euler.x),
+                    math.degrees(rotation_euler.y),
+                    math.degrees(rotation_euler.z)
                 )),
                 scale=str_float((scale.x + scale.y + scale.z) / 3.0),
                 clusterMaxTriangles=0,
