@@ -70,6 +70,15 @@ _RESIDENCY_PRESETS: dict[str, dict] = {
     },
 }
 
+_SUPPORTED_NODE_NAMES = {
+    "Scene",
+    "CameraPath",
+    "Keyframe",
+    "Mesh",
+    "Sphere",
+    "Rectangle",
+}
+
 
 def _material_attributes(registry: SceneRegistry, inst, mat_id: int):
     mat = None
@@ -138,6 +147,17 @@ def _material_attributes(registry: SceneRegistry, inst, mat_id: int):
                     attrs["normalTexture"] = normal_path
 
     return attrs
+
+
+def _prune_unsupported_nodes(node):
+    """Drop any nodes the SceneLoader will not understand (e.g., Mitsuba-style bsdf/integrator tags)."""
+    filtered_children = []
+    for child in getattr(node, "children", []):
+        if child.name not in _SUPPORTED_NODE_NAMES:
+            continue
+        _prune_unsupported_nodes(child)
+        filtered_children.append(child)
+    node.children = filtered_children
 
 
 def _residency_attributes(settings) -> dict:
@@ -294,6 +314,7 @@ def export_scene(op, filepath, context, settings):
             scene.attributes["environmentBrightness"] = environment.brightness
 
     root.add_child(scene)
+    _prune_unsupported_nodes(root)
 
     # Remove mesh & texture directory if empty
     try:
