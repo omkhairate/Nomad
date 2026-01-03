@@ -1,13 +1,14 @@
 import math
-import mathutils
 import re
+import mathutils
 
-# Blender's mathutils module does not always expose rad2deg/deg2rad,
-# so register lightweight fallbacks to keep the add-on working across versions.
-if not hasattr(mathutils, "rad2deg"):
-    mathutils.rad2deg = math.degrees
-if not hasattr(mathutils, "deg2rad"):
-    mathutils.deg2rad = math.radians
+
+def rad2deg(angle):
+    return math.degrees(angle)
+
+
+def deg2rad(angle):
+    return math.radians(angle)
 
 
 def find_unique_name(used: set[str], name: str):
