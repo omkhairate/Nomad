@@ -11,6 +11,7 @@ from .registry import SceneRegistry
 from .world import export_world_background
 from .node import _handle_image
 from .light import export_lights
+from .camera import export_camera
 
 
 def _material_attributes(registry: SceneRegistry, inst, mat_id: int):
@@ -211,17 +212,7 @@ def export_scene(op, filepath, context, settings):
     registry = SceneRegistry(rootPath, depsgraph, settings, op)
 
     if settings.enable_camera and depsgraph.scene.camera is not None:
-        camera = depsgraph.scene.camera
-        cam_matrix = camera.matrix_world
-        cam_pos = cam_matrix.to_translation()
-        cam_forward = cam_matrix.to_quaternion() @ mathutils.Vector((0.0, 0.0, -1.0))
-        look_at = cam_pos + cam_forward
-
-        camera_path = XMLNode("CameraPath")
-        camera_path.add("Keyframe", frame=depsgraph.scene.frame_current,
-                        position=str_flat_array(cam_pos),
-                        lookAt=str_flat_array(look_at))
-        scene.add_child(camera_path)
+        scene.add_children(export_camera(registry))
 
     scene.add_children(export_objects(registry))
     scene.add_children(export_lights(registry))
