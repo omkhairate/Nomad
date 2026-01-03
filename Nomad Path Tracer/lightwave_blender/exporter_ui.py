@@ -2,6 +2,7 @@ import bpy
 
 from bpy.props import (
     BoolProperty,
+    EnumProperty,
     StringProperty
 )
 from bpy_extras.io_utils import (
@@ -69,6 +70,26 @@ class ExportLightwave(bpy.types.Operator, ExportHelper):
         name="Export Integrator",
         description="If true, current integrator technique will be mapped to Lightwave",
         default=True,
+    )
+
+    enable_residency_settings: BoolProperty(
+        name="Export Residency Settings",
+        description="If true, writes residency strategy attributes to match the selected preset",
+        default=False,
+    )
+
+    residency_preset: EnumProperty(
+        name="Residency Preset",
+        description="Choose which residency strategy tuning to export on the Scene root",
+        items=(
+            ("none", "None (Path tracer defaults)", "Do not export residency parameters"),
+            ("distance", "Distance LOD", "Matches the default distance LOD tuning from scene.xml"),
+            ("environment", "Environment Hit", "Matches scene_envhit_crossfire.xml"),
+            ("predictive", "Predictive Environment", "Matches scene_predictive_crossfire.xml"),
+            ("probabilistic", "Probabilistic", "Matches scene_probabilistic_crossfire.xml"),
+            ("unified", "Unified Score", "Matches scene_unified_offload_demo.xml"),
+        ),
+        default="none",
     )
 
     copy_images: BoolProperty(
@@ -164,6 +185,10 @@ class LIGHTWAVE_PT_export_include(bpy.types.Panel):
         col.prop(operator, 'enable_background', text="Background")
         col.prop(operator, 'enable_camera', text="Camera")
         col.prop(operator, 'enable_integrator', text="Integrator")
+        col.prop(operator, 'enable_residency_settings', text="Residency Settings")
+        sub = col.column()
+        sub.active = operator.enable_residency_settings
+        sub.prop(operator, 'residency_preset', text="Preset")
 
         layout.separator()
         col = layout.column(heading="Images")
