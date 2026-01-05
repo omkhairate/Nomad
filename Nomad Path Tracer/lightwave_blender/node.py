@@ -35,11 +35,49 @@ def _export_rgb_value(registry: SceneRegistry, input: RMInput, exposure):
 
 def _export_image(registry: SceneRegistry, image, path, is_f32=False, keep_format=False):
     if os.path.exists(path) and not registry.settings.overwrite_existing_textures:
-        return
+        return True
+
+    def _try_load_pixels():
+        try:
+            return len(image.pixels)
+        except Exception as exc:
+            registry.warn(f"Unable to read pixel buffer length for {image.name}: {exc}")
+            return 0
 
     # Make sure the image is loaded to memory, so we can write it out
-    if not image.has_data:
-        image.pixels[0]
+    pixel_count = _try_load_pixels()
+    if (not getattr(image, "has_data", True) or pixel_count == 0) and hasattr(image, "reload"):
+        try:
+            image.reload()
+            pixel_count = _try_load_pixels()
+        except Exception as exc:
+            registry.warn(f"Failed to reload image {image.name}: {exc}")
+
+    if pixel_count == 0 and hasattr(image, "update"):
+        try:
+            image.update()
+            pixel_count = _try_load_pixels()
+        except Exception as exc:
+            registry.warn(f"Failed to update image {image.name}: {exc}")
+
+    if pixel_count > 0:
+        try:
+            sample_len = min(pixel_count, 4)
+            if sample_len > 0:
+                sample = [0.0] * sample_len
+                image.pixels.foreach_get(sample)
+        except Exception as exc:
+            registry.warn(f"Unable to read pixels for {image.name}: {exc}")
+
+    if pixel_count == 0:
+        width = 0
+        height = 0
+        try:
+            width, height = image.size
+        except Exception:
+            pass
+        registry.error(f"Image {image.name} has no pixel data loaded (size: {width}x{height}); skipping export")
+        return False
 
     # Export the actual image data
     try:
@@ -59,6 +97,7 @@ def _export_image(registry: SceneRegistry, image, path, is_f32=False, keep_forma
                 "Can not change the original format of given image")
         # Try other way
         image.save_render(path)
+    return True
 
 
 def _handle_image(registry: SceneRegistry, image: bpy.types.Image):
@@ -68,7 +107,8 @@ def _handle_image(registry: SceneRegistry, image: bpy.types.Image):
         img_name = image.name + \
             (".png" if not image.use_generated_float else ".exr")
         img_path = os.path.join(tex_dir_name, img_name)
-        _export_image(registry, image, os.path.join(registry.path, img_path), is_f32=image.use_generated_float)
+        if not _export_image(registry, image, os.path.join(registry.path, img_path), is_f32=image.use_generated_float):
+            return None
         return img_path.replace('\\', '/') # Ensure the image path is not using \ to keep the xml valid
     elif image.source == 'FILE':
         filepath = image.filepath_raw if image.filepath_raw is not None else image.filepath
@@ -105,13 +145,15 @@ def _handle_image(registry: SceneRegistry, image: bpy.types.Image):
                 img_path = os.path.join(tex_dir_name, img_name)
 
             try:
-                _export_image(registry, image, os.path.join(registry.path, img_path),
+                success = _export_image(registry, image, os.path.join(registry.path, img_path),
                                 is_f32=is_f32, keep_format=keep_format)
             except:
                 # Above failed, so give this a try
                 img_path = os.path.join(tex_dir_name, img_name)
-                _export_image(registry, image, os.path.join(registry.path, img_path),
+                success = _export_image(registry, image, os.path.join(registry.path, img_path),
                                   is_f32=False, keep_format=True)
+            if not success:
+                return None
         return img_path.replace('\\', '/') # Ensure the image path is not using \ to keep the xml valid
     else:
         registry.error(f"Image type {image.source} not supported")
@@ -126,6 +168,9 @@ def _export_image_texture(registry: SceneRegistry, input: RMInput, exposure):
 
     def export(unique_name):
         img_path = _handle_image(registry, bl_node.image)
+        if img_path is None:
+            registry.error(f"Skipping texture export for node {bl_node.name} because the image could not be loaded")
+            return _export_fallback()
         kw = {}
 
         if exposure is not None and exposure != 1:
@@ -159,6 +204,9 @@ def _export_env_image_texture(registry: SceneRegistry, input: RMInput, exposure)
 
     def export(unique_name):
         img_path = _handle_image(registry, bl_node.image)
+        if img_path is None:
+            registry.error(f"Skipping environment texture export for node {bl_node.name} because the image could not be loaded")
+            return _export_fallback()
         kw = {}
 
         if exposure is not None and exposure != 1:
