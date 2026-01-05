@@ -1,7 +1,10 @@
-<Scene width="720" height="576" maxRayDepth="4" startCompacted="true" environmentTexture="textures/NomadEnv_1p0000_1p0000_1p0000.exr" environmentBrightness="0.050876" residencyStrategy="alwaysresident">
+<Scene width="720" height="576" maxRayDepth="4" startCompacted="true" environmentTexture="Textures/NomadEnv_1p0000_1p0000_1p0000.exr" environmentBrightness="1.25" residencyStrategy="alwaysresident">
   <CameraPath>
     <Keyframe frame="0" position="0,-4.8365,0.90248" lookAt="0,-5.8175,0.70843"/>
   </CameraPath>
+  <Rectangle position="0,-4.2,1.5" u="1.6,0,0" v="0,1.6,0"
+             albedo="1,1,1" emission="1,0.98,0.95"
+             materialType="-1" emissionPower="10"/>
   <Mesh file="meshes/_m_2_Cube.024.obj" position="2.4728,1.1086,2.9702" scale="0.22584" clusterMaxTriangles="0" clusterMaxExtent="0" basisX="-9.2298e-09,-0.21115,0" basisY="0.22812,-9.9712e-09,0" basisZ="0,0,0.23826" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
   <Mesh file="meshes/_m_3_Cube.024.obj" position="2.4728,1.1086,2.9702" scale="0.22584" clusterMaxTriangles="0" clusterMaxExtent="0" basisX="-9.2298e-09,-0.21115,0" basisY="0.22812,-9.9712e-09,0" basisZ="0,0,0.23826" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
   <Mesh file="meshes/_m_4_Cube.024.obj" position="2.4728,1.1086,2.9702" scale="0.22584" clusterMaxTriangles="0" clusterMaxExtent="0" basisX="-9.2298e-09,-0.21115,0" basisY="0.22812,-9.9712e-09,0" basisZ="0,0,0.23826" albedo="0.8,0.8,0.8" emission="0,0,0" materialType="0" emissionPower="0"/>
