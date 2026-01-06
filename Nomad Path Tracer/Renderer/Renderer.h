@@ -226,6 +226,12 @@ private:
                                 bool removePending = true);
   bool submitAsyncCommandBuffer(MTL::CommandBuffer *commandBuffer,
                                std::function<void(bool)> completion);
+  void noteCommandQueueError(MTL::CommandBuffer *commandBuffer,
+                             const char *context);
+  std::string describeCommandBufferError(MTL::CommandBuffer *commandBuffer,
+                                         const char *context) const;
+  void flushPendingBlasBuildsOnError();
+  void logCommandQueueErrorOnce();
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
   bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
   void rebuildMaterialTextures();
@@ -284,6 +290,10 @@ private:
 
   std::vector<FrameCommandBufferRecord> _frameCommandBuffers;
   std::mutex _frameCommandBufferMutex;
+  std::atomic<bool> _commandQueueError{false};
+  bool _commandQueueErrorLogged = false;
+  std::string _commandQueueErrorDetails;
+  std::mutex _commandQueueErrorMutex;
   MTL::CommandBuffer *_lastRayHitCommandBuffer = nullptr;
   bool _rayHitCopyError = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;

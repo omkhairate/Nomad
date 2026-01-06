@@ -7,6 +7,8 @@
 #include "Scene.h"
 #include "SceneLoader.h"
 #include "../offline/denoiser_settings.h"
+#include <Foundation/NSError.hpp>
+#include <Foundation/NSString.hpp>
 #include <Metal/MTLArgument.hpp>
 #include <Metal/MTLComputePipeline.hpp>
 #include <algorithm>
@@ -87,6 +89,26 @@ TaskLimiter &sceneBvhTaskLimiter() {
 
 namespace {
 constexpr float kIdleVisibleExploreSeed = 1.0f;
+
+std::string commandBufferStatusName(MTL::CommandBufferStatus status) {
+  using Status = MTL::CommandBufferStatus;
+  switch (status) {
+  case Status::CommandBufferStatusNotEnqueued:
+    return "NotEnqueued";
+  case Status::CommandBufferStatusEnqueued:
+    return "Enqueued";
+  case Status::CommandBufferStatusCommitted:
+    return "Committed";
+  case Status::CommandBufferStatusScheduled:
+    return "Scheduled";
+  case Status::CommandBufferStatusCompleted:
+    return "Completed";
+  case Status::CommandBufferStatusError:
+    return "Error";
+  default:
+    return "Unknown";
+  }
+}
 }
 
 namespace NomadPathTracer {
@@ -312,6 +334,124 @@ ParallelForConfig textureUploadConfig(size_t textureCount, size_t totalTexels) {
     config.preferredChunkSize = textureCount;
 
   return config;
+}
+
+std::string Renderer::describeCommandBufferError(
+    MTL::CommandBuffer *commandBuffer, const char *context) const {
+  std::ostringstream ss;
+  ss << (context ? context : "Command buffer");
+  if (!commandBuffer) {
+    ss << " failed: no command buffer";
+    return ss.str();
+  }
+
+  auto status = commandBuffer->status();
+  ss << " status=" << commandBufferStatusName(status);
+
+  if (status != MTL::CommandBufferStatusCompleted) {
+    if (auto *error = commandBuffer->error()) {
+      const char *domain = error->domain() ? error->domain()->utf8String()
+                                           : "UnknownDomain";
+      auto code = static_cast<long long>(error->code());
+      ss << " error=" << domain << ":" << code;
+      if (auto *desc = error->localizedDescription())
+        ss << " (" << desc->utf8String() << ")";
+    }
+  }
+
+  return ss.str();
+}
+
+void Renderer::flushPendingBlasBuildsOnError() {
+  while (!_pendingBlasBuilds.empty()) {
+    auto buildRequest = _pendingBlasBuilds.front();
+    _pendingBlasBuilds.pop_front();
+    if (!buildRequest)
+      continue;
+
+    if (buildRequest->resident) {
+      buildRequest->resident->clearPendingCommand();
+      bool transitioned = false;
+      if (buildRequest->objectIndex < _instanceRecords.size()) {
+        auto &instanceRecord = _instanceRecords[buildRequest->objectIndex];
+        transitioned = transitionResidentToCold(buildRequest->objectIndex,
+                                                *buildRequest->resident,
+                                                instanceRecord);
+        if (!transitioned) {
+          buildRequest->resident->resources.makeResourcesPurgeable();
+          buildRequest->resident->resources.releaseAllAllocations();
+          buildRequest->resident->byteSize = 0;
+          buildRequest->resident->triangleCount = 0;
+          buildRequest->resident->vertexCount = 0;
+          buildRequest->resident->vertexBufferOffset = 0;
+          buildRequest->resident->indexBufferOffset = 0;
+          buildRequest->resident->geometryValid = false;
+          buildRequest->resident->state =
+              ResidentObjectGpuResources::ResidencyState::Cold;
+          buildRequest->resident->lastStateChange =
+              std::chrono::steady_clock::now();
+          instanceRecord.primitiveBase = 0;
+          instanceRecord.primitiveIndexBase = 0;
+          instanceRecord.blasRootIndex = -1;
+          instanceRecord.primitiveCount = 0;
+        }
+      } else {
+        buildRequest->resident->state =
+            ResidentObjectGpuResources::ResidencyState::Cold;
+        buildRequest->resident->geometryValid = false;
+      }
+    }
+    buildRequest->releaseResources();
+  }
+
+  releaseBlasScratchPool();
+}
+
+void Renderer::logCommandQueueErrorOnce() {
+  std::string details;
+  {
+    std::lock_guard<std::mutex> lock(_commandQueueErrorMutex);
+    if (_commandQueueErrorLogged)
+      return;
+    _commandQueueErrorLogged = true;
+    details = _commandQueueErrorDetails;
+  }
+
+  if (details.empty())
+    details = "Unknown GPU command queue failure";
+
+  std::printf(
+      "[Renderer][Error] GPU command queue reported a failure (%s). Rendering "
+      "paused; restart the renderer or lower refresh rate/max ray depth to "
+      "reduce GPU load.\n",
+      details.c_str());
+}
+
+void Renderer::noteCommandQueueError(MTL::CommandBuffer *commandBuffer,
+                                     const char *context) {
+  if (!commandBuffer)
+    return;
+
+  if (commandBuffer->status() == MTL::CommandBufferStatusCompleted)
+    return;
+
+  std::string details = describeCommandBufferError(commandBuffer, context);
+  bool alreadyRecorded =
+      _commandQueueError.exchange(true, std::memory_order_acq_rel);
+  if (!alreadyRecorded) {
+    {
+      std::lock_guard<std::mutex> lock(_commandQueueErrorMutex);
+      _commandQueueErrorDetails = details;
+      _commandQueueErrorLogged = false;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      this->flushPendingBlasBuildsOnError();
+      this->logCommandQueueErrorOnce();
+    });
+  } else {
+    dispatch_async(dispatch_get_main_queue(),
+                   ^{ this->logCommandQueueErrorOnce(); });
+  }
 }
 
 void Renderer::PendingBlasBuild::releaseResources() {
@@ -2867,13 +3007,16 @@ void Renderer::enqueueBlasBuild(
     const std::shared_ptr<PendingBlasBuild> &buildRequest) {
   if (!buildRequest)
     return;
+  if (_commandQueueError.load(std::memory_order_acquire))
+    return;
 
   _pendingBlasBuilds.push_back(buildRequest);
   processBlasBuildQueue();
 }
 
 void Renderer::processBlasBuildQueue() {
-  if (!_pDevice || !_pCommandQueue)
+  if (!_pDevice || !_pCommandQueue ||
+      _commandQueueError.load(std::memory_order_acquire))
     return;
 
   while (!_pendingBlasBuilds.empty() &&
@@ -2897,7 +3040,8 @@ void Renderer::processBlasBuildQueue() {
 
 bool Renderer::startBlasBuild(
     const std::shared_ptr<PendingBlasBuild> &buildRequest) {
-  if (!buildRequest || !buildRequest->resident || !_pDevice || !_pCommandQueue)
+  if (!buildRequest || !buildRequest->resident || !_pDevice || !_pCommandQueue ||
+      _commandQueueError.load(std::memory_order_acquire))
     return false;
 
   auto &resident = *buildRequest->resident;
@@ -3320,15 +3464,23 @@ bool Renderer::submitAsyncCommandBuffer(
 
   if (completion) {
     commandBuffer->addCompletedHandler(
-        [completion = std::move(completion)](MTL::CommandBuffer *cmd) {
-          bool success =
-              cmd->status() == MTL::CommandBufferStatusCompleted;
+        [this, completion = std::move(completion)](
+            MTL::CommandBuffer *cmd) {
+          auto status = cmd->status();
+          if (status != MTL::CommandBufferStatusCompleted)
+            noteCommandQueueError(cmd, "Async command buffer");
+          bool success = status == MTL::CommandBufferStatusCompleted;
           auto completionCopy = completion;
           dispatch_async(dispatch_get_main_queue(), ^{
             if (completionCopy)
               completionCopy(success);
           });
         });
+  } else {
+    commandBuffer->addCompletedHandler([this](MTL::CommandBuffer *cmd) {
+      if (cmd->status() != MTL::CommandBufferStatusCompleted)
+        noteCommandQueueError(cmd, "Async command buffer");
+    });
   }
 
   commandBuffer->commit();
@@ -3726,7 +3878,8 @@ void Renderer::updateTlasScratchResidentBytes(NS::UInteger bytes) {
 void Renderer::updateTopLevelAccelerationStructure(
     const std::vector<MTL::AccelerationStructureInstanceDescriptor> &descriptors,
     const std::vector<MTL::AccelerationStructure *> &structures) {
-  if (!_pDevice || !_pCommandQueue)
+  if (!_pDevice || !_pCommandQueue ||
+      _commandQueueError.load(std::memory_order_acquire))
     return;
 
   finalizePendingTlasScratchResize();
@@ -3963,8 +4116,10 @@ void Renderer::updateTopLevelAccelerationStructure(
   if (signalValue > 0) {
     commandBuffer->addCompletedHandler(
         [this, signalValue](MTL::CommandBuffer *cmd) {
-          bool success =
-              cmd->status() == MTL::CommandBufferStatusCompleted;
+          auto status = cmd->status();
+          bool success = status == MTL::CommandBufferStatusCompleted;
+          if (!success)
+            noteCommandQueueError(cmd, "TLAS build");
           this->handleDeferredBlasEvictions(cmd, success);
           this->_tlasCompletedEventValue.store(signalValue,
                                                std::memory_order_release);
@@ -3972,8 +4127,10 @@ void Renderer::updateTopLevelAccelerationStructure(
   } else {
     commandBuffer->addCompletedHandler(
         [this](MTL::CommandBuffer *cmd) {
-          bool success =
-              cmd->status() == MTL::CommandBufferStatusCompleted;
+          auto status = cmd->status();
+          bool success = status == MTL::CommandBufferStatusCompleted;
+          if (!success)
+            noteCommandQueueError(cmd, "TLAS build");
           this->handleDeferredBlasEvictions(cmd, success);
           this->finalizePendingTlasScratchResize(true);
         });
@@ -3981,6 +4138,7 @@ void Renderer::updateTopLevelAccelerationStructure(
 
   _pendingBlasEvictions.assign(commandBuffer);
 
+  trackFrameCommandBuffer(commandBuffer);
   commandBuffer->commit();
 
   instanceDesc->release();
@@ -6510,6 +6668,11 @@ void Renderer::updateUniforms(bool cameraChanged) {
 }
 
 void Renderer::draw(MTK::View *pView) {
+  if (_commandQueueError.load(std::memory_order_acquire)) {
+    logCommandQueueErrorOnce();
+    return;
+  }
+
   processRayHitCounters();
   bool cameraChanged = updateCameraStates();
   Camera::State viewCamera =
@@ -6627,6 +6790,7 @@ void Renderer::draw(MTK::View *pView) {
 
   updateAdaptiveSamplingMaps(prepCmd);
 
+  trackFrameCommandBuffer(prepCmd);
   prepCmd->commit();
 
   if (!haveAllTextures) {
@@ -11835,6 +11999,8 @@ void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
         release = true;
       }
     }
+    if (completed->status() != MTL::CommandBufferStatusCompleted)
+      noteCommandQueueError(completed, "Frame command buffer");
     if (release)
       completed->release();
   });
