@@ -804,17 +804,39 @@ static bool cameraStatesDiffer(const Camera::State &a, const Camera::State &b,
 
 static Camera::State makeCameraState(const simd::float3 &position,
                                      const simd::float3 &lookAt,
+                                     const simd::float3 &up,
                                      float verticalFov, float focalLength,
-                                     const simd::float3 &fallbackForward) {
+                                     const simd::float3 &fallbackForward,
+                                     const simd::float3 &fallbackUp) {
+  auto normalizeWithFallback = [](const simd::float3 &v,
+                                  const simd::float3 &fallback) {
+    float lenSq = simd::length_squared(v);
+    if (lenSq > 1e-6f) {
+      return simd::normalize(v);
+    }
+    float fallbackLenSq = simd::length_squared(fallback);
+    if (fallbackLenSq > 1e-6f) {
+      return simd::normalize(fallback);
+    }
+    return simd::make_float3(0.0f, 1.0f, 0.0f);
+  };
+
   Camera::State state{};
   state.position = position;
   simd::float3 direction = lookAt - position;
-  if (simd::length_squared(direction) > 1e-6f) {
-    state.forward = simd::normalize(direction);
-  } else {
-    state.forward = fallbackForward;
+  state.forward = normalizeWithFallback(direction, fallbackForward);
+
+  simd::float3 desiredUp = normalizeWithFallback(up, fallbackUp);
+  float alignment = std::abs(simd::dot(desiredUp, state.forward));
+  if (alignment > 0.999f) {
+    simd::float3 reference = std::abs(state.forward.y) < 0.999f
+                                 ? simd::make_float3(0.0f, 1.0f, 0.0f)
+                                 : simd::make_float3(1.0f, 0.0f, 0.0f);
+    simd::float3 right = simd::cross(reference, state.forward);
+    desiredUp = normalizeWithFallback(simd::cross(state.forward, right),
+                                      fallbackUp);
   }
-  state.up = {0, 1, 0};
+  state.up = desiredUp;
   state.verticalFov = verticalFov;
   state.focalLength = focalLength;
   return state;
@@ -2339,8 +2361,9 @@ void Renderer::updateVisibleScene() {
   if (!_pScene->cameraPath.empty()) {
     const auto &k = _pScene->cameraPath.front();
     _primaryCameraState = makeCameraState(
-        k.position, k.lookAt, _primaryCameraState.verticalFov,
-        _primaryCameraState.focalLength, _primaryCameraState.forward);
+        k.position, k.lookAt, k.up, _primaryCameraState.verticalFov,
+        _primaryCameraState.focalLength, _primaryCameraState.forward,
+        _primaryCameraState.up);
   }
 
   Camera::applyState(_primaryCameraState);
@@ -2351,9 +2374,9 @@ void Renderer::updateVisibleScene() {
     float fov = observer.verticalFov > 0.0f ? observer.verticalFov
                                             : _primaryCameraState.verticalFov;
     _observerCameraState =
-        makeCameraState(observer.position, observer.lookAt, fov,
+        makeCameraState(observer.position, observer.lookAt, observer.up, fov,
                         _primaryCameraState.focalLength,
-                        _primaryCameraState.forward);
+                        _primaryCameraState.forward, _primaryCameraState.up);
   } else {
     _observerCameraState = _primaryCameraState;
   }
@@ -6419,16 +6442,18 @@ bool Renderer::updateCameraStates() {
     Camera::State newState = _primaryCameraState;
     if (_animationFrame <= path.front().frame) {
       const auto &k = path.front();
-      newState = makeCameraState(k.position, k.lookAt,
+      newState = makeCameraState(k.position, k.lookAt, k.up,
                                  _primaryCameraState.verticalFov,
                                  _primaryCameraState.focalLength,
-                                 _primaryCameraState.forward);
+                                 _primaryCameraState.forward,
+                                 _primaryCameraState.up);
     } else if (_animationFrame >= path.back().frame) {
       const auto &k = path.back();
-      newState = makeCameraState(k.position, k.lookAt,
+      newState = makeCameraState(k.position, k.lookAt, k.up,
                                  _primaryCameraState.verticalFov,
                                  _primaryCameraState.focalLength,
-                                 _primaryCameraState.forward);
+                                 _primaryCameraState.forward,
+                                 _primaryCameraState.up);
     } else {
       for (size_t i = 0; i + 1 < path.size(); ++i) {
         const auto &k0 = path[i];
@@ -6439,10 +6464,12 @@ bool Renderer::updateCameraStates() {
           simd::float3 position =
               k0.position + t * (k1.position - k0.position);
           simd::float3 look = k0.lookAt + t * (k1.lookAt - k0.lookAt);
-          newState = makeCameraState(position, look,
+          simd::float3 up = k0.up + t * (k1.up - k0.up);
+          newState = makeCameraState(position, look, up,
                                      _primaryCameraState.verticalFov,
                                      _primaryCameraState.focalLength,
-                                     _primaryCameraState.forward);
+                                     _primaryCameraState.forward,
+                                     _primaryCameraState.up);
           break;
         }
       }
