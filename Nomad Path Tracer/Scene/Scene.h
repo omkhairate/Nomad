@@ -139,11 +139,13 @@ struct CameraKeyframe {
   uint32_t frame;
   simd::float3 position;
   simd::float3 lookAt;
+  simd::float3 up = simd::make_float3(0.0f, 1.0f, 0.0f);
 };
 
 struct ObserverCamera {
   simd::float3 position = simd::make_float3(0.0f, 0.0f, 0.0f);
   simd::float3 lookAt = simd::make_float3(0.0f, 0.0f, -1.0f);
+  simd::float3 up = simd::make_float3(0.0f, 1.0f, 0.0f);
   float verticalFov = 60.0f;
 };
 

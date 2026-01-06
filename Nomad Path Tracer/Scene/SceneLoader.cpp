@@ -32,6 +32,14 @@ static simd::float3 parseVec3(const char* str) {
     return simd::make_float3(x, y, z);
 }
 
+static simd::float3 parseVec3OrDefault(const char* str,
+                                       const simd::float3& defaultValue) {
+    if (!str) {
+        return defaultValue;
+    }
+    return parseVec3(str);
+}
+
 static std::vector<float> parseFloatList(const char *attr) {
     std::vector<float> values;
     if (!attr) {
@@ -992,6 +1000,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 key.frame = kf->UnsignedAttribute("frame", 0);
                 key.position = parseVec3(kf->Attribute("position"));
                 key.lookAt = parseVec3(kf->Attribute("lookAt"));
+                key.up = parseVec3OrDefault(kf->Attribute("up"),
+                                            simd::make_float3(0.0f, 1.0f, 0.0f));
                 scene->cameraPath.push_back(key);
             }
         }
@@ -1003,6 +1013,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             if (const char* lookAttr = e->Attribute("lookAt")) {
                 observer.lookAt = parseVec3(lookAttr);
             }
+            observer.up = parseVec3OrDefault(
+                e->Attribute("up"), observer.up);
             observer.verticalFov = e->FloatAttribute("verticalFov", observer.verticalFov);
             scene->setObserverCamera(observer);
         }

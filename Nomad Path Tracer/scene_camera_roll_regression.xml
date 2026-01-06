@@ -1,0 +1,14 @@
+<Scene width="640" height="360" maxRayDepth="8" startCompacted="true" residencyStrategy="alwaysresident">
+    <!-- Camera is rolled 90 degrees around the forward axis to validate up-vector handling. -->
+    <ObserverCamera position="0,2,6" lookAt="0,2,0" up="0,0,1" verticalFov="45" />
+    <CameraPath>
+        <Keyframe frame="0" position="0,2,6" lookAt="0,2,0" up="0,0,1" />
+    </CameraPath>
+
+    <Rectangle position="0,0,0" u="4,0,0" v="0,0,-4" albedo="0.75,0.75,0.78"
+               emission="0,0,0" materialType="0" emissionPower="0" />
+    <Rectangle position="0,2,-2" u="1,0,0" v="0,1,0" albedo="0.8,0.8,0.82"
+               emission="1.0,0.45,0.35" materialType="-1" emissionPower="18" />
+    <Sphere position="-1.2,0.6,-1.0" radius="0.6" albedo="0.4,0.6,0.9"
+            emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
