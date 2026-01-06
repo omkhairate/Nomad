@@ -4,7 +4,7 @@ import mathutils
 import os
 
 from .shape import export_shape
-from .utils import str_flat_array, str_float
+from .utils import convert_world_matrix, str_flat_array, str_float
 from .addon_preferences import get_prefs
 from .xml_node import XMLNode, XMLRootNode
 from .registry import SceneRegistry
@@ -217,12 +217,14 @@ def export_objects(registry: SceneRegistry):
             registry.warn(f"Entity {object_eval.name} has no material or shape and will be ignored")
             continue
 
-        basis = inst.matrix_world.to_3x3()
+        converted_matrix = convert_world_matrix(inst.matrix_world)
+
+        basis = converted_matrix.to_3x3()
         basis_x = basis.col[0]
         basis_y = basis.col[1]
         basis_z = basis.col[2]
 
-        location, rotation, scale = inst.matrix_world.decompose()
+        location, rotation, scale = converted_matrix.decompose()
         rotation_euler = rotation.to_euler('XYZ')
         has_uniform_scale = _is_uniform_scale(scale)
         uses_rotation_attributes = has_uniform_scale and _basis_matches_rotation(
