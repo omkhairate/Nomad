@@ -1,6 +1,6 @@
 <Scene width="720" height="576" maxRayDepth="4" startCompacted="true" environmentTexture="Textures/NomadEnv_1p0000_1p0000_1p0000.exr" environmentBrightness="1.25" residencyStrategy="alwaysresident">
   <CameraPath>
-    <Keyframe frame="0" position="0,-4.8365,0.90248" lookAt="0,-5.8175,0.70843"/>
+    <Keyframe frame="0" position="0,-5.2,0.9" lookAt="0.6,3.6,4.3"/>
   </CameraPath>
   <Rectangle position="0,-4.2,1.5" u="1.6,0,0" v="0,1.6,0"
              albedo="1,1,1" emission="1,0.98,0.95"
