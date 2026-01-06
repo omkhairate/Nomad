@@ -6654,6 +6654,8 @@ void Renderer::draw(MTK::View *pView) {
   uint32_t minSamples = 1;
   uint32_t maxSamples = 1;
   std::vector<TileDispatchRegion> tiles;
+  NS::UInteger generatedTileWidth = 0;
+  NS::UInteger generatedTileHeight = 0;
   if (_pPathTracePSO && accum1) {
     NS::UInteger width = accum1->width();
     NS::UInteger height = accum1->height();
@@ -6681,6 +6683,8 @@ void Renderer::draw(MTK::View *pView) {
         tileHeight = std::max<NS::UInteger>(
             1, static_cast<NS::UInteger>(std::max(1.0, scaledHeight)));
       }
+      generatedTileWidth = tileWidth;
+      generatedTileHeight = tileHeight;
       for (NS::UInteger y = 0; y < height; y += tileHeight) {
         NS::UInteger actualHeight = std::min(tileHeight, height - y);
         for (NS::UInteger x = 0; x < width; x += tileWidth) {
@@ -6736,8 +6740,12 @@ void Renderer::draw(MTK::View *pView) {
       }
     }
 
+    size_t tileBaseWidth =
+        std::max<size_t>(static_cast<size_t>(generatedTileWidth), 1);
+    size_t tileBaseHeight =
+        std::max<size_t>(static_cast<size_t>(generatedTileHeight), 1);
     size_t baseTileWork =
-        std::max<size_t>(static_cast<size_t>(tileWidth) * tileHeight, 1);
+        std::max<size_t>(tileBaseWidth * tileBaseHeight, 1);
     baseTileWork = std::max<size_t>(baseTileWork * effectiveMaxSamples, 1);
     size_t maxWorkPerCommand = std::max(tileWorkBudget, baseTileWork);
 
