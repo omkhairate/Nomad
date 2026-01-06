@@ -48,10 +48,27 @@ def str_flat_array(array):
     return ",".join([str_float(x) for x in array])
 
 
+def world_to_renderer_matrix():
+    # Converts from Blender (X right, Y forward, Z up) to renderer (X right, Y up, -Z forward)
+    return mathutils.Matrix((
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, -1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    ))
+
+
+def convert_world_matrix(matrix):
+    return world_to_renderer_matrix() @ matrix
+
+
 def orient_camera(matrix, skip_scale=False):
-    # Y Up, Front -Z
-    loc, rot, sca = matrix.decompose()
-    return mathutils.Matrix.LocRotScale(loc, rot @ mathutils.Quaternion((0, 0, 1, 0)) @ mathutils.Quaternion((0, 0, 0, 1)), mathutils.Vector.Fill(3, 1) if skip_scale else sca)
+    converted = convert_world_matrix(matrix)
+    loc, rot, sca = converted.decompose()
+    return mathutils.Matrix.LocRotScale(
+        loc,
+        rot,
+        mathutils.Vector.Fill(3, 1) if skip_scale else sca)
 
 
 def try_extract_node_value(value, default=0):
