@@ -25,6 +25,11 @@ enum class ResidencyStrategy {
   ReSTIR = 9,
 };
 
+// Default budget for the amount of tile/sample work recorded into a single
+// path tracing command buffer. The renderer clamps user-provided values to be
+// at least 1 tile of work.
+constexpr size_t kDefaultMaxTileSampleWorkPerCommand = 128 * 128 * 4;
+
 struct SceneObject {
   size_t firstPrimitive = 0;
   size_t primitiveCount = 0;
@@ -197,6 +202,10 @@ public:
   const ResidencyParameters &getResidencyParameters() const;
   void setResidencyParameters(const ResidencyParameters &params);
 
+  size_t getMaxTileSampleWorkPerCommand() const;
+  bool hasCustomMaxTileSampleWorkPerCommand() const;
+  void setMaxTileSampleWorkPerCommand(size_t work);
+
   bool getStartCompacted() const;
   void setStartCompacted(bool start);
 
@@ -264,6 +273,8 @@ private:
   ResidencyParameters residencyParams;
   bool startCompacted;
   double textureResidencyMemoryCapMB;
+  size_t maxTileSampleWorkPerCommand;
+  bool maxTileSampleWorkPerCommandSet;
   bool observerCameraValid;
   ObserverCamera observerCamera;
   mutable std::vector<simd::float3> triangleVerticesCache;

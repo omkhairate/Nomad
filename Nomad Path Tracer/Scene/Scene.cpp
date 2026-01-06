@@ -88,6 +88,8 @@ void Scene::clear() {
   residencyParams = ResidencyParameters{};
   startCompacted = false;
   textureResidencyMemoryCapMB = 2048.0;
+  maxTileSampleWorkPerCommand = kDefaultMaxTileSampleWorkPerCommand;
+  maxTileSampleWorkPerCommandSet = false;
   observerCameraValid = false;
   observerCamera = ObserverCamera{};
   triangleVerticesCache.clear();
@@ -253,6 +255,19 @@ const ResidencyParameters &Scene::getResidencyParameters() const {
 void Scene::setResidencyParameters(const ResidencyParameters &params) {
   residencyParams = params;
   residencyParams.normalizeEnvironmentDepthSettings();
+}
+
+size_t Scene::getMaxTileSampleWorkPerCommand() const {
+  return maxTileSampleWorkPerCommand;
+}
+
+bool Scene::hasCustomMaxTileSampleWorkPerCommand() const {
+  return maxTileSampleWorkPerCommandSet;
+}
+
+void Scene::setMaxTileSampleWorkPerCommand(size_t work) {
+  maxTileSampleWorkPerCommand = std::max<size_t>(work, 1);
+  maxTileSampleWorkPerCommandSet = true;
 }
 
 bool Scene::getStartCompacted() const { return startCompacted; }

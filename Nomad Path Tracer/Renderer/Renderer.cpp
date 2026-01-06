@@ -518,12 +518,6 @@ struct TileDispatchRegion {
 
 constexpr uint32_t kPathTraceTileWidth = 128;
 constexpr uint32_t kPathTraceTileHeight = 128;
-// Limit the amount of pixel/sample work recorded into a single command buffer to
-// reduce the chance of long-running kernels triggering GPU timeout errors when
-// high sample counts are requested. With the always-resident residency strategy
-// scenes keep significantly more geometry active, so reduce the per-command
-// budget to lower kernel runtimes and avoid tripping the macOS GPU watchdog.
-constexpr size_t kMaxTileSampleWorkPerCommand = 128 * 128 * 4;
 constexpr std::chrono::milliseconds kFrameCommandBufferWaitTimeout(4);
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
@@ -6716,10 +6710,36 @@ void Renderer::draw(MTK::View *pView) {
     MTL::Size threadsPerThreadgroup =
         MTL::Size::Make(tgWidth, tgHeight, 1);
 
+    auto parseMaxTileWorkEnv = []() -> size_t {
+      const char *env = std::getenv("MPT_MAX_TILE_WORK");
+      if (!env)
+        return 0;
+      char *end = nullptr;
+      unsigned long long parsed = std::strtoull(env, &end, 10);
+      if (end == env)
+        return 0;
+      return static_cast<size_t>(parsed);
+    };
+
     size_t tileIndex = 0;
-    const size_t maxWorkPerCommand =
-        std::max<size_t>(kMaxTileSampleWorkPerCommand, 1);
     const size_t effectiveMaxSamples = std::max<size_t>(maxSamples, 1);
+    const size_t envTileWork = parseMaxTileWorkEnv();
+    const bool envTileWorkValid = envTileWork > 0;
+    size_t tileWorkBudget = envTileWorkValid ? envTileWork
+                                             : kDefaultMaxTileSampleWorkPerCommand;
+
+    if (!envTileWorkValid && _pScene) {
+      if (_pScene->hasCustomMaxTileSampleWorkPerCommand()) {
+        tileWorkBudget = _pScene->getMaxTileSampleWorkPerCommand();
+      } else if (_frameStrategy == ResidencyStrategy::AlwaysResident) {
+        tileWorkBudget = std::max<size_t>(kDefaultMaxTileSampleWorkPerCommand / 2, 1);
+      }
+    }
+
+    size_t baseTileWork =
+        std::max<size_t>(static_cast<size_t>(tileWidth) * tileHeight, 1);
+    baseTileWork = std::max<size_t>(baseTileWork * effectiveMaxSamples, 1);
+    size_t maxWorkPerCommand = std::max(tileWorkBudget, baseTileWork);
 
     while (tileIndex < tiles.size()) {
       size_t batchStart = tileIndex;

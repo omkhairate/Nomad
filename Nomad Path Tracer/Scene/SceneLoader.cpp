@@ -855,6 +855,13 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "environmentBrightness", scene->getEnvironmentBrightness());
     scene->setEnvironmentBrightness(envBrightness);
 
+    uint64_t maxTileWork =
+        root->Unsigned64Attribute("maxTileWorkPerCommand", 0);
+    maxTileWork = root->Unsigned64Attribute("maxTileWork", maxTileWork);
+    if (maxTileWork > 0) {
+        scene->setMaxTileSampleWorkPerCommand(static_cast<size_t>(maxTileWork));
+    }
+
     int nextMeshGroupId = 0;
 
     for (auto* e = root->FirstChildElement(); e; e = e->NextSiblingElement()) {
