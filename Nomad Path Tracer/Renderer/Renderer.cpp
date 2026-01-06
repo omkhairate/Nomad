@@ -217,6 +217,19 @@ bool ResidentObjectGpuResources::hasPendingCommands() {
   return false;
 }
 
+bool ResidentObjectGpuResources::waitForPendingCommands(
+    std::chrono::milliseconds timeout) {
+  using namespace std::chrono;
+  const auto deadline = steady_clock::now() + timeout;
+  while (hasPendingCommands()) {
+    if (timeout.count() == 0 || steady_clock::now() >= deadline)
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  clearPendingCommand();
+  return true;
+}
+
 bool ResidentObjectGpuResources::transitionToCold(
     BlasInstanceRecord &instanceRecord) {
   clearPendingCommand();
@@ -251,6 +264,19 @@ bool ResidentObjectGpuResources::ensureResident(
   if (isResident() && !forceRebuild) {
     lastStateChange = std::chrono::steady_clock::now();
     return true;
+  }
+
+  constexpr auto kPendingCommandWait =
+      std::chrono::milliseconds(50);
+  if (hasPendingCommands()) {
+    if (!waitForPendingCommands(kPendingCommandWait)) {
+      std::printf(
+          "[BLAS] Deferred rebuild for object %zu: pending command buffer "
+          "still in flight.\n",
+          objectIndex);
+      lastStateChange = std::chrono::steady_clock::now();
+      return true;
+    }
   }
 
   transitionToStreaming();
@@ -2717,6 +2743,18 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   if (!_pDevice || !_pCommandQueue)
     return false;
 
+  constexpr auto kPendingCommandWait =
+      std::chrono::milliseconds(50);
+  if (resident.hasPendingCommands()) {
+    if (!resident.waitForPendingCommands(kPendingCommandWait)) {
+      std::printf(
+          "[BLAS] Deferred build for object %zu: waiting for prior command "
+          "buffer to complete.\n",
+          objectIndex);
+      return false;
+    }
+  }
+
   NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
 
   auto cleanupPool = [&]() {
@@ -2879,6 +2917,16 @@ void Renderer::processBlasBuildQueue() {
   while (!_pendingBlasBuilds.empty() &&
          _activeBlasBuilds.size() < kMaxBlasBuildsInFlight) {
     auto buildRequest = _pendingBlasBuilds.front();
+    if (buildRequest && buildRequest->resident &&
+        buildRequest->resident->hasPendingCommands()) {
+      std::printf(
+          "[BLAS] Deferred queued build for object %zu: pending command buffer "
+          "still in flight.\n",
+          buildRequest->objectIndex);
+      _pendingBlasBuilds.pop_front();
+      _pendingBlasBuilds.push_back(buildRequest);
+      break;
+    }
     if (!startBlasBuild(buildRequest)) {
       _pendingBlasBuilds.pop_front();
       if (buildRequest && buildRequest->resident &&

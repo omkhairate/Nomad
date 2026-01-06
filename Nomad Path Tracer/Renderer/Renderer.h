@@ -65,6 +65,7 @@ struct ResidentObjectGpuResources {
   bool transitionToCold(BlasInstanceRecord &instanceRecord);
   void clearPendingCommand();
   bool hasPendingCommands();
+  bool waitForPendingCommands(std::chrono::milliseconds timeout);
   bool isResident() const { return state == ResidencyState::Resident; }
 
   ResidentObjectGpuResources() = default;
