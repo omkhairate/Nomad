@@ -15,7 +15,7 @@ def _emissive_attributes(emission):
     }
 
 
-def _build_point_light(registry: SceneRegistry, light: bpy.types.Light, inst: bpy.types.DepsgraphObjectInstance):
+def _build_point_light(registry: SceneRegistry, light: bpy.types.Light, matrix_world):
     radius = max(light.shadow_soft_size, 1e-3)
     normalization = 1.0 / (4.0 * (math.pi * radius) ** 2)
 
@@ -24,7 +24,7 @@ def _build_point_light(registry: SceneRegistry, light: bpy.types.Light, inst: bp
         for chan in range(3)
     ]
 
-    position = inst.matrix_world.translation
+    position = matrix_world.translation
 
     return XMLNode(
         "Sphere",
@@ -46,8 +46,8 @@ def _area_light_extents(registry: SceneRegistry, light: bpy.types.Light):
     return scale_x, scale_y
 
 
-def _build_rectangle_light(registry: SceneRegistry, light: bpy.types.Light, inst: bpy.types.DepsgraphObjectInstance, *, scale_x: float, scale_y: float):
-    basis = inst.matrix_world.to_3x3()
+def _build_rectangle_light(registry: SceneRegistry, light: bpy.types.Light, inst_name: str, matrix_world, *, scale_x: float, scale_y: float):
+    basis = matrix_world.to_3x3()
     u = basis.col[0] * (scale_x * 0.5)
     v = basis.col[1] * (scale_y * 0.5)
 
@@ -55,7 +55,7 @@ def _build_rectangle_light(registry: SceneRegistry, light: bpy.types.Light, inst
     lensqr_y = v.length_squared
 
     if lensqr_x <= 0.0 or lensqr_y <= 0.0:
-        registry.warn(f"Light '{inst.object.name}' has zero area and will be skipped")
+        registry.warn(f"Light '{inst_name}' has zero area and will be skipped")
         return None
 
     normalization = 1.0 / (16.0 * (lensqr_x * lensqr_y) ** 0.5)
@@ -66,7 +66,7 @@ def _build_rectangle_light(registry: SceneRegistry, light: bpy.types.Light, inst
 
     return XMLNode(
         "Rectangle",
-        position=str_flat_array(inst.matrix_world.translation),
+        position=str_flat_array(matrix_world.translation),
         u=str_flat_array(u),
         v=str_flat_array(v),
         **_emissive_attributes(emission),
@@ -84,21 +84,23 @@ def export_light(registry: SceneRegistry, inst):
         registry.warn("Light portals are not supported")
         return []
 
+    converted_matrix = convert_world_matrix(inst.matrix_world)
+
     if light.type in {"POINT", "SPOT"}:
-        return [_build_point_light(registry, light, inst)]
+        return [_build_point_light(registry, light, converted_matrix)]
 
     if light.type == "AREA":
         if not getattr(registry.settings, "enable_area_lights", True):
-            return [_build_point_light(registry, light, inst)]
+            return [_build_point_light(registry, light, converted_matrix)]
         scale_x, scale_y = _area_light_extents(registry, light)
-        rect_node = _build_rectangle_light(registry, light, inst, scale_x=scale_x, scale_y=scale_y)
+        rect_node = _build_rectangle_light(registry, light, inst.object.name, converted_matrix, scale_x=scale_x, scale_y=scale_y)
         return [rect_node] if rect_node is not None else []
 
     if light.type == "SUN":
         if not getattr(registry.settings, "enable_area_lights", True):
-            return [_build_point_light(registry, light, inst)]
+            return [_build_point_light(registry, light, converted_matrix)]
         size = _sun_extents(light)
-        rect_node = _build_rectangle_light(registry, light, inst, scale_x=size, scale_y=size)
+        rect_node = _build_rectangle_light(registry, light, inst.object.name, converted_matrix, scale_x=size, scale_y=size)
         return [rect_node] if rect_node is not None else []
 
     registry.warn(f"Light type {light.type} unsupported")
