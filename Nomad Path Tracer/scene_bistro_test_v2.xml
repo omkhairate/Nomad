@@ -1593,4 +1593,7 @@
   <Mesh file="meshes/_m_5_Mesh.1294.obj" position="1.5035,-8.9493,3.7368" scale="0.01102" clusterMaxTriangles="0" clusterMaxExtent="0" basisX="0.010029,-0.0041933,4.3839e-05" basisY="0.0042877,0.010252,-0.0003048" basisZ="7.5949e-05,0.00029738,0.01107" albedo="1,1,1" emission="0,0,0" materialType="0" emissionPower="50"/>
   <Mesh file="meshes/_m_0_Mesh.1295.obj" position="7.2615,-4.1579,3.1682" scale="0.01" clusterMaxTriangles="0" clusterMaxExtent="0" rotation="-0.013722,-5.1674,-22.01" albedo="1,1,1" emission="0,0,0" materialType="0" emissionPower="1"/>
   <Mesh file="meshes/_m_1_Mesh.1295.obj" position="7.2615,-4.1579,3.1682" scale="0.01" clusterMaxTriangles="0" clusterMaxExtent="0" rotation="-0.013722,-5.1674,-22.01" albedo="1,1,1" emission="0,0,0" materialType="0" emissionPower="50"/>
+  <Rectangle position="0.5,1.2,6.4" u="1.8,0,0" v="0,1.2,0" emission="1,0.9,0.8" emissionPower="8" albedo="0,0,0" materialType="0"/>
+  <Rectangle position="-3.2,-4.5,6.2" u="1.4,0,0" v="0,1.4,0" emission="1,0.95,0.9" emissionPower="7" albedo="0,0,0" materialType="0"/>
+  <Sphere position="2.8,-1.0,5.9" radius="0.18" emission="1,1,1" emissionPower="4" albedo="0,0,0" materialType="0"/>
 </Scene>
