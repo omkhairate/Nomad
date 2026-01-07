@@ -37,7 +37,8 @@ def export_camera(registry: SceneRegistry):
         rotation = matrix.to_quaternion()
         forward = rotation @ mathutils.Vector((0.0, 0.0, -1.0))
         look_at = position + forward
-        up = matrix.to_3x3().col[1]
+        up = rotation @ mathutils.Vector((0.0, 1.0, 0.0))
+        up.normalize()
 
         camera_path.add("Keyframe",
                         frame=frame,
