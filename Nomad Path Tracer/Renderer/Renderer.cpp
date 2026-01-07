@@ -5701,6 +5701,12 @@ void Renderer::configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width
   slot.storageMode = MTL::StorageMode::StorageModePrivate;
   slot.descriptorValid = true;
   slot.stagingValid = false;
+
+  if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
+      &slot == &_sampleCountSlot) {
+    _needsAccumulationReset = true;
+    _accumulationTargetsNeedClear = true;
+  }
 }
 
 size_t Renderer::textureByteSize(const ManagedTextureSlot &slot) const {
@@ -5937,6 +5943,12 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
     return nullptr;
+  }
+
+  if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
+      &slot == &_sampleCountSlot) {
+    _needsAccumulationReset = true;
+    _accumulationTargetsNeedClear = true;
   }
 
   bool logged = false;
