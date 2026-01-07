@@ -2445,6 +2445,7 @@ void Renderer::updateVisibleScene() {
   printf("Active primitive residency strategy: %s\n", strategyName);
 
   _alwaysResidentCache.reset();
+  _forceAlwaysResidentActivation = true;
 
   ++_cameraVersion;
   _depthWeightCameraVersion = 0;
@@ -7088,8 +7089,10 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameRestirCandidateAcceptance = 0.0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
   if (strategy != _lastResidencyStrategy) {
-    if (strategy == ResidencyStrategy::AlwaysResident)
+    if (strategy == ResidencyStrategy::AlwaysResident) {
       _alwaysResidentCache.markDirty();
+      _forceAlwaysResidentActivation = true;
+    }
     _lastResidencyStrategy = strategy;
   }
   _frameStrategy = strategy;
@@ -7146,11 +7149,16 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
   size_t primitiveCount = _activePrimitive.size();
   size_t objectCount = _allSceneObjects.size();
   bool hasRecentChanges = !_recentlyActivated.empty() || !_recentlyDeactivated.empty();
+  bool forceActivation = forceAllToggles || _forceAlwaysResidentActivation;
 
   bool changed = false;
 
-  if (_alwaysResidentCache.needsUpdate(forceAllToggles, primitiveCount,
-                                       objectCount, hasRecentChanges)) {
+  if (forceActivation)
+    _recentlyDeactivated.clear();
+
+  if (forceActivation ||
+      _alwaysResidentCache.needsUpdate(forceActivation, primitiveCount, objectCount,
+                                       hasRecentChanges)) {
     for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
          ++objectIndex) {
       size_t toggled = setObjectActive(objectIndex, true);
@@ -7164,6 +7172,7 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
     }
 
     _alwaysResidentCache.markUpdated(primitiveCount, objectCount);
+    _forceAlwaysResidentActivation = false;
   }
 
   bool anyInactivePrimitive =
