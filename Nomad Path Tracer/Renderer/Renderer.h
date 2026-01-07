@@ -648,6 +648,7 @@ private:
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
   AlwaysResidentCache _alwaysResidentCache;
+  bool _forceAlwaysResidentActivation = false;
   bool _frameCaptureEnabled = false;
   size_t _frameCaptureInterval = 4;
   uint64_t _renderedFrameCount = 0;
