@@ -4329,8 +4329,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   constexpr float kCompactionExitRatio = 0.7f;
   constexpr uint32_t kCompactionCooldownFrames = 30;
 
+  bool alwaysResident = _frameStrategy == ResidencyStrategy::AlwaysResident;
   bool useCompaction = _residentCompacted;
-  if (!_residentCompacted) {
+  if (alwaysResident) {
+    useCompaction = false;
+  } else if (!_residentCompacted) {
     if (_compactionCooldown == 0 && totalPrimitiveCount > 0 &&
         _activePrimitiveCount < totalPrimitiveCount) {
       float occupancy = static_cast<float>(_activePrimitiveCount) /
@@ -5304,6 +5307,11 @@ void Renderer::recalculateNodeCounters(
   if (_blasNodeCount == 0 && _tlasNodeCount == 0) {
     _residentNodeCount = 0;
     _activeNodeCount = 0;
+    return;
+  }
+  if (isAlwaysResidentStrategy()) {
+    _residentNodeCount = _blasNodeCount + _tlasNodeCount;
+    _activeNodeCount = _residentNodeCount;
     return;
   }
 
@@ -12219,6 +12227,12 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   printf("Active nodes: %zu Resident nodes: %zu Offloaded nodes: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
          _activeNodeCount, _residentNodeCount, offloaded,
          _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond);
+  if (isAlwaysResidentStrategy() && offloaded > 0) {
+    printf("Always-resident strategy reported %zu offloaded nodes.\n",
+           offloaded);
+    assert(offloaded == 0 &&
+           "Always-resident strategy should not report offloaded nodes");
+  }
 
   if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty()) {
     BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
