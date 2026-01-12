@@ -97,6 +97,37 @@ static float luminance(const simd::float3& c) {
     return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 }
 
+static bool HasMaterialOverrideAttributes(const XMLElement* element) {
+    if (!element) {
+        return false;
+    }
+
+    return element->Attribute("diffuse") || element->Attribute("albedo") ||
+           element->Attribute("emission") ||
+           element->FindAttribute("emissionPower") ||
+           element->Attribute("specular") || element->Attribute("transmission") ||
+           element->FindAttribute("opacity") || element->FindAttribute("shininess") ||
+           element->FindAttribute("roughness") || element->FindAttribute("ior") ||
+           element->FindAttribute("materialType") ||
+           element->Attribute("diffuseTexture") ||
+           element->Attribute("albedoTexture") ||
+           element->Attribute("specularTexture") ||
+           element->Attribute("normalTexture") ||
+           element->Attribute("normalMap") || element->Attribute("bumpTexture");
+}
+
+static bool NeedsFallbackMaterial(const Material& material) {
+    constexpr float kMinMaterialLuminance = 1.0e-4f;
+    bool hasTextures = material.diffuseTextureIndex >= 0 ||
+                       material.specularTextureIndex >= 0 ||
+                       material.normalTextureIndex >= 0;
+    if (hasTextures) {
+        return false;
+    }
+    return luminance(material.diffuseColor) <= kMinMaterialLuminance &&
+           luminance(material.specularColor) <= kMinMaterialLuminance;
+}
+
 static float computeRoughness(float shininess, float explicitRoughness) {
     if (explicitRoughness > 0.0f) {
         return clamp01(explicitRoughness);
@@ -952,6 +983,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
 
             Material overrideMaterial = ParseMaterialAttributes(e);
             ApplyTextureAttributes(e, baseDir, scene, overrideMaterial, textureCache);
+            Material fallbackMaterial{};
+            bool hasExplicitOverride = HasMaterialOverrideAttributes(e);
 
             size_t clusterMaxTriangles = static_cast<size_t>(
                 e->Unsigned64Attribute("clusterMaxTriangles", 0));
@@ -979,12 +1012,21 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 }
 
                 const Material* chosenMaterial = &overrideMaterial;
+                bool usingOverrideMaterial = true;
+                int materialId = -1;
                 if (triIndex < meshData.faceMaterialIndices.size()) {
-                    int materialId = meshData.faceMaterialIndices[triIndex];
+                    materialId = meshData.faceMaterialIndices[triIndex];
                     if (materialId >= 0 &&
                         static_cast<size_t>(materialId) < meshData.materials.size()) {
                         chosenMaterial = &meshData.materials[materialId];
+                        usingOverrideMaterial = false;
                     }
+                }
+
+                bool allowFallback = !(usingOverrideMaterial && hasExplicitOverride);
+                if (allowFallback &&
+                    (materialId < 0 || NeedsFallbackMaterial(*chosenMaterial))) {
+                    chosenMaterial = &fallbackMaterial;
                 }
 
                 p.material = *chosenMaterial;
