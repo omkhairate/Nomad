@@ -544,6 +544,7 @@ struct TileDispatchRegion {
 
 constexpr uint32_t kPathTraceTileWidth = 128;
 constexpr uint32_t kPathTraceTileHeight = 128;
+constexpr size_t kPathTraceMaxTilesPerCommand = 16;
 constexpr std::chrono::milliseconds kFrameCommandBufferWaitTimeout(4);
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
@@ -6830,12 +6831,28 @@ void Renderer::draw(MTK::View *pView) {
       return static_cast<size_t>(parsed);
     };
 
+    auto parseMaxTilesPerCommandEnv = []() -> size_t {
+      const char *env = std::getenv("MPT_MAX_TILES_PER_COMMAND");
+      if (!env)
+        return 0;
+      char *end = nullptr;
+      unsigned long long parsed = std::strtoull(env, &end, 10);
+      if (end == env)
+        return 0;
+      return static_cast<size_t>(parsed);
+    };
+
     size_t tileIndex = 0;
     const size_t effectiveMaxSamples = std::max<size_t>(maxSamples, 1);
     const size_t envTileWork = parseMaxTileWorkEnv();
     const bool envTileWorkValid = envTileWork > 0;
     size_t tileWorkBudget = envTileWorkValid ? envTileWork
                                              : kDefaultMaxTileSampleWorkPerCommand;
+    const size_t envMaxTilesPerCommand = parseMaxTilesPerCommandEnv();
+    size_t maxTilesPerCommand = envMaxTilesPerCommand > 0
+                                    ? envMaxTilesPerCommand
+                                    : kPathTraceMaxTilesPerCommand;
+    maxTilesPerCommand = std::max<size_t>(maxTilesPerCommand, 1);
 
     if (!envTileWorkValid && _pScene) {
       if (_pScene->hasCustomMaxTileSampleWorkPerCommand()) {
@@ -6864,7 +6881,9 @@ void Renderer::draw(MTK::View *pView) {
         tileWork = std::max<size_t>(tileWork, 1);
         tileWork *= effectiveMaxSamples;
 
-        if (tileIndex > batchStart && batchWork + tileWork > maxWorkPerCommand)
+        if (tileIndex > batchStart &&
+            (batchWork + tileWork > maxWorkPerCommand ||
+             (tileIndex - batchStart) >= maxTilesPerCommand))
           break;
 
         batchWork += tileWork;
