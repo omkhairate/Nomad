@@ -6465,6 +6465,7 @@ bool Renderer::updateCameraStates() {
 
   double originalDelta = _deltaTimeSeconds;
 
+  bool pathFrameAdvanced = false;
   if (!path.empty()) {
     Camera::State newState = _primaryCameraState;
     if (_animationFrame <= path.front().frame) {
@@ -6514,6 +6515,7 @@ bool Renderer::updateCameraStates() {
       _observerCameraState = Camera::captureState();
 
     _animationFrame++;
+    pathFrameAdvanced = true;
   } else {
     Camera::State *target =
         _observerActive ? &_observerCameraState : &_primaryCameraState;
@@ -6529,7 +6531,8 @@ bool Renderer::updateCameraStates() {
   Camera::deltaTime = _observerActive ? 0.0f
                                       : static_cast<float>(_deltaTimeSeconds);
 
-  bool viewChanged = toggled || cameraStatesDiffer(activeView, previousViewState) ||
+  bool viewChanged = toggled || pathFrameAdvanced ||
+                     cameraStatesDiffer(activeView, previousViewState) ||
                      hadObserver != _observerActive;
   if (viewChanged) {
     ++_cameraVersion;
