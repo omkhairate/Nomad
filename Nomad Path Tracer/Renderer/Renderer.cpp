@@ -5985,6 +5985,12 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
   } else {
     std::printf("[TextureResidency] Restored slot %s without staging data.\n",
                 label);
+    if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
+        &slot == &_sampleCountSlot || &slot == &_albedoSlot ||
+        &slot == &_normalSlot) {
+      _needsAccumulationReset = true;
+      _accumulationTargetsNeedClear = true;
+    }
   }
 
   slot.lastUsedFrame = _renderedFrameCount;
