@@ -6340,15 +6340,15 @@ void Renderer::buildTextures() {
 
   for (auto &slot : _accumulationSlots)
     configureTextureSlot(slot, width, height,
-                         MTL::PixelFormat::PixelFormatRGBA16Float, usage);
+                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_sampleCountSlot, width, height,
-                       MTL::PixelFormat::PixelFormatR16Float, usage);
+                       MTL::PixelFormat::PixelFormatR32Float, usage);
   configureTextureSlot(_sampleImportanceSlot, width, height,
                        MTL::PixelFormat::PixelFormatR16Float, usage);
   configureTextureSlot(_albedoSlot, width, height,
-                       MTL::PixelFormat::PixelFormatRGBA16Float, usage);
+                       MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_normalSlot, width, height,
-                       MTL::PixelFormat::PixelFormatRGBA16Float, usage);
+                       MTL::PixelFormat::PixelFormatRGBA32Float, usage);
 
   _needsAccumulationReset = true;
   _accumulationTargetsNeedClear = true;

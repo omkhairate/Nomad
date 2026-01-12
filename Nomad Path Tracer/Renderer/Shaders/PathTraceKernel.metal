@@ -19,12 +19,12 @@ kernel void pathTraceKernel(
     device const uint *primitiveRemap [[buffer(11)]],
     device atomic_uint *primitiveRayStats [[buffer(12)]],
     device const InstanceRecord *instanceRecords [[buffer(13)]],
-    texture2d<half, access::read> lastFrame [[texture(0)]],
-    texture2d<half, access::write> currentFrame [[texture(1)]],
-    texture2d<half, access::read_write> sampleCount [[texture(2)]],
+    texture2d<float, access::read> lastFrame [[texture(0)]],
+    texture2d<float, access::write> currentFrame [[texture(1)]],
+    texture2d<float, access::read_write> sampleCount [[texture(2)]],
     texture2d<half, access::read> sampleImportance [[texture(3)]],
-    texture2d<half, access::read_write> albedoAccum [[texture(4)]],
-    texture2d<half, access::read_write> normalAccum [[texture(5)]],
+    texture2d<float, access::read_write> albedoAccum [[texture(4)]],
+    texture2d<float, access::read_write> normalAccum [[texture(5)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
         materialTextures [[texture(6)]],
     texture2d<float, access::sample> environmentMap
@@ -128,8 +128,8 @@ kernel void pathTraceKernel(
   averagedNormal = clamp(averagedNormal, -1.0f, 1.0f);
 
   float4 result = float4(averaged, 1.0f);
-  currentFrame.write(half4(result), pixel);
-  albedoAccum.write(half4(float4(averagedAlbedo, 1.0f)), pixel);
-  normalAccum.write(half4(float4(averagedNormal, 1.0f)), pixel);
-  sampleCount.write(half4(totalSamples, half(0.0f), half(0.0f), half(0.0f)), pixel);
+  currentFrame.write(result, pixel);
+  albedoAccum.write(float4(averagedAlbedo, 1.0f), pixel);
+  normalAccum.write(float4(averagedNormal, 1.0f), pixel);
+  sampleCount.write(float4(totalSamples, 0.0f, 0.0f, 0.0f), pixel);
 }
