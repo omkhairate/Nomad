@@ -1,0 +1,15 @@
+<Scene width="1280" height="720" maxRayDepth="8" startCompacted="true" residencyStrategy="alwaysresident">
+    <ObserverCamera position="0,1.2,4" lookAt="0,0.6,0" verticalFov="40" />
+
+    <!-- Small emissive sphere light above the rectangles -->
+    <Sphere position="0,2,0" radius="0.2" albedo="0,0,0"
+            emission="1,1,1" materialType="0" emissionPower="25" />
+
+    <!-- Occluder rectangle between the light and receiver -->
+    <Rectangle position="0,1,0" u="1.2,0,0" v="0,0,1.2" rotation="0,0,0"
+               albedo="0.7,0.7,0.7" emission="0,0,0" materialType="0" emissionPower="0" />
+
+    <!-- Receiver rectangle beneath the occluder to catch the shadow -->
+    <Rectangle position="0,0,0" u="2.5,0,0" v="0,0,2.5" rotation="0,0,0"
+               albedo="0.75,0.75,0.75" emission="0,0,0" materialType="0" emissionPower="0" />
+</Scene>
