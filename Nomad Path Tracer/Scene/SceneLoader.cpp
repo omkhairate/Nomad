@@ -1044,6 +1044,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 key.lookAt = parseVec3(kf->Attribute("lookAt"));
                 key.up = parseVec3OrDefault(kf->Attribute("up"),
                                             simd::make_float3(0.0f, 1.0f, 0.0f));
+                key.aperture = kf->FloatAttribute("aperture", key.aperture);
+                key.focusDistance =
+                    kf->FloatAttribute("focusDistance", key.focusDistance);
                 scene->cameraPath.push_back(key);
             }
         }
@@ -1058,6 +1061,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             observer.up = parseVec3OrDefault(
                 e->Attribute("up"), observer.up);
             observer.verticalFov = e->FloatAttribute("verticalFov", observer.verticalFov);
+            observer.aperture = e->FloatAttribute("aperture", observer.aperture);
+            observer.focusDistance =
+                e->FloatAttribute("focusDistance", observer.focusDistance);
             scene->setObserverCamera(observer);
         }
     }

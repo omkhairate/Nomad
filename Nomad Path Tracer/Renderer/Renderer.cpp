@@ -505,6 +505,8 @@ struct UniformsData {
   int primitiveIndex;
   simd::float3 cameraPosition;
   simd::float2 screenSize;
+  float aperture;
+  float focusDistance;
 
   simd::float3 viewportU;
   simd::float3 viewportV;
@@ -800,6 +802,10 @@ static bool cameraStatesDiffer(const Camera::State &a, const Camera::State &b,
     return true;
   if (std::abs(a.focalLength - b.focalLength) > epsilon)
     return true;
+  if (std::abs(a.aperture - b.aperture) > epsilon)
+    return true;
+  if (std::abs(a.focusDistance - b.focusDistance) > epsilon)
+    return true;
   return false;
 }
 
@@ -807,6 +813,7 @@ static Camera::State makeCameraState(const simd::float3 &position,
                                      const simd::float3 &lookAt,
                                      const simd::float3 &up,
                                      float verticalFov, float focalLength,
+                                     float aperture, float focusDistance,
                                      const simd::float3 &fallbackForward,
                                      const simd::float3 &fallbackUp) {
   auto normalizeWithFallback = [](const simd::float3 &v,
@@ -840,6 +847,8 @@ static Camera::State makeCameraState(const simd::float3 &position,
   state.up = desiredUp;
   state.verticalFov = verticalFov;
   state.focalLength = focalLength;
+  state.aperture = aperture;
+  state.focusDistance = focusDistance;
   return state;
 }
 
@@ -2363,8 +2372,8 @@ void Renderer::updateVisibleScene() {
     const auto &k = _pScene->cameraPath.front();
     _primaryCameraState = makeCameraState(
         k.position, k.lookAt, k.up, _primaryCameraState.verticalFov,
-        _primaryCameraState.focalLength, _primaryCameraState.forward,
-        _primaryCameraState.up);
+        _primaryCameraState.focalLength, k.aperture, k.focusDistance,
+        _primaryCameraState.forward, _primaryCameraState.up);
   }
 
   Camera::applyState(_primaryCameraState);
@@ -2376,7 +2385,8 @@ void Renderer::updateVisibleScene() {
                                             : _primaryCameraState.verticalFov;
     _observerCameraState =
         makeCameraState(observer.position, observer.lookAt, observer.up, fov,
-                        _primaryCameraState.focalLength,
+                        _primaryCameraState.focalLength, observer.aperture,
+                        observer.focusDistance,
                         _primaryCameraState.forward, _primaryCameraState.up);
   } else {
     _observerCameraState = _primaryCameraState;
@@ -6473,14 +6483,16 @@ bool Renderer::updateCameraStates() {
       const auto &k = path.front();
       newState = makeCameraState(k.position, k.lookAt, k.up,
                                  _primaryCameraState.verticalFov,
-                                 _primaryCameraState.focalLength,
+                                 _primaryCameraState.focalLength, k.aperture,
+                                 k.focusDistance,
                                  _primaryCameraState.forward,
                                  _primaryCameraState.up);
     } else if (_animationFrame >= path.back().frame) {
       const auto &k = path.back();
       newState = makeCameraState(k.position, k.lookAt, k.up,
                                  _primaryCameraState.verticalFov,
-                                 _primaryCameraState.focalLength,
+                                 _primaryCameraState.focalLength, k.aperture,
+                                 k.focusDistance,
                                  _primaryCameraState.forward,
                                  _primaryCameraState.up);
     } else {
@@ -6497,6 +6509,9 @@ bool Renderer::updateCameraStates() {
           newState = makeCameraState(position, look, up,
                                      _primaryCameraState.verticalFov,
                                      _primaryCameraState.focalLength,
+                                     k0.aperture + t * (k1.aperture - k0.aperture),
+                                     k0.focusDistance +
+                                         t * (k1.focusDistance - k0.focusDistance),
                                      _primaryCameraState.forward,
                                      _primaryCameraState.up);
           break;
@@ -6576,6 +6591,11 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.environmentMapIntensity = _environmentBrightness;
   u.environmentPadding0 = 0.0f;
   u.environmentPadding1 = 0.0f;
+
+  const Camera::State &activeView =
+      _observerActive ? _observerCameraState : _primaryCameraState;
+  u.aperture = activeView.aperture;
+  u.focusDistance = activeView.focusDistance;
 
   uint64_t residentPrimitiveCount = _residentPrimitiveCount;
   uint64_t residentTriangleCount = _residentTriangleCount;

@@ -53,6 +53,8 @@ struct UniformsData
     int primitiveIndex;
     simd::float3 cameraPosition;
     simd::float2 screenSize;
+    float aperture;
+    float focusDistance;
 
     simd::float3 viewportU;
     simd::float3 viewportV;

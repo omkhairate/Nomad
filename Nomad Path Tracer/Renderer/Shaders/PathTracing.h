@@ -65,6 +65,25 @@ inline float3 randomInUnitSphere(thread uint32_t &seed) {
   }
 }
 
+inline float2 concentricSampleDisk(float2 u) {
+  float2 uOffset = 2.0 * u - float2(1.0);
+  if (uOffset.x == 0.0f && uOffset.y == 0.0f) {
+    return float2(0.0f);
+  }
+
+  float r;
+  float theta;
+  if (abs(uOffset.x) > abs(uOffset.y)) {
+    r = uOffset.x;
+    theta = (M_PI / 4.0f) * (uOffset.y / uOffset.x);
+  } else {
+    r = uOffset.y;
+    theta = (M_PI / 2.0f) - (M_PI / 4.0f) * (uOffset.x / uOffset.y);
+  }
+
+  return r * float2(cos(theta), sin(theta));
+}
+
 inline int decodeTextureIndex(float value) {
   return (value >= -0.5f) ? int(floor(value + 0.5f)) : -1;
 }

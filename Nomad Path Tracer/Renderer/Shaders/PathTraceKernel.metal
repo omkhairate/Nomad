@@ -84,10 +84,28 @@ kernel void pathTraceKernel(
     float3 rayDir = (u.firstPixelPosition + (uv.x + xOff) * u.viewportU +
                      (uv.y + yOff) * u.viewportV) -
                     u.cameraPosition;
+    float3 rayOrigin = u.cameraPosition;
+    float3 rayDirection = normalize(rayDir);
+    if (u.aperture > 0.0f) {
+      float lensU = randomFloat(seed);
+      seed = random(seed);
+      float lensV = randomFloat(seed);
+      seed = random(seed);
+      float2 diskSample = concentricSampleDisk(float2(lensU, lensV));
+      float lensRadius = u.aperture;
+      float3 cameraRight = normalize(u.viewportU);
+      float3 cameraUp = normalize(u.viewportV);
+      float3 lensOffset =
+          lensRadius * (diskSample.x * cameraRight + diskSample.y * cameraUp);
+      float focusDistance = max(u.focusDistance, 0.0001f);
+      float3 focusPoint = u.cameraPosition + rayDirection * focusDistance;
+      rayOrigin = u.cameraPosition + lensOffset;
+      rayDirection = normalize(focusPoint - rayOrigin);
+    }
 
     Ray r;
-    r.origin = u.cameraPosition;
-    r.direction = normalize(rayDir);
+    r.origin = rayOrigin;
+    r.direction = rayDirection;
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
 
