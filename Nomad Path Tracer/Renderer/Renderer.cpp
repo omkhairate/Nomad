@@ -6504,6 +6504,9 @@ bool Renderer::updateCameraStates() {
       }
     }
 
+    bool isPlaying = path.size() > 1 && _animationFrame >= path.front().frame &&
+                     _animationFrame < path.back().frame;
+    bool stateChanged = cameraStatesDiffer(newState, _primaryCameraState);
     _primaryCameraState = newState;
 
     _deltaTimeSeconds = 0.0;
@@ -6515,7 +6518,7 @@ bool Renderer::updateCameraStates() {
       _observerCameraState = Camera::captureState();
 
     _animationFrame++;
-    pathFrameAdvanced = true;
+    pathFrameAdvanced = isPlaying || stateChanged;
   } else {
     Camera::State *target =
         _observerActive ? &_observerCameraState : &_primaryCameraState;
