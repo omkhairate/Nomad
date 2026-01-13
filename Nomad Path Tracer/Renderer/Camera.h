@@ -16,6 +16,8 @@ struct State
     simd::float3 up {0, 1, 0};
     float verticalFov = 60.0f;
     float focalLength = 1.0f;
+    float aperture = 0.0f;
+    float focusDistance = 1.0f;
 };
 
 inline simd::float3 position;
@@ -24,6 +26,8 @@ inline simd::float3 up;
 
 inline float verticalFov;
 inline float focalLength;
+inline float aperture;
+inline float focusDistance;
 inline simd::float2 screenSize;
 inline float deltaTime = 0.0f;
 
@@ -39,12 +43,14 @@ inline static void reset()
 
     verticalFov = 60.0;
     focalLength = 1.0;
+    aperture = 0.0f;
+    focusDistance = 1.0f;
     deltaTime = 0.0f;
 }
 
 inline State captureState()
 {
-    return {position, forward, up, verticalFov, focalLength};
+    return {position, forward, up, verticalFov, focalLength, aperture, focusDistance};
 }
 
 inline void applyState(const State& state)
@@ -54,6 +60,8 @@ inline void applyState(const State& state)
     up = state.up;
     verticalFov = state.verticalFov;
     focalLength = state.focalLength;
+    aperture = state.aperture;
+    focusDistance = state.focusDistance;
 }
 
 
