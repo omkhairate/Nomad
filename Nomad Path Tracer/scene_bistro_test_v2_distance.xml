@@ -1,4 +1,4 @@
-<Scene width="720" height="576" maxRayDepth="4" startCompacted="true" residencyStrategy="alwaysresident" environmentBrightness="0">
+<Scene width="720" height="576" maxRayDepth="4" startCompacted="true" residencyStrategy="distance" environmentBrightness="0">
   <CameraPath>
     <Keyframe frame="1" position="-9.8374,-1.4931,3.4163" lookAt="0,0,0" up="0,0,1" />
     <Keyframe frame="60" position="-6.42,-6.18,3.18" lookAt="0,0,0" up="0,0,1" />
