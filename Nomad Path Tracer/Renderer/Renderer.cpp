@@ -6623,6 +6623,35 @@ void Renderer::draw(MTK::View *pView) {
   Camera::State viewCamera =
       _observerActive ? _observerCameraState : _primaryCameraState;
 
+  auto historyMissing = [&](const ManagedTextureSlot &slot) {
+    if (slot.texture && !slot.needsGpuRefresh)
+      return false;
+    switch (slot.historyBacking) {
+    case ManagedTextureSlot::HistoryBacking::SharedBuffer:
+      return !slot.stagingBuffer || !slot.stagingValid;
+    case ManagedTextureSlot::HistoryBacking::CpuData:
+      return slot.historyData.empty() || slot.historyWidth == 0 ||
+             slot.historyHeight == 0;
+    case ManagedTextureSlot::HistoryBacking::None:
+    default:
+      return true;
+    }
+  };
+
+  auto proxyRestorePending = [&](const ManagedTextureSlot &slot) {
+    return slot.historyIsProxy && (!slot.texture || slot.needsGpuRefresh);
+  };
+
+  if (proxyRestorePending(_accumulationSlots[0]) ||
+      proxyRestorePending(_accumulationSlots[1]) ||
+      proxyRestorePending(_sampleCountSlot) ||
+      historyMissing(_accumulationSlots[0]) ||
+      historyMissing(_accumulationSlots[1]) ||
+      historyMissing(_sampleCountSlot)) {
+    _needsAccumulationReset = true;
+    _accumulationTargetsNeedClear = true;
+  }
+
   Camera::applyState(_primaryCameraState);
   updateResidency();
 
