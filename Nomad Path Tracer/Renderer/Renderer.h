@@ -204,6 +204,7 @@ private:
   SceneAccelerationBuildResult buildSceneAccelerationStructures(
       size_t primitiveCount, size_t primitiveHitBytes);
   void ensureTlasBuildEvent();
+  void waitForPendingBlasBuilds();
   void waitForPendingTlasBuild();
   bool hasPendingTlasBuild() const;
   void finalizePendingTlasScratchResize(bool force = false);
