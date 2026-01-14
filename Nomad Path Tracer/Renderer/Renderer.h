@@ -183,6 +183,8 @@ private:
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   std::vector<bool> buildResidentMaskFromGpuResources() const;
   void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
+  void recordPathTraceCommandTime(double gpuMs, size_t tileCount);
+  size_t updatePathTraceTilesPerCommandBudget();
   bool waitForPendingFrameCommands(
       std::chrono::milliseconds timeout,
       std::chrono::steady_clock::time_point *waitSnapshot = nullptr);
@@ -288,6 +290,10 @@ private:
   std::mutex _frameCommandBufferMutex;
   MTL::CommandBuffer *_lastRayHitCommandBuffer = nullptr;
   bool _rayHitCopyError = false;
+  std::mutex _pathTraceBudgetMutex;
+  std::deque<double> _pathTraceGpuMsPerTileHistory;
+  size_t _pathTraceTilesPerCommandBudget = 0;
+  bool _pathTraceCommandTimeout = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
