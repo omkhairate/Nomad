@@ -547,6 +547,9 @@ struct TileDispatchRegion {
 constexpr uint32_t kPathTraceTileWidth = 128;
 constexpr uint32_t kPathTraceTileHeight = 128;
 constexpr size_t kPathTraceMaxTilesPerCommand = 16;
+constexpr size_t kPathTraceMinTilesPerCommand = 2;
+constexpr double kPathTraceTargetGpuMsPerCommand = 6.0;
+constexpr size_t kPathTraceCommandHistorySamples = 30;
 constexpr std::chrono::milliseconds kFrameCommandBufferWaitTimeout(4);
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
 
@@ -1195,6 +1198,7 @@ Renderer::Renderer(MTL::Device *pDevice)
   buildShaders();
   buildTextures();
   rebuildEnvironmentTexture();
+  _pathTraceTilesPerCommandBudget = kPathTraceMaxTilesPerCommand;
 
   recalculateViewport();
   initializeBenchmarking();
@@ -6916,7 +6920,12 @@ void Renderer::draw(MTK::View *pView) {
     size_t maxTilesPerCommand = envMaxTilesPerCommand > 0
                                     ? envMaxTilesPerCommand
                                     : kPathTraceMaxTilesPerCommand;
-    maxTilesPerCommand = std::max<size_t>(maxTilesPerCommand, 1);
+    size_t adaptiveTilesPerCommand = updatePathTraceTilesPerCommandBudget();
+    maxTilesPerCommand =
+        std::min<size_t>(maxTilesPerCommand, adaptiveTilesPerCommand);
+    maxTilesPerCommand = std::clamp(maxTilesPerCommand,
+                                    kPathTraceMinTilesPerCommand,
+                                    kPathTraceMaxTilesPerCommand);
 
     if (!envTileWorkValid && _pScene) {
       if (_pScene->hasCustomMaxTileSampleWorkPerCommand()) {
@@ -6955,6 +6964,7 @@ void Renderer::draw(MTK::View *pView) {
       }
 
       size_t batchEnd = std::max<size_t>(batchStart + 1, tileIndex);
+      size_t tilesInCommand = batchEnd - batchStart;
 
       MTL::CommandBuffer *computeCmd = _pCommandQueue->commandBuffer();
       if (!computeCmd)
@@ -7041,6 +7051,15 @@ void Renderer::draw(MTK::View *pView) {
       }
 
       pCompute->endEncoding();
+      computeCmd->addCompletedHandler(
+          [this, tilesInCommand](MTL::CommandBuffer *cmd) {
+            if (!cmd ||
+                cmd->status() != MTL::CommandBufferStatusCompleted)
+              return;
+            double gpuMs =
+                (cmd->GPUEndTime() - cmd->GPUStartTime()) * 1000.0;
+            this->recordPathTraceCommandTime(gpuMs, tilesInCommand);
+          });
       trackFrameCommandBuffer(computeCmd);
       computeCmd->commit();
     }
@@ -12031,6 +12050,57 @@ void Renderer::trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer) {
   });
 }
 
+void Renderer::recordPathTraceCommandTime(double gpuMs, size_t tileCount) {
+  if (gpuMs <= 0.0 || tileCount == 0)
+    return;
+
+  std::lock_guard<std::mutex> lock(_pathTraceBudgetMutex);
+  const double msPerTile = gpuMs / static_cast<double>(tileCount);
+  if (!std::isfinite(msPerTile) || msPerTile <= 0.0)
+    return;
+
+  _pathTraceGpuMsPerTileHistory.push_back(msPerTile);
+  if (_pathTraceGpuMsPerTileHistory.size() > kPathTraceCommandHistorySamples) {
+    _pathTraceGpuMsPerTileHistory.pop_front();
+  }
+}
+
+size_t Renderer::updatePathTraceTilesPerCommandBudget() {
+  std::lock_guard<std::mutex> lock(_pathTraceBudgetMutex);
+  size_t budget = _pathTraceTilesPerCommandBudget;
+  bool timeoutHit = _pathTraceCommandTimeout;
+  _pathTraceCommandTimeout = false;
+
+  if (timeoutHit) {
+    budget = std::max(kPathTraceMinTilesPerCommand, budget / 2);
+  }
+
+  if (!_pathTraceGpuMsPerTileHistory.empty()) {
+    double totalMs = std::accumulate(
+        _pathTraceGpuMsPerTileHistory.begin(),
+        _pathTraceGpuMsPerTileHistory.end(), 0.0);
+    double avgMsPerTile =
+        totalMs / static_cast<double>(_pathTraceGpuMsPerTileHistory.size());
+    if (avgMsPerTile > 0.0) {
+      double targetTiles =
+          std::floor(kPathTraceTargetGpuMsPerCommand / avgMsPerTile);
+      size_t desired = static_cast<size_t>(std::max(1.0, targetTiles));
+      desired = std::clamp(desired, kPathTraceMinTilesPerCommand,
+                           kPathTraceMaxTilesPerCommand);
+      if (desired < budget) {
+        budget = desired;
+      } else if (!timeoutHit && desired > budget) {
+        budget = std::min(budget + 1, desired);
+      }
+    }
+  }
+
+  budget = std::clamp(budget, kPathTraceMinTilesPerCommand,
+                      kPathTraceMaxTilesPerCommand);
+  _pathTraceTilesPerCommandBudget = budget;
+  return budget;
+}
+
 bool Renderer::waitForPendingFrameCommands(
     std::chrono::milliseconds timeout,
     std::chrono::steady_clock::time_point *waitSnapshot) {
@@ -12104,6 +12174,11 @@ bool Renderer::waitForPendingFrameCommands(
   for (auto &record : pending) {
     if (record.buffer)
       record.buffer->release();
+  }
+
+  if (!infiniteTimeout && !allComplete) {
+    std::lock_guard<std::mutex> lock(_pathTraceBudgetMutex);
+    _pathTraceCommandTimeout = true;
   }
 
   if (newCommandTracked)
