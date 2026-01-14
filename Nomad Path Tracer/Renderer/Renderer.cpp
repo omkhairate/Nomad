@@ -3707,6 +3707,20 @@ bool Renderer::hasPendingTlasBuild() const {
          _tlasBuildEventValue;
 }
 
+void Renderer::waitForPendingBlasBuilds() {
+  constexpr auto kPollInterval = std::chrono::milliseconds(1);
+  bool pending = true;
+  while (pending) {
+    pending = false;
+    for (auto &resident : _residentObjectGpuResources) {
+      if (!resident.hasPendingCommands())
+        continue;
+      pending = true;
+      resident.waitForPendingCommands(kPollInterval);
+    }
+  }
+}
+
 void Renderer::waitForPendingTlasBuild() {
   if (!hasPendingTlasBuild())
     return;
@@ -6856,8 +6870,10 @@ void Renderer::draw(MTK::View *pView) {
 
   if (_pPathTracePSO && !tiles.empty()) {
     if (_useAccelerationStructureBindings && _pTlasStructure &&
-        _pGeometryHandleBuffer)
+        _pGeometryHandleBuffer) {
+      waitForPendingBlasBuilds();
       waitForPendingTlasBuild();
+    }
 
     NS::UInteger tgWidth =
         std::max<NS::UInteger>(1, _pPathTracePSO->threadExecutionWidth());
@@ -6943,11 +6959,6 @@ void Renderer::draw(MTK::View *pView) {
       MTL::CommandBuffer *computeCmd = _pCommandQueue->commandBuffer();
       if (!computeCmd)
         break;
-
-      if (_useAccelerationStructureBindings && _pTlasStructure &&
-          _pGeometryHandleBuffer && _pTlasBuildEvent &&
-          _tlasBuildEventValue > 0)
-        computeCmd->encodeWait(_pTlasBuildEvent, _tlasBuildEventValue);
 
       MTL::ComputeCommandEncoder *pCompute = computeCmd->computeCommandEncoder();
       if (!pCompute) {
