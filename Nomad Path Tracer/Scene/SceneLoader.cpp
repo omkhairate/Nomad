@@ -747,6 +747,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "unifiedOffscreenFloor", params.unifiedOffscreenFloor);
     params.unifiedReentryBoost =
         root->FloatAttribute("unifiedReentryBoost", params.unifiedReentryBoost);
+    params.unifiedNormalize =
+        root->BoolAttribute("unifiedNormalize", params.unifiedNormalize);
 
     params.rayHitDecay = root->FloatAttribute("rayHitDecay", params.rayHitDecay);
     params.rayHitTargetFraction =

@@ -7725,6 +7725,28 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
       std::clamp(_residencyConfig.unifiedOffscreenDecay, 0.0f, 1.0f);
   const float offscreenFloor =
       std::max(_residencyConfig.unifiedOffscreenFloor, 0.0f);
+  const bool normalizeUnified = _residencyConfig.unifiedNormalize;
+  constexpr float normalizationEpsilon = 1e-6f;
+
+  std::vector<float> adjustedEnergy(primCount, 0.0f);
+  std::vector<float> adjustedHit(primCount, 0.0f);
+  std::vector<float> adjustedCoverage(primCount, 0.0f);
+  std::vector<float> adjustedDistance(primCount, 0.0f);
+  std::vector<uint8_t> skipScore(primCount, 0);
+
+  float minEnergy = std::numeric_limits<float>::max();
+  float maxEnergy = std::numeric_limits<float>::lowest();
+  float minHit = std::numeric_limits<float>::max();
+  float maxHit = std::numeric_limits<float>::lowest();
+  float minCoverage = std::numeric_limits<float>::max();
+  float maxCoverage = std::numeric_limits<float>::lowest();
+  float minDistance = std::numeric_limits<float>::max();
+  float maxDistance = std::numeric_limits<float>::lowest();
+
+  auto updateMinMax = [](float value, float &minValue, float &maxValue) {
+    minValue = std::min(minValue, value);
+    maxValue = std::max(maxValue, value);
+  };
 
   for (size_t i = 0; i < primCount; ++i) {
     uint64_t boundsVersion = boundsVersionForPrimitive(i);
@@ -7803,6 +7825,15 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
     if (hit == 0.0f && energy == 0.0f && coverage == 0.0f &&
         distanceScore == 0.0f && !visible) {
       _primitiveUnifiedPrevVisible[i] = visible ? 1 : 0;
+      adjustedEnergy[i] = energy;
+      adjustedHit[i] = hit;
+      adjustedCoverage[i] = coverage;
+      adjustedDistance[i] = distanceScore;
+      skipScore[i] = 1;
+      updateMinMax(adjustedEnergy[i], minEnergy, maxEnergy);
+      updateMinMax(adjustedHit[i], minHit, maxHit);
+      updateMinMax(adjustedCoverage[i], minCoverage, maxCoverage);
+      updateMinMax(adjustedDistance[i], minDistance, maxDistance);
       continue;
     }
 
@@ -7830,6 +7861,39 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
 
     if (i < _primitiveUnifiedPrevVisible.size())
       _primitiveUnifiedPrevVisible[i] = visible ? 1 : 0;
+
+    adjustedEnergy[i] = energy;
+    adjustedHit[i] = hit;
+    adjustedCoverage[i] = coverage;
+    adjustedDistance[i] = distanceScore;
+    updateMinMax(adjustedEnergy[i], minEnergy, maxEnergy);
+    updateMinMax(adjustedHit[i], minHit, maxHit);
+    updateMinMax(adjustedCoverage[i], minCoverage, maxCoverage);
+    updateMinMax(adjustedDistance[i], minDistance, maxDistance);
+  }
+
+  auto normalizeValue = [&](float value, float minValue, float maxValue) {
+    float range = maxValue - minValue;
+    if (range <= normalizationEpsilon)
+      return 0.0f;
+    return (value - minValue) / (range + normalizationEpsilon);
+  };
+
+  for (size_t i = 0; i < primCount; ++i) {
+    if (skipScore[i] != 0)
+      continue;
+
+    float energy = adjustedEnergy[i];
+    float hit = adjustedHit[i];
+    float coverage = adjustedCoverage[i];
+    float distanceScore = adjustedDistance[i];
+
+    if (normalizeUnified) {
+      energy = normalizeValue(energy, minEnergy, maxEnergy);
+      hit = normalizeValue(hit, minHit, maxHit);
+      coverage = normalizeValue(coverage, minCoverage, maxCoverage);
+      distanceScore = normalizeValue(distanceScore, minDistance, maxDistance);
+    }
 
     float score = alpha * energy + beta * hit + gamma * coverage +
                   delta * distanceScore;
