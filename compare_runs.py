@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+
+csv.field_size_limit(sys.maxsize)
 
 Frames = List[int]
 Series = Dict[str, List[float]]
