@@ -66,6 +66,7 @@ struct ResidencyParameters {
   float unifiedOffscreenDecay = 0.05f;
   float unifiedOffscreenFloor = 0.02f;
   float unifiedReentryBoost = 3.0f;
+  bool unifiedNormalize = true;
 
   float rayHitDecay = 0.85f;
   float rayHitTargetFraction = 0.6f;
