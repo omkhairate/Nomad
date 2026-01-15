@@ -6135,6 +6135,10 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
 void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
   if (!cmd || _needsAccumulationReset)
     return;
+  if (_residencyConfig.restirBaselineMode) {
+    std::printf("[TextureResidency] Skipping eviction: ReSTIR baseline mode enabled.\n");
+    return;
+  }
 
   bool belowBudget = _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
   double totalMemoryMB = currentGPUMemoryMB();

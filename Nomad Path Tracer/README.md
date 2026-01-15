@@ -9,3 +9,10 @@ Long-running path tracing commands can trigger GPU timeout errors when the pixel
 - **Default:** when unset, the renderer uses a conservative default budget. For `AlwaysResident` residency, the default budget is halved to keep command buffers short while more geometry remains resident.
 
 The renderer clamps the budget so each command can still process at least one full tile, based on the current tile dimensions and sample count.
+
+## ReSTIR baseline mode
+
+To keep ReSTIR temporal reuse stable for baseline comparisons, you can disable texture history eviction:
+
+- **Scene XML:** add `restirBaselineMode="true"` (or `restirBaseline="true"`) to the `<Scene>` root.
+- **Behavior:** no history eviction; maintains stable ReSTIR temporal reuse for baseline comparisons.
