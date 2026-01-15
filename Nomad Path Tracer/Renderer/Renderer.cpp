@@ -11537,8 +11537,6 @@ bool Renderer::flushRayHitCopy() {
 }
 
 void Renderer::processRayHitCounters() {
-  _lastFrameGlobalEnvEscape = 0.0f;
-
   if (!flushRayHitCopy())
     return;
 
