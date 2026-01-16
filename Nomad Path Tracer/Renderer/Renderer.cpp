@@ -501,6 +501,15 @@ double Renderer::residencyMemoryMB() const {
   return _residencyBudget.residencyMemoryMB(totalMB);
 }
 
+double Renderer::residentGeometryMemoryMB() const {
+  size_t totalBytes = 0;
+  for (const auto &resident : _residentObjectGpuResources) {
+    if (resident.isResident() && resident.geometryValid)
+      totalBytes += resident.byteSize;
+  }
+  return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+}
+
 struct UniformsData {
   int primitiveIndex;
   simd::float3 cameraPosition;
@@ -574,6 +583,7 @@ size_t alignTo(size_t value, size_t alignment) {
 
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
 constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
+constexpr double kDefaultGeometryResidencyMemoryCapMB = 2048.0;
 constexpr size_t kMaxTextureHistoryBytes = 16ull * 1024ull * 1024ull;
 constexpr float kFrustumDebugNear = 0.1f;
 constexpr float kFrustumDebugFarMultiplier = 5.0f;
@@ -1468,8 +1478,8 @@ void Renderer::writeBenchmarkHeader() {
         "restir_candidate_acceptance,primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,"
-         "residency_memory_mb,texture_memory_cap_mb,"
-         "over_memory_cap,residency_compacted,"
+         "residency_memory_mb,texture_memory_cap_mb,geometry_memory_cap_mb,"
+         "over_memory_cap,geometry_over_memory_cap,residency_compacted,"
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
@@ -1566,7 +1576,9 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.scratchMemoryMB, 3) << ','
       << formatFixed(sample.residencyMemoryMB, 3) << ','
       << formatFixed(sample.textureMemoryCapMB, 3) << ','
+      << formatFixed(sample.geometryMemoryCapMB, 3) << ','
       << boolToInt(sample.overMemoryCap) << ','
+      << boolToInt(sample.geometryOverMemoryCap) << ','
       << boolToInt(sample.residentCompacted) << ','
       << boolToInt(sample.accumulationReset) << ','
       << formatFixed(_residencyConfig.rayHitDecay, 3) << ','
@@ -2419,6 +2431,12 @@ void Renderer::updateVisibleScene() {
     _textureResidencyMemoryCapMB = kDefaultTextureResidencyMemoryCapMB;
   printf("Texture residency memory cap: %.1f MB\n",
          _textureResidencyMemoryCapMB);
+  _geometryResidencyMemoryCapMB =
+      std::max(_pScene->getGeometryResidencyMemoryCapMB(), 0.0);
+  if (_geometryResidencyMemoryCapMB <= 0.0)
+    _geometryResidencyMemoryCapMB = kDefaultGeometryResidencyMemoryCapMB;
+  printf("Geometry residency memory cap: %.1f MB\n",
+         _geometryResidencyMemoryCapMB);
   _residentCompacted = _pScene->getStartCompacted();
   _compactionCooldown = 0;
 
@@ -6223,6 +6241,77 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
     blit->endEncoding();
 }
 
+void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
+  if (!cmd)
+    return;
+  if (_geometryResidencyMemoryCapMB <= 0.0)
+    return;
+
+  double residentMB = residentGeometryMemoryMB();
+  if (residentMB <= _geometryResidencyMemoryCapMB)
+    return;
+
+  std::printf("[GeometryResidency] Triggering eviction: residency=%.2f MB "
+              "(cap=%.2f MB).\n",
+              residentMB, _geometryResidencyMemoryCapMB);
+
+  struct GeometryCandidate {
+    size_t objectIndex = 0;
+    double score = 0.0;
+    double bytesMB = 0.0;
+  };
+
+  std::vector<GeometryCandidate> candidates;
+  candidates.reserve(_residentObjectGpuResources.size());
+  for (size_t objectIndex = 0; objectIndex < _residentObjectGpuResources.size();
+       ++objectIndex) {
+    const auto &resident = _residentObjectGpuResources[objectIndex];
+    if (!resident.isResident() || !resident.geometryValid)
+      continue;
+    if (objectIndex >= _instanceRecords.size())
+      continue;
+
+    double bytesMB =
+        static_cast<double>(resident.byteSize) / (1024.0 * 1024.0);
+    if (bytesMB <= 0.0)
+      continue;
+
+    uint64_t lastHitFrame = 0;
+    if (objectIndex < _objectHitLastFrame.size())
+      lastHitFrame = _objectHitLastFrame[objectIndex];
+    uint64_t frameAge =
+        _renderedFrameCount > lastHitFrame ? _renderedFrameCount - lastHitFrame
+                                           : 0;
+    double recency = 1.0 / (1.0 + static_cast<double>(frameAge));
+    bool active =
+        objectIndex < _objectActive.size() && _objectActive[objectIndex];
+    double score = recency / (1.0 + bytesMB);
+    if (active)
+      score += 1.0;
+
+    candidates.push_back({objectIndex, score, bytesMB});
+  }
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const GeometryCandidate &a, const GeometryCandidate &b) {
+              if (a.score == b.score)
+                return a.bytesMB > b.bytesMB;
+              return a.score < b.score;
+            });
+
+  for (const auto &candidate : candidates) {
+    if (residentMB <= _geometryResidencyMemoryCapMB)
+      break;
+    if (candidate.objectIndex >= _residentObjectGpuResources.size() ||
+        candidate.objectIndex >= _instanceRecords.size())
+      continue;
+    auto &resident = _residentObjectGpuResources[candidate.objectIndex];
+    requestResidentEviction(candidate.objectIndex, resident,
+                            _instanceRecords[candidate.objectIndex]);
+    residentMB = std::max(0.0, residentMB - candidate.bytesMB);
+  }
+}
+
 void Renderer::clearMaterialTextures() {
   for (MTL::Texture *texture : _materialTextures) {
     if (texture)
@@ -6734,8 +6823,13 @@ void Renderer::draw(MTK::View *pView) {
 
   bool belowBudget =
       _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
+  double geometryMemory = residentGeometryMemoryMB();
+  bool geometryOverCap = geometryMemory > _geometryResidencyMemoryCapMB;
   double contentMemory = residencyMemoryMB();
   bool overCap = contentMemory > _textureResidencyMemoryCapMB;
+
+  if (geometryOverCap)
+    updateGeometryResidency(prepCmd);
 
   if (!_needsAccumulationReset && (belowBudget || overCap))
     updateTextureResidency(prepCmd);
@@ -12335,6 +12429,8 @@ void Renderer::beginFrameMetrics() {
     sample.residencyMemoryMB =
         std::max(0.0, sample.gpuMemoryMB - sample.scratchMemoryMB);
     sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
+    sample.geometryMemoryCapMB = _geometryResidencyMemoryCapMB;
+    double geometryResidentMB = residentGeometryMemoryMB();
     sample.avgHitProbability = 0.0;
     sample.p95HitProbability = 0.0;
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
@@ -12465,6 +12561,8 @@ void Renderer::beginFrameMetrics() {
     sample.residentCompacted = _residentCompacted;
     sample.overMemoryCap =
         sample.residencyMemoryMB > _textureResidencyMemoryCapMB;
+    sample.geometryOverMemoryCap =
+        geometryResidentMB > _geometryResidencyMemoryCapMB;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
 }

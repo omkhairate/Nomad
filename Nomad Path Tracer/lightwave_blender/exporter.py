@@ -18,6 +18,7 @@ _RESIDENCY_PRESETS: dict[str, dict] = {
         "strategy": "distance",
         "attributes": {
             "textureResidencyMemoryCapMB": 16,
+            "geometryResidencyMemoryCapMB": 16,
             "lodEnterDistance": 50,
             "lodExitDistance": 75,
             "residencyCooldown": 1,
@@ -28,6 +29,7 @@ _RESIDENCY_PRESETS: dict[str, dict] = {
         "strategy": "environment",
         "attributes": {
             "textureResidencyMemoryCapMB": 512,
+            "geometryResidencyMemoryCapMB": 512,
             "envTargetFraction": 0.78,
             "envEscapeThreshold": 0.18,
             "envMinActive": 150,
@@ -40,6 +42,7 @@ _RESIDENCY_PRESETS: dict[str, dict] = {
         "strategy": "predictive",
         "attributes": {
             "textureResidencyMemoryCapMB": 512,
+            "geometryResidencyMemoryCapMB": 512,
             "envTargetFraction": 0.72,
             "envEscapeThreshold": 0.16,
             "envMinActive": 150,
@@ -52,6 +55,7 @@ _RESIDENCY_PRESETS: dict[str, dict] = {
         "strategy": "probabilistic",
         "attributes": {
             "textureResidencyMemoryCapMB": 512,
+            "geometryResidencyMemoryCapMB": 512,
             "probabilityDecay": 0.92,
             "probabilityThreshold": 0.42,
             "probabilityMinActive": 150,
@@ -62,6 +66,7 @@ _RESIDENCY_PRESETS: dict[str, dict] = {
         "strategy": "unified",
         "attributes": {
             "textureResidencyMemoryCapMB": 512,
+            "geometryResidencyMemoryCapMB": 512,
             "unifiedEnergyWeight": 0.85,
             "unifiedHitWeight": 1.95,
             "unifiedCoverageWeight": 1.55,
