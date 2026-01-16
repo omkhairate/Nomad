@@ -8026,6 +8026,9 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   float visibilityBoost = std::max(_residencyConfig.energyVisibilityBoost, 1.0f);
   const bool applyVisibilityBoost = visibilityBoost > 1.0001f;
 
+  if (applyVisibilityBoost)
+    updatePrimitiveScreenCoverageForFrame();
+
   simd::float3 forward = simd::normalize(Camera::forward);
   simd::float3 up = simd::normalize(Camera::up);
   simd::float3 right = simd::cross(forward, up);
@@ -8733,6 +8736,97 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   }
 
   return changed;
+}
+
+bool Renderer::updatePrimitiveScreenCoverageForFrame() {
+  if (_activePrimitive.empty())
+    return false;
+
+  const size_t primCount = _activePrimitive.size();
+  if (_coverageUpdatedFrame == _renderedFrameCount &&
+      _primitiveScreenCoverage.size() == primCount)
+    return false;
+
+  if (_primitiveScreenCoverage.size() != primCount)
+    _primitiveScreenCoverage.assign(primCount, 0.0f);
+
+  float screenArea = Camera::screenSize.x * Camera::screenSize.y;
+  if (screenArea <= 0.0f)
+    screenArea = 1.0f;
+  float halfFov = Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
+  float tanHalfFov = std::tan(halfFov);
+  if (tanHalfFov <= 0.0f)
+    tanHalfFov = 1e-3f;
+
+  simd::float3 forward = simd::normalize(Camera::forward);
+  simd::float3 up = simd::normalize(Camera::up);
+  simd::float3 right = simd::cross(forward, up);
+  float rightLenSq = simd::length_squared(right);
+  if (rightLenSq < 1e-6f)
+    right = {1.0f, 0.0f, 0.0f};
+  else
+    right /= std::sqrt(rightLenSq);
+
+  float aspect = Camera::screenSize.y > 0.0f
+                     ? Camera::screenSize.x / Camera::screenSize.y
+                     : 1.0f;
+  float horizontalHalfFov = std::atan(tanHalfFov * aspect);
+
+  const auto coverageForSphere =
+      [screenArea, forward, right, horizontalHalfFov,
+       tanHalfFov](const BoundingSphere &b) -> float {
+    if (!isInView(b))
+      return 0.0f;
+
+    simd::float3 toCenter = b.center - Camera::position;
+    float depth = simd::dot(toCenter, forward);
+    if (depth <= 1e-3f)
+      return 0.0f;
+
+    float dist = simd::length(toCenter);
+    float cosAngle = depth / std::max(dist, 1e-3f);
+    float horiz = simd::dot(toCenter, right);
+    float horizAngle = std::atan2(std::fabs(horiz), depth);
+    if (horizAngle > horizontalHalfFov + 0.1f)
+      return 0.0f;
+
+    float radiusPixels =
+        (b.radius / depth) / tanHalfFov * (Camera::screenSize.y * 0.5f);
+    radiusPixels = std::max(radiusPixels, 0.0f);
+    float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
+    float angleFactor = std::max(cosAngle, 0.0f);
+    return std::min(area * angleFactor, screenArea);
+  };
+
+  const size_t objectCount = _allSceneObjects.size();
+  std::vector<float> objectFallbackCoverage(objectCount, 0.0f);
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (objectIndex < _objectBounds.size())
+      objectFallbackCoverage[objectIndex] =
+          coverageForSphere(_objectBounds[objectIndex]);
+  }
+
+  parallelChunkedAsync(0, primCount,
+                       [this, &objectFallbackCoverage,
+                        &coverageForSphere](size_t chunkBegin, size_t chunkEnd) {
+                         for (size_t i = chunkBegin; i < chunkEnd; ++i) {
+                           float coverage = 0.0f;
+                           if (i < _primitiveBounds.size()) {
+                             coverage = coverageForSphere(_primitiveBounds[i]);
+                           } else {
+                             size_t objectIndex =
+                                 (i < _primitiveToObject.size())
+                                     ? _primitiveToObject[i]
+                                     : std::numeric_limits<size_t>::max();
+                             if (objectIndex < objectFallbackCoverage.size())
+                               coverage = objectFallbackCoverage[objectIndex];
+                           }
+                           _primitiveScreenCoverage[i] = coverage;
+                         }
+                       });
+
+  _coverageUpdatedFrame = _renderedFrameCount;
+  return true;
 }
 
 bool Renderer::updateUnifiedResidency(bool forceAllToggles) {
@@ -10322,91 +10416,18 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     return false;
 
   const size_t primCount = _activePrimitive.size();
-  if (_primitiveScreenCoverage.size() != primCount)
-    _primitiveScreenCoverage.assign(primCount, 0.0f);
   if (_screenCoverageSortedIndices.size() != primCount) {
     _screenCoverageSortedIndices.resize(primCount);
     std::iota(_screenCoverageSortedIndices.begin(),
               _screenCoverageSortedIndices.end(), size_t(0));
   }
 
+  updatePrimitiveScreenCoverageForFrame();
+
   float screenArea = Camera::screenSize.x * Camera::screenSize.y;
   if (screenArea <= 0.0f)
     screenArea = 1.0f;
-  float halfFov = Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
-  float tanHalfFov = std::tan(halfFov);
-  if (tanHalfFov <= 0.0f)
-    tanHalfFov = 1e-3f;
-
-  simd::float3 forward = simd::normalize(Camera::forward);
-  simd::float3 up = simd::normalize(Camera::up);
-  simd::float3 right = simd::cross(forward, up);
-  float rightLenSq = simd::length_squared(right);
-  if (rightLenSq < 1e-6f)
-    right = {1.0f, 0.0f, 0.0f};
-  else
-    right /= std::sqrt(rightLenSq);
-
-  float aspect = Camera::screenSize.y > 0.0f
-                     ? Camera::screenSize.x / Camera::screenSize.y
-                     : 1.0f;
-  float horizontalHalfFov = std::atan(tanHalfFov * aspect);
-
-  const auto coverageForSphere =
-      [screenArea, forward, right, horizontalHalfFov,
-       tanHalfFov](const BoundingSphere &b) -> float {
-    if (!isInView(b))
-      return 0.0f;
-
-    simd::float3 toCenter = b.center - Camera::position;
-    float depth = simd::dot(toCenter, forward);
-    if (depth <= 1e-3f)
-      return 0.0f;
-
-    float dist = simd::length(toCenter);
-    float cosAngle = depth / std::max(dist, 1e-3f);
-    float horiz = simd::dot(toCenter, right);
-    float horizAngle = std::atan2(std::fabs(horiz), depth);
-    if (horizAngle > horizontalHalfFov + 0.1f)
-      return 0.0f;
-
-    float radiusPixels =
-        (b.radius / depth) / tanHalfFov * (Camera::screenSize.y * 0.5f);
-    radiusPixels = std::max(radiusPixels, 0.0f);
-    float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
-    float angleFactor = std::max(cosAngle, 0.0f);
-    return std::min(area * angleFactor, screenArea);
-  };
-
   const size_t objectCount = _allSceneObjects.size();
-  std::vector<float> objectFallbackCoverage(objectCount, 0.0f);
-  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
-    if (objectIndex < _objectBounds.size())
-      objectFallbackCoverage[objectIndex] =
-          coverageForSphere(_objectBounds[objectIndex]);
-  }
-
-  parallelChunkedAsync(0, primCount, [this, screenArea, forward, right,
-                                      horizontalHalfFov, tanHalfFov,
-                                      &objectFallbackCoverage,
-                                      &coverageForSphere](size_t chunkBegin,
-                                                         size_t chunkEnd) {
-    for (size_t i = chunkBegin; i < chunkEnd; ++i) {
-      float coverage = 0.0f;
-      if (i < _primitiveBounds.size()) {
-        coverage = coverageForSphere(_primitiveBounds[i]);
-      } else {
-        size_t objectIndex =
-            (i < _primitiveToObject.size())
-                ? _primitiveToObject[i]
-                : std::numeric_limits<size_t>::max();
-        if (objectIndex < objectFallbackCoverage.size())
-          coverage = objectFallbackCoverage[objectIndex];
-      }
-      _primitiveScreenCoverage[i] = coverage;
-    }
-  });
-
   if (objectCount == 0)
     return false;
 

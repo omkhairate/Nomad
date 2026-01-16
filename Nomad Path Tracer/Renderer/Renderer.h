@@ -175,6 +175,7 @@ private:
   bool updateReSTIRResidency(bool forceAllToggles);
   void resetProbabilisticResidencyState();
   bool updateScreenSpaceFootprint(bool forceAllToggles);
+  bool updatePrimitiveScreenCoverageForFrame();
   bool updateEnvironmentHitResidency(bool forceAllToggles);
   bool updatePredictiveResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
@@ -524,6 +525,7 @@ private:
   uint64_t _depthWeightCameraVersion = 0;
   uint64_t _lastResidentFlushCameraVersion = 0;
   uint64_t _coverageCameraVersion = 0;
+  uint64_t _coverageUpdatedFrame = 0;
   std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;
   double _textureResidencyMemoryCapMB = 2048.0;
