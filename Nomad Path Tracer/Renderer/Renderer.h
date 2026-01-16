@@ -179,6 +179,7 @@ private:
   bool updateEnvironmentHitResidency(bool forceAllToggles);
   bool updatePredictiveResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
+  void prewarmAlwaysResidentResources();
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
@@ -664,6 +665,7 @@ private:
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
   AlwaysResidentCache _alwaysResidentCache;
   bool _forceAlwaysResidentActivation = false;
+  bool _pendingAlwaysResidentPrewarm = false;
   bool _frameCaptureEnabled = false;
   size_t _frameCaptureInterval = 4;
   uint64_t _renderedFrameCount = 0;

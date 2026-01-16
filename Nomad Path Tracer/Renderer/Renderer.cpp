@@ -2481,6 +2481,8 @@ void Renderer::updateVisibleScene() {
 
   _alwaysResidentCache.reset();
   _forceAlwaysResidentActivation = true;
+  _pendingAlwaysResidentPrewarm =
+      _pScene->getResidencyStrategy() == ResidencyStrategy::AlwaysResident;
 
   ++_cameraVersion;
   _depthWeightCameraVersion = 0;
@@ -2710,6 +2712,156 @@ void Renderer::updateVisibleScene() {
 
   updateResidency(true, true);
   rebuildEnvironmentTexture();
+}
+
+void Renderer::prewarmAlwaysResidentResources() {
+  if (!_pScene ||
+      _pScene->getResidencyStrategy() != ResidencyStrategy::AlwaysResident)
+    return;
+
+  _pendingAlwaysResidentPrewarm = false;
+
+  updateAlwaysResident(true);
+  flushResidencyChanges(true);
+
+  if (!_pPathTracePSO || !_pCommandQueue)
+    return;
+
+  MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
+  if (!cmd)
+    return;
+
+  MTL::BlitCommandEncoder *blit = nullptr;
+  auto ensureSlotReady = [&](ManagedTextureSlot &slot) -> MTL::Texture * {
+    if (!slot.descriptorValid)
+      return nullptr;
+    return requestResidentTexture(slot, cmd, blit);
+  };
+
+  MTL::Texture *accum0 = ensureSlotReady(_accumulationSlots[0]);
+  MTL::Texture *accum1 = ensureSlotReady(_accumulationSlots[1]);
+  MTL::Texture *sampleCount = ensureSlotReady(_sampleCountSlot);
+  MTL::Texture *sampleImportance = ensureSlotReady(_sampleImportanceSlot);
+  MTL::Texture *albedoTexture = ensureSlotReady(_albedoSlot);
+  MTL::Texture *normalTexture = ensureSlotReady(_normalSlot);
+
+  if (blit)
+    blit->endEncoding();
+
+  bool haveAllTextures =
+      accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
+      normalTexture;
+
+  bool useAccelerationStructureLayout =
+      _useAccelerationStructureBindings && _pTlasStructure &&
+      _pGeometryHandleBuffer;
+
+  if (!haveAllTextures) {
+    trackFrameCommandBuffer(cmd);
+    cmd->commit();
+    return;
+  }
+
+  if (useAccelerationStructureLayout) {
+    if (!_pSphereBuffer || !_pSphereMaterialBuffer || !_pUniformsBuffer ||
+        !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
+        !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
+        !_pInstanceBuffer) {
+      trackFrameCommandBuffer(cmd);
+      cmd->commit();
+      return;
+    }
+  } else {
+    if (!_pBVHBuffer || !_pSphereBuffer || !_pSphereMaterialBuffer ||
+        !_pUniformsBuffer || !_pTriangleVertexBuffer ||
+        !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
+        !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
+        !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
+        !_pInstanceBuffer) {
+      trackFrameCommandBuffer(cmd);
+      cmd->commit();
+      return;
+    }
+  }
+
+  MTL::ComputeCommandEncoder *compute = cmd->computeCommandEncoder();
+  if (!compute) {
+    trackFrameCommandBuffer(cmd);
+    cmd->commit();
+    return;
+  }
+
+  compute->setComputePipelineState(_pPathTracePSO);
+
+  if (useAccelerationStructureLayout) {
+    compute->setAccelerationStructure(_pTlasStructure, 0);
+    compute->setBuffer(_pGeometryHandleBuffer, 0, 1);
+    compute->setBuffer(_pSphereBuffer, 0, 2);
+    compute->setBuffer(_pSphereMaterialBuffer, 0, 3);
+    compute->setBuffer(_pUniformsBuffer, 0, 4);
+    compute->setBuffer(_pActiveBuffer, 0, 5);
+    compute->setBuffer(_pLightIndexBuffer, 0, 6);
+    compute->setBuffer(_pLightCdfBuffer, 0, 7);
+    compute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
+    compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
+    compute->setBuffer(_pInstanceBuffer, 0, 10);
+    compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+    compute->setBuffer(_pInstanceBuffer, 0, 13);
+  } else {
+    compute->setBuffer(_pBVHBuffer, 0, 0);
+    compute->setBuffer(_pSphereBuffer, 0, 1);
+    compute->setBuffer(_pSphereMaterialBuffer, 0, 2);
+    compute->setBuffer(_pUniformsBuffer, 0, 3);
+    compute->setBuffer(_pTriangleVertexBuffer, 0, 4);
+    compute->setBuffer(_pTriangleIndexBuffer, 0, 5);
+    compute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
+    compute->setBuffer(_pTLASBuffer, 0, 7);
+    compute->setBuffer(_pActiveBuffer, 0, 8);
+    compute->setBuffer(_pLightIndexBuffer, 0, 9);
+    compute->setBuffer(_pLightCdfBuffer, 0, 10);
+    compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
+    compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+    compute->setBuffer(_pInstanceBuffer, 0, 13);
+  }
+
+  compute->setTexture(accum0, 0);
+  compute->setTexture(accum1, 1);
+  compute->setTexture(sampleCount, 2);
+  compute->setTexture(sampleImportance, 3);
+  compute->setTexture(albedoTexture, 4);
+  compute->setTexture(normalTexture, 5);
+
+  for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
+    MTL::Texture *materialTex =
+        (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
+                                            : nullptr;
+    compute->setTexture(materialTex, 6 + texIdx);
+  }
+
+  compute->setTexture(_environmentTexture, 6 + kMaxMaterialTextureSlots);
+  if (_environmentSampler)
+    compute->setSamplerState(_environmentSampler, 0);
+
+  TileDispatchRegion tileParams{};
+  tileParams.originX = 0;
+  tileParams.originY = 0;
+  tileParams.width = 1;
+  tileParams.height = 1;
+  compute->setBytes(&tileParams, sizeof(TileDispatchRegion), 16);
+
+  NS::UInteger tgWidth =
+      std::max<NS::UInteger>(1, _pPathTracePSO->threadExecutionWidth());
+  NS::UInteger maxThreads = std::max<NS::UInteger>(
+      tgWidth, _pPathTracePSO->maxTotalThreadsPerThreadgroup());
+  NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
+  MTL::Size threadsPerThreadgroup = MTL::Size::Make(tgWidth, tgHeight, 1);
+
+  compute->dispatchThreadgroups(MTL::Size::Make(1, 1, 1),
+                                threadsPerThreadgroup);
+  compute->endEncoding();
+
+  trackFrameCommandBuffer(cmd);
+  cmd->commit();
 }
 
 
@@ -7319,6 +7471,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     if (strategy == ResidencyStrategy::AlwaysResident) {
       _alwaysResidentCache.markDirty();
       _forceAlwaysResidentActivation = true;
+      _pendingAlwaysResidentPrewarm = true;
     }
     _lastResidencyStrategy = strategy;
   }
@@ -7370,6 +7523,10 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
 
   if (changed || forceFullRebuild)
     flushResidencyChanges(forceFullRebuild);
+
+  if (_pendingAlwaysResidentPrewarm &&
+      strategy == ResidencyStrategy::AlwaysResident)
+    prewarmAlwaysResidentResources();
 }
 
 bool Renderer::updateAlwaysResident(bool forceAllToggles) {
