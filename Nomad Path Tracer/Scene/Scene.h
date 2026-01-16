@@ -55,6 +55,7 @@ struct ResidencyParameters {
   size_t energyMaxTogglesPerFrame = 32;
   float energyVisibilityBoost = 1.75f;
   float energyImportanceSmoothing = 0.85f;
+  bool energyUseAverageImportance = true;
 
   // Favor immediate view cues over historical hit data so residency reacts
   // quickly to camera motion.

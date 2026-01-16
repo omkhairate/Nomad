@@ -730,6 +730,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         root->FloatAttribute("energyVisibilityBoost", params.energyVisibilityBoost);
     params.energyImportanceSmoothing = root->FloatAttribute(
         "energyImportanceSmoothing", params.energyImportanceSmoothing);
+    params.energyUseAverageImportance =
+        root->BoolAttribute("energyUseAverageImportance",
+                            params.energyUseAverageImportance);
 
     params.unifiedEnergyWeight =
         root->FloatAttribute("unifiedEnergyWeight", params.unifiedEnergyWeight);
