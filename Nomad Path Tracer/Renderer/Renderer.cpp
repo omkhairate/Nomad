@@ -10352,36 +10352,61 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
                      : 1.0f;
   float horizontalHalfFov = std::atan(tanHalfFov * aspect);
 
+  const auto coverageForSphere =
+      [screenArea, forward, right, horizontalHalfFov,
+       tanHalfFov](const BoundingSphere &b) -> float {
+    if (!isInView(b))
+      return 0.0f;
+
+    simd::float3 toCenter = b.center - Camera::position;
+    float depth = simd::dot(toCenter, forward);
+    if (depth <= 1e-3f)
+      return 0.0f;
+
+    float dist = simd::length(toCenter);
+    float cosAngle = depth / std::max(dist, 1e-3f);
+    float horiz = simd::dot(toCenter, right);
+    float horizAngle = std::atan2(std::fabs(horiz), depth);
+    if (horizAngle > horizontalHalfFov + 0.1f)
+      return 0.0f;
+
+    float radiusPixels =
+        (b.radius / depth) / tanHalfFov * (Camera::screenSize.y * 0.5f);
+    radiusPixels = std::max(radiusPixels, 0.0f);
+    float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
+    float angleFactor = std::max(cosAngle, 0.0f);
+    return std::min(area * angleFactor, screenArea);
+  };
+
+  const size_t objectCount = _allSceneObjects.size();
+  std::vector<float> objectFallbackCoverage(objectCount, 0.0f);
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (objectIndex < _objectBounds.size())
+      objectFallbackCoverage[objectIndex] =
+          coverageForSphere(_objectBounds[objectIndex]);
+  }
+
   parallelChunkedAsync(0, primCount, [this, screenArea, forward, right,
-                                      horizontalHalfFov,
-                                      tanHalfFov](size_t chunkBegin,
-                                                 size_t chunkEnd) {
+                                      horizontalHalfFov, tanHalfFov,
+                                      &objectFallbackCoverage,
+                                      &coverageForSphere](size_t chunkBegin,
+                                                         size_t chunkEnd) {
     for (size_t i = chunkBegin; i < chunkEnd; ++i) {
       float coverage = 0.0f;
-      if (i < _primitiveBounds.size() && isInView(_primitiveBounds[i])) {
-        const BoundingSphere &b = _primitiveBounds[i];
-        simd::float3 toCenter = b.center - Camera::position;
-        float depth = simd::dot(toCenter, forward);
-        if (depth > 1e-3f) {
-          float dist = simd::length(toCenter);
-          float cosAngle = depth / std::max(dist, 1e-3f);
-          float horiz = simd::dot(toCenter, right);
-          float horizAngle = std::atan2(std::fabs(horiz), depth);
-          if (horizAngle <= horizontalHalfFov + 0.1f) {
-            float radiusPixels = (b.radius / depth) / tanHalfFov *
-                                 (Camera::screenSize.y * 0.5f);
-            radiusPixels = std::max(radiusPixels, 0.0f);
-            float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
-            float angleFactor = std::max(cosAngle, 0.0f);
-            coverage = std::min(area * angleFactor, screenArea);
-          }
-        }
+      if (i < _primitiveBounds.size()) {
+        coverage = coverageForSphere(_primitiveBounds[i]);
+      } else {
+        size_t objectIndex =
+            (i < _primitiveToObject.size())
+                ? _primitiveToObject[i]
+                : std::numeric_limits<size_t>::max();
+        if (objectIndex < objectFallbackCoverage.size())
+          coverage = objectFallbackCoverage[objectIndex];
       }
       _primitiveScreenCoverage[i] = coverage;
     }
   });
 
-  const size_t objectCount = _allSceneObjects.size();
   if (objectCount == 0)
     return false;
 
