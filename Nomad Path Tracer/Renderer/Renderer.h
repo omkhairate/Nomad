@@ -415,6 +415,7 @@ private:
     size_t probabilityFinalDesiredPrimitives = 0;
     size_t probabilityTrimmedPrimitives = 0;
     bool probabilityBudgetHit = false;
+    size_t screenMinPixelCoverageSkips = 0;
     double environmentTargetActiveFraction = 0.0;
     double environmentEscapeThreshold = 0.0;
     std::string environmentDepthWeights;
@@ -653,6 +654,7 @@ private:
   size_t _frameProbabilityFinalDesiredPrimitives = 0;
   size_t _frameProbabilityTrimmedPrimitives = 0;
   bool _frameProbabilityBudgetHit = false;
+  size_t _frameScreenMinPixelCoverageSkips = 0;
   size_t _frameEnvironmentActivationFloor = 0;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
