@@ -1478,7 +1478,8 @@ void Renderer::writeBenchmarkHeader() {
          "lod_enter_distance,lod_exit_distance,lod_enter_view_margin,"
          "lod_exit_view_margin,energy_target_fraction,"
          "energy_min_active,energy_visibility_boost,screen_target_fraction,"
-         "screen_min_pixels,screen_min_active,environment_target_fraction,"
+         "screen_min_pixels,screen_min_active,screen_min_pixel_skips,"
+         "environment_target_fraction,"
          "environment_escape_threshold,env_high_escape,env_low_escape,global_env_escape,"
          "environment_activation_floor,environment_min_active,environment_toggle_budget,"
          "unified_offscreen_decay,unified_offscreen_floor,environment_depth_weights,"
@@ -1590,6 +1591,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(_residencyConfig.screenFootprintTargetFraction, 3) << ','
       << formatFixed(_residencyConfig.screenFootprintMinPixelCoverage, 3) << ','
       << _residencyConfig.screenFootprintMinActivePrimitives << ','
+      << sample.screenMinPixelCoverageSkips << ','
       << formatFixed(sample.environmentTargetActiveFraction, 3) << ','
       << formatFixed(sample.environmentEscapeThreshold, 3) << ','
       << formatFixed(sample.envHighEscapeThreshold, 3) << ','
@@ -7214,6 +7216,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameObjectActivations = 0;
   _frameObjectDeactivations = 0;
   _frameProbabilisticToggles = 0;
+  _frameScreenMinPixelCoverageSkips = 0;
   _frameEnvironmentActivationFloor = 0;
   _frameRestirReuseRate = 0.0;
   _frameRestirCandidateAcceptance = 0.0;
@@ -10515,10 +10518,12 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     if (minPrimitivesSatisfied && coverageSatisfied)
       break;
     if (minPrimitivesSatisfied &&
-        coverage < _residencyConfig.screenFootprintMinPixelCoverage)
-      break;
+        coverage < _residencyConfig.screenFootprintMinPixelCoverage) {
+      ++_frameScreenMinPixelCoverageSkips;
+      continue;
+    }
     if (minPrimitivesSatisfied && coverage <= 0.0f)
-      break;
+      continue;
 
     desiredGroupState[groupIndex] = true;
     primitivesEnabled += declaredPrimitiveCount;
@@ -12449,6 +12454,7 @@ void Renderer::beginFrameMetrics() {
         _frameProbabilityFinalDesiredPrimitives;
     sample.probabilityTrimmedPrimitives = _frameProbabilityTrimmedPrimitives;
     sample.probabilityBudgetHit = _frameProbabilityBudgetHit;
+    sample.screenMinPixelCoverageSkips = _frameScreenMinPixelCoverageSkips;
     sample.deltaTimeSeconds = _deltaTimeSeconds;
     sample.wallSeconds = std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - _benchmarkStartTime)
