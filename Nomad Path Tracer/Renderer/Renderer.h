@@ -182,6 +182,7 @@ private:
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
+  double residentGeometryMemoryMB() const;
   std::vector<bool> buildResidentMaskFromGpuResources() const;
   void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
   void recordPathTraceCommandTime(double gpuMs, size_t tileCount);
@@ -395,6 +396,7 @@ private:
     double scratchMemoryMB = 0.0;
     double residencyMemoryMB = 0.0;
     double textureMemoryCapMB = 0.0;
+    double geometryMemoryCapMB = 0.0;
     double deltaTimeSeconds = 0.0;
     double wallSeconds = 0.0;
     double cpuTimeSeconds = 0.0;
@@ -431,6 +433,7 @@ private:
     bool accumulationReset = false;
     bool residentCompacted = false;
     bool overMemoryCap = false;
+    bool geometryOverMemoryCap = false;
   };
 
   struct FrameCaptureRequest {
@@ -530,6 +533,7 @@ private:
   std::vector<size_t> _screenCoverageSortedIndices;
   float _totalPrimitiveImportance = 0.0f;
   double _textureResidencyMemoryCapMB = 2048.0;
+  double _geometryResidencyMemoryCapMB = 2048.0;
 
   std::vector<BlasInstanceRecord> _instanceRecords;
   std::vector<Primitive> _residentPrimitives;
@@ -694,6 +698,7 @@ private:
   void releaseTextureSlot(ManagedTextureSlot &slot);
   const char *textureSlotLabel(const ManagedTextureSlot &slot) const;
   void updateTextureResidency(MTL::CommandBuffer *cmd);
+  void updateGeometryResidency(MTL::CommandBuffer *cmd);
 };
 
 } // namespace NomadPathTracer

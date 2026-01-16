@@ -889,6 +889,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "textureResidencyMemoryCapMB", scene->getTextureResidencyMemoryCapMB());
     scene->setTextureResidencyMemoryCapMB(textureCap);
 
+    double geometryCap = root->DoubleAttribute(
+        "geometryResidencyMemoryCapMB", scene->getGeometryResidencyMemoryCapMB());
+    scene->setGeometryResidencyMemoryCapMB(geometryCap);
+
     const char *environmentAttr = root->Attribute("environmentTexture");
     if (environmentAttr && environmentAttr[0]) {
         std::filesystem::path envPath(environmentAttr);

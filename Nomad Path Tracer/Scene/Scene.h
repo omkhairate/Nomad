@@ -220,6 +220,8 @@ public:
 
   double getTextureResidencyMemoryCapMB() const;
   void setTextureResidencyMemoryCapMB(double capMB);
+  double getGeometryResidencyMemoryCapMB() const;
+  void setGeometryResidencyMemoryCapMB(double capMB);
 
   void buildBVH();
   size_t getBVHNodeCount() const;
@@ -282,6 +284,7 @@ private:
   ResidencyParameters residencyParams;
   bool startCompacted;
   double textureResidencyMemoryCapMB;
+  double geometryResidencyMemoryCapMB;
   size_t maxTileSampleWorkPerCommand;
   bool maxTileSampleWorkPerCommandSet;
   bool observerCameraValid;
