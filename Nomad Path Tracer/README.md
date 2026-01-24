@@ -24,3 +24,17 @@ ReSTIR sampling can be enabled without changing the residency strategy, which is
 - **Scene XML:** add `restirSampling="true"` (or `restirSamplingEnabled="true"`) to the `<Scene>` root.
 - **Behavior:** when enabled, ReSTIR sampling runs regardless of the configured residency strategy.
 - **Legacy scenes:** `residencyStrategy="restir"` still enables ReSTIR sampling automatically.
+
+## Bistro test scenes with ReSTIR sampling enabled
+
+The `scene_bistro_test_v2_*_restir_on.xml` variants mirror their corresponding bistro test scenes but explicitly enable ReSTIR sampling via `restirSampling="true"` on the `<Scene>` root. Use these for A/B comparisons that isolate the sampling toggle from other settings.
+
+- `scene_bistro_test_v2_distance_restir_on.xml`
+- `scene_bistro_test_v2_energy_restir_on.xml`
+- `scene_bistro_test_v2_environment_restir_on.xml`
+- `scene_bistro_test_v2_predictive_restir_on.xml`
+- `scene_bistro_test_v2_probabilistic_restir_on.xml`
+- `scene_bistro_test_v2_rayhit_restir_on.xml`
+- `scene_bistro_test_v2_restir_restir_on.xml`
+- `scene_bistro_test_v2_screenspace_restir_on.xml`
+- `scene_bistro_test_v2_unified_restir_on.xml`
