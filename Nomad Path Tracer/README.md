@@ -16,3 +16,11 @@ To keep ReSTIR temporal reuse stable for baseline comparisons, you can disable t
 
 - **Scene XML:** add `restirBaselineMode="true"` (or `restirBaseline="true"`) to the `<Scene>` root.
 - **Behavior:** no history eviction; maintains stable ReSTIR temporal reuse for baseline comparisons.
+
+## ReSTIR sampling toggle
+
+ReSTIR sampling can be enabled without changing the residency strategy, which is useful for A/B comparisons.
+
+- **Scene XML:** add `restirSampling="true"` (or `restirSamplingEnabled="true"`) to the `<Scene>` root.
+- **Behavior:** when enabled, ReSTIR sampling runs regardless of the configured residency strategy.
+- **Legacy scenes:** `residencyStrategy="restir"` still enables ReSTIR sampling automatically.

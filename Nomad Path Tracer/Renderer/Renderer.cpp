@@ -2419,6 +2419,11 @@ void Renderer::updateVisibleScene() {
 
   _residencyConfig = _pScene->getResidencyParameters();
   _residencyConfig.normalizeEnvironmentDepthSettings();
+  if (_pScene->getResidencyStrategy() == ResidencyStrategy::ReSTIR &&
+      !_residencyConfig.restirSamplingEnabled) {
+    _residencyConfig.restirSamplingEnabled = true;
+    _pScene->setResidencyParameters(_residencyConfig);
+  }
   bool requiresCachedBlas =
       _pScene->getResidencyStrategy() != ResidencyStrategy::AlwaysResident;
   if (_residencyConfig.buildCachedBlas != requiresCachedBlas) {
@@ -7467,6 +7472,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameRestirReuseRate = 0.0;
   _frameRestirCandidateAcceptance = 0.0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
+  bool restirSamplingActive = _residencyConfig.restirSamplingEnabled;
+  if (strategy == ResidencyStrategy::ReSTIR)
+    restirSamplingActive = true;
   if (strategy != _lastResidencyStrategy) {
     if (strategy == ResidencyStrategy::AlwaysResident) {
       _alwaysResidentCache.markDirty();
@@ -7475,7 +7483,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     }
     _lastResidencyStrategy = strategy;
   }
-  _frameStrategy = strategy;
+  _frameStrategy = restirSamplingActive ? ResidencyStrategy::ReSTIR : strategy;
 
   for (uint32_t &cooldown : _primitiveCooldown)
     if (cooldown > 0)
@@ -7501,7 +7509,6 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     changed = updateProbabilisticResidency(forceAllToggles);
     break;
   case ResidencyStrategy::ReSTIR:
-    changed = updateReSTIRResidency(forceAllToggles);
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
@@ -7520,6 +7527,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     changed = updateLODByDistance(forceAllToggles);
     break;
   }
+
+  if (restirSamplingActive)
+    changed |= updateReSTIRResidency(forceAllToggles);
 
   if (changed || forceFullRebuild)
     flushResidencyChanges(forceFullRebuild);

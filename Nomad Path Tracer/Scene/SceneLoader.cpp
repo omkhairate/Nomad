@@ -806,6 +806,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "restirBaselineMode", params.restirBaselineMode);
     params.restirBaselineMode = root->BoolAttribute(
         "restirBaseline", params.restirBaselineMode);
+    params.restirSamplingEnabled = root->BoolAttribute(
+        "restirSampling", params.restirSamplingEnabled);
+    params.restirSamplingEnabled = root->BoolAttribute(
+        "restirSamplingEnabled", params.restirSamplingEnabled);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(
         "probabilityIdleCooldownFrames", params.probabilityIdleCooldownFrames);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(
@@ -879,6 +883,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "bufferShrinkActiveRatio", params.bufferShrinkActiveRatio);
     params.buildCachedBlas = root->BoolAttribute(
         "buildCachedBlas", params.buildCachedBlas);
+
+    if (scene->getResidencyStrategy() == ResidencyStrategy::ReSTIR) {
+        params.restirSamplingEnabled = true;
+    }
 
     scene->setResidencyParameters(params);
 
