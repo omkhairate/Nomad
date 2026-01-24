@@ -9031,7 +9031,7 @@ bool Renderer::updatePrimitiveScreenCoverageForFrame() {
   float horizontalHalfFov = std::atan(tanHalfFov * aspect);
 
   const auto coverageForSphere =
-      [screenArea, forward, right, horizontalHalfFov,
+      [this, screenArea, forward, right, horizontalHalfFov,
        tanHalfFov](const BoundingSphere &b) -> float {
     if (!isInView(b))
       return 0.0f;
