@@ -99,6 +99,7 @@ struct ResidencyParameters {
   size_t restirCandidateCount = 4;
   size_t restirMaxTogglesPerFrame = 16;
   bool restirBaselineMode = false;
+  bool restirSamplingEnabled = false;
 
   float screenFootprintTargetFraction = 0.65f;
   float screenFootprintMinPixelCoverage = 32.0f;
