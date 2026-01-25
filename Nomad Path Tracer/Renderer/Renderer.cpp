@@ -7659,12 +7659,24 @@ void Renderer::draw(MTK::View *pView) {
       return static_cast<size_t>(parsed);
     };
 
+    auto parseAlwaysResidentHalfTileWorkEnv = []() -> bool {
+      const char *env = std::getenv("MPT_ALWAYS_RESIDENT_TILE_WORK_HALF");
+      if (!env)
+        return false;
+      char *end = nullptr;
+      unsigned long parsed = std::strtoul(env, &end, 10);
+      if (end == env)
+        return false;
+      return parsed > 0;
+    };
+
     size_t tileIndex = 0;
     const size_t effectiveMaxSamples = std::max<size_t>(maxSamples, 1);
     const size_t envTileWork = parseMaxTileWorkEnv();
     const bool envTileWorkValid = envTileWork > 0;
     size_t tileWorkBudget = envTileWorkValid ? envTileWork
                                              : kDefaultMaxTileSampleWorkPerCommand;
+    const bool alwaysResidentHalfTileWork = parseAlwaysResidentHalfTileWorkEnv();
     const size_t envMaxTilesPerCommand = parseMaxTilesPerCommandEnv();
     size_t maxTilesPerCommand = envMaxTilesPerCommand > 0
                                     ? envMaxTilesPerCommand
@@ -7679,7 +7691,8 @@ void Renderer::draw(MTK::View *pView) {
     if (!envTileWorkValid && _pScene) {
       if (_pScene->hasCustomMaxTileSampleWorkPerCommand()) {
         tileWorkBudget = _pScene->getMaxTileSampleWorkPerCommand();
-      } else if (_frameStrategy == ResidencyStrategy::AlwaysResident) {
+      } else if (_frameStrategy == ResidencyStrategy::AlwaysResident &&
+                 alwaysResidentHalfTileWork) {
         tileWorkBudget = std::max<size_t>(kDefaultMaxTileSampleWorkPerCommand / 2, 1);
       }
     }
