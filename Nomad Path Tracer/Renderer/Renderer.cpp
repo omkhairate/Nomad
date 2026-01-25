@@ -1666,7 +1666,8 @@ void Renderer::writeBenchmarkHeader() {
          "primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,resident_geometry_memory_mb,"
-         "residency_memory_mb,texture_memory_cap_mb,geometry_memory_cap_mb,"
+         "resident_texture_memory_mb,restir_memory_mb,residency_memory_mb,"
+         "texture_memory_cap_mb,geometry_memory_cap_mb,"
          "total_memory_cap_mb,over_memory_cap,geometry_over_memory_cap,"
          "total_over_memory_cap,total_memory_overage_warnings,geometry_cap_hits,"
          "geometry_hard_cap_denials,residency_compacted,"
@@ -1761,6 +1762,8 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.gpuMemoryMB, 3) << ','
       << formatFixed(sample.scratchMemoryMB, 3) << ','
       << formatFixed(sample.residentGeometryMemoryMB, 3) << ','
+      << formatFixed(sample.residentTextureMemoryMB, 3) << ','
+      << formatFixed(sample.restirMemoryMB, 3) << ','
       << formatFixed(sample.residencyMemoryMB, 3) << ','
       << formatFixed(sample.textureMemoryCapMB, 3) << ','
       << formatFixed(sample.geometryMemoryCapMB, 3) << ','
@@ -12847,13 +12850,17 @@ void Renderer::beginFrameMetrics() {
     sample.residentObjectCount = residentObjects;
     sample.gpuMemoryMB = currentGPUMemoryMB();
     sample.scratchMemoryMB = scratchMemoryMB();
-    sample.residencyMemoryMB =
-        std::max(0.0, sample.gpuMemoryMB - sample.scratchMemoryMB);
     sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
     sample.geometryMemoryCapMB = _geometryResidencyMemoryCapMB;
     sample.totalMemoryCapMB = _totalGpuMemoryCapMB;
     double geometryResidentMB = residentGeometryMemoryMB();
+    double textureResidentMB = residentTextureMemoryMB();
+    double restirResidentMB = restirMemoryMB();
     sample.residentGeometryMemoryMB = geometryResidentMB;
+    sample.residentTextureMemoryMB = textureResidentMB;
+    sample.restirMemoryMB = restirResidentMB;
+    sample.residencyMemoryMB =
+        std::max(0.0, geometryResidentMB + textureResidentMB + restirResidentMB);
     sample.avgHitProbability = 0.0;
     sample.p95HitProbability = 0.0;
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;

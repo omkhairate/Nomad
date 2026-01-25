@@ -67,11 +67,11 @@ def _load_perf_csv(path: Path) -> tuple[List[int], Dict[str, List[float]], Dict[
     return frames, metrics, node_series
 
 
-def _load_gpu_mem_csv(path: Path) -> tuple[List[int], List[float]]:
-    """Return frame numbers and GPU memory usage."""
+def _load_gpu_mem_csv(path: Path) -> tuple[List[int], Dict[str, List[float]]]:
+    """Return frame numbers and GPU memory metrics."""
 
     frames: List[int] = []
-    mem: List[float] = []
+    metrics: Dict[str, List[float]] = {}
 
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -80,12 +80,17 @@ def _load_gpu_mem_csv(path: Path) -> tuple[List[int], List[float]]:
         reader = csv.DictReader(f)
         for row in reader:
             frame_value = row.get("frame")
-            mem_value = row.get("gpu_memory_mb")
-            if frame_value is None or mem_value is None:
-                raise ValueError("gpu_mem.csv must contain 'frame' and 'gpu_memory_mb'")
+            if frame_value is None:
+                raise ValueError("gpu_mem.csv must contain a 'frame' column")
             frames.append(int(frame_value))
-            mem.append(float(mem_value))
-    return frames, mem
+            for key, value in row.items():
+                if key == "frame" or value in (None, ""):
+                    continue
+                try:
+                    metrics.setdefault(key, []).append(float(value))
+                except ValueError:
+                    continue
+    return frames, metrics
 
 
 def _nodes_from_dump(data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -263,9 +268,10 @@ def _node_figure(frames: Iterable[int], series: Mapping[str, List[int]]) -> go.F
     return fig
 
 
-def _gpu_memory_figure(frames: List[int], mem: List[float]) -> go.Figure:
+def _gpu_memory_figure(frames: List[int], metrics: Mapping[str, List[float]]) -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=frames, y=mem, mode="lines+markers", name="gpu_memory_mb"))
+    for name, values in metrics.items():
+        fig.add_trace(go.Scatter(x=frames, y=values, mode="lines+markers", name=name))
     fig.update_layout(title="GPU memory usage per frame", xaxis_title="Frame", yaxis_title="Memory (MB)")
     return fig
 
@@ -341,13 +347,13 @@ def main() -> None:
 
     gpu_path = args.runs / "gpu_mem.csv"
     try:
-        gpu_frames, gpu_mem = _load_gpu_mem_csv(gpu_path)
+        gpu_frames, gpu_metrics = _load_gpu_mem_csv(gpu_path)
     except FileNotFoundError:
         print(f"Skipping GPU memory plot: {gpu_path} was not found")
     except Exception as exc:  # pragma: no cover - defensive reporting
         print(f"Skipping GPU memory plot: failed to parse {gpu_path}: {exc}")
     else:
-        gpu_fig = _gpu_memory_figure(gpu_frames, gpu_mem)
+        gpu_fig = _gpu_memory_figure(gpu_frames, gpu_metrics)
         gpu_output = args.output_dir / "gpu_memory.html"
         _write_html(gpu_fig, gpu_output, args.auto_open)
         outputs["gpu_memory"] = gpu_output

@@ -32,7 +32,9 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
     std::filesystem::path gpu = base / "gpu_mem.csv";
     _gpuMemLog.open(gpu);
     if (_gpuMemLog.is_open())
-      _gpuMemLog << "frame,gpu_memory_mb\n";
+      _gpuMemLog << "frame,gpu_memory_mb,scratch_memory_mb,"
+                    "resident_geometry_memory_mb,resident_texture_memory_mb,"
+                    "restir_memory_mb,residency_memory_mb\n";
   }
 
   auto parseBoolEnv = [](const char *value) {
@@ -92,8 +94,15 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
     _perfLog.flush();
   }
   if (_gpuMemLog.is_open()) {
-    _gpuMemLog << _frameCount << "," << _pRenderer->currentGPUMemoryMB()
-               << "\n";
+    double totalMemory = _pRenderer->currentGPUMemoryMB();
+    double scratchMemory = _pRenderer->scratchMemoryMB();
+    double geometryMemory = _pRenderer->residentGeometryMemoryMB();
+    double textureMemory = _pRenderer->residentTextureMemoryMB();
+    double restirMemory = _pRenderer->restirMemoryMB();
+    double residencyMemory = geometryMemory + textureMemory + restirMemory;
+    _gpuMemLog << _frameCount << "," << totalMemory << "," << scratchMemory
+               << "," << geometryMemory << "," << textureMemory << ","
+               << restirMemory << "," << residencyMemory << "\n";
     _gpuMemLog.flush();
   }
   if (!_dumpPath.empty()) {
