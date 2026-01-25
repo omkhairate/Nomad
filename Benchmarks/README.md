@@ -27,6 +27,14 @@ Residency memory reporting now splits the working set into the actual budget com
 - `restir_memory_mb` – ReSTIR buffers that scale with resolution when sampling is enabled.
 - `residency_memory_mb` – sum of the above resident components, which is the budget that the residency strategies and caps are meant to manage. Geometry strategy tweaks primarily affect the geometry slice, while texture eviction and ReSTIR toggles influence the other two components.
 
+Total-cap enforcement now adds memory-budget context to the benchmark exports:
+
+- `total_memory_cap_mb` – effective total GPU memory cap in MB (authoritative budget).
+- `minimum_resident_footprint_mb` – estimated minimum resident footprint (history + mandatory buffers + essential geometry).
+- `total_memory_cap_relaxed_mb` – temporary relaxed cap (0 when inactive) if the configured total cap is below the minimum footprint.
+- `total_memory_cap_denials` – number of allocations denied due to the total cap during the frame.
+- `total_memory_eviction_stall` – 1 when the system is in eviction-stall mode (total cap below footprint or pending overage).
+
 ## Environment-hit scene attributes
 
 Scenes that opt into the `environment` residency strategy can now tune how aggressively the renderer combats environment-map leaks. The `<Scene>` root accepts the following optional attributes:

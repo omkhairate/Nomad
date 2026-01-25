@@ -31,9 +31,13 @@ To keep ReSTIR temporal reuse stable for baseline comparisons, you can disable t
 
 ## Geometry residency memory cap
 
-The `geometryResidencyMemoryCapMB` scene parameter is now treated as a hard ceiling. Geometry residency allocations (including streaming uploads, prewarm passes, and rebuilds) are rejected if the next allocation would exceed the cap; the renderer queues the request and triggers eviction until enough space is available to retry.
+The `geometryResidencyMemoryCapMB` scene parameter remains a hard ceiling. Geometry residency allocations (including streaming uploads, prewarm passes, and rebuilds) are rejected if the next allocation would exceed the cap; the renderer queues the request and triggers eviction until enough space is available to retry.
 
-When `totalGpuMemoryCapMB` is set, the renderer also treats the total GPU memory budget (resident content + scratch) as a soft cap. Total memory overages pause new residency allocations and trigger texture eviction, even if the texture residency pool itself is still under `textureResidencyMemoryCapMB`.
+For the memory-budget study, `totalGpuMemoryCapMB` is now the single authoritative (hard) budget. Both texture and geometry allocations check the total cap before proceeding; if the next allocation would exceed the cap, the renderer blocks the allocation and evicts residency from textures and geometry until the total budget is satisfied.
+
+To prevent eviction scheduling deadlocks, the renderer estimates a minimum resident footprint (history + mandatory buffers + essential geometry). If the configured total cap remains below this footprint for several frames, it logs a warning, disables history, forces an accumulation reset, and temporarily relaxes the effective total cap to the minimum footprint. Benchmark metrics report the minimum footprint, relaxed cap, and whether the frame is in eviction-stall mode.
+
+See `StudyNotes.md` for the study-specific memory budget notes and recommended interpretation of the new metrics.
 
 ## Bistro test scenes with ReSTIR sampling enabled
 
