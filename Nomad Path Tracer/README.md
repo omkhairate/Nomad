@@ -25,6 +25,10 @@ ReSTIR sampling can be enabled without changing the residency strategy, which is
 - **Behavior:** when enabled, ReSTIR sampling runs regardless of the configured residency strategy.
 - **Legacy scenes:** `residencyStrategy="restir"` still enables ReSTIR sampling automatically.
 
+## Geometry residency memory cap
+
+The `geometryResidencyMemoryCapMB` scene parameter is now treated as a hard ceiling. Geometry residency allocations (including streaming uploads, prewarm passes, and rebuilds) are rejected if the next allocation would exceed the cap; the renderer queues the request and triggers eviction until enough space is available to retry.
+
 ## Bistro test scenes with ReSTIR sampling enabled
 
 The `scene_bistro_test_v2_*_restir_on.xml` variants mirror their corresponding bistro test scenes but explicitly enable ReSTIR sampling via `restirSampling="true"` on the `<Scene>` root. Use these for A/B comparisons that isolate the sampling toggle from other settings.

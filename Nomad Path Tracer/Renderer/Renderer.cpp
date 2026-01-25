@@ -502,12 +502,60 @@ double Renderer::residencyMemoryMB() const {
 }
 
 double Renderer::residentGeometryMemoryMB() const {
+  size_t totalBytes = residentGeometryMemoryBytes();
+  return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+}
+
+size_t Renderer::residentGeometryMemoryBytes() const {
   size_t totalBytes = 0;
   for (const auto &resident : _residentObjectGpuResources) {
-    if (resident.isResident() && resident.geometryValid)
+    if (resident.state != ResidentObjectGpuResources::ResidencyState::Cold)
       totalBytes += resident.byteSize;
   }
-  return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+  return totalBytes;
+}
+
+size_t Renderer::geometryResidencyCapBytes() const {
+  double capMB = std::max(0.0, _geometryResidencyMemoryCapMB);
+  return static_cast<size_t>(capMB * 1024.0 * 1024.0);
+}
+
+bool Renderer::checkGeometryResidencyCap(size_t objectIndex,
+                                         size_t requestedBytes,
+                                         size_t existingBytes,
+                                         const char *context) {
+  if (_geometryResidencyMemoryCapMB <= 0.0)
+    return true;
+
+  size_t capBytes = geometryResidencyCapBytes();
+  if (capBytes == 0)
+    return true;
+
+  size_t residentBytes = residentGeometryMemoryBytes();
+  size_t nextBytes = residentBytes >= existingBytes
+                         ? residentBytes - existingBytes + requestedBytes
+                         : residentBytes + requestedBytes;
+
+  if (nextBytes <= capBytes)
+    return true;
+
+  size_t overageBytes = nextBytes - capBytes;
+  _pendingGeometryResidencyOverageBytes =
+      std::max(_pendingGeometryResidencyOverageBytes, overageBytes);
+  ++_geometryResidencyCapHitCount;
+  ++_frameGeometryResidencyCapHitCount;
+
+  std::printf(
+      "[GeometryResidency] Cap hit for object %zu (%s): requested %.2f MB "
+      "(existing %.2f MB), resident %.2f MB, cap %.2f MB (over %.2f MB). "
+      "Deferring allocation and scheduling eviction.\n",
+      objectIndex, context ? context : "unspecified",
+      static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
+      static_cast<double>(existingBytes) / (1024.0 * 1024.0),
+      static_cast<double>(residentBytes) / (1024.0 * 1024.0),
+      static_cast<double>(capBytes) / (1024.0 * 1024.0),
+      static_cast<double>(overageBytes) / (1024.0 * 1024.0));
+  return false;
 }
 
 struct UniformsData {
@@ -1479,7 +1527,7 @@ void Renderer::writeBenchmarkHeader() {
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,geometry_memory_cap_mb,"
-         "over_memory_cap,geometry_over_memory_cap,residency_compacted,"
+         "over_memory_cap,geometry_over_memory_cap,geometry_cap_hits,residency_compacted,"
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
@@ -1579,6 +1627,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.geometryMemoryCapMB, 3) << ','
       << boolToInt(sample.overMemoryCap) << ','
       << boolToInt(sample.geometryOverMemoryCap) << ','
+      << sample.geometryCapHitCount << ','
       << boolToInt(sample.residentCompacted) << ','
       << boolToInt(sample.accumulationReset) << ','
       << formatFixed(_residencyConfig.rayHitDecay, 3) << ','
@@ -3130,39 +3179,47 @@ void Renderer::processBlasBuildQueue() {
   if (!_pDevice || !_pCommandQueue)
     return;
 
+  size_t queueIterations = _pendingBlasBuilds.size();
   while (!_pendingBlasBuilds.empty() &&
-         _activeBlasBuilds.size() < kMaxBlasBuildsInFlight) {
+         _activeBlasBuilds.size() < kMaxBlasBuildsInFlight &&
+         queueIterations > 0) {
     auto buildRequest = _pendingBlasBuilds.front();
+    _pendingBlasBuilds.pop_front();
+    --queueIterations;
+
     if (buildRequest && buildRequest->resident &&
         buildRequest->resident->hasPendingCommands()) {
       std::printf(
           "[BLAS] Deferred queued build for object %zu: pending command buffer "
           "still in flight.\n",
           buildRequest->objectIndex);
-      _pendingBlasBuilds.pop_front();
       _pendingBlasBuilds.push_back(buildRequest);
-      break;
-    }
-    if (!startBlasBuild(buildRequest)) {
-      _pendingBlasBuilds.pop_front();
-      if (buildRequest && buildRequest->resident &&
-          buildRequest->objectIndex < _instanceRecords.size()) {
-        transitionResidentToCold(buildRequest->objectIndex,
-                                 *buildRequest->resident,
-                                 _instanceRecords[buildRequest->objectIndex]);
-      }
       continue;
     }
 
-    _pendingBlasBuilds.pop_front();
-    _activeBlasBuilds.push_back(buildRequest);
+    BlasBuildStartResult result = startBlasBuild(buildRequest);
+    if (result == BlasBuildStartResult::Started) {
+      _activeBlasBuilds.push_back(buildRequest);
+      continue;
+    }
+    if (result == BlasBuildStartResult::DeferredCap) {
+      _pendingBlasBuilds.push_back(buildRequest);
+      continue;
+    }
+
+    if (buildRequest && buildRequest->resident &&
+        buildRequest->objectIndex < _instanceRecords.size()) {
+      transitionResidentToCold(buildRequest->objectIndex,
+                               *buildRequest->resident,
+                               _instanceRecords[buildRequest->objectIndex]);
+    }
   }
 }
 
-bool Renderer::startBlasBuild(
+Renderer::BlasBuildStartResult Renderer::startBlasBuild(
     const std::shared_ptr<PendingBlasBuild> &buildRequest) {
   if (!buildRequest || !buildRequest->resident || !_pDevice || !_pCommandQueue)
-    return false;
+    return BlasBuildStartResult::Failed;
 
   auto &resident = *buildRequest->resident;
 
@@ -3189,7 +3246,7 @@ bool Renderer::startBlasBuild(
                           ->init();
   if (!geometryDesc) {
     cleanupPool();
-    return false;
+    return BlasBuildStartResult::Failed;
   }
   geometryDesc->setOpaque(true);
 
@@ -3204,7 +3261,7 @@ bool Renderer::startBlasBuild(
     if (accelDesc)
       accelDesc->release();
     cleanupPool();
-    return false;
+    return BlasBuildStartResult::Failed;
   }
 
   accelDesc->setGeometryDescriptors(geometryArray);
@@ -3217,10 +3274,18 @@ bool Renderer::startBlasBuild(
   MTL::Buffer *vertexBuffer = nullptr;
   MTL::Buffer *indexBuffer = nullptr;
 
+  bool capDenied = false;
   auto requestGeometryBuffers = [&]() -> bool {
     NS::UInteger initialHeapBytes = alignedVertexSize + alignedIndexSize;
-    if (initialHeapBytes > 0)
+    if (initialHeapBytes > 0) {
+      if (!checkGeometryResidencyCap(buildRequest->objectIndex,
+                                     static_cast<size_t>(initialHeapBytes),
+                                     resident.byteSize, "initial buffers")) {
+        capDenied = true;
+        return false;
+      }
       resident.resources.ensureHeapCapacity(initialHeapBytes);
+    }
 
     vertexBuffer = resident.resources.ensureVertexBuffer(vertexBytes,
                                                         vertexLabel.c_str());
@@ -3234,7 +3299,8 @@ bool Renderer::startBlasBuild(
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
-    return false;
+    return capDenied ? BlasBuildStartResult::DeferredCap
+                     : BlasBuildStartResult::Failed;
   }
 
   auto configureGeometryDescriptor = [&]() {
@@ -3272,6 +3338,15 @@ bool Renderer::startBlasBuild(
 
     if (requiredTotal > totalHeapBytes) {
       totalHeapBytes = requiredTotal;
+      if (!checkGeometryResidencyCap(buildRequest->objectIndex,
+                                     static_cast<size_t>(totalHeapBytes),
+                                     resident.byteSize, "heap resize")) {
+        geometryArray->release();
+        geometryDesc->release();
+        accelDesc->release();
+        cleanupPool();
+        return BlasBuildStartResult::DeferredCap;
+      }
       resident.resources.ensureHeapCapacity(totalHeapBytes);
 
       if (!requestGeometryBuffers()) {
@@ -3279,7 +3354,8 @@ bool Renderer::startBlasBuild(
         geometryDesc->release();
         accelDesc->release();
         cleanupPool();
-        return false;
+        return capDenied ? BlasBuildStartResult::DeferredCap
+                         : BlasBuildStartResult::Failed;
       }
       continue;
     }
@@ -3298,7 +3374,7 @@ bool Renderer::startBlasBuild(
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
-    return false;
+    return BlasBuildStartResult::Failed;
   }
 
   MTL::Buffer *vertexStaging = nullptr;
@@ -3332,7 +3408,7 @@ bool Renderer::startBlasBuild(
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
-    return false;
+    return BlasBuildStartResult::Failed;
   }
 
   NS::UInteger requestedScratchSize = sizes.buildScratchBufferSize;
@@ -3354,7 +3430,7 @@ bool Renderer::startBlasBuild(
       geometryDesc->release();
       accelDesc->release();
       cleanupPool();
-      return false;
+      return BlasBuildStartResult::Failed;
     }
 
     buildRequest->scratchBuffer = scratchBuffer;
@@ -3377,7 +3453,7 @@ bool Renderer::startBlasBuild(
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
-    return false;
+    return BlasBuildStartResult::Failed;
   }
 
   MTL::BlitCommandEncoder *blitEncoder = nullptr;
@@ -3412,7 +3488,7 @@ bool Renderer::startBlasBuild(
     geometryDesc->release();
     accelDesc->release();
     cleanupPool();
-    return false;
+    return BlasBuildStartResult::Failed;
   }
 
   asEncoder->buildAccelerationStructure(accelerationStructure, accelDesc,
@@ -3445,11 +3521,11 @@ bool Renderer::startBlasBuild(
     resident.clearPendingCommand();
     buildRequest->releaseResources();
     cleanupPool();
-    return false;
+    return BlasBuildStartResult::Failed;
   }
 
   cleanupPool();
-  return true;
+  return BlasBuildStartResult::Started;
 }
 
 void Renderer::handleCompletedBlasBuild(
@@ -6404,13 +6480,37 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
   if (_geometryResidencyMemoryCapMB <= 0.0)
     return;
 
-  double residentMB = residentGeometryMemoryMB();
-  if (residentMB <= _geometryResidencyMemoryCapMB)
-    return;
+  size_t capBytes = geometryResidencyCapBytes();
+  size_t residentBytes = residentGeometryMemoryBytes();
+  size_t targetBytes = capBytes;
+  if (_pendingGeometryResidencyOverageBytes > 0) {
+    if (capBytes > _pendingGeometryResidencyOverageBytes)
+      targetBytes = capBytes - _pendingGeometryResidencyOverageBytes;
+    else
+      targetBytes = 0;
+  }
 
-  std::printf("[GeometryResidency] Triggering eviction: residency=%.2f MB "
-              "(cap=%.2f MB).\n",
-              residentMB, _geometryResidencyMemoryCapMB);
+  if (residentBytes <= targetBytes) {
+    if (_pendingGeometryResidencyOverageBytes > 0)
+      _pendingGeometryResidencyOverageBytes = 0;
+    return;
+  }
+
+  double residentMB =
+      static_cast<double>(residentBytes) / (1024.0 * 1024.0);
+  double capMB = static_cast<double>(capBytes) / (1024.0 * 1024.0);
+  double targetMB = static_cast<double>(targetBytes) / (1024.0 * 1024.0);
+
+  if (_pendingGeometryResidencyOverageBytes > 0) {
+    std::printf(
+        "[GeometryResidency] Triggering eviction: residency=%.2f MB (cap=%.2f "
+        "MB, target=%.2f MB) to satisfy pending allocation.\n",
+        residentMB, capMB, targetMB);
+  } else {
+    std::printf("[GeometryResidency] Triggering eviction: residency=%.2f MB "
+                "(cap=%.2f MB).\n",
+                residentMB, capMB);
+  }
 
   struct GeometryCandidate {
     size_t objectIndex = 0;
@@ -6457,7 +6557,7 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
             });
 
   for (const auto &candidate : candidates) {
-    if (residentMB <= _geometryResidencyMemoryCapMB)
+    if (residentBytes <= targetBytes)
       break;
     if (candidate.objectIndex >= _residentObjectGpuResources.size() ||
         candidate.objectIndex >= _instanceRecords.size())
@@ -6465,8 +6565,16 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
     auto &resident = _residentObjectGpuResources[candidate.objectIndex];
     requestResidentEviction(candidate.objectIndex, resident,
                             _instanceRecords[candidate.objectIndex]);
-    residentMB = std::max(0.0, residentMB - candidate.bytesMB);
+    double candidateBytes =
+        candidate.bytesMB * (1024.0 * 1024.0);
+    residentBytes =
+        residentBytes > static_cast<size_t>(candidateBytes)
+            ? residentBytes - static_cast<size_t>(candidateBytes)
+            : 0;
   }
+
+  if (residentBytes <= targetBytes)
+    _pendingGeometryResidencyOverageBytes = 0;
 }
 
 void Renderer::clearMaterialTextures() {
@@ -6985,7 +7093,7 @@ void Renderer::draw(MTK::View *pView) {
   double contentMemory = residencyMemoryMB();
   bool overCap = contentMemory > _textureResidencyMemoryCapMB;
 
-  if (geometryOverCap)
+  if (geometryOverCap || _pendingGeometryResidencyOverageBytes > 0)
     updateGeometryResidency(prepCmd);
 
   if (!_needsAccumulationReset && (belowBudget || overCap))
@@ -7469,6 +7577,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameProbabilisticToggles = 0;
   _frameScreenMinPixelCoverageSkips = 0;
   _frameEnvironmentActivationFloor = 0;
+  _frameGeometryResidencyCapHitCount = 0;
   _frameRestirReuseRate = 0.0;
   _frameRestirCandidateAcceptance = 0.0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
@@ -12730,6 +12839,7 @@ void Renderer::beginFrameMetrics() {
         sample.residencyMemoryMB > _textureResidencyMemoryCapMB;
     sample.geometryOverMemoryCap =
         geometryResidentMB > _geometryResidencyMemoryCapMB;
+    sample.geometryCapHitCount = _frameGeometryResidencyCapHitCount;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
 }
