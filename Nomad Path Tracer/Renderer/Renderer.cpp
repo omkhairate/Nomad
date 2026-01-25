@@ -525,6 +525,9 @@ double Renderer::residentTextureMemoryMB() const {
 }
 
 double Renderer::restirMemoryMB() const {
+  if (!_residencyConfig.restirSamplingEnabled)
+    return 0.0;
+
   size_t totalBytes = 0;
   if (_pRestirStatsBuffer)
     totalBytes += _pRestirStatsBuffer->length();
@@ -2838,6 +2841,8 @@ void Renderer::prewarmAlwaysResidentResources() {
   if (!_pPathTracePSO || !_pCommandQueue)
     return;
 
+  const bool restirEnabled = _residencyConfig.restirSamplingEnabled;
+
   MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
   if (!cmd)
     return;
@@ -2855,20 +2860,32 @@ void Renderer::prewarmAlwaysResidentResources() {
   MTL::Texture *sampleImportance = ensureSlotReady(_sampleImportanceSlot);
   MTL::Texture *albedoTexture = ensureSlotReady(_albedoSlot);
   MTL::Texture *normalTexture = ensureSlotReady(_normalSlot);
-  MTL::Texture *restirPrevSample = ensureSlotReady(_restirSampleSlots[0]);
-  MTL::Texture *restirPrevNormal = ensureSlotReady(_restirNormalSlots[0]);
-  MTL::Texture *restirPrevState = ensureSlotReady(_restirStateSlots[0]);
-  MTL::Texture *restirOutSample = ensureSlotReady(_restirSampleSlots[1]);
-  MTL::Texture *restirOutNormal = ensureSlotReady(_restirNormalSlots[1]);
-  MTL::Texture *restirOutState = ensureSlotReady(_restirStateSlots[1]);
+  MTL::Texture *restirPrevSample = nullptr;
+  MTL::Texture *restirPrevNormal = nullptr;
+  MTL::Texture *restirPrevState = nullptr;
+  MTL::Texture *restirOutSample = nullptr;
+  MTL::Texture *restirOutNormal = nullptr;
+  MTL::Texture *restirOutState = nullptr;
+  if (restirEnabled) {
+    restirPrevSample = ensureSlotReady(_restirSampleSlots[0]);
+    restirPrevNormal = ensureSlotReady(_restirNormalSlots[0]);
+    restirPrevState = ensureSlotReady(_restirStateSlots[0]);
+    restirOutSample = ensureSlotReady(_restirSampleSlots[1]);
+    restirOutNormal = ensureSlotReady(_restirNormalSlots[1]);
+    restirOutState = ensureSlotReady(_restirStateSlots[1]);
+  }
 
   if (blit)
     blit->endEncoding();
 
   bool haveAllTextures =
       accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
-      normalTexture && restirPrevSample && restirPrevNormal && restirPrevState &&
-      restirOutSample && restirOutNormal && restirOutState;
+      normalTexture;
+  if (restirEnabled) {
+    haveAllTextures = haveAllTextures && restirPrevSample && restirPrevNormal &&
+                      restirPrevState && restirOutSample && restirOutNormal &&
+                      restirOutState;
+  }
 
   bool useAccelerationStructureLayout =
       _useAccelerationStructureBindings && _pTlasStructure &&
@@ -2884,7 +2901,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     if (!_pSphereBuffer || !_pSphereMaterialBuffer || !_pUniformsBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer || !_pRestirStatsBuffer) {
+        !_pInstanceBuffer || (restirEnabled && !_pRestirStatsBuffer)) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -2895,7 +2912,7 @@ void Renderer::prewarmAlwaysResidentResources() {
         !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer || !_pRestirStatsBuffer) {
+        !_pInstanceBuffer || (restirEnabled && !_pRestirStatsBuffer)) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -2925,7 +2942,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pInstanceBuffer, 0, 10);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(_pRestirStatsBuffer, 0, 14);
+    compute->setBuffer(restirEnabled ? _pRestirStatsBuffer : nullptr, 0, 14);
   } else {
     compute->setBuffer(_pBVHBuffer, 0, 0);
     compute->setBuffer(_pSphereBuffer, 0, 1);
@@ -2941,7 +2958,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(_pRestirStatsBuffer, 0, 14);
+    compute->setBuffer(restirEnabled ? _pRestirStatsBuffer : nullptr, 0, 14);
   }
 
   compute->setTexture(accum0, 0);
@@ -2950,12 +2967,21 @@ void Renderer::prewarmAlwaysResidentResources() {
   compute->setTexture(sampleImportance, 3);
   compute->setTexture(albedoTexture, 4);
   compute->setTexture(normalTexture, 5);
-  compute->setTexture(restirPrevSample, 6);
-  compute->setTexture(restirPrevNormal, 7);
-  compute->setTexture(restirPrevState, 8);
-  compute->setTexture(restirOutSample, 9);
-  compute->setTexture(restirOutNormal, 10);
-  compute->setTexture(restirOutState, 11);
+  if (restirEnabled) {
+    compute->setTexture(restirPrevSample, 6);
+    compute->setTexture(restirPrevNormal, 7);
+    compute->setTexture(restirPrevState, 8);
+    compute->setTexture(restirOutSample, 9);
+    compute->setTexture(restirOutNormal, 10);
+    compute->setTexture(restirOutState, 11);
+  } else {
+    compute->setTexture(nullptr, 6);
+    compute->setTexture(nullptr, 7);
+    compute->setTexture(nullptr, 8);
+    compute->setTexture(nullptr, 9);
+    compute->setTexture(nullptr, 10);
+    compute->setTexture(nullptr, 11);
+  }
 
   for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
     MTL::Texture *materialTex =
@@ -4422,6 +4448,7 @@ void Renderer::updateTopLevelAccelerationStructure(
 void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t totalPrimitiveCount = _allPrimitives.size();
   size_t cachedTotalPrimitiveCount = _cachedTotalPrimitiveCount;
+  const bool restirEnabled = _residencyConfig.restirSamplingEnabled;
 
   if (forceFullRebuild) {
     bool startCompacted = _pScene ? _pScene->getStartCompacted() : false;
@@ -4437,7 +4464,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       markBufferModified(_pUniformsBuffer,
                          NS::Range::Make(0, uniformsDataSize));
   }
-  if (!_pRestirStatsBuffer) {
+  if (!restirEnabled && _pRestirStatsBuffer) {
+    _pRestirStatsBuffer->release();
+    _pRestirStatsBuffer = nullptr;
+  }
+  if (restirEnabled && !_pRestirStatsBuffer) {
     constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 4;
     _pRestirStatsBuffer =
         _pDevice->newBuffer(kRestirStatsBytes, MTL::ResourceStorageModeShared);
@@ -6868,6 +6899,16 @@ void Renderer::buildTextures() {
 
   MTL::TextureUsage usage = static_cast<MTL::TextureUsage>(
       MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
+  const bool restirEnabled = _residencyConfig.restirSamplingEnabled;
+  auto disableRestirSlot = [&](ManagedTextureSlot &slot) {
+    releaseTextureSlot(slot);
+    slot.width = 0;
+    slot.height = 0;
+    slot.pixelFormat = MTL::PixelFormat::PixelFormatInvalid;
+    slot.usage = MTL::TextureUsage(0);
+    slot.descriptorValid = false;
+    slot.stagingValid = false;
+  };
 
   for (auto &slot : _accumulationSlots)
     configureTextureSlot(slot, width, height,
@@ -6880,15 +6921,24 @@ void Renderer::buildTextures() {
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_normalSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
-  for (auto &slot : _restirSampleSlots)
-    configureTextureSlot(slot, width, height,
-                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
-  for (auto &slot : _restirNormalSlots)
-    configureTextureSlot(slot, width, height,
-                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
-  for (auto &slot : _restirStateSlots)
-    configureTextureSlot(slot, width, height,
-                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  if (restirEnabled) {
+    for (auto &slot : _restirSampleSlots)
+      configureTextureSlot(slot, width, height,
+                           MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+    for (auto &slot : _restirNormalSlots)
+      configureTextureSlot(slot, width, height,
+                           MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+    for (auto &slot : _restirStateSlots)
+      configureTextureSlot(slot, width, height,
+                           MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  } else {
+    for (auto &slot : _restirSampleSlots)
+      disableRestirSlot(slot);
+    for (auto &slot : _restirNormalSlots)
+      disableRestirSlot(slot);
+    for (auto &slot : _restirStateSlots)
+      disableRestirSlot(slot);
+  }
 
   _needsAccumulationReset = true;
   _accumulationTargetsNeedClear = true;
@@ -6898,12 +6948,16 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   if (!cmd)
     return false;
 
-  std::array<ManagedTextureSlot *, 12> slots = {
+  const bool restirEnabled = _residencyConfig.restirSamplingEnabled;
+  std::vector<ManagedTextureSlot *> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot,
-      &_restirSampleSlots[0], &_restirSampleSlots[1],
-      &_restirNormalSlots[0], &_restirNormalSlots[1],
-      &_restirStateSlots[0], &_restirStateSlots[1]};
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot};
+  if (restirEnabled) {
+    slots.insert(slots.end(),
+                 {&_restirSampleSlots[0], &_restirSampleSlots[1],
+                  &_restirNormalSlots[0], &_restirNormalSlots[1],
+                  &_restirStateSlots[0], &_restirStateSlots[1]});
+  }
 
   bool anyDescriptors = false;
   bool allResident = true;
@@ -7284,6 +7338,7 @@ void Renderer::draw(MTK::View *pView) {
   bool allowResidency =
       _needsAccumulationReset || (!belowBudget && !overCap);
 
+  const bool restirEnabled = _residencyConfig.restirSamplingEnabled;
   MTL::BlitCommandEncoder *restoreBlit = nullptr;
   MTL::Texture *accum0 = _accumulationSlots[0].texture;
   MTL::Texture *accum1 = _accumulationSlots[1].texture;
@@ -7291,12 +7346,20 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *sampleImportance = _sampleImportanceSlot.texture;
   MTL::Texture *albedoTexture = _albedoSlot.texture;
   MTL::Texture *normalTexture = _normalSlot.texture;
-  MTL::Texture *restirPrevSample = _restirSampleSlots[0].texture;
-  MTL::Texture *restirPrevNormal = _restirNormalSlots[0].texture;
-  MTL::Texture *restirPrevState = _restirStateSlots[0].texture;
-  MTL::Texture *restirOutSample = _restirSampleSlots[1].texture;
-  MTL::Texture *restirOutNormal = _restirNormalSlots[1].texture;
-  MTL::Texture *restirOutState = _restirStateSlots[1].texture;
+  MTL::Texture *restirPrevSample = nullptr;
+  MTL::Texture *restirPrevNormal = nullptr;
+  MTL::Texture *restirPrevState = nullptr;
+  MTL::Texture *restirOutSample = nullptr;
+  MTL::Texture *restirOutNormal = nullptr;
+  MTL::Texture *restirOutState = nullptr;
+  if (restirEnabled) {
+    restirPrevSample = _restirSampleSlots[0].texture;
+    restirPrevNormal = _restirNormalSlots[0].texture;
+    restirPrevState = _restirStateSlots[0].texture;
+    restirOutSample = _restirSampleSlots[1].texture;
+    restirOutNormal = _restirNormalSlots[1].texture;
+    restirOutState = _restirStateSlots[1].texture;
+  }
   if (allowResidency) {
     accum0 = requestResidentTexture(_accumulationSlots[0], prepCmd, restoreBlit);
     accum1 = requestResidentTexture(_accumulationSlots[1], prepCmd, restoreBlit);
@@ -7305,18 +7368,20 @@ void Renderer::draw(MTK::View *pView) {
         requestResidentTexture(_sampleImportanceSlot, prepCmd, restoreBlit);
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
     normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
-    restirPrevSample =
-        requestResidentTexture(_restirSampleSlots[0], prepCmd, restoreBlit);
-    restirPrevNormal =
-        requestResidentTexture(_restirNormalSlots[0], prepCmd, restoreBlit);
-    restirPrevState =
-        requestResidentTexture(_restirStateSlots[0], prepCmd, restoreBlit);
-    restirOutSample =
-        requestResidentTexture(_restirSampleSlots[1], prepCmd, restoreBlit);
-    restirOutNormal =
-        requestResidentTexture(_restirNormalSlots[1], prepCmd, restoreBlit);
-    restirOutState =
-        requestResidentTexture(_restirStateSlots[1], prepCmd, restoreBlit);
+    if (restirEnabled) {
+      restirPrevSample =
+          requestResidentTexture(_restirSampleSlots[0], prepCmd, restoreBlit);
+      restirPrevNormal =
+          requestResidentTexture(_restirNormalSlots[0], prepCmd, restoreBlit);
+      restirPrevState =
+          requestResidentTexture(_restirStateSlots[0], prepCmd, restoreBlit);
+      restirOutSample =
+          requestResidentTexture(_restirSampleSlots[1], prepCmd, restoreBlit);
+      restirOutNormal =
+          requestResidentTexture(_restirNormalSlots[1], prepCmd, restoreBlit);
+      restirOutState =
+          requestResidentTexture(_restirStateSlots[1], prepCmd, restoreBlit);
+    }
   }
 
   auto ensureSlotReady = [&](ManagedTextureSlot &slot, MTL::Texture *&handle) {
@@ -7335,12 +7400,14 @@ void Renderer::draw(MTK::View *pView) {
   ensureSlotReady(_sampleImportanceSlot, sampleImportance);
   ensureSlotReady(_albedoSlot, albedoTexture);
   ensureSlotReady(_normalSlot, normalTexture);
-  ensureSlotReady(_restirSampleSlots[0], restirPrevSample);
-  ensureSlotReady(_restirNormalSlots[0], restirPrevNormal);
-  ensureSlotReady(_restirStateSlots[0], restirPrevState);
-  ensureSlotReady(_restirSampleSlots[1], restirOutSample);
-  ensureSlotReady(_restirNormalSlots[1], restirOutNormal);
-  ensureSlotReady(_restirStateSlots[1], restirOutState);
+  if (restirEnabled) {
+    ensureSlotReady(_restirSampleSlots[0], restirPrevSample);
+    ensureSlotReady(_restirNormalSlots[0], restirPrevNormal);
+    ensureSlotReady(_restirStateSlots[0], restirPrevState);
+    ensureSlotReady(_restirSampleSlots[1], restirOutSample);
+    ensureSlotReady(_restirNormalSlots[1], restirOutNormal);
+    ensureSlotReady(_restirStateSlots[1], restirOutState);
+  }
 
   auto markSlotUsed = [&](ManagedTextureSlot &slot, MTL::Texture *handle) {
     if (handle)
@@ -7353,20 +7420,26 @@ void Renderer::draw(MTK::View *pView) {
   markSlotUsed(_sampleImportanceSlot, sampleImportance);
   markSlotUsed(_albedoSlot, albedoTexture);
   markSlotUsed(_normalSlot, normalTexture);
-  markSlotUsed(_restirSampleSlots[0], restirPrevSample);
-  markSlotUsed(_restirNormalSlots[0], restirPrevNormal);
-  markSlotUsed(_restirStateSlots[0], restirPrevState);
-  markSlotUsed(_restirSampleSlots[1], restirOutSample);
-  markSlotUsed(_restirNormalSlots[1], restirOutNormal);
-  markSlotUsed(_restirStateSlots[1], restirOutState);
+  if (restirEnabled) {
+    markSlotUsed(_restirSampleSlots[0], restirPrevSample);
+    markSlotUsed(_restirNormalSlots[0], restirPrevNormal);
+    markSlotUsed(_restirStateSlots[0], restirPrevState);
+    markSlotUsed(_restirSampleSlots[1], restirOutSample);
+    markSlotUsed(_restirNormalSlots[1], restirOutNormal);
+    markSlotUsed(_restirStateSlots[1], restirOutState);
+  }
 
   if (restoreBlit)
     restoreBlit->endEncoding();
 
   bool haveAllTextures =
       accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
-      normalTexture && restirPrevSample && restirPrevNormal && restirPrevState &&
-      restirOutSample && restirOutNormal && restirOutState;
+      normalTexture;
+  if (restirEnabled) {
+    haveAllTextures = haveAllTextures && restirPrevSample && restirPrevNormal &&
+                      restirPrevState && restirOutSample && restirOutNormal &&
+                      restirOutState;
+  }
 
   if (_accumulationTargetsNeedClear && haveAllTextures) {
     if (resetAccumulationTargets(prepCmd)) {
@@ -7377,7 +7450,7 @@ void Renderer::draw(MTK::View *pView) {
 
   updateAdaptiveSamplingMaps(prepCmd);
 
-  if (_pRestirStatsBuffer) {
+  if (restirEnabled && _pRestirStatsBuffer) {
     constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 4;
     if (MTL::BlitCommandEncoder *statsBlit = prepCmd->blitCommandEncoder()) {
       statsBlit->fillBuffer(_pRestirStatsBuffer,
@@ -7584,7 +7657,8 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(_pRestirStatsBuffer, 0, 14);
+        pCompute->setBuffer(restirEnabled ? _pRestirStatsBuffer : nullptr, 0,
+                            14);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -7600,7 +7674,8 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(_pRestirStatsBuffer, 0, 14);
+        pCompute->setBuffer(restirEnabled ? _pRestirStatsBuffer : nullptr, 0,
+                            14);
       }
 
       pCompute->setTexture(accum0, 0);
@@ -7609,12 +7684,21 @@ void Renderer::draw(MTK::View *pView) {
       pCompute->setTexture(sampleImportance, 3);
       pCompute->setTexture(albedoTexture, 4);
       pCompute->setTexture(normalTexture, 5);
-      pCompute->setTexture(restirPrevSample, 6);
-      pCompute->setTexture(restirPrevNormal, 7);
-      pCompute->setTexture(restirPrevState, 8);
-      pCompute->setTexture(restirOutSample, 9);
-      pCompute->setTexture(restirOutNormal, 10);
-      pCompute->setTexture(restirOutState, 11);
+      if (restirEnabled) {
+        pCompute->setTexture(restirPrevSample, 6);
+        pCompute->setTexture(restirPrevNormal, 7);
+        pCompute->setTexture(restirPrevState, 8);
+        pCompute->setTexture(restirOutSample, 9);
+        pCompute->setTexture(restirOutNormal, 10);
+        pCompute->setTexture(restirOutState, 11);
+      } else {
+        pCompute->setTexture(nullptr, 6);
+        pCompute->setTexture(nullptr, 7);
+        pCompute->setTexture(nullptr, 8);
+        pCompute->setTexture(nullptr, 9);
+        pCompute->setTexture(nullptr, 10);
+        pCompute->setTexture(nullptr, 11);
+      }
 
       for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
         MTL::Texture *materialTex =

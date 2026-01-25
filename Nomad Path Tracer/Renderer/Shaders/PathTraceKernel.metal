@@ -181,10 +181,6 @@ kernel void pathTraceKernel(
         }
       }
     }
-  } else {
-    restirOutSample.write(float4(0.0f), pixel);
-    restirOutNormal.write(float4(0.0f), pixel);
-    restirOutState.write(float4(0.0f), pixel);
   }
 
   float totalSamples = previousSampleCount + float(samplesThisFrame);
