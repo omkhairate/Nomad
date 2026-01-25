@@ -272,6 +272,9 @@ private:
   void updateBlasScratchResidencyBudget();
   double scratchMemoryMB() const;
   double residencyMemoryMB() const;
+  double residentTextureMemoryMB() const;
+  double restirMemoryMB() const;
+  size_t textureByteSize(MTL::Texture *texture) const;
   
   MTL::Device *_pDevice = nullptr;
   MTL::CommandQueue *_pCommandQueue = nullptr;

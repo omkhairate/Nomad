@@ -501,6 +501,50 @@ double Renderer::residencyMemoryMB() const {
   return _residencyBudget.residencyMemoryMB(totalMB);
 }
 
+double Renderer::residentTextureMemoryMB() const {
+  size_t totalBytes = 0;
+  auto addSlot = [&](const ManagedTextureSlot &slot) {
+    if (!slot.texture)
+      return;
+    totalBytes += textureByteSize(slot);
+  };
+
+  for (const auto &slot : _accumulationSlots)
+    addSlot(slot);
+  addSlot(_sampleCountSlot);
+  addSlot(_sampleImportanceSlot);
+  addSlot(_albedoSlot);
+  addSlot(_normalSlot);
+
+  for (MTL::Texture *texture : _materialTextures) {
+    totalBytes += textureByteSize(texture);
+  }
+  totalBytes += textureByteSize(_environmentTexture);
+
+  return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+}
+
+double Renderer::restirMemoryMB() const {
+  size_t totalBytes = 0;
+  if (_pRestirStatsBuffer)
+    totalBytes += _pRestirStatsBuffer->length();
+
+  auto addSlot = [&](const ManagedTextureSlot &slot) {
+    if (!slot.texture)
+      return;
+    totalBytes += textureByteSize(slot);
+  };
+
+  for (const auto &slot : _restirSampleSlots)
+    addSlot(slot);
+  for (const auto &slot : _restirNormalSlots)
+    addSlot(slot);
+  for (const auto &slot : _restirStateSlots)
+    addSlot(slot);
+
+  return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+}
+
 double Renderer::residentGeometryMemoryMB() const {
   size_t totalBytes = residentGeometryMemoryBytes();
   return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
@@ -6077,6 +6121,19 @@ size_t Renderer::textureByteSize(const ManagedTextureSlot &slot) const {
   size_t rowBytes = slot.width * pixelBytes;
   size_t alignedRowBytes = alignTo(rowBytes, 256);
   return alignedRowBytes * slot.height;
+}
+
+size_t Renderer::textureByteSize(MTL::Texture *texture) const {
+  if (!texture)
+    return 0;
+
+  size_t pixelBytes = bytesPerPixel(texture->pixelFormat());
+  if (pixelBytes == 0)
+    return 0;
+
+  size_t rowBytes = texture->width() * pixelBytes;
+  size_t alignedRowBytes = alignTo(rowBytes, 256);
+  return alignedRowBytes * texture->height();
 }
 
 void Renderer::clearTextureHistory(ManagedTextureSlot &slot) {
@@ -12729,10 +12786,16 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
                          _totalNodeCount - _residentNodeCount :
                          0;
   double geometryResidentMB = residentGeometryMemoryMB();
+  double totalMemoryMB = currentGPUMemoryMB();
+  double scratchMB = scratchMemoryMB();
+  double textureMB = residentTextureMemoryMB();
+  double restirMB = restirMemoryMB();
   printf("Active nodes: %zu Resident nodes: %zu Offloaded nodes: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f Resident geometry: %.3f MB\n",
          _activeNodeCount, _residentNodeCount, offloaded,
          _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond,
          geometryResidentMB);
+  printf("GPU mem (MB) total=%.3f scratch=%.3f geometry=%.3f textures=%.3f restir=%.3f\n",
+         totalMemoryMB, scratchMB, geometryResidentMB, textureMB, restirMB);
   if (_residencyConfig.restirSamplingEnabled) {
     printf("ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f\n",
            _frameRestirReuseRate, _frameRestirCandidateAcceptance);
