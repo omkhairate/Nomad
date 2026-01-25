@@ -27,6 +27,18 @@ Residency memory reporting now splits the working set into the actual budget com
 - `restir_memory_mb` – ReSTIR buffers that scale with resolution when sampling is enabled.
 - `residency_memory_mb` – sum of the above resident components, which is the budget that the residency strategies and caps are meant to manage. Geometry strategy tweaks primarily affect the geometry slice, while texture eviction and ReSTIR toggles influence the other two components.
 
+## Residency cap configuration for the study
+
+The renderer now enforces a **single** residency budget using `totalGpuMemoryCapMB`. Geometry allocations and texture evictions both reference this unified cap (which includes resident content + scratch), and the legacy per-pool caps are synced to the same value for reporting/compatibility.
+
+For the study runs reported in the paper/appendix, we fixed the caps to a single value to avoid ambiguity:
+
+- `totalGpuMemoryCapMB = 4096` MB (authoritative)
+- `textureResidencyMemoryCapMB = 4096` MB (synced)
+- `geometryResidencyMemoryCapMB = 4096` MB (synced)
+
+If you override the cap in a scene XML, report `totalGpuMemoryCapMB` explicitly; the renderer will align the texture and geometry caps to that value.
+
 ## Environment-hit scene attributes
 
 Scenes that opt into the `environment` residency strategy can now tune how aggressively the renderer combats environment-map leaks. The `<Scene>` root accepts the following optional attributes:

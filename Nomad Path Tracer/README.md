@@ -29,11 +29,11 @@ To keep ReSTIR temporal reuse stable for baseline comparisons, you can disable t
 - **Behavior:** no history eviction unless GPU or texture residency caps are exceeded; maintains stable ReSTIR temporal reuse for baseline comparisons.
 - **Warning:** do not use `restirBaselineMode` to compare residency strategies unless caps are still enforced to keep eviction behavior consistent.
 
-## Geometry residency memory cap
+## Unified residency memory cap
 
-The `geometryResidencyMemoryCapMB` scene parameter is now treated as a hard ceiling. Geometry residency allocations (including streaming uploads, prewarm passes, and rebuilds) are rejected if the next allocation would exceed the cap; the renderer queues the request and triggers eviction until enough space is available to retry.
+The renderer now treats `totalGpuMemoryCapMB` as the single residency budget for both geometry and textures. Geometry uploads (including streaming/prewarm passes and rebuilds) are deferred if the next allocation would exceed the total cap, and eviction is scheduled before retrying. Texture/accumulation eviction uses the same total cap to decide when to release history.
 
-When `totalGpuMemoryCapMB` is set, the renderer also treats the total GPU memory budget (resident content + scratch) as a soft cap. Total memory overages pause new residency allocations and trigger texture eviction, even if the texture residency pool itself is still under `textureResidencyMemoryCapMB`.
+The legacy per-pool caps (`geometryResidencyMemoryCapMB` and `textureResidencyMemoryCapMB`) are still accepted on the `<Scene>` root, but the renderer syncs them to `totalGpuMemoryCapMB` for compatibility and reporting.
 
 ## Bistro test scenes with ReSTIR sampling enabled
 
