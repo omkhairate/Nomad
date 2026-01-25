@@ -315,6 +315,7 @@ private:
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   MTL::Buffer *_pRestirStatsBuffer = nullptr;
+  MTL::Buffer *_pRestirStatsDummyBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
