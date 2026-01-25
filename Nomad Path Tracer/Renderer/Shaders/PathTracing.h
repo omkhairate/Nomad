@@ -12,7 +12,7 @@ constant uint kMaterialFloat4Count = 5;
 constant uint kPrimitiveFloat4Count = 7;
 constant uint kMaxMaterialTextures = 64;
 
-constexpr sampler kMaterialTextureSampler(address::repeat, filter::linear);
+constant sampler kMaterialTextureSampler(address::repeat, filter::linear);
 
 struct PathTraceSample {
   float3 radiance;
