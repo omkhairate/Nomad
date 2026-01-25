@@ -20,7 +20,7 @@ struct PathTraceSample {
   float3 normal;
 };
 
-constexpr uint kRestirCandidateCount = 4;
+constant uint kRestirCandidateCount = 4;
 
 struct RestirSampleData {
   float3 position;
