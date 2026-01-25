@@ -13,6 +13,7 @@
 #include <array>
 #include <cassert>
 #include <CoreFoundation/CoreFoundation.h>
+#include <Foundation/Foundation.hpp>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -342,12 +343,20 @@ ParallelForConfig textureUploadConfig(size_t textureCount, size_t totalTexels) {
 
 void Renderer::PendingBlasBuild::releaseResources() {
   if (vertexStaging) {
-    vertexStaging->release();
-    vertexStaging = nullptr;
+    if (renderer) {
+      renderer->releaseBuffer(vertexStaging);
+    } else {
+      vertexStaging->release();
+      vertexStaging = nullptr;
+    }
   }
   if (indexStaging) {
-    indexStaging->release();
-    indexStaging = nullptr;
+    if (renderer) {
+      renderer->releaseBuffer(indexStaging);
+    } else {
+      indexStaging->release();
+      indexStaging = nullptr;
+    }
   }
   if (scratchBuffer) {
     if (renderer) {
@@ -412,8 +421,10 @@ MTL::Buffer *Renderer::acquireBlasScratchBuffer(NS::UInteger requestedSize,
     it = _blasScratchPool.erase(it);
   }
 
-  auto *buffer = _pDevice->newBuffer(requestedSize,
-                                     MTL::ResourceStorageModePrivate);
+  auto *buffer = allocateBuffer(requestedSize,
+                                MTL::ResourceStorageModePrivate,
+                                GpuMemoryTracker::Category::Scratch,
+                                "BlasScratch");
   if (buffer) {
     allocatedSize = requestedSize;
     _blasScratchPoolInUseBytes += requestedSize;
@@ -434,7 +445,7 @@ void Renderer::recycleBlasScratchBuffer(MTL::Buffer *buffer, NS::UInteger size) 
     return;
 
   if (size == 0) {
-    buffer->release();
+    releaseBuffer(buffer);
     return;
   }
 
@@ -467,10 +478,8 @@ void Renderer::releaseBlasScratchPool() {
   }
 
   for (auto &entry : _blasScratchPool) {
-    for (auto *buffer : entry.second) {
-      if (buffer)
-        buffer->release();
-    }
+    for (auto *&buffer : entry.second)
+      releaseBuffer(buffer);
   }
 
   _blasScratchPool.clear();
@@ -1170,8 +1179,74 @@ BufferCountInfo prepareBufferCounts(size_t current, size_t previous,
 
 } // namespace
 
+MTL::Buffer *Renderer::allocateBuffer(NS::UInteger size,
+                                      MTL::ResourceOptions options,
+                                      GpuMemoryTracker::Category category,
+                                      const char *label) {
+  if (!_pDevice || size == 0)
+    return nullptr;
+
+  MTL::Buffer *buffer = _pDevice->newBuffer(size, options);
+  if (!buffer)
+    return nullptr;
+
+  if (label) {
+    using NS::StringEncoding::UTF8StringEncoding;
+    buffer->setLabel(NS::String::string(label, UTF8StringEncoding));
+  }
+
+  _gpuMemoryTracker.recordResource(category, buffer);
+  return buffer;
+}
+
+void Renderer::releaseBuffer(MTL::Buffer *&buffer) {
+  if (!buffer)
+    return;
+  _gpuMemoryTracker.releaseResource(buffer);
+  buffer->release();
+  buffer = nullptr;
+}
+
+MTL::Texture *Renderer::allocateTexture(MTL::TextureDescriptor *descriptor,
+                                        GpuMemoryTracker::Category category,
+                                        const char *label) {
+  if (!_pDevice || !descriptor)
+    return nullptr;
+
+  MTL::Texture *texture = _pDevice->newTexture(descriptor);
+  if (!texture)
+    return nullptr;
+
+  if (label) {
+    using NS::StringEncoding::UTF8StringEncoding;
+    texture->setLabel(NS::String::string(label, UTF8StringEncoding));
+  }
+
+  _gpuMemoryTracker.recordResource(category, texture);
+  return texture;
+}
+
+void Renderer::releaseTexture(MTL::Texture *&texture) {
+  if (!texture)
+    return;
+  _gpuMemoryTracker.releaseResource(texture);
+  texture->release();
+  texture = nullptr;
+}
+
+GpuMemoryTracker::Category
+Renderer::textureSlotCategory(const ManagedTextureSlot &slot) const {
+  if (&slot == &_restirSampleSlots[0] || &slot == &_restirSampleSlots[1] ||
+      &slot == &_restirNormalSlots[0] || &slot == &_restirNormalSlots[1] ||
+      &slot == &_restirStateSlots[0] || &slot == &_restirStateSlots[1]) {
+    return GpuMemoryTracker::Category::Restir;
+  }
+  return GpuMemoryTracker::Category::Textures;
+}
+
 void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                                     size_t &currentCapacity,
+                                    GpuMemoryTracker::Category category,
                                     bool allowShrink,
                                     MTL::ResourceOptions storageMode,
                                     const char *label,
@@ -1207,8 +1282,7 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
     growing = true;
 
   if (buffer) {
-    buffer->release();
-    buffer = nullptr;
+    releaseBuffer(buffer);
     currentCapacity = 0;
   }
 
@@ -1216,7 +1290,8 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
     desiredCapacity = requiredBytes;
 
   desiredCapacity = std::max(desiredCapacity, size_t(1));
-  buffer = _pDevice->newBuffer(desiredCapacity, storageMode);
+  buffer = allocateBuffer(static_cast<NS::UInteger>(desiredCapacity),
+                          storageMode, category, label);
   currentCapacity = buffer ? buffer->length() : 0;
 
   const char *name = label ? label : "UnnamedBuffer";
@@ -1307,10 +1382,20 @@ Renderer::Renderer(MTL::Device *pDevice)
           }) {
   _pCommandQueue = _pDevice->newCommandQueue();
   _tlasHeap.initialize(_pDevice);
+  _tlasHeap.setMemoryTracker(&_gpuMemoryTracker,
+                             GpuMemoryTracker::Category::Heaps);
+  _tlasHeap.setMemoryTracker(&_gpuMemoryTracker,
+                             GpuMemoryTracker::Category::Heaps);
   _dummyBlasResources.initialize(_pDevice);
+  _dummyBlasResources.setMemoryTracker(&_gpuMemoryTracker,
+                                       GpuMemoryTracker::Category::Heaps);
+  _dummyBlasResources.setMemoryTracker(&_gpuMemoryTracker,
+                                       GpuMemoryTracker::Category::Heaps);
   constexpr size_t kRestirDummyBytes = 16;
   _pRestirStatsDummyBuffer =
-      _pDevice->newBuffer(kRestirDummyBytes, MTL::ResourceStorageModeShared);
+      allocateBuffer(kRestirDummyBytes, MTL::ResourceStorageModeShared,
+                     GpuMemoryTracker::Category::Restir,
+                     "RestirStatsDummy");
   if (_pRestirStatsDummyBuffer) {
     if (void *ptr = _pRestirStatsDummyBuffer->contents())
       std::memset(ptr, 0, kRestirDummyBytes);
@@ -1339,49 +1424,29 @@ Renderer::~Renderer() {
   _pendingBlasEvictions.clear();
   assert(_pendingBlasEvictions.empty());
 
-  if (_pSphereBuffer)
-    _pSphereBuffer->release();
-  if (_pSphereMaterialBuffer)
-    _pSphereMaterialBuffer->release();
-  if (_pTriangleVertexBuffer)
-    _pTriangleVertexBuffer->release();
-  if (_pTriangleIndexBuffer)
-    _pTriangleIndexBuffer->release();
-  if (_pUniformsBuffer)
-    _pUniformsBuffer->release();
-  if (_pBVHBuffer)
-    _pBVHBuffer->release();
-  if (_pPrimitiveIndexBuffer)
-    _pPrimitiveIndexBuffer->release();
-  if (_pTLASBuffer)
-    _pTLASBuffer->release();
-  if (_pActiveBuffer)
-    _pActiveBuffer->release();
-  if (_pPrimitiveRemapBuffer)
-    _pPrimitiveRemapBuffer->release();
+  releaseBuffer(_pSphereBuffer);
+  releaseBuffer(_pSphereMaterialBuffer);
+  releaseBuffer(_pTriangleVertexBuffer);
+  releaseBuffer(_pTriangleIndexBuffer);
+  releaseBuffer(_pUniformsBuffer);
+  releaseBuffer(_pBVHBuffer);
+  releaseBuffer(_pPrimitiveIndexBuffer);
+  releaseBuffer(_pTLASBuffer);
+  releaseBuffer(_pActiveBuffer);
+  releaseBuffer(_pPrimitiveRemapBuffer);
   flushRayHitCopy();
-  if (_pPrimitiveHitBufferGPU)
-    _pPrimitiveHitBufferGPU->release();
-  if (_pPrimitiveHitReadback)
-    _pPrimitiveHitReadback->release();
-  if (_pLightIndexBuffer)
-    _pLightIndexBuffer->release();
-  if (_pLightCdfBuffer)
-    _pLightCdfBuffer->release();
-  if (_pRestirStatsBuffer)
-    _pRestirStatsBuffer->release();
-  if (_pRestirStatsDummyBuffer)
-    _pRestirStatsDummyBuffer->release();
-  if (_pInstanceBuffer)
-    _pInstanceBuffer->release();
-  if (_pGeometryHandleBuffer)
-    _pGeometryHandleBuffer->release();
-  if (_pTlasScratchBuffer)
-    _pTlasScratchBuffer->release();
+  releaseBuffer(_pPrimitiveHitBufferGPU);
+  releaseBuffer(_pPrimitiveHitReadback);
+  releaseBuffer(_pLightIndexBuffer);
+  releaseBuffer(_pLightCdfBuffer);
+  releaseBuffer(_pRestirStatsBuffer);
+  releaseBuffer(_pRestirStatsDummyBuffer);
+  releaseBuffer(_pInstanceBuffer);
+  releaseBuffer(_pGeometryHandleBuffer);
+  releaseBuffer(_pTlasScratchBuffer);
   if (_pTlasBuildEvent)
     _pTlasBuildEvent->release();
-  if (_pTlasDescriptorStaging)
-    _pTlasDescriptorStaging->release();
+  releaseBuffer(_pTlasDescriptorStaging);
   _pTlasDescriptorStaging = nullptr;
   _tlasDescriptorStagingCapacity = 0;
   _pTlasScratchBuffer = nullptr;
@@ -1391,8 +1456,7 @@ Renderer::~Renderer() {
   _pTlasBuildEvent = nullptr;
   _tlasBuildEventValue = 0;
   _tlasCompletedEventValue.store(0, std::memory_order_relaxed);
-  if (_pFrustumVertexBuffer)
-    _pFrustumVertexBuffer->release();
+  releaseBuffer(_pFrustumVertexBuffer);
   releaseEnvironmentTexture();
   if (_environmentSampler)
     _environmentSampler->release();
@@ -1421,8 +1485,7 @@ Renderer::~Renderer() {
   for (auto &slot : _restirStateSlots)
     releaseTextureSlot(slot);
 
-  if (_pTextureClearBuffer)
-    _pTextureClearBuffer->release();
+  releaseBuffer(_pTextureClearBuffer);
 
   if (_pPathTracePSO)
     _pPathTracePSO->release();
@@ -1831,15 +1894,16 @@ Renderer::encodeFrameCapture(MTL::Texture *colorTexture,
     return nullptr;
 
   MTL::Buffer *readback =
-      _pDevice->newBuffer(static_cast<NS::UInteger>(totalBytes),
-                          MTL::ResourceStorageModeShared);
+      allocateBuffer(static_cast<NS::UInteger>(totalBytes),
+                     MTL::ResourceStorageModeShared,
+                     GpuMemoryTracker::Category::Staging, "FrameCapture");
   if (!readback)
     return nullptr;
 
   if (!blit)
     blit = cmd->blitCommandEncoder();
   if (!blit) {
-    readback->release();
+    releaseBuffer(readback);
     return nullptr;
   }
 
@@ -1860,7 +1924,7 @@ Renderer::encodeFrameCapture(MTL::Texture *colorTexture,
     outputPath = std::filesystem::path(_frameCaptureDirectory) / nameBuilder.str();
   } catch (const std::exception &e) {
     std::printf("Failed to build frame capture path: %s\n", e.what());
-    readback->release();
+    releaseBuffer(readback);
     return nullptr;
   }
 
@@ -1889,8 +1953,10 @@ Renderer::encodeFrameCapture(MTL::Texture *colorTexture,
     if (auxTotalBytes == 0)
       return;
     dstBuffer =
-        _pDevice->newBuffer(static_cast<NS::UInteger>(auxTotalBytes),
-                            MTL::ResourceStorageModeShared);
+        allocateBuffer(static_cast<NS::UInteger>(auxTotalBytes),
+                       MTL::ResourceStorageModeShared,
+                       GpuMemoryTracker::Category::Staging,
+                       "FrameCaptureAux");
     if (!dstBuffer) {
       rowBytes = 0;
       return;
@@ -1898,8 +1964,7 @@ Renderer::encodeFrameCapture(MTL::Texture *colorTexture,
     if (!blit)
       blit = cmd->blitCommandEncoder();
     if (!blit) {
-      dstBuffer->release();
-      dstBuffer = nullptr;
+      releaseBuffer(dstBuffer);
       rowBytes = 0;
       return;
     }
@@ -1939,18 +2004,9 @@ void Renderer::finalizeFrameCapture(
     return;
 
   auto releaseCaptureBuffers = [&]() {
-    if (capture->buffer) {
-      capture->buffer->release();
-      capture->buffer = nullptr;
-    }
-    if (capture->albedoBuffer) {
-      capture->albedoBuffer->release();
-      capture->albedoBuffer = nullptr;
-    }
-    if (capture->normalBuffer) {
-      capture->normalBuffer->release();
-      capture->normalBuffer = nullptr;
-    }
+    releaseBuffer(capture->buffer);
+    releaseBuffer(capture->albedoBuffer);
+    releaseBuffer(capture->normalBuffer);
   };
 
   if (!capture->buffer) {
@@ -1988,18 +2044,9 @@ void Renderer::processPendingCapturedFrames() {
         continue;
 
       auto releaseCaptureBuffers = [&]() {
-        if (capture->buffer) {
-          capture->buffer->release();
-          capture->buffer = nullptr;
-        }
-        if (capture->albedoBuffer) {
-          capture->albedoBuffer->release();
-          capture->albedoBuffer = nullptr;
-        }
-        if (capture->normalBuffer) {
-          capture->normalBuffer->release();
-          capture->normalBuffer = nullptr;
-        }
+        releaseBuffer(capture->buffer);
+        releaseBuffer(capture->albedoBuffer);
+        releaseBuffer(capture->normalBuffer);
       };
 
       if (!capture->buffer) {
@@ -2722,10 +2769,12 @@ void Renderer::updateVisibleScene() {
       kGlobalRayStatsCount * sizeof(uint32_t);
   flushRayHitCopy();
   ensureBufferCapacity(_pPrimitiveHitBufferGPU, hitBytes,
-                       _primitiveHitBufferCapacity, false,
+                       _primitiveHitBufferCapacity,
+                       GpuMemoryTracker::Category::RendererBuffers, false,
                        MTL::ResourceStorageModePrivate);
   ensureBufferCapacity(_pPrimitiveHitReadback, hitBytes,
-                       _primitiveHitReadbackCapacity, false,
+                       _primitiveHitReadbackCapacity,
+                       GpuMemoryTracker::Category::Staging, false,
                        MTL::ResourceStorageModeShared);
   if (uint32_t *hitPtr =
           _pPrimitiveHitReadback
@@ -2786,6 +2835,8 @@ void Renderer::updateVisibleScene() {
     resident.byteSize = 0;
     resident.state = ResidentObjectGpuResources::ResidencyState::Cold;
     resident.lastStateChange = std::chrono::steady_clock::now();
+    resident.resources.setMemoryTracker(&_gpuMemoryTracker,
+                                        GpuMemoryTracker::Category::Heaps);
     resident.resources.initialize(_pDevice);
   }
 
@@ -3490,7 +3541,8 @@ Renderer::BlasBuildStartResult Renderer::startBlasBuild(
   MTL::Buffer *indexStaging = nullptr;
   if (vertexBytes > 0) {
     vertexStaging =
-        _pDevice->newBuffer(vertexBytes, MTL::ResourceStorageModeShared);
+        allocateBuffer(vertexBytes, MTL::ResourceStorageModeShared,
+                       GpuMemoryTracker::Category::Staging, "BlasVertexStaging");
     if (vertexStaging) {
       std::memcpy(vertexStaging->contents(), buildRequest->vertices.data(),
                   vertexBytes);
@@ -3499,7 +3551,8 @@ Renderer::BlasBuildStartResult Renderer::startBlasBuild(
   }
   if (indexBytes > 0) {
     indexStaging =
-        _pDevice->newBuffer(indexBytes, MTL::ResourceStorageModeShared);
+        allocateBuffer(indexBytes, MTL::ResourceStorageModeShared,
+                       GpuMemoryTracker::Category::Staging, "BlasIndexStaging");
     if (indexStaging) {
       std::memcpy(indexStaging->contents(), buildRequest->indices.data(),
                   indexBytes);
@@ -3509,10 +3562,8 @@ Renderer::BlasBuildStartResult Renderer::startBlasBuild(
 
   if ((vertexBytes > 0 && !vertexStaging) ||
       (indexBytes > 0 && !indexStaging)) {
-    if (indexStaging)
-      indexStaging->release();
-    if (vertexStaging)
-      vertexStaging->release();
+    releaseBuffer(indexStaging);
+    releaseBuffer(vertexStaging);
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
@@ -3531,10 +3582,8 @@ Renderer::BlasBuildStartResult Renderer::startBlasBuild(
                                             allocatedScratchSize,
                                             scratchReused);
     if (!scratchBuffer) {
-      if (indexStaging)
-        indexStaging->release();
-      if (vertexStaging)
-        vertexStaging->release();
+      releaseBuffer(indexStaging);
+      releaseBuffer(vertexStaging);
       geometryArray->release();
       geometryDesc->release();
       accelDesc->release();
@@ -3554,10 +3603,8 @@ Renderer::BlasBuildStartResult Renderer::startBlasBuild(
       buildRequest->scratchBuffer = nullptr;
       buildRequest->scratchSize = 0;
     }
-    if (indexStaging)
-      indexStaging->release();
-    if (vertexStaging)
-      vertexStaging->release();
+    releaseBuffer(indexStaging);
+    releaseBuffer(vertexStaging);
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
@@ -3589,10 +3636,8 @@ Renderer::BlasBuildStartResult Renderer::startBlasBuild(
       buildRequest->scratchBuffer = nullptr;
       buildRequest->scratchSize = 0;
     }
-    if (indexStaging)
-      indexStaging->release();
-    if (vertexStaging)
-      vertexStaging->release();
+    releaseBuffer(indexStaging);
+    releaseBuffer(vertexStaging);
     geometryArray->release();
     geometryDesc->release();
     accelDesc->release();
@@ -3826,11 +3871,8 @@ bool Renderer::ensureDummyBlas() {
     NS::UInteger size = 0;
   };
 
-  auto releaseZeroRequest = [](ZeroRequest &request) {
-    if (request.staging) {
-      request.staging->release();
-      request.staging = nullptr;
-    }
+  auto releaseZeroRequest = [this](ZeroRequest &request) {
+    releaseBuffer(request.staging);
     request.target = nullptr;
     request.size = 0;
   };
@@ -3852,7 +3894,8 @@ bool Renderer::ensureDummyBlas() {
     }
 
     MTL::Buffer *staging =
-        _pDevice->newBuffer(size, MTL::ResourceStorageModeShared);
+        allocateBuffer(size, MTL::ResourceStorageModeShared,
+                       GpuMemoryTracker::Category::Staging, "DummyBlasZero");
     if (!staging)
       return false;
     if (void *contents = staging->contents())
@@ -3933,13 +3976,14 @@ bool Renderer::ensureDummyBlas() {
   NS::UInteger scratchSize = sizes.buildScratchBufferSize;
   MTL::Buffer *scratchBuffer = nullptr;
   if (scratchSize > 0)
-    scratchBuffer =
-        _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
+    scratchBuffer = allocateBuffer(scratchSize,
+                                   MTL::ResourceStorageModePrivate,
+                                   GpuMemoryTracker::Category::Scratch,
+                                   "DummyBlasScratch");
 
   MTL::CommandBuffer *commandBuffer = _pCommandQueue->commandBuffer();
   if (!commandBuffer) {
-    if (scratchBuffer)
-      scratchBuffer->release();
+    releaseBuffer(scratchBuffer);
     releaseZeroRequest(vertexZeroRequest);
     releaseZeroRequest(indexZeroRequest);
     releaseDescriptors();
@@ -3949,8 +3993,7 @@ bool Renderer::ensureDummyBlas() {
   if (vertexZeroRequest.staging || indexZeroRequest.staging) {
     MTL::BlitCommandEncoder *blitEncoder = commandBuffer->blitCommandEncoder();
     if (!blitEncoder) {
-      if (scratchBuffer)
-        scratchBuffer->release();
+      releaseBuffer(scratchBuffer);
       releaseZeroRequest(vertexZeroRequest);
       releaseZeroRequest(indexZeroRequest);
       releaseDescriptors();
@@ -3972,8 +4015,7 @@ bool Renderer::ensureDummyBlas() {
   MTL::AccelerationStructureCommandEncoder *encoder =
       commandBuffer->accelerationStructureCommandEncoder();
   if (!encoder) {
-    if (scratchBuffer)
-      scratchBuffer->release();
+    releaseBuffer(scratchBuffer);
     releaseZeroRequest(vertexZeroRequest);
     releaseZeroRequest(indexZeroRequest);
     releaseDescriptors();
@@ -4003,16 +4045,13 @@ bool Renderer::ensureDummyBlas() {
   auto completion = [this, context = buildContext, structure,
                      totalRequestedBytes](bool success) {
     if (context->vertexStaging) {
-      context->vertexStaging->release();
-      context->vertexStaging = nullptr;
+      releaseBuffer(context->vertexStaging);
     }
     if (context->indexStaging) {
-      context->indexStaging->release();
-      context->indexStaging = nullptr;
+      releaseBuffer(context->indexStaging);
     }
     if (context->scratchBuffer) {
-      context->scratchBuffer->release();
-      context->scratchBuffer = nullptr;
+      releaseBuffer(context->scratchBuffer);
     }
 
     if (success) {
@@ -4035,16 +4074,13 @@ bool Renderer::ensureDummyBlas() {
   if (!submitted) {
     _dummyBlasBuildInFlight = false;
     if (buildContext->vertexStaging) {
-      buildContext->vertexStaging->release();
-      buildContext->vertexStaging = nullptr;
+      releaseBuffer(buildContext->vertexStaging);
     }
     if (buildContext->indexStaging) {
-      buildContext->indexStaging->release();
-      buildContext->indexStaging = nullptr;
+      releaseBuffer(buildContext->indexStaging);
     }
     if (buildContext->scratchBuffer) {
-      buildContext->scratchBuffer->release();
-      buildContext->scratchBuffer = nullptr;
+      releaseBuffer(buildContext->scratchBuffer);
     }
     return false;
   }
@@ -4157,15 +4193,14 @@ void Renderer::finalizePendingTlasScratchResize(bool force) {
   size_t desiredSize = _tlasScratchTracker.targetRefitSize();
   size_t retiredBytes = _tlasScratchTracker.retiredBytes();
 
-  if (_pTlasScratchBuffer) {
-    _pTlasScratchBuffer->release();
-    _pTlasScratchBuffer = nullptr;
-    _tlasScratchCapacity = 0;
-  }
+  releaseBuffer(_pTlasScratchBuffer);
+  _tlasScratchCapacity = 0;
 
   if (desiredSize > 0 && _pDevice) {
-    _pTlasScratchBuffer = _pDevice->newBuffer(
-        static_cast<NS::UInteger>(desiredSize), MTL::ResourceStorageModePrivate);
+    _pTlasScratchBuffer = allocateBuffer(
+        static_cast<NS::UInteger>(desiredSize),
+        MTL::ResourceStorageModePrivate,
+        GpuMemoryTracker::Category::Scratch, "TlasScratch");
     _tlasScratchCapacity =
         _pTlasScratchBuffer ? static_cast<NS::UInteger>(desiredSize)
                             : static_cast<NS::UInteger>(0);
@@ -4262,10 +4297,11 @@ void Renderer::updateTopLevelAccelerationStructure(
   if (needsDescriptorUpload && descriptorBytes > 0) {
     if (!_pTlasDescriptorStaging ||
         _tlasDescriptorStagingCapacity < descriptorBytes) {
-      if (_pTlasDescriptorStaging)
-        _pTlasDescriptorStaging->release();
+      releaseBuffer(_pTlasDescriptorStaging);
       _pTlasDescriptorStaging =
-          _pDevice->newBuffer(descriptorBytes, MTL::ResourceStorageModeShared);
+          allocateBuffer(descriptorBytes, MTL::ResourceStorageModeShared,
+                         GpuMemoryTracker::Category::Staging,
+                         "TlasDescriptorStaging");
       _tlasDescriptorStagingCapacity =
           _pTlasDescriptorStaging ? descriptorBytes : 0;
     }
@@ -4339,10 +4375,10 @@ void Renderer::updateTopLevelAccelerationStructure(
   MTL::Buffer *scratchBuffer = nullptr;
   if (scratchSize > 0) {
     if (!_pTlasScratchBuffer || _tlasScratchCapacity < scratchSize) {
-      if (_pTlasScratchBuffer)
-        _pTlasScratchBuffer->release();
+      releaseBuffer(_pTlasScratchBuffer);
       _pTlasScratchBuffer =
-          _pDevice->newBuffer(scratchSize, MTL::ResourceStorageModePrivate);
+          allocateBuffer(scratchSize, MTL::ResourceStorageModePrivate,
+                         GpuMemoryTracker::Category::Scratch, "TlasScratch");
       _tlasScratchCapacity =
           _pTlasScratchBuffer ? scratchSize : static_cast<NS::UInteger>(0);
     }
@@ -4470,19 +4506,21 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   const size_t uniformsDataSize = sizeof(UniformsData);
   if (!_pUniformsBuffer) {
     _pUniformsBuffer =
-        _pDevice->newBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged);
+        allocateBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged,
+                       GpuMemoryTracker::Category::RendererBuffers,
+                       "UniformsBuffer");
     if (_pUniformsBuffer)
       markBufferModified(_pUniformsBuffer,
                          NS::Range::Make(0, uniformsDataSize));
   }
   if (!restirEnabled && _pRestirStatsBuffer) {
-    _pRestirStatsBuffer->release();
-    _pRestirStatsBuffer = nullptr;
+    releaseBuffer(_pRestirStatsBuffer);
   }
   if (restirEnabled && !_pRestirStatsBuffer) {
     constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 4;
     _pRestirStatsBuffer =
-        _pDevice->newBuffer(kRestirStatsBytes, MTL::ResourceStorageModeShared);
+        allocateBuffer(kRestirStatsBytes, MTL::ResourceStorageModeShared,
+                       GpuMemoryTracker::Category::Restir, "RestirStats");
     if (_pRestirStatsBuffer) {
       if (void *ptr = _pRestirStatsBuffer->contents())
         std::memset(ptr, 0, kRestirStatsBytes);
@@ -5427,8 +5465,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     if (primitiveBytes == 0)
       primitiveBytes = sizeof(simd::float4);
     ensureBufferCapacity(_pSphereBuffer, primitiveBytes, _sphereBufferCapacity,
-                         allowShrink, MTL::ResourceStorageModeManaged,
-                         "PrimitiveData", shrinkContext);
+                         GpuMemoryTracker::Category::Geometry, allowShrink,
+                         MTL::ResourceStorageModeManaged, "PrimitiveData",
+                         shrinkContext);
     if (_pSphereBuffer) {
       simd::float4 *dst =
           static_cast<simd::float4 *>(_pSphereBuffer->contents());
@@ -5448,7 +5487,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         std::max<size_t>(materialFloat4Count, size_t(1)) *
         sizeof(simd::float4);
     ensureBufferCapacity(_pSphereMaterialBuffer, materialBytes,
-                         _sphereMaterialBufferCapacity, allowShrink,
+                         _sphereMaterialBufferCapacity,
+                         GpuMemoryTracker::Category::Geometry, allowShrink,
                          MTL::ResourceStorageModeManaged, "PrimitiveMaterials",
                          shrinkContext);
     if (_pSphereMaterialBuffer) {
@@ -5470,7 +5510,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t primitiveIndexBytes =
         std::max<size_t>(primitiveIndexCount, size_t(1)) * sizeof(int);
     ensureBufferCapacity(_pPrimitiveIndexBuffer, primitiveIndexBytes,
-                         _primitiveIndexBufferCapacity, allowShrink,
+                         _primitiveIndexBufferCapacity,
+                         GpuMemoryTracker::Category::Geometry, allowShrink,
                          MTL::ResourceStorageModeManaged, "PrimitiveIndices",
                          shrinkContext);
     if (_pPrimitiveIndexBuffer) {
@@ -5487,7 +5528,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t blasFloat4Count = bvhSource->size();
     size_t bvhBytes =
         std::max<size_t>(blasFloat4Count, size_t(1)) * sizeof(simd::float4);
-    ensureBufferCapacity(_pBVHBuffer, bvhBytes, _bvhBufferCapacity, allowShrink,
+    ensureBufferCapacity(_pBVHBuffer, bvhBytes, _bvhBufferCapacity,
+                         GpuMemoryTracker::Category::Geometry, allowShrink,
                          MTL::ResourceStorageModeManaged, "BLASNodes",
                          shrinkContext);
     if (_pBVHBuffer) {
@@ -5508,8 +5550,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t tlasBytes =
         std::max<size_t>(tlasFloat4Count, size_t(1)) * sizeof(simd::float4);
     ensureBufferCapacity(_pTLASBuffer, tlasBytes, _tlasBufferCapacity,
-                         allowShrink, MTL::ResourceStorageModeManaged,
-                         "TLASNodes", shrinkContext);
+                         GpuMemoryTracker::Category::Geometry, allowShrink,
+                         MTL::ResourceStorageModeManaged, "TLASNodes",
+                         shrinkContext);
     if (_pTLASBuffer) {
       simd::float4 *dst =
           static_cast<simd::float4 *>(_pTLASBuffer->contents());
@@ -5527,7 +5570,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t remapCount = std::max<size_t>(_residentRemap.size(), size_t(1));
     ensureBufferCapacity(_pPrimitiveRemapBuffer,
                          remapCount * sizeof(uint32_t),
-                         _primitiveRemapBufferCapacity, allowShrink,
+                         _primitiveRemapBufferCapacity,
+                         GpuMemoryTracker::Category::Geometry, allowShrink,
                          MTL::ResourceStorageModeManaged, "PrimitiveRemap",
                          shrinkContext);
     if (_pPrimitiveRemapBuffer) {
@@ -5549,7 +5593,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t vertexBytes =
         std::max<size_t>(vertexCount, size_t(1)) * sizeof(simd::float3);
     ensureBufferCapacity(_pTriangleVertexBuffer, vertexBytes,
-                         _triangleVertexBufferCapacity, allowShrink,
+                         _triangleVertexBufferCapacity,
+                         GpuMemoryTracker::Category::Geometry, allowShrink,
                          MTL::ResourceStorageModeManaged, "TriangleVertices",
                          shrinkContext);
     if (_pTriangleVertexBuffer) {
@@ -5568,7 +5613,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     size_t indexBytes =
         std::max<size_t>(indexCount, size_t(1)) * sizeof(simd::uint3);
     ensureBufferCapacity(_pTriangleIndexBuffer, indexBytes,
-                         _triangleIndexBufferCapacity, allowShrink,
+                         _triangleIndexBufferCapacity,
+                         GpuMemoryTracker::Category::Geometry, allowShrink,
                          MTL::ResourceStorageModeManaged, "TriangleIndices",
                          shrinkContext);
     if (_pTriangleIndexBuffer) {
@@ -5588,8 +5634,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t instanceCount = std::max<size_t>(_instanceRecords.size(), size_t(1));
   size_t instanceBytes = instanceCount * sizeof(BlasInstanceRecord);
   ensureBufferCapacity(_pInstanceBuffer, instanceBytes, _instanceBufferCapacity,
-                       allowShrink, MTL::ResourceStorageModeManaged,
-                       "InstanceRecords", shrinkContext);
+                       GpuMemoryTracker::Category::Geometry, allowShrink,
+                       MTL::ResourceStorageModeManaged, "InstanceRecords",
+                       shrinkContext);
   if (_pInstanceBuffer) {
     auto *dst = static_cast<BlasInstanceRecord *>(
         _pInstanceBuffer->contents());
@@ -5609,7 +5656,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       std::max<size_t>(geometryHandleCount, size_t(1)) *
       sizeof(GeometryHandle);
   ensureBufferCapacity(_pGeometryHandleBuffer, geometryHandleBytes,
-                       _geometryHandleBufferCapacity, allowShrink,
+                       _geometryHandleBufferCapacity,
+                       GpuMemoryTracker::Category::Geometry, allowShrink,
                        MTL::ResourceStorageModeManaged, "GeometryHandles",
                        shrinkContext);
   if (_pGeometryHandleBuffer) {
@@ -5630,8 +5678,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   size_t activeBytes =
       std::max<size_t>(activeMaskCount, size_t(1)) * sizeof(uint8_t);
   ensureBufferCapacity(_pActiveBuffer, activeBytes, _activeBufferCapacity,
-                       allowShrink, MTL::ResourceStorageModeManaged,
-                       "ActiveMask", shrinkContext);
+                       GpuMemoryTracker::Category::RendererBuffers, allowShrink,
+                       MTL::ResourceStorageModeManaged, "ActiveMask",
+                       shrinkContext);
   if (_pActiveBuffer) {
     uint8_t *activePtr =
         static_cast<uint8_t *>(_pActiveBuffer->contents());
@@ -5671,7 +5720,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       std::max<size_t>(_cachedLightIndices.size(), size_t(1)) *
       sizeof(uint32_t);
   ensureBufferCapacity(_pLightIndexBuffer, lightIndexBytes,
-                       _lightIndexBufferCapacity, allowShrink,
+                       _lightIndexBufferCapacity,
+                       GpuMemoryTracker::Category::RendererBuffers, allowShrink,
                        MTL::ResourceStorageModeManaged, "LightIndices",
                        shrinkContext);
   if (_pLightIndexBuffer) {
@@ -5687,9 +5737,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   size_t lightCdfBytes =
       std::max<size_t>(_cachedLightCdf.size(), size_t(1)) * sizeof(float);
-  ensureBufferCapacity(_pLightCdfBuffer, lightCdfBytes, _lightCdfBufferCapacity,
-                       allowShrink, MTL::ResourceStorageModeManaged,
-                       "LightCdf", shrinkContext);
+  ensureBufferCapacity(_pLightCdfBuffer, lightCdfBytes,
+                       _lightCdfBufferCapacity,
+                       GpuMemoryTracker::Category::RendererBuffers, allowShrink,
+                       MTL::ResourceStorageModeManaged, "LightCdf",
+                       shrinkContext);
   if (_pLightCdfBuffer) {
     float *dst = static_cast<float *>(_pLightCdfBuffer->contents());
     if (_cachedLightCdf.empty())
@@ -6088,13 +6140,9 @@ void Renderer::recalculateNodeCounters(
 
 
 void Renderer::releaseTextureSlot(ManagedTextureSlot &slot) {
-  if (slot.texture) {
-    slot.texture->release();
-    slot.texture = nullptr;
-  }
+  releaseTexture(slot.texture);
   if (slot.stagingBuffer) {
-    slot.stagingBuffer->release();
-    slot.stagingBuffer = nullptr;
+    releaseBuffer(slot.stagingBuffer);
     slot.stagingCapacity = 0;
   }
   slot.stagingValid = false;
@@ -6399,7 +6447,8 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
   descriptor->setUsage(slot.usage);
   descriptor->setStorageMode(slot.storageMode);
 
-  slot.texture = _pDevice->newTexture(descriptor);
+  slot.texture =
+      allocateTexture(descriptor, textureSlotCategory(slot), label);
   descriptor->release();
 
   if (!slot.texture) {
@@ -6493,7 +6542,8 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     }
   } else {
     ensureBufferCapacity(slot.stagingBuffer, totalBytes, slot.stagingCapacity,
-                         false, MTL::ResourceStorageModeShared);
+                         GpuMemoryTracker::Category::Staging, false,
+                         MTL::ResourceStorageModeShared);
     if (!slot.stagingBuffer) {
       if (captureCpuHistoryProxy(slot)) {
         preservedHistory = true;
@@ -6559,10 +6609,7 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     _accumulationTargetsNeedClear = true;
   }
 
-  if (slot.texture) {
-    slot.texture->release();
-    slot.texture = nullptr;
-  }
+  releaseTexture(slot.texture);
   return true;
 }
 
@@ -6762,18 +6809,13 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
 }
 
 void Renderer::clearMaterialTextures() {
-  for (MTL::Texture *texture : _materialTextures) {
-    if (texture)
-      texture->release();
-  }
+  for (auto &texture : _materialTextures)
+    releaseTexture(texture);
   _materialTextures.clear();
 }
 
 void Renderer::releaseEnvironmentTexture() {
-  if (_environmentTexture) {
-    _environmentTexture->release();
-    _environmentTexture = nullptr;
-  }
+  releaseTexture(_environmentTexture);
   _environmentTexturePath.clear();
 }
 
@@ -6814,6 +6856,8 @@ void Renderer::rebuildEnvironmentTexture() {
     return;
   }
 
+  _gpuMemoryTracker.recordResource(GpuMemoryTracker::Category::Textures,
+                                   texture);
   _environmentTexture = texture;
   _environmentTexturePath = desiredPath;
 }
@@ -6846,7 +6890,9 @@ void Renderer::rebuildMaterialTextures() {
     descriptor->setUsage(MTL::TextureUsageShaderRead);
     descriptor->setStorageMode(MTL::StorageMode::StorageModeManaged);
 
-    MTL::Texture *texture = _pDevice->newTexture(descriptor);
+    MTL::Texture *texture =
+        allocateTexture(descriptor, GpuMemoryTracker::Category::Textures,
+                        "MaterialFallback");
     descriptor->release();
     if (!texture)
       return nullptr;
@@ -6880,7 +6926,9 @@ void Renderer::rebuildMaterialTextures() {
     descriptor->setUsage(MTL::TextureUsageShaderRead);
     descriptor->setStorageMode(MTL::StorageMode::StorageModeManaged);
 
-    MTL::Texture *texture = _pDevice->newTexture(descriptor);
+    MTL::Texture *texture =
+        allocateTexture(descriptor, GpuMemoryTracker::Category::Textures,
+                        "MaterialTexture");
     descriptor->release();
 
     if (!texture) {
@@ -6990,7 +7038,8 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
     return allResident;
 
   ensureBufferCapacity(_pTextureClearBuffer, maxBytes,
-                       _textureClearBufferCapacity, false,
+                       _textureClearBufferCapacity,
+                       GpuMemoryTracker::Category::RendererBuffers, false,
                        MTL::ResourceStorageModeShared);
   if (!_pTextureClearBuffer)
     return false;
@@ -7801,7 +7850,8 @@ void Renderer::draw(MTK::View *pView) {
 
     size_t requiredBytes = vertexCount * sizeof(simd::float3);
     ensureBufferCapacity(_pFrustumVertexBuffer, requiredBytes,
-                         _frustumVertexCapacity, false,
+                         _frustumVertexCapacity,
+                         GpuMemoryTracker::Category::RendererBuffers, false,
                          MTL::ResourceStorageModeShared);
 
     if (_pFrustumVertexBuffer && requiredBytes > 0) {
@@ -12909,16 +12959,34 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
                          _totalNodeCount - _residentNodeCount :
                          0;
   double geometryResidentMB = residentGeometryMemoryMB();
-  double totalMemoryMB = currentGPUMemoryMB();
-  double scratchMB = scratchMemoryMB();
-  double textureMB = residentTextureMemoryMB();
-  double restirMB = restirMemoryMB();
+  auto toMB = [](size_t bytes) {
+    return static_cast<double>(bytes) / (1024.0 * 1024.0);
+  };
+  size_t totalAllocatedBytes =
+      static_cast<size_t>(_pDevice->currentAllocatedSize());
+  GpuMemoryTracker::Totals tracked = _gpuMemoryTracker.totals();
+  size_t trackedBytes = tracked.totalTracked;
+  size_t otherBytes =
+      totalAllocatedBytes > trackedBytes ? (totalAllocatedBytes - trackedBytes)
+                                         : 0;
+  double totalMemoryMB = toMB(totalAllocatedBytes);
+  double scratchMB = toMB(tracked.scratch);
+  double geometryMB = toMB(tracked.geometry);
+  double textureMB = toMB(tracked.textures);
+  double restirMB = toMB(tracked.restir);
+  double rendererBuffersMB = toMB(tracked.rendererBuffers);
+  double heapsMB = toMB(tracked.heaps);
+  double stagingMB = toMB(tracked.staging);
+  double otherMB = toMB(otherBytes);
   printf("Active nodes: %zu Resident nodes: %zu Offloaded nodes: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f Resident geometry: %.3f MB\n",
          _activeNodeCount, _residentNodeCount, offloaded,
          _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond,
          geometryResidentMB);
-  printf("GPU mem (MB) total=%.3f scratch=%.3f geometry=%.3f textures=%.3f restir=%.3f\n",
-         totalMemoryMB, scratchMB, geometryResidentMB, textureMB, restirMB);
+  printf(
+      "GPU mem (MB) total=%.3f scratch=%.3f geometry=%.3f textures=%.3f restir=%.3f "
+      "renderer=%.3f heaps=%.3f staging=%.3f other=%.3f\n",
+      totalMemoryMB, scratchMB, geometryMB, textureMB, restirMB,
+      rendererBuffersMB, heapsMB, stagingMB, otherMB);
   if (_residencyConfig.restirSamplingEnabled) {
     printf("ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f\n",
            _frameRestirReuseRate, _frameRestirCandidateAcceptance);

@@ -20,6 +20,7 @@
 #include "AlwaysResidentCache.h"
 #include "DeferredPurgeQueue.h"
 #include "GpuHeapResources.h"
+#include "GpuMemoryTracker.h"
 #include "ResidencyBudget.h"
 #include "TlasScratchTracker.h"
 #include "Camera.h"
@@ -153,11 +154,23 @@ private:
   void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
                             size_t &currentCapacity,
+                            GpuMemoryTracker::Category category,
                             bool allowShrink = false,
                             MTL::ResourceOptions storageMode =
                                 MTL::ResourceStorageModeManaged,
                             const char *label = nullptr,
                             const char *resizeContext = nullptr);
+  MTL::Buffer *allocateBuffer(NS::UInteger size,
+                              MTL::ResourceOptions options,
+                              GpuMemoryTracker::Category category,
+                              const char *label = nullptr);
+  void releaseBuffer(MTL::Buffer *&buffer);
+  MTL::Texture *allocateTexture(MTL::TextureDescriptor *descriptor,
+                                GpuMemoryTracker::Category category,
+                                const char *label = nullptr);
+  void releaseTexture(MTL::Texture *&texture);
+  GpuMemoryTracker::Category
+  textureSlotCategory(const ManagedTextureSlot &slot) const;
   void rebuildEnvironmentTexture();
   void releaseEnvironmentTexture();
   struct BoundingSphere {
@@ -277,6 +290,7 @@ private:
   size_t textureByteSize(MTL::Texture *texture) const;
   
   MTL::Device *_pDevice = nullptr;
+  GpuMemoryTracker _gpuMemoryTracker;
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;

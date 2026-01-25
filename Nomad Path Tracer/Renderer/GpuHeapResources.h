@@ -3,6 +3,8 @@
 #include <Metal/Metal.hpp>
 #include <cstddef>
 
+#include "GpuMemoryTracker.h"
+
 namespace NomadPathTracer {
 
 class GpuHeapResources {
@@ -11,6 +13,10 @@ public:
 
   GpuHeapResources() = default;
   ~GpuHeapResources();
+
+  void setMemoryTracker(GpuMemoryTracker *tracker,
+                        GpuMemoryTracker::Category category =
+                            GpuMemoryTracker::Category::Heaps);
 
   void initialize(MTL::Device *device,
                   NS::UInteger heapSize = 0,
@@ -86,7 +92,9 @@ private:
   NS::UInteger _accelerationSize = 0;
   MTL::StorageMode _storageMode = MTL::StorageMode::StorageModePrivate;
   MTL::HazardTrackingMode _hazardMode = MTL::HazardTrackingModeTracked;
+  GpuMemoryTracker *_memoryTracker = nullptr;
+  GpuMemoryTracker::Category _heapCategory =
+      GpuMemoryTracker::Category::Heaps;
 };
 
 } // namespace NomadPathTracer
-

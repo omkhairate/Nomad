@@ -21,6 +21,23 @@ NS::UInteger alignUp(NS::UInteger value, NS::UInteger alignment) {
 
 GpuHeapResources::~GpuHeapResources() { destroy(); }
 
+void GpuHeapResources::setMemoryTracker(GpuMemoryTracker *tracker,
+                                        GpuMemoryTracker::Category category) {
+  if (_memoryTracker == tracker && _heapCategory == category)
+    return;
+
+  if (_memoryTracker && _heap) {
+    _memoryTracker->releaseAllocation(_heap);
+  }
+
+  _memoryTracker = tracker;
+  _heapCategory = category;
+
+  if (_memoryTracker && _heap) {
+    _memoryTracker->recordAllocation(_heapCategory, _heap, _heap->size());
+  }
+}
+
 void GpuHeapResources::initialize(MTL::Device *device, NS::UInteger heapSize,
                                   MTL::StorageMode storageMode,
                                   MTL::HazardTrackingMode hazardMode) {
@@ -49,6 +66,8 @@ void GpuHeapResources::destroy() {
   releaseAccelerationStructure();
 
   if (_heap) {
+    if (_memoryTracker)
+      _memoryTracker->releaseAllocation(_heap);
     _heap->release();
     _heap = nullptr;
   }
@@ -261,6 +280,8 @@ void GpuHeapResources::recreateHeap(NS::UInteger newSize) {
   releaseAccelerationStructure();
 
   if (_heap) {
+    if (_memoryTracker)
+      _memoryTracker->releaseAllocation(_heap);
     _heap->release();
     _heap = nullptr;
   }
@@ -279,6 +300,8 @@ void GpuHeapResources::recreateHeap(NS::UInteger newSize) {
   desc->release();
 
   _heapSize = _heap ? _heap->size() : 0;
+  if (_memoryTracker && _heap)
+    _memoryTracker->recordAllocation(_heapCategory, _heap, _heapSize);
 }
 
 void GpuHeapResources::tryDestroyHeap() {
@@ -286,6 +309,8 @@ void GpuHeapResources::tryDestroyHeap() {
     return;
   if (_vertex.buffer || _index.buffer || _accelerationStructure)
     return;
+  if (_memoryTracker)
+    _memoryTracker->releaseAllocation(_heap);
   _heap->release();
   _heap = nullptr;
   _heapSize = 0;
@@ -301,4 +326,3 @@ NS::UInteger GpuHeapResources::primitiveDataSize(size_t primitiveCount) {
 }
 
 } // namespace NomadPathTracer
-
