@@ -235,51 +235,20 @@ inline intersection firstHitTLAS(
     uint totalPrimitiveCount, device atomic_uint *primitiveRayStats,
     thread TlasLeafCache *cache);
 
-inline RestirEvaluation evaluateLightCandidate(
-    uint lightOffset, uint lightPrimIndex, float3 lightPoint,
-    float3 lightNormal, float area, float3 offsetNormal,
-    float3 diffuseColor, float4 absorption, intersection bestHit,
-    thread TlasLeafCache &bounceCache, device const float4 *tlasNodes,
-    uint tlasNodeCount, device const float4 *bvhNodes,
-    device const float4 *primitives, device const int *primitiveIndices,
-    device const uchar *activeMask,
+inline bool isLightVisible(
+    float3 origin, float3 offsetNormal, float3 wi, float dist,
+    uint lightPrimIndex, thread TlasLeafCache &bounceCache,
+    device const float4 *tlasNodes, uint tlasNodeCount,
+    device const float4 *bvhNodes, device const float4 *primitives,
+    device const int *primitiveIndices, device const uchar *activeMask,
     device const InstanceRecord *instanceRecords,
     device const uint *primitiveRemap, uint primitiveCount,
-    uint totalPrimitiveCount, device atomic_uint *primitiveRayStats,
-    device const float4 *materials, device const float *lightCdf,
-    float lightTotalWeight) {
-  RestirEvaluation result{};
-  result.contribution = float3(0.0f);
-  result.target = 0.0f;
-  result.pdf = 0.0f;
-  result.valid = false;
-
-  if (area <= 0.0f)
-    return result;
-
-  float3 toLight = lightPoint - bestHit.point;
-  float dist2 = dot(toLight, toLight);
-  if (dist2 <= 1e-6f)
-    return result;
-  float dist = sqrt(dist2);
-  float3 wi = toLight / dist;
-  float cosTheta = max(dot(offsetNormal, wi), 0.0f);
-  float cosLight = max(dot(lightNormal, -wi), 0.0f);
-  if (cosTheta <= 0.0f || cosLight <= 0.0f)
-    return result;
-
-  float lightPdf = lightPdfFromCdf(lightOffset, lightCdf, lightTotalWeight);
-  if (lightPdf <= 0.0f)
-    return result;
-
-  float pdfArea = 1.0f / area;
-  float pdfSolid = pdfArea * dist2 / cosLight;
-  float totalPdf = lightPdf * pdfSolid;
-  if (totalPdf <= 0.0f)
-    return result;
+    uint totalPrimitiveCount, device atomic_uint *primitiveRayStats) {
+  if (dist <= 0.0001f || !isfinite(dist))
+    return false;
 
   Ray shadowRay;
-  shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
+  shadowRay.origin = origin + 0.0005f * offsetNormal;
   shadowRay.direction = wi;
   shadowRay.minDistance = 0.0001f;
   shadowRay.maxDistance = dist - 0.0001f;
@@ -313,13 +282,66 @@ inline RestirEvaluation evaluateLightCandidate(
         primitiveCount, totalPrimitiveCount, primitiveRayStats, nullptr);
   }
 
-  bool visible = false;
-  if (shadowHit.primitiveId == -1) {
-    visible = true;
-  } else if (shadowHit.primitiveId == int(lightPrimIndex) &&
-             shadowHit.t >= dist - 0.001f) {
-    visible = true;
-  }
+  if (shadowHit.primitiveId == -1)
+    return true;
+  if (shadowHit.primitiveId == int(lightPrimIndex) &&
+      shadowHit.t >= dist - 0.001f)
+    return true;
+  return false;
+}
+
+inline RestirEvaluation evaluateLightCandidate(
+    uint lightOffset, uint lightPrimIndex, float3 lightPoint,
+    float3 lightNormal, float area, float3 offsetNormal,
+    float3 diffuseColor, float4 absorption, intersection bestHit,
+    thread TlasLeafCache &bounceCache, device const float4 *tlasNodes,
+    uint tlasNodeCount, device const float4 *bvhNodes,
+    device const float4 *primitives, device const int *primitiveIndices,
+    device const uchar *activeMask,
+    device const InstanceRecord *instanceRecords,
+    device const uint *primitiveRemap, uint primitiveCount,
+    uint totalPrimitiveCount, device atomic_uint *primitiveRayStats,
+    device const float4 *materials, device const float *lightCdf,
+    float lightTotalWeight, bool visibilityKnown, bool visibilityResult) {
+  RestirEvaluation result{};
+  result.contribution = float3(0.0f);
+  result.target = 0.0f;
+  result.pdf = 0.0f;
+  result.valid = false;
+
+  if (area <= 0.0f)
+    return result;
+
+  float3 toLight = lightPoint - bestHit.point;
+  float dist2 = dot(toLight, toLight);
+  if (dist2 <= 1e-6f)
+    return result;
+  float dist = sqrt(dist2);
+  float3 wi = toLight / dist;
+  float cosTheta = max(dot(offsetNormal, wi), 0.0f);
+  float cosLight = max(dot(lightNormal, -wi), 0.0f);
+  if (cosTheta <= 0.0f || cosLight <= 0.0f)
+    return result;
+
+  float lightPdf = lightPdfFromCdf(lightOffset, lightCdf, lightTotalWeight);
+  if (lightPdf <= 0.0f)
+    return result;
+
+  float pdfArea = 1.0f / area;
+  float pdfSolid = pdfArea * dist2 / cosLight;
+  float totalPdf = lightPdf * pdfSolid;
+  if (totalPdf <= 0.0f)
+    return result;
+
+  bool visible = visibilityKnown
+                     ? visibilityResult
+                     : isLightVisible(bestHit.point, offsetNormal, wi, dist,
+                                      lightPrimIndex, bounceCache, tlasNodes,
+                                      tlasNodeCount, bvhNodes, primitives,
+                                      primitiveIndices, activeMask,
+                                      instanceRecords, primitiveRemap,
+                                      primitiveCount, totalPrimitiveCount,
+                                      primitiveRayStats);
   if (!visible)
     return result;
 
@@ -1071,7 +1093,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                   tlasNodes, tlasNodeCount, bvhNodes, primitives,
                   primitiveIndices, activeMask, instanceRecords, primitiveRemap,
                   primitiveCount, totalPrimitiveCount, primitiveRayStats,
-                  materials, lightCdf, lightTotalWeight);
+                  materials, lightCdf, lightTotalWeight, false, false);
               if (eval.valid && eval.pdf > 0.0f) {
                 float weight = eval.target / eval.pdf;
                 updateRestirReservoir(combined, restirReservoir->sample, weight,
@@ -1109,7 +1131,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
               tlasNodes, tlasNodeCount, bvhNodes, primitives, primitiveIndices,
               activeMask, instanceRecords, primitiveRemap, primitiveCount,
               totalPrimitiveCount, primitiveRayStats, materials, lightCdf,
-              lightTotalWeight);
+              lightTotalWeight, false, false);
           if (!eval.valid)
             continue;
 
@@ -1138,7 +1160,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                   tlasNodes, tlasNodeCount, bvhNodes, primitives,
                   primitiveIndices, activeMask, instanceRecords, primitiveRemap,
                   primitiveCount, totalPrimitiveCount, primitiveRayStats,
-                  materials, lightCdf, lightTotalWeight);
+                  materials, lightCdf, lightTotalWeight, false, false);
               if (eval.valid && eval.target > 0.0f) {
                 float weight =
                     restirReservoir->W / (restirReservoir->M * eval.target);

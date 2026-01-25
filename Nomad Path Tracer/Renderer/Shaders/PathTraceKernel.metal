@@ -164,6 +164,9 @@ kernel void restirSpatialKernel(
     float depthDelta = abs(dot(delta, shadingNormal));
     if (depthDelta > kSpatialDepthThreshold)
       continue;
+    float neighborDepthDelta = abs(dot(delta, neighborNormal));
+    if (neighborDepthDelta > kSpatialDepthThreshold)
+      continue;
     if (length(delta) > kSpatialPositionThreshold)
       continue;
 
@@ -187,6 +190,19 @@ kernel void restirSpatialKernel(
     if (!isfinite(candidateSample.area) || candidateSample.area <= 0.0f)
       continue;
     uint lightPrimIndex = lightIndices[lightOffset];
+    float3 toLight = candidateSample.position - bestHit.point;
+    float dist2 = dot(toLight, toLight);
+    if (dist2 <= 1e-6f)
+      continue;
+    float dist = sqrt(dist2);
+    float3 wi = toLight / dist;
+    bool visible = isLightVisible(
+        bestHit.point, shadingNormal, wi, dist, lightPrimIndex, bounceCache,
+        tlasNodes, uint(u.tlasNodeCount), bvhNodes, primitives, primitiveIndices,
+        activeMask, instanceRecords, primitiveRemap, uint(u.primitiveCount),
+        uint(u.totalPrimitiveCount), primitiveRayStats);
+    if (!visible)
+      continue;
     RestirEvaluation eval = evaluateLightCandidate(
         lightOffset, lightPrimIndex, candidateSample.position,
         candidateSample.normal, candidateSample.area, shadingNormal,
@@ -194,7 +210,7 @@ kernel void restirSpatialKernel(
         uint(u.tlasNodeCount), bvhNodes, primitives, primitiveIndices, activeMask,
         instanceRecords, primitiveRemap, uint(u.primitiveCount),
         uint(u.totalPrimitiveCount), primitiveRayStats, materials, lightCdf,
-        u.lightTotalWeight);
+        u.lightTotalWeight, true, visible);
     if (!eval.valid || eval.pdf <= 0.0f)
       continue;
 
