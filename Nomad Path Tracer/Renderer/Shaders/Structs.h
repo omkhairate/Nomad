@@ -84,6 +84,7 @@ struct UniformsData
     float environmentMapIntensity;
     float environmentPadding0;
     float environmentPadding1;
+    float cameraMotionMetric;
 };
 
 struct TileRegion
