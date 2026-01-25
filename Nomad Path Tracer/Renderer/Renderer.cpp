@@ -520,6 +520,22 @@ size_t Renderer::geometryResidencyCapBytes() const {
   return static_cast<size_t>(capMB * 1024.0 * 1024.0);
 }
 
+void Renderer::recordGeometryResidencyHardCapDenied(
+    size_t objectIndex, size_t requestedBytes, size_t existingBytes,
+    size_t residentBytes, size_t capBytes, const char *context) {
+  ++_geometryResidencyHardCapDeniedCount;
+  ++_frameGeometryResidencyHardCapDeniedCount;
+
+  std::printf(
+      "[GeometryResidency] Hard cap deny for object %zu (%s): requested %.2f MB "
+      "(existing %.2f MB), resident %.2f MB, cap %.2f MB.\n",
+      objectIndex, context ? context : "unspecified",
+      static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
+      static_cast<double>(existingBytes) / (1024.0 * 1024.0),
+      static_cast<double>(residentBytes) / (1024.0 * 1024.0),
+      static_cast<double>(capBytes) / (1024.0 * 1024.0));
+}
+
 bool Renderer::checkGeometryResidencyCap(size_t objectIndex,
                                          size_t requestedBytes,
                                          size_t existingBytes,
@@ -545,16 +561,12 @@ bool Renderer::checkGeometryResidencyCap(size_t objectIndex,
   ++_geometryResidencyCapHitCount;
   ++_frameGeometryResidencyCapHitCount;
 
-  std::printf(
-      "[GeometryResidency] Cap hit for object %zu (%s): requested %.2f MB "
-      "(existing %.2f MB), resident %.2f MB, cap %.2f MB (over %.2f MB). "
-      "Deferring allocation and scheduling eviction.\n",
-      objectIndex, context ? context : "unspecified",
-      static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
-      static_cast<double>(existingBytes) / (1024.0 * 1024.0),
-      static_cast<double>(residentBytes) / (1024.0 * 1024.0),
-      static_cast<double>(capBytes) / (1024.0 * 1024.0),
-      static_cast<double>(overageBytes) / (1024.0 * 1024.0));
+  recordGeometryResidencyHardCapDenied(objectIndex, requestedBytes,
+                                       existingBytes, residentBytes, capBytes,
+                                       context);
+  std::printf("  [GeometryResidency] Over cap by %.2f MB; deferring allocation "
+              "and scheduling eviction.\n",
+              static_cast<double>(overageBytes) / (1024.0 * 1024.0));
   return false;
 }
 
@@ -1531,7 +1543,8 @@ void Renderer::writeBenchmarkHeader() {
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,geometry_memory_cap_mb,"
-         "over_memory_cap,geometry_over_memory_cap,geometry_cap_hits,residency_compacted,"
+         "over_memory_cap,geometry_over_memory_cap,geometry_cap_hits,"
+         "geometry_hard_cap_denials,residency_compacted,"
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
@@ -1628,6 +1641,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << boolToInt(sample.overMemoryCap) << ','
       << boolToInt(sample.geometryOverMemoryCap) << ','
       << sample.geometryCapHitCount << ','
+      << sample.geometryHardCapDeniedCount << ','
       << boolToInt(sample.residentCompacted) << ','
       << boolToInt(sample.accumulationReset) << ','
       << formatFixed(_residencyConfig.rayHitDecay, 3) << ','
@@ -5191,10 +5205,34 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
   }
 
+  size_t geometryCapBytes = geometryResidencyCapBytes();
+  size_t projectedResidentBytes = residentGeometryMemoryBytes();
+  bool geometryHardCapEnabled =
+      _geometryResidencyMemoryCapMB > 0.0 && geometryCapBytes > 0;
+  bool geometryHardCapReached = _pendingGeometryResidencyOverageBytes > 0;
+
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
     auto &gpuResident = _residentObjectGpuResources[objectIndex];
     auto &instanceRecord = _instanceRecords[objectIndex];
+
+    if (geometryHardCapEnabled && shouldBeResident &&
+        gpuResident.state ==
+            ResidentObjectGpuResources::ResidencyState::Cold) {
+      bool projectedOverCap = geometryHardCapReached ||
+                              projectedResidentBytes >= geometryCapBytes ||
+                              _pendingGeometryResidencyOverageBytes > 0;
+      if (projectedOverCap) {
+        recordGeometryResidencyHardCapDenied(objectIndex, 0, 0,
+                                             projectedResidentBytes,
+                                             geometryCapBytes,
+                                             "residency update");
+        shouldBeResident = false;
+        objectShouldBeResident[objectIndex] = false;
+        instanceRecord.blasRootIndex = -1;
+        geometryHardCapReached = true;
+      }
+    }
 
     if (shouldBeResident) {
       bool built = gpuResident.ensureResident(
@@ -6540,11 +6578,11 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
 
   if (_pendingGeometryResidencyOverageBytes > 0) {
     std::printf(
-        "[GeometryResidency] Triggering eviction: residency=%.2f MB (cap=%.2f "
+        "[GeometryResidency] Over budget eviction: residency=%.2f MB (cap=%.2f "
         "MB, target=%.2f MB) to satisfy pending allocation.\n",
         residentMB, capMB, targetMB);
   } else {
-    std::printf("[GeometryResidency] Triggering eviction: residency=%.2f MB "
+    std::printf("[GeometryResidency] Over budget eviction: residency=%.2f MB "
                 "(cap=%.2f MB).\n",
                 residentMB, capMB);
   }
@@ -7691,6 +7729,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameScreenMinPixelCoverageSkips = 0;
   _frameEnvironmentActivationFloor = 0;
   _frameGeometryResidencyCapHitCount = 0;
+  _frameGeometryResidencyHardCapDeniedCount = 0;
   _frameRestirReuseRate = 0.0;
   _frameRestirCandidateAcceptance = 0.0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
@@ -12635,6 +12674,8 @@ void Renderer::beginFrameMetrics() {
     sample.geometryOverMemoryCap =
         geometryResidentMB > _geometryResidencyMemoryCapMB;
     sample.geometryCapHitCount = _frameGeometryResidencyCapHitCount;
+    sample.geometryHardCapDeniedCount =
+        _frameGeometryResidencyHardCapDeniedCount;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
 }

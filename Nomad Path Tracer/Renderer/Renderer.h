@@ -185,6 +185,12 @@ private:
   double residentGeometryMemoryMB() const;
   size_t residentGeometryMemoryBytes() const;
   size_t geometryResidencyCapBytes() const;
+  void recordGeometryResidencyHardCapDenied(size_t objectIndex,
+                                            size_t requestedBytes,
+                                            size_t existingBytes,
+                                            size_t residentBytes,
+                                            size_t capBytes,
+                                            const char *context);
   bool checkGeometryResidencyCap(size_t objectIndex, size_t requestedBytes,
                                  size_t existingBytes,
                                  const char *context);
@@ -446,6 +452,7 @@ private:
     bool overMemoryCap = false;
     bool geometryOverMemoryCap = false;
     size_t geometryCapHitCount = 0;
+    size_t geometryHardCapDeniedCount = 0;
   };
 
   struct FrameCaptureRequest {
@@ -669,7 +676,9 @@ private:
   size_t _frameScreenMinPixelCoverageSkips = 0;
   size_t _frameEnvironmentActivationFloor = 0;
   size_t _frameGeometryResidencyCapHitCount = 0;
+  size_t _frameGeometryResidencyHardCapDeniedCount = 0;
   size_t _geometryResidencyCapHitCount = 0;
+  size_t _geometryResidencyHardCapDeniedCount = 0;
   size_t _pendingGeometryResidencyOverageBytes = 0;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
