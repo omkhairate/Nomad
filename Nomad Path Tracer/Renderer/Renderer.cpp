@@ -6674,6 +6674,8 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
   double scratchMB = scratchMemoryMB();
   double residencyMB = std::max(0.0, totalMemoryMB - scratchMB);
   bool overMemory = residencyMB > _textureResidencyMemoryCapMB;
+  bool totalOverCap =
+      _totalGpuMemoryCapMB > 0.0 && totalMemoryMB > _totalGpuMemoryCapMB;
 
   if (!overMemory && totalMemoryMB > _textureResidencyMemoryCapMB &&
       scratchMB > 0.0) {
@@ -6681,13 +6683,17 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
                 "residency=%.2f MB (cap=%.2f MB).\n",
                 totalMemoryMB, scratchMB, residencyMB, _textureResidencyMemoryCapMB);
   }
-  if (!belowBudget && !overMemory)
+  if (!belowBudget && !overMemory && !totalOverCap)
     return;
 
   if (overMemory) {
     std::printf("[TextureResidency] Triggering eviction: residency=%.2f MB (total=%.2f MB, "
                 "scratch=%.2f MB, cap=%.2f MB).\n",
                 residencyMB, totalMemoryMB, scratchMB, _textureResidencyMemoryCapMB);
+  } else if (totalOverCap) {
+    std::printf("[TextureResidency] Triggering eviction: total=%.2f MB "
+                "(residency=%.2f MB, scratch=%.2f MB, cap=%.2f MB).\n",
+                totalMemoryMB, residencyMB, scratchMB, _totalGpuMemoryCapMB);
   }
 
   std::array<ManagedTextureSlot *, 13> slots = {
@@ -6731,9 +6737,9 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
               return a.score < b.score;
             });
 
-  bool stopOnMemory = overMemory;
+  bool stopOnMemory = overMemory || totalOverCap;
   bool stopOnBudget = !belowBudget;
-  bool needMemoryEviction = overMemory;
+  bool needMemoryEviction = overMemory || totalOverCap;
   bool primitiveBudgetSatisfied = belowBudget;
   MTL::BlitCommandEncoder *blit = nullptr;
   for (const ResidencyCandidate &candidate : candidates) {
@@ -6745,7 +6751,10 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
     if (!evictTextureSlot(*candidate.slot, cmd, blit))
       continue;
     residencyMB = std::max(0.0, residencyMB - candidate.bytesMB);
-    needMemoryEviction = residencyMB > _textureResidencyMemoryCapMB;
+    totalMemoryMB = std::max(0.0, totalMemoryMB - candidate.bytesMB);
+    needMemoryEviction =
+        residencyMB > _textureResidencyMemoryCapMB ||
+        (_totalGpuMemoryCapMB > 0.0 && totalMemoryMB > _totalGpuMemoryCapMB);
     primitiveBudgetSatisfied =
         _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
   }
@@ -7427,7 +7436,7 @@ void Renderer::draw(MTK::View *pView) {
     updateTextureResidency(prepCmd);
 
   bool allowResidency =
-      _needsAccumulationReset || (!belowBudget && !overCap);
+      _needsAccumulationReset || (!belowBudget && !overCap && !totalOverCap);
 
   MTL::BlitCommandEncoder *restoreBlit = nullptr;
   MTL::Texture *accum0 = _accumulationSlots[0].texture;

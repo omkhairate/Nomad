@@ -30,6 +30,8 @@ To keep ReSTIR temporal reuse stable for baseline comparisons, you can disable t
 
 The `geometryResidencyMemoryCapMB` scene parameter is now treated as a hard ceiling. Geometry residency allocations (including streaming uploads, prewarm passes, and rebuilds) are rejected if the next allocation would exceed the cap; the renderer queues the request and triggers eviction until enough space is available to retry.
 
+When `totalGpuMemoryCapMB` is set, the renderer also treats the total GPU memory budget (resident content + scratch) as a soft cap. Total memory overages pause new residency allocations and trigger texture eviction, even if the texture residency pool itself is still under `textureResidencyMemoryCapMB`.
+
 ## Bistro test scenes with ReSTIR sampling enabled
 
 The `scene_bistro_test_v2_*_restir_on.xml` variants mirror their corresponding bistro test scenes but explicitly enable ReSTIR sampling via `restirSampling="true"` on the `<Scene>` root. Use these for A/B comparisons that isolate the sampling toggle from other settings.
