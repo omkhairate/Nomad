@@ -1489,6 +1489,8 @@ Renderer::~Renderer() {
 
   if (_pPathTracePSO)
     _pPathTracePSO->release();
+  if (_pRestirSpatialPSO)
+    _pRestirSpatialPSO->release();
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
   if (_pOverlayPSO)
@@ -2368,6 +2370,10 @@ void Renderer::buildShaders() {
     _pPathTracePSO->release();
     _pPathTracePSO = nullptr;
   }
+  if (_pRestirSpatialPSO) {
+    _pRestirSpatialPSO->release();
+    _pRestirSpatialPSO = nullptr;
+  }
   if (_pAdaptiveSamplingPSO) {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
@@ -2468,6 +2474,18 @@ void Renderer::buildShaders() {
       }
     }
     pPathTraceFn->release();
+  }
+
+  pError = nullptr;
+  MTL::Function *pRestirSpatialFn = pLibrary->newFunction(
+      NS::String::string("restirSpatialKernel", UTF8StringEncoding));
+  if (pRestirSpatialFn) {
+    _pRestirSpatialPSO =
+        _pDevice->newComputePipelineState(pRestirSpatialFn, &pError);
+    if (!_pRestirSpatialPSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    }
+    pRestirSpatialFn->release();
   }
 
   pError = nullptr;
@@ -7776,6 +7794,55 @@ void Renderer::draw(MTK::View *pView) {
       trackFrameCommandBuffer(computeCmd);
       computeCmd->commit();
     }
+  }
+
+  bool restirSpatialDispatched = false;
+  if (_pRestirSpatialPSO && _residencyConfig.restirSamplingEnabled &&
+      restirPrevSample && restirPrevNormal && restirPrevState &&
+      restirOutSample && restirOutNormal && restirOutState) {
+    MTL::CommandBuffer *restirCmd = _pCommandQueue->commandBuffer();
+    if (restirCmd) {
+      MTL::ComputeCommandEncoder *pCompute = restirCmd->computeCommandEncoder();
+      if (pCompute) {
+        pCompute->setComputePipelineState(_pRestirSpatialPSO);
+        pCompute->setBuffer(_pUniformsBuffer, 0, 0);
+        pCompute->setTexture(restirOutSample, 0);
+        pCompute->setTexture(restirOutNormal, 1);
+        pCompute->setTexture(restirOutState, 2);
+        pCompute->setTexture(restirPrevSample, 3);
+        pCompute->setTexture(restirPrevNormal, 4);
+        pCompute->setTexture(restirPrevState, 5);
+
+        NS::UInteger width = restirOutSample->width();
+        NS::UInteger height = restirOutSample->height();
+        if (width > 0 && height > 0) {
+          NS::UInteger tgWidth = std::max<NS::UInteger>(
+              1, _pRestirSpatialPSO->threadExecutionWidth());
+          NS::UInteger maxThreads = std::max<NS::UInteger>(
+              tgWidth, _pRestirSpatialPSO->maxTotalThreadsPerThreadgroup());
+          NS::UInteger tgHeight =
+              std::max<NS::UInteger>(1, maxThreads / tgWidth);
+          MTL::Size threadsPerThreadgroup =
+              MTL::Size::Make(tgWidth, tgHeight, 1);
+          MTL::Size threadgroups = MTL::Size::Make(
+              (width + threadsPerThreadgroup.width - 1) /
+                  threadsPerThreadgroup.width,
+              (height + threadsPerThreadgroup.height - 1) /
+                  threadsPerThreadgroup.height,
+              1);
+          pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+          restirSpatialDispatched = true;
+        }
+        pCompute->endEncoding();
+      }
+      trackFrameCommandBuffer(restirCmd);
+      restirCmd->commit();
+    }
+  }
+  if (restirSpatialDispatched) {
+    std::swap(_restirSampleSlots[0], _restirSampleSlots[1]);
+    std::swap(_restirNormalSlots[0], _restirNormalSlots[1]);
+    std::swap(_restirStateSlots[0], _restirStateSlots[1]);
   }
 
   MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
