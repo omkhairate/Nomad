@@ -7797,46 +7797,49 @@ void Renderer::draw(MTK::View *pView) {
   }
 
   bool restirSpatialDispatched = false;
-  if (_pRestirSpatialPSO && _residencyConfig.restirSamplingEnabled &&
-      restirPrevSample && restirPrevNormal && restirPrevState &&
-      restirOutSample && restirOutNormal && restirOutState) {
-    MTL::CommandBuffer *restirCmd = _pCommandQueue->commandBuffer();
-    if (restirCmd) {
-      MTL::ComputeCommandEncoder *pCompute = restirCmd->computeCommandEncoder();
-      if (pCompute) {
-        pCompute->setComputePipelineState(_pRestirSpatialPSO);
-        pCompute->setBuffer(_pUniformsBuffer, 0, 0);
-        pCompute->setTexture(restirOutSample, 0);
-        pCompute->setTexture(restirOutNormal, 1);
-        pCompute->setTexture(restirOutState, 2);
-        pCompute->setTexture(restirPrevSample, 3);
-        pCompute->setTexture(restirPrevNormal, 4);
-        pCompute->setTexture(restirPrevState, 5);
+  if (_residencyConfig.restirSamplingEnabled && restirPrevSample &&
+      restirPrevNormal && restirPrevState && restirOutSample &&
+      restirOutNormal && restirOutState) {
+    if (_pRestirSpatialPSO) {
+      MTL::CommandBuffer *restirCmd = _pCommandQueue->commandBuffer();
+      if (restirCmd) {
+        MTL::ComputeCommandEncoder *pCompute =
+            restirCmd->computeCommandEncoder();
+        if (pCompute) {
+          pCompute->setComputePipelineState(_pRestirSpatialPSO);
+          pCompute->setBuffer(_pUniformsBuffer, 0, 0);
+          pCompute->setTexture(restirOutSample, 0);
+          pCompute->setTexture(restirOutNormal, 1);
+          pCompute->setTexture(restirOutState, 2);
+          pCompute->setTexture(restirPrevSample, 3);
+          pCompute->setTexture(restirPrevNormal, 4);
+          pCompute->setTexture(restirPrevState, 5);
 
-        NS::UInteger width = restirOutSample->width();
-        NS::UInteger height = restirOutSample->height();
-        if (width > 0 && height > 0) {
-          NS::UInteger tgWidth = std::max<NS::UInteger>(
-              1, _pRestirSpatialPSO->threadExecutionWidth());
-          NS::UInteger maxThreads = std::max<NS::UInteger>(
-              tgWidth, _pRestirSpatialPSO->maxTotalThreadsPerThreadgroup());
-          NS::UInteger tgHeight =
-              std::max<NS::UInteger>(1, maxThreads / tgWidth);
-          MTL::Size threadsPerThreadgroup =
-              MTL::Size::Make(tgWidth, tgHeight, 1);
-          MTL::Size threadgroups = MTL::Size::Make(
-              (width + threadsPerThreadgroup.width - 1) /
-                  threadsPerThreadgroup.width,
-              (height + threadsPerThreadgroup.height - 1) /
-                  threadsPerThreadgroup.height,
-              1);
-          pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-          restirSpatialDispatched = true;
+          NS::UInteger width = restirOutSample->width();
+          NS::UInteger height = restirOutSample->height();
+          if (width > 0 && height > 0) {
+            NS::UInteger tgWidth = std::max<NS::UInteger>(
+                1, _pRestirSpatialPSO->threadExecutionWidth());
+            NS::UInteger maxThreads = std::max<NS::UInteger>(
+                tgWidth, _pRestirSpatialPSO->maxTotalThreadsPerThreadgroup());
+            NS::UInteger tgHeight =
+                std::max<NS::UInteger>(1, maxThreads / tgWidth);
+            MTL::Size threadsPerThreadgroup =
+                MTL::Size::Make(tgWidth, tgHeight, 1);
+            MTL::Size threadgroups = MTL::Size::Make(
+                (width + threadsPerThreadgroup.width - 1) /
+                    threadsPerThreadgroup.width,
+                (height + threadsPerThreadgroup.height - 1) /
+                    threadsPerThreadgroup.height,
+                1);
+            pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+            restirSpatialDispatched = true;
+          }
+          pCompute->endEncoding();
         }
-        pCompute->endEncoding();
+        trackFrameCommandBuffer(restirCmd);
+        restirCmd->commit();
       }
-      trackFrameCommandBuffer(restirCmd);
-      restirCmd->commit();
     }
   }
   if (restirSpatialDispatched) {
