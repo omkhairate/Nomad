@@ -4,6 +4,112 @@ using namespace metal;
 
 #include "PathTracing.h"
 
+inline bool loadRestirReservoir(texture2d<float, access::read> restirSample,
+                                texture2d<float, access::read> restirNormal,
+                                texture2d<float, access::read> restirState,
+                                uint2 pixel,
+                                thread RestirReservoir &reservoir) {
+  float4 state = restirState.read(pixel);
+  float4 sample = restirSample.read(pixel);
+  float4 normal = restirNormal.read(pixel);
+  if (isfinite(state.x) && isfinite(state.y) && state.x > 0.0f &&
+      state.y > 0.0f && isfinite(sample.w) && sample.w >= 0.0f) {
+    reservoir.valid = 1u;
+    reservoir.W = state.x;
+    reservoir.M = state.y;
+    reservoir.sample.position = sample.xyz;
+    reservoir.sample.normal = normal.xyz;
+    reservoir.sample.area = normal.w;
+    reservoir.sample.lightIndex = uint(sample.w);
+    reservoir.selectedFromTemporal = 0u;
+    return true;
+  }
+  return false;
+}
+
+inline void writeRestirReservoir(texture2d<float, access::write> restirSample,
+                                 texture2d<float, access::write> restirNormal,
+                                 texture2d<float, access::write> restirState,
+                                 uint2 pixel,
+                                 thread const RestirReservoir &reservoir) {
+  float4 outSample = float4(0.0f);
+  float4 outNormal = float4(0.0f);
+  float4 outState = float4(0.0f);
+  if (reservoir.valid != 0u && reservoir.W > 0.0f && reservoir.M > 0.0f) {
+    outSample = float4(reservoir.sample.position,
+                       float(reservoir.sample.lightIndex));
+    outNormal = float4(reservoir.sample.normal, reservoir.sample.area);
+    outState = float4(reservoir.W, reservoir.M, 0.0f, 1.0f);
+  }
+  restirSample.write(outSample, pixel);
+  restirNormal.write(outNormal, pixel);
+  restirState.write(outState, pixel);
+}
+
+kernel void restirSpatialKernel(
+    device const UniformsData *uniforms [[buffer(0)]],
+    texture2d<float, access::read> restirInSample [[texture(0)]],
+    texture2d<float, access::read> restirInNormal [[texture(1)]],
+    texture2d<float, access::read> restirInState [[texture(2)]],
+    texture2d<float, access::write> restirOutSample [[texture(3)]],
+    texture2d<float, access::write> restirOutNormal [[texture(4)]],
+    texture2d<float, access::write> restirOutState [[texture(5)]],
+    uint2 gid [[thread_position_in_grid]]) {
+  if (!uniforms)
+    return;
+
+  uint width = restirInSample.get_width();
+  uint height = restirInSample.get_height();
+  if (gid.x >= width || gid.y >= height)
+    return;
+
+  const device UniformsData &u = *uniforms;
+  float2 screenSize = float2(u.screenSize);
+  if (screenSize.x <= 0.0f || screenSize.y <= 0.0f)
+    return;
+
+  float2 uv = (float2(gid) + 0.5f) / screenSize;
+  uint32_t seed = random(uv, u.randomSeed.xyz) * ((uint32_t)-1);
+  seed ^= uint32_t(u.frameCount + gid.x * 1973u + gid.y * 9277u);
+
+  RestirReservoir combined{};
+  combined.valid = 0u;
+  combined.W = 0.0f;
+  combined.M = 0.0f;
+
+  constexpr int kSpatialTapCount = 5;
+  const int2 offsets[kSpatialTapCount] = {
+      int2(0, 0), int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1)};
+
+  for (int tap = 0; tap < kSpatialTapCount; ++tap) {
+    int2 offset = offsets[tap];
+    int2 sampleCoord = int2(gid) + offset;
+    sampleCoord.x = clamp(sampleCoord.x, 0, int(width) - 1);
+    sampleCoord.y = clamp(sampleCoord.y, 0, int(height) - 1);
+    uint2 pixel = uint2(sampleCoord);
+
+    RestirReservoir candidate{};
+    if (!loadRestirReservoir(restirInSample, restirInNormal, restirInState,
+                             pixel, candidate))
+      continue;
+    if (candidate.W <= 0.0f || candidate.M <= 0.0f)
+      continue;
+
+    float weight = candidate.W;
+    combined.M += candidate.M;
+    combined.W += weight;
+    float select = randomFloat(seed);
+    seed = random(seed);
+    if (combined.W > 0.0f && select < (weight / combined.W)) {
+      combined.sample = candidate.sample;
+      combined.valid = 1u;
+    }
+  }
+
+  writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
+                       combined);
+}
+
 kernel void pathTraceKernel(
     device const float4 *bvhNodes [[buffer(0)]],
     device const float4 *primitives [[buffer(1)]],

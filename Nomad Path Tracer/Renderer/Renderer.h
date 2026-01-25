@@ -297,6 +297,7 @@ private:
   MTL::RenderPipelineState *_pPSO = nullptr;
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
+  MTL::ComputePipelineState *_pRestirSpatialPSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
 
   // Core scene and geometry data
