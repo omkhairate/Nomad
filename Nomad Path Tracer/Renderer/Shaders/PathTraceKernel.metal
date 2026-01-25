@@ -361,6 +361,8 @@ kernel void pathTraceKernel(
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
 
+    float temporalReuseChance =
+        clamp(1.0f - u.cameraMotionMetric, 0.0f, 1.0f);
     PathTraceSample sample = rayColor(r, rayDx, rayDy, tlasNodes, u.tlasNodeCount,
                                       bvhNodes, primitives, materials,
                                       u.primitiveCount, primitiveIndices,
@@ -376,7 +378,8 @@ kernel void pathTraceKernel(
                                       restirEnabled && sampleIdx == 0
                                           ? &restir
                                           : nullptr,
-                                      restirEnabled && sampleIdx == 0);
+                                      restirEnabled && sampleIdx == 0,
+                                      temporalReuseChance);
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;

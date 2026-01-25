@@ -657,6 +657,7 @@ struct UniformsData {
   float environmentMapIntensity = 1.0f;
   float environmentPadding0 = 0.0f;
   float environmentPadding1 = 0.0f;
+  float cameraMotionMetric = 0.0f;
 };
 
 struct TileDispatchRegion {
@@ -934,6 +935,40 @@ static bool cameraStatesDiffer(const Camera::State &a, const Camera::State &b,
   if (std::abs(a.focusDistance - b.focusDistance) > epsilon)
     return true;
   return false;
+}
+
+static float computeCameraMotionMetric(const Camera::State &current,
+                                       const Camera::State &previous) {
+  auto normalizeWithFallback = [](const simd::float3 &v) {
+    float lenSq = simd::length_squared(v);
+    if (lenSq > 1e-6f)
+      return simd::normalize(v);
+    return simd::make_float3(0.0f, 0.0f, -1.0f);
+  };
+
+  simd::float3 currentForward = normalizeWithFallback(current.forward);
+  simd::float3 previousForward = normalizeWithFallback(previous.forward);
+  simd::float3 currentUp = normalizeWithFallback(current.up);
+  simd::float3 previousUp = normalizeWithFallback(previous.up);
+
+  float positionDelta = simd::length(current.position - previous.position);
+  float forwardDot = std::clamp(simd::dot(currentForward, previousForward),
+                                -1.0f, 1.0f);
+  float upDot = std::clamp(simd::dot(currentUp, previousUp), -1.0f, 1.0f);
+  float forwardAngle = std::acos(forwardDot);
+  float upAngle = std::acos(upDot);
+  float fovDelta = std::abs(current.verticalFov - previous.verticalFov) *
+                   static_cast<float>(M_PI / 180.0f);
+
+  constexpr float kPositionWeight = 0.25f;
+  constexpr float kForwardAngleWeight = 0.5f;
+  constexpr float kUpAngleWeight = 0.25f;
+  constexpr float kFovWeight = 0.1f;
+
+  float metric = positionDelta * kPositionWeight +
+                 forwardAngle * kForwardAngleWeight + upAngle * kUpAngleWeight +
+                 fovDelta * kFovWeight;
+  return std::clamp(metric, 0.0f, 1.0f);
 }
 
 static Camera::State makeCameraState(const simd::float3 &position,
@@ -1663,6 +1698,7 @@ void Renderer::writeBenchmarkHeader() {
          "probability_initial_desired_primitives,"
          "probability_final_desired_primitives,probability_trimmed_primitives,"
          "probability_budget_hit,restir_reuse_rate,restir_candidate_acceptance,"
+         "camera_motion_metric,"
          "primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,resident_geometry_memory_mb,"
@@ -1753,7 +1789,8 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.probabilityTrimmedPrimitives << ','
       << boolToInt(sample.probabilityBudgetHit) << ','
       << formatFixed(sample.restirReuseRate, 3) << ','
-      << formatFixed(sample.restirCandidateAcceptance, 3) << ',';
+      << formatFixed(sample.restirCandidateAcceptance, 3) << ','
+      << formatFixed(sample.cameraMotionMetric, 3) << ',';
   appendCsvEscaped(row, sample.primitiveProbabilities);
   row << ',';
   appendCsvEscaped(row, sample.objectProbabilities);
@@ -7310,16 +7347,24 @@ void Renderer::updateUniforms(bool cameraChanged) {
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
+  const Camera::State &activeView =
+      _observerActive ? _observerCameraState : _primaryCameraState;
+  u.aperture = activeView.aperture;
+  u.focusDistance = activeView.focusDistance;
   u.environmentMapEnabled =
       (_environmentTexture && _environmentSampler) ? 1u : 0u;
   u.environmentMapIntensity = _environmentBrightness;
   u.environmentPadding0 = 0.0f;
   u.environmentPadding1 = 0.0f;
-
-  const Camera::State &activeView =
-      _observerActive ? _observerCameraState : _primaryCameraState;
-  u.aperture = activeView.aperture;
-  u.focusDistance = activeView.focusDistance;
+  if (_lastUniformCameraStateValid) {
+    u.cameraMotionMetric =
+        computeCameraMotionMetric(activeView, _lastUniformCameraState);
+  } else {
+    u.cameraMotionMetric = 0.0f;
+  }
+  _frameCameraMotionMetric = u.cameraMotionMetric;
+  _lastUniformCameraState = activeView;
+  _lastUniformCameraStateValid = true;
 
   uint64_t residentPrimitiveCount = _residentPrimitiveCount;
   uint64_t residentTriangleCount = _residentTriangleCount;
@@ -12955,6 +13000,7 @@ void Renderer::beginFrameMetrics() {
     sample.probabilityVisibleFloor = _residencyConfig.probabilityVisibleFloor;
     sample.restirReuseRate = _frameRestirReuseRate;
     sample.restirCandidateAcceptance = _frameRestirCandidateAcceptance;
+    sample.cameraMotionMetric = _frameCameraMotionMetric;
     sample.environmentTargetActiveFraction =
         _residencyConfig.environmentTargetActiveFraction;
     sample.environmentEscapeThreshold =
@@ -13173,9 +13219,9 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   if (_residencyConfig.restirSamplingEnabled) {
     printf(
         "ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f "
-        "history_evictions=%zu\n",
+        "camera_motion=%.3f history_evictions=%zu\n",
         _frameRestirReuseRate, _frameRestirCandidateAcceptance,
-        _frameRestirHistoryEvictions);
+        _frameCameraMotionMetric, _frameRestirHistoryEvictions);
   }
   if (isAlwaysResidentStrategy() && offloaded > 0) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",
@@ -13189,6 +13235,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
     _pendingBenchmarkSamples.pop_front();
     sample.restirReuseRate = _frameRestirReuseRate;
     sample.restirCandidateAcceptance = _frameRestirCandidateAcceptance;
+    sample.cameraMotionMetric = _frameCameraMotionMetric;
     sample.cpuTimeSeconds = _lastCPUTime;
     sample.gpuTimeSeconds = _lastGPUTime;
     sample.raysPerSecond = _lastRaysPerSecond;

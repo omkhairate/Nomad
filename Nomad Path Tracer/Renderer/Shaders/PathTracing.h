@@ -870,7 +870,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 uint environmentEnabled,
                                 float environmentIntensity,
                                 thread RestirReservoir *restirReservoir,
-                                bool restirEnabled) {
+                                bool restirEnabled,
+                                float temporalReuseChance) {
   PathTraceSample sampleResult;
   sampleResult.radiance = float3(0.0f);
   sampleResult.albedo = float3(0.0f);
@@ -1080,7 +1081,16 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         combined.M = 0.0f;
         combined.selectedFromTemporal = 0u;
 
-        if (restirReservoir->valid != 0u) {
+        float reuseChance = clamp(temporalReuseChance, 0.0f, 1.0f);
+        bool allowTemporal = reuseChance > 0.0f;
+        if (restirReservoir->valid != 0u && allowTemporal) {
+          float reuseRoll = randomFloat(seed);
+          seed = random(seed);
+          if (reuseRoll > reuseChance) {
+            allowTemporal = false;
+          }
+        }
+        if (restirReservoir->valid != 0u && allowTemporal) {
           uint selectedOffset = restirReservoir->sample.lightIndex;
           if (selectedOffset < lightCount) {
             uint lightPrimIndex = lightIndices[selectedOffset];

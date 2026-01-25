@@ -452,6 +452,7 @@ private:
     double probabilityVisibleFloor = 0.0;
     double restirReuseRate = 0.0;
     double restirCandidateAcceptance = 0.0;
+    double cameraMotionMetric = 0.0;
     std::string primitiveProbabilities;
     std::string objectProbabilities;
     size_t probabilisticToggles = 0;
@@ -514,6 +515,9 @@ private:
   std::vector<SceneObject> _allSceneObjects;
   double _frameRestirReuseRate = 0.0;
   double _frameRestirCandidateAcceptance = 0.0;
+  double _frameCameraMotionMetric = 0.0;
+  Camera::State _lastUniformCameraState{};
+  bool _lastUniformCameraStateValid = false;
   std::vector<BoundingSphere> _objectBounds;
   std::vector<bool> _objectActive;
   std::vector<uint32_t> _objectCooldown;
