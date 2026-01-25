@@ -1697,7 +1697,8 @@ void Renderer::writeBenchmarkHeader() {
          "probability_target_primitives,"
          "probability_initial_desired_primitives,"
          "probability_final_desired_primitives,probability_trimmed_primitives,"
-         "probability_budget_hit,restir_reuse_rate,restir_candidate_acceptance,"
+         "probability_budget_hit,restir_reuse_rate,restir_history_reset,"
+         "restir_candidate_acceptance,"
          "camera_motion_metric,"
          "primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
@@ -1789,6 +1790,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.probabilityTrimmedPrimitives << ','
       << boolToInt(sample.probabilityBudgetHit) << ','
       << formatFixed(sample.restirReuseRate, 3) << ','
+      << boolToInt(sample.restirHistoryReset) << ','
       << formatFixed(sample.restirCandidateAcceptance, 3) << ','
       << formatFixed(sample.cameraMotionMetric, 3) << ',';
   appendCsvEscaped(row, sample.primitiveProbabilities);
@@ -7165,6 +7167,7 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   if (!blit)
     return false;
 
+  bool restirCleared = false;
   for (ManagedTextureSlot *slot : slots) {
     if (!slot->texture)
       continue;
@@ -7181,9 +7184,13 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
     blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
                          size, slot->texture, 0, 0, origin);
     slot->stagingValid = false;
+    if (isRestirHistorySlot(*slot))
+      restirCleared = true;
   }
 
   blit->endEncoding();
+  if (restirCleared)
+    _frameRestirHistoryReset = true;
   return allResident;
 }
 
@@ -7406,6 +7413,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
 void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
   _frameRestirHistoryEvictions = 0;
+  _frameRestirHistoryReset = false;
   bool cameraChanged = updateCameraStates();
   Camera::State viewCamera =
       _observerActive ? _observerCameraState : _primaryCameraState;
@@ -7422,6 +7430,7 @@ void Renderer::draw(MTK::View *pView) {
     }
   };
 
+  bool restirHistoryInvalid = false;
   auto historyMissing = [&](const ManagedTextureSlot &slot) {
     if (slot.texture && !slot.needsGpuRefresh)
       return false;
@@ -7435,6 +7444,7 @@ void Renderer::draw(MTK::View *pView) {
               "staging_valid=%d).\n",
               label, historyBackingName(slot.historyBacking),
               slot.stagingValid ? 1 : 0);
+          restirHistoryInvalid = true;
         }
         return true;
       }
@@ -7449,6 +7459,7 @@ void Renderer::draw(MTK::View *pView) {
               label, historyBackingName(slot.historyBacking),
               static_cast<unsigned>(slot.historyWidth),
               static_cast<unsigned>(slot.historyHeight));
+          restirHistoryInvalid = true;
         }
         return true;
       }
@@ -7459,13 +7470,17 @@ void Renderer::draw(MTK::View *pView) {
         std::printf(
             "[TextureResidency] ReSTIR history missing for %s (backing=%s).\n",
             label, historyBackingName(slot.historyBacking));
+        restirHistoryInvalid = true;
       }
       return true;
     }
   };
 
   auto proxyRestorePending = [&](const ManagedTextureSlot &slot) {
-    return slot.historyIsProxy && (!slot.texture || slot.needsGpuRefresh);
+    bool pending = slot.historyIsProxy && (!slot.texture || slot.needsGpuRefresh);
+    if (pending && isRestirHistorySlot(slot))
+      restirHistoryInvalid = true;
+    return pending;
   };
 
   if (proxyRestorePending(_accumulationSlots[0]) ||
@@ -7486,6 +7501,8 @@ void Renderer::draw(MTK::View *pView) {
       historyMissing(_restirNormalSlots[1]) ||
       historyMissing(_restirStateSlots[0]) ||
       historyMissing(_restirStateSlots[1])) {
+    if (restirHistoryInvalid)
+      _frameRestirHistoryReset = true;
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
   }
@@ -12999,6 +13016,7 @@ void Renderer::beginFrameMetrics() {
     sample.probabilityTargetFraction = _residencyConfig.probabilityTargetFraction;
     sample.probabilityVisibleFloor = _residencyConfig.probabilityVisibleFloor;
     sample.restirReuseRate = _frameRestirReuseRate;
+    sample.restirHistoryReset = _frameRestirHistoryReset;
     sample.restirCandidateAcceptance = _frameRestirCandidateAcceptance;
     sample.cameraMotionMetric = _frameCameraMotionMetric;
     sample.environmentTargetActiveFraction =
@@ -13234,6 +13252,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
     BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
     _pendingBenchmarkSamples.pop_front();
     sample.restirReuseRate = _frameRestirReuseRate;
+    sample.restirHistoryReset = _frameRestirHistoryReset;
     sample.restirCandidateAcceptance = _frameRestirCandidateAcceptance;
     sample.cameraMotionMetric = _frameCameraMotionMetric;
     sample.cpuTimeSeconds = _lastCPUTime;

@@ -451,6 +451,7 @@ private:
     double probabilityTargetFraction = 0.0;
     double probabilityVisibleFloor = 0.0;
     double restirReuseRate = 0.0;
+    bool restirHistoryReset = false;
     double restirCandidateAcceptance = 0.0;
     double cameraMotionMetric = 0.0;
     std::string primitiveProbabilities;
@@ -736,6 +737,7 @@ private:
   bool _historyStreamingUsedProxy = false;
   size_t _historyStreamingRestoreCount = 0;
   size_t _frameRestirHistoryEvictions = 0;
+  bool _frameRestirHistoryReset = false;
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
