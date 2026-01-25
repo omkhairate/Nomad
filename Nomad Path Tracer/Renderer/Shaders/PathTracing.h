@@ -196,6 +196,27 @@ struct RestirEvaluation {
   bool valid;
 };
 
+inline bool intersectAABB(thread const Ray &r, float3 bmin, float3 bmax,
+                          float tMin, float tMax);
+inline intersection firstHitBVH(thread const Ray &r,
+                                device const float4 *bvhNodes,
+                                device const float4 *primitives,
+                                device const int *primitiveIndices,
+                                device const uchar *activeMask,
+                                device const uint *primitiveRemap,
+                                uint residentPrimitiveCount,
+                                uint totalPrimitiveCount,
+                                device atomic_uint *primitiveRayStats,
+                                int startNode);
+inline intersection firstHitTLAS(
+    thread const Ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
+    device const float4 *bvhNodes, device const float4 *primitives,
+    device const int *primitiveIndices, device const uchar *activeMask,
+    device const InstanceRecord *instanceRecords,
+    device const uint *primitiveRemap, uint residentPrimitiveCount,
+    uint totalPrimitiveCount, device atomic_uint *primitiveRayStats,
+    thread TlasLeafCache *cache);
+
 inline RestirEvaluation evaluateLightCandidate(
     uint lightOffset, uint lightPrimIndex, float3 lightPoint,
     float3 lightNormal, float area, float3 offsetNormal,
