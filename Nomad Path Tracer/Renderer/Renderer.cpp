@@ -587,6 +587,7 @@ struct UniformsData {
   uint32_t sampleImportanceTextureIndex = 0;
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
+  uint32_t restirSamplingEnabled = 0;
   uint32_t textureCount = 0;
   uint32_t environmentMapEnabled = 0;
   float environmentMapIntensity = 1.0f;
@@ -1300,6 +1301,8 @@ Renderer::~Renderer() {
     _pLightIndexBuffer->release();
   if (_pLightCdfBuffer)
     _pLightCdfBuffer->release();
+  if (_pRestirStatsBuffer)
+    _pRestirStatsBuffer->release();
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
   if (_pGeometryHandleBuffer)
@@ -1342,6 +1345,12 @@ Renderer::~Renderer() {
   releaseTextureSlot(_sampleImportanceSlot);
   releaseTextureSlot(_albedoSlot);
   releaseTextureSlot(_normalSlot);
+  for (auto &slot : _restirSampleSlots)
+    releaseTextureSlot(slot);
+  for (auto &slot : _restirNormalSlots)
+    releaseTextureSlot(slot);
+  for (auto &slot : _restirStateSlots)
+    releaseTextureSlot(slot);
 
   if (_pTextureClearBuffer)
     _pTextureClearBuffer->release();
@@ -1410,8 +1419,6 @@ void Renderer::resetProbabilisticResidencyState() {
             2.0f);
   std::fill(_primitiveExplorationScore.begin(),
             _primitiveExplorationScore.end(), 0.0f);
-  std::fill(_restirReservoirWeight.begin(), _restirReservoirWeight.end(), 0.0f);
-  std::fill(_restirTemporalScore.begin(), _restirTemporalScore.end(), 0.0f);
 
   std::fill(_objectHitAlpha.begin(), _objectHitAlpha.end(), 1.0f);
   std::fill(_objectHitBeta.begin(), _objectHitBeta.end(), 1.0f);
@@ -1519,9 +1526,8 @@ void Renderer::writeBenchmarkHeader() {
          "probability_target_primitives,"
          "probability_initial_desired_primitives,"
          "probability_final_desired_primitives,probability_trimmed_primitives,"
-         "probability_budget_hit,restir_reservoir_size,restir_reuse_weight,"
-        "restir_candidate_count,restir_toggle_budget,restir_reuse_rate,"
-        "restir_candidate_acceptance,primitive_probabilities,"
+         "probability_budget_hit,restir_reuse_rate,restir_candidate_acceptance,"
+         "primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,geometry_memory_cap_mb,"
@@ -1607,10 +1613,6 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.probabilityFinalDesiredPrimitives << ','
       << sample.probabilityTrimmedPrimitives << ','
       << boolToInt(sample.probabilityBudgetHit) << ','
-      << _residencyConfig.restirReservoirSize << ','
-      << formatFixed(_residencyConfig.restirReuseWeight, 3) << ','
-      << _residencyConfig.restirCandidateCount << ','
-      << _residencyConfig.restirMaxTogglesPerFrame << ','
       << formatFixed(sample.restirReuseRate, 3) << ','
       << formatFixed(sample.restirCandidateAcceptance, 3) << ',';
   appendCsvEscaped(row, sample.primitiveProbabilities);
@@ -1680,7 +1682,7 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
   case ResidencyStrategy::Probabilistic:
     return "Probabilistic";
   case ResidencyStrategy::ReSTIR:
-    return "ReSTIR RIS";
+    return "Deprecated ReSTIR (distance LOD fallback)";
   case ResidencyStrategy::UnifiedScore:
     return "Unified score";
   case ResidencyStrategy::PredictiveEnvironment:
@@ -2466,11 +2468,6 @@ void Renderer::updateVisibleScene() {
 
   _residencyConfig = _pScene->getResidencyParameters();
   _residencyConfig.normalizeEnvironmentDepthSettings();
-  if (_pScene->getResidencyStrategy() == ResidencyStrategy::ReSTIR &&
-      !_residencyConfig.restirSamplingEnabled) {
-    _residencyConfig.restirSamplingEnabled = true;
-    _pScene->setResidencyParameters(_residencyConfig);
-  }
   bool requiresCachedBlas =
       _pScene->getResidencyStrategy() != ResidencyStrategy::AlwaysResident;
   if (_residencyConfig.buildCachedBlas != requiresCachedBlas) {
@@ -2513,7 +2510,7 @@ void Renderer::updateVisibleScene() {
     strategyName = "Unified score";
     break;
   case ResidencyStrategy::ReSTIR:
-    strategyName = "ReSTIR RIS";
+    strategyName = "Deprecated ReSTIR (distance LOD fallback)";
     break;
   case ResidencyStrategy::PredictiveEnvironment:
     strategyName = "Predictive environment";
@@ -2566,9 +2563,6 @@ void Renderer::updateVisibleScene() {
   _primitiveVisible.assign(primCount, 0);
   _rayHitSortedIndices.resize(primCount);
   _probabilitySortedIndices.resize(primCount);
-  _restirReservoirWeight.assign(primCount, 0.0f);
-  _restirTemporalScore.assign(primCount, 0.0f);
-  _restirSortedIndices.resize(primCount);
   _primitiveScreenCoverage.assign(primCount, 0.0f);
   _primitiveDistanceFalloffCache.assign(primCount, 0.0f);
   _primitiveCoverageDirty.assign(primCount, 1);
@@ -2627,8 +2621,6 @@ void Renderer::updateVisibleScene() {
         _rayHitSortedIndices[i] = i;
       if (i < _probabilitySortedIndices.size())
         _probabilitySortedIndices[i] = i;
-      if (i < _restirSortedIndices.size())
-        _restirSortedIndices[i] = i;
       if (i < _screenCoverageSortedIndices.size())
         _screenCoverageSortedIndices[i] = i;
       localImportance += std::max(_primitiveImportance[i], 0.0f);
@@ -2795,13 +2787,20 @@ void Renderer::prewarmAlwaysResidentResources() {
   MTL::Texture *sampleImportance = ensureSlotReady(_sampleImportanceSlot);
   MTL::Texture *albedoTexture = ensureSlotReady(_albedoSlot);
   MTL::Texture *normalTexture = ensureSlotReady(_normalSlot);
+  MTL::Texture *restirPrevSample = ensureSlotReady(_restirSampleSlots[0]);
+  MTL::Texture *restirPrevNormal = ensureSlotReady(_restirNormalSlots[0]);
+  MTL::Texture *restirPrevState = ensureSlotReady(_restirStateSlots[0]);
+  MTL::Texture *restirOutSample = ensureSlotReady(_restirSampleSlots[1]);
+  MTL::Texture *restirOutNormal = ensureSlotReady(_restirNormalSlots[1]);
+  MTL::Texture *restirOutState = ensureSlotReady(_restirStateSlots[1]);
 
   if (blit)
     blit->endEncoding();
 
   bool haveAllTextures =
       accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
-      normalTexture;
+      normalTexture && restirPrevSample && restirPrevNormal && restirPrevState &&
+      restirOutSample && restirOutNormal && restirOutState;
 
   bool useAccelerationStructureLayout =
       _useAccelerationStructureBindings && _pTlasStructure &&
@@ -2817,7 +2816,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     if (!_pSphereBuffer || !_pSphereMaterialBuffer || !_pUniformsBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer) {
+        !_pInstanceBuffer || !_pRestirStatsBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -2828,7 +2827,7 @@ void Renderer::prewarmAlwaysResidentResources() {
         !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer) {
+        !_pInstanceBuffer || !_pRestirStatsBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -2858,6 +2857,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pInstanceBuffer, 0, 10);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
+    compute->setBuffer(_pRestirStatsBuffer, 0, 14);
   } else {
     compute->setBuffer(_pBVHBuffer, 0, 0);
     compute->setBuffer(_pSphereBuffer, 0, 1);
@@ -2873,6 +2873,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
+    compute->setBuffer(_pRestirStatsBuffer, 0, 14);
   }
 
   compute->setTexture(accum0, 0);
@@ -2881,15 +2882,21 @@ void Renderer::prewarmAlwaysResidentResources() {
   compute->setTexture(sampleImportance, 3);
   compute->setTexture(albedoTexture, 4);
   compute->setTexture(normalTexture, 5);
+  compute->setTexture(restirPrevSample, 6);
+  compute->setTexture(restirPrevNormal, 7);
+  compute->setTexture(restirPrevState, 8);
+  compute->setTexture(restirOutSample, 9);
+  compute->setTexture(restirOutNormal, 10);
+  compute->setTexture(restirOutState, 11);
 
   for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
     MTL::Texture *materialTex =
         (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
                                             : nullptr;
-    compute->setTexture(materialTex, 6 + texIdx);
+    compute->setTexture(materialTex, 12 + texIdx);
   }
 
-  compute->setTexture(_environmentTexture, 6 + kMaxMaterialTextureSlots);
+  compute->setTexture(_environmentTexture, 12 + kMaxMaterialTextureSlots);
   if (_environmentSampler)
     compute->setSamplerState(_environmentSampler, 0);
 
@@ -4361,6 +4368,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     if (_pUniformsBuffer)
       markBufferModified(_pUniformsBuffer,
                          NS::Range::Make(0, uniformsDataSize));
+  }
+  if (!_pRestirStatsBuffer) {
+    constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 4;
+    _pRestirStatsBuffer =
+        _pDevice->newBuffer(kRestirStatsBytes, MTL::ResourceStorageModeShared);
+    if (_pRestirStatsBuffer) {
+      if (void *ptr = _pRestirStatsBuffer->contents())
+        std::memset(ptr, 0, kRestirStatsBytes);
+    }
   }
 
   if (_primitiveToResidentIndex.size() < totalPrimitiveCount)
@@ -5964,6 +5980,18 @@ const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
     return "_albedoSlot";
   if (&slot == &_normalSlot)
     return "_normalSlot";
+  if (&slot == &_restirSampleSlots[0])
+    return "_restirSampleSlots[0]";
+  if (&slot == &_restirSampleSlots[1])
+    return "_restirSampleSlots[1]";
+  if (&slot == &_restirNormalSlots[0])
+    return "_restirNormalSlots[0]";
+  if (&slot == &_restirNormalSlots[1])
+    return "_restirNormalSlots[1]";
+  if (&slot == &_restirStateSlots[0])
+    return "_restirStateSlots[0]";
+  if (&slot == &_restirStateSlots[1])
+    return "_restirStateSlots[1]";
   return "<unknown texture slot>";
 }
 
@@ -5990,7 +6018,10 @@ void Renderer::configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width
   slot.stagingValid = false;
 
   if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
-      &slot == &_sampleCountSlot) {
+      &slot == &_sampleCountSlot || &slot == &_restirSampleSlots[0] ||
+      &slot == &_restirSampleSlots[1] || &slot == &_restirNormalSlots[0] ||
+      &slot == &_restirNormalSlots[1] || &slot == &_restirStateSlots[0] ||
+      &slot == &_restirStateSlots[1]) {
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
   }
@@ -6233,7 +6264,10 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
   }
 
   if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
-      &slot == &_sampleCountSlot) {
+      &slot == &_sampleCountSlot || &slot == &_restirSampleSlots[0] ||
+      &slot == &_restirSampleSlots[1] || &slot == &_restirNormalSlots[0] ||
+      &slot == &_restirNormalSlots[1] || &slot == &_restirStateSlots[0] ||
+      &slot == &_restirStateSlots[1]) {
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
   }
@@ -6266,7 +6300,10 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
                 label);
     if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
         &slot == &_sampleCountSlot || &slot == &_albedoSlot ||
-        &slot == &_normalSlot) {
+        &slot == &_normalSlot || &slot == &_restirSampleSlots[0] ||
+        &slot == &_restirSampleSlots[1] || &slot == &_restirNormalSlots[0] ||
+        &slot == &_restirNormalSlots[1] || &slot == &_restirStateSlots[0] ||
+        &slot == &_restirStateSlots[1]) {
       _needsAccumulationReset = true;
       _accumulationTargetsNeedClear = true;
     }
@@ -6411,9 +6448,12 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
                 residencyMB, totalMemoryMB, scratchMB, _textureResidencyMemoryCapMB);
   }
 
-  std::array<ManagedTextureSlot *, 6> slots = {
+  std::array<ManagedTextureSlot *, 12> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot};
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot,
+      &_restirSampleSlots[0], &_restirSampleSlots[1],
+      &_restirNormalSlots[0], &_restirNormalSlots[1],
+      &_restirStateSlots[0], &_restirStateSlots[1]};
 
   struct ResidencyCandidate {
     ManagedTextureSlot *slot = nullptr;
@@ -6735,6 +6775,15 @@ void Renderer::buildTextures() {
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_normalSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  for (auto &slot : _restirSampleSlots)
+    configureTextureSlot(slot, width, height,
+                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  for (auto &slot : _restirNormalSlots)
+    configureTextureSlot(slot, width, height,
+                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  for (auto &slot : _restirStateSlots)
+    configureTextureSlot(slot, width, height,
+                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
 
   _needsAccumulationReset = true;
   _accumulationTargetsNeedClear = true;
@@ -6744,9 +6793,12 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   if (!cmd)
     return false;
 
-  std::array<ManagedTextureSlot *, 6> slots = {
+  std::array<ManagedTextureSlot *, 12> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot};
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot,
+      &_restirSampleSlots[0], &_restirSampleSlots[1],
+      &_restirNormalSlots[0], &_restirNormalSlots[1],
+      &_restirStateSlots[0], &_restirStateSlots[1]};
 
   bool anyDescriptors = false;
   bool allResident = true;
@@ -6958,6 +7010,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.sampleImportanceTextureIndex = 3;
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
+  u.restirSamplingEnabled = _residencyConfig.restirSamplingEnabled ? 1u : 0u;
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
@@ -7037,9 +7090,21 @@ void Renderer::draw(MTK::View *pView) {
   if (proxyRestorePending(_accumulationSlots[0]) ||
       proxyRestorePending(_accumulationSlots[1]) ||
       proxyRestorePending(_sampleCountSlot) ||
+      proxyRestorePending(_restirSampleSlots[0]) ||
+      proxyRestorePending(_restirSampleSlots[1]) ||
+      proxyRestorePending(_restirNormalSlots[0]) ||
+      proxyRestorePending(_restirNormalSlots[1]) ||
+      proxyRestorePending(_restirStateSlots[0]) ||
+      proxyRestorePending(_restirStateSlots[1]) ||
       historyMissing(_accumulationSlots[0]) ||
       historyMissing(_accumulationSlots[1]) ||
-      historyMissing(_sampleCountSlot)) {
+      historyMissing(_sampleCountSlot) ||
+      historyMissing(_restirSampleSlots[0]) ||
+      historyMissing(_restirSampleSlots[1]) ||
+      historyMissing(_restirNormalSlots[0]) ||
+      historyMissing(_restirNormalSlots[1]) ||
+      historyMissing(_restirStateSlots[0]) ||
+      historyMissing(_restirStateSlots[1])) {
     _needsAccumulationReset = true;
     _accumulationTargetsNeedClear = true;
   }
@@ -7056,6 +7121,9 @@ void Renderer::draw(MTK::View *pView) {
   updateUniforms(cameraChanged);
   beginFrameMetrics();
   std::swap(_accumulationSlots[0], _accumulationSlots[1]);
+  std::swap(_restirSampleSlots[0], _restirSampleSlots[1]);
+  std::swap(_restirNormalSlots[0], _restirNormalSlots[1]);
+  std::swap(_restirStateSlots[0], _restirStateSlots[1]);
 
   _historyStreamingActive = false;
   _historyStreamingRestoreCount = 0;
@@ -7106,6 +7174,12 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *sampleImportance = _sampleImportanceSlot.texture;
   MTL::Texture *albedoTexture = _albedoSlot.texture;
   MTL::Texture *normalTexture = _normalSlot.texture;
+  MTL::Texture *restirPrevSample = _restirSampleSlots[0].texture;
+  MTL::Texture *restirPrevNormal = _restirNormalSlots[0].texture;
+  MTL::Texture *restirPrevState = _restirStateSlots[0].texture;
+  MTL::Texture *restirOutSample = _restirSampleSlots[1].texture;
+  MTL::Texture *restirOutNormal = _restirNormalSlots[1].texture;
+  MTL::Texture *restirOutState = _restirStateSlots[1].texture;
   if (allowResidency) {
     accum0 = requestResidentTexture(_accumulationSlots[0], prepCmd, restoreBlit);
     accum1 = requestResidentTexture(_accumulationSlots[1], prepCmd, restoreBlit);
@@ -7114,6 +7188,18 @@ void Renderer::draw(MTK::View *pView) {
         requestResidentTexture(_sampleImportanceSlot, prepCmd, restoreBlit);
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
     normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
+    restirPrevSample =
+        requestResidentTexture(_restirSampleSlots[0], prepCmd, restoreBlit);
+    restirPrevNormal =
+        requestResidentTexture(_restirNormalSlots[0], prepCmd, restoreBlit);
+    restirPrevState =
+        requestResidentTexture(_restirStateSlots[0], prepCmd, restoreBlit);
+    restirOutSample =
+        requestResidentTexture(_restirSampleSlots[1], prepCmd, restoreBlit);
+    restirOutNormal =
+        requestResidentTexture(_restirNormalSlots[1], prepCmd, restoreBlit);
+    restirOutState =
+        requestResidentTexture(_restirStateSlots[1], prepCmd, restoreBlit);
   }
 
   auto ensureSlotReady = [&](ManagedTextureSlot &slot, MTL::Texture *&handle) {
@@ -7132,6 +7218,12 @@ void Renderer::draw(MTK::View *pView) {
   ensureSlotReady(_sampleImportanceSlot, sampleImportance);
   ensureSlotReady(_albedoSlot, albedoTexture);
   ensureSlotReady(_normalSlot, normalTexture);
+  ensureSlotReady(_restirSampleSlots[0], restirPrevSample);
+  ensureSlotReady(_restirNormalSlots[0], restirPrevNormal);
+  ensureSlotReady(_restirStateSlots[0], restirPrevState);
+  ensureSlotReady(_restirSampleSlots[1], restirOutSample);
+  ensureSlotReady(_restirNormalSlots[1], restirOutNormal);
+  ensureSlotReady(_restirStateSlots[1], restirOutState);
 
   auto markSlotUsed = [&](ManagedTextureSlot &slot, MTL::Texture *handle) {
     if (handle)
@@ -7144,13 +7236,20 @@ void Renderer::draw(MTK::View *pView) {
   markSlotUsed(_sampleImportanceSlot, sampleImportance);
   markSlotUsed(_albedoSlot, albedoTexture);
   markSlotUsed(_normalSlot, normalTexture);
+  markSlotUsed(_restirSampleSlots[0], restirPrevSample);
+  markSlotUsed(_restirNormalSlots[0], restirPrevNormal);
+  markSlotUsed(_restirStateSlots[0], restirPrevState);
+  markSlotUsed(_restirSampleSlots[1], restirOutSample);
+  markSlotUsed(_restirNormalSlots[1], restirOutNormal);
+  markSlotUsed(_restirStateSlots[1], restirOutState);
 
   if (restoreBlit)
     restoreBlit->endEncoding();
 
   bool haveAllTextures =
       accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
-      normalTexture;
+      normalTexture && restirPrevSample && restirPrevNormal && restirPrevState &&
+      restirOutSample && restirOutNormal && restirOutState;
 
   if (_accumulationTargetsNeedClear && haveAllTextures) {
     if (resetAccumulationTargets(prepCmd)) {
@@ -7160,6 +7259,15 @@ void Renderer::draw(MTK::View *pView) {
   }
 
   updateAdaptiveSamplingMaps(prepCmd);
+
+  if (_pRestirStatsBuffer) {
+    constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 4;
+    if (MTL::BlitCommandEncoder *statsBlit = prepCmd->blitCommandEncoder()) {
+      statsBlit->fillBuffer(_pRestirStatsBuffer,
+                            NS::Range::Make(0, kRestirStatsBytes), 0);
+      statsBlit->endEncoding();
+    }
+  }
 
   prepCmd->commit();
 
@@ -7359,6 +7467,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+        pCompute->setBuffer(_pRestirStatsBuffer, 0, 14);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -7374,6 +7483,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+        pCompute->setBuffer(_pRestirStatsBuffer, 0, 14);
       }
 
       pCompute->setTexture(accum0, 0);
@@ -7382,16 +7492,22 @@ void Renderer::draw(MTK::View *pView) {
       pCompute->setTexture(sampleImportance, 3);
       pCompute->setTexture(albedoTexture, 4);
       pCompute->setTexture(normalTexture, 5);
+      pCompute->setTexture(restirPrevSample, 6);
+      pCompute->setTexture(restirPrevNormal, 7);
+      pCompute->setTexture(restirPrevState, 8);
+      pCompute->setTexture(restirOutSample, 9);
+      pCompute->setTexture(restirOutNormal, 10);
+      pCompute->setTexture(restirOutState, 11);
 
       for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
         MTL::Texture *materialTex =
             (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
                                                 : nullptr;
-        pCompute->setTexture(materialTex, 6 + texIdx);
+        pCompute->setTexture(materialTex, 12 + texIdx);
       }
 
       pCompute->setTexture(_environmentTexture,
-                            6 + kMaxMaterialTextureSlots);
+                            12 + kMaxMaterialTextureSlots);
       if (_environmentSampler)
         pCompute->setSamplerState(_environmentSampler, 0);
 
@@ -7578,9 +7694,6 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameRestirReuseRate = 0.0;
   _frameRestirCandidateAcceptance = 0.0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
-  bool restirSamplingActive = _residencyConfig.restirSamplingEnabled;
-  if (strategy == ResidencyStrategy::ReSTIR)
-    restirSamplingActive = true;
   if (strategy != _lastResidencyStrategy) {
     if (strategy == ResidencyStrategy::AlwaysResident) {
       _alwaysResidentCache.markDirty();
@@ -7589,7 +7702,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     }
     _lastResidencyStrategy = strategy;
   }
-  _frameStrategy = restirSamplingActive ? ResidencyStrategy::ReSTIR : strategy;
+  _frameStrategy = strategy;
 
   for (uint32_t &cooldown : _primitiveCooldown)
     if (cooldown > 0)
@@ -7615,6 +7728,8 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     changed = updateProbabilisticResidency(forceAllToggles);
     break;
   case ResidencyStrategy::ReSTIR:
+    printf("Deprecated residency strategy ReSTIR requested; falling back to distance LOD.\n");
+    changed = updateLODByDistance(forceAllToggles);
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
     changed = updateScreenSpaceFootprint(forceAllToggles);
@@ -7633,9 +7748,6 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     changed = updateLODByDistance(forceAllToggles);
     break;
   }
-
-  if (restirSamplingActive)
-    changed |= updateReSTIRResidency(forceAllToggles);
 
   if (changed || forceFullRebuild)
     flushResidencyChanges(forceFullRebuild);
@@ -10489,287 +10601,6 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   return changed;
 }
 
-bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
-  if (_activePrimitive.empty())
-    return false;
-
-  auto randomPositive = []() {
-    float r = randomFloat();
-    constexpr float kEpsilon = 1e-6f;
-    return (r <= 0.0f) ? kEpsilon : r;
-  };
-
-  _frameProbabilityTargetPrimitives = 0;
-  _frameProbabilityInitialDesiredPrimitives = 0;
-  _frameProbabilityFinalDesiredPrimitives = 0;
-  _frameProbabilityTrimmedPrimitives = 0;
-  _frameProbabilityBudgetHit = false;
-  _frameProbabilisticToggles = 0;
-
-  const size_t primCount = _activePrimitive.size();
-  const size_t reservoirSize =
-      std::max<size_t>(1, _residencyConfig.restirReservoirSize);
-  const size_t candidateCount =
-      std::max<size_t>(1, _residencyConfig.restirCandidateCount);
-  const float reuseWeight =
-      std::clamp(_residencyConfig.restirReuseWeight, 0.0f, 1.0f);
-  const size_t toggleBudget = _residencyConfig.restirMaxTogglesPerFrame;
-  const float hysteresis =
-      std::max(0.0f, _residencyConfig.probabilityDesiredHysteresis);
-  const float explorationFloor = 1.0e-3f;
-
-  if (_restirReservoirWeight.size() < primCount)
-    _restirReservoirWeight.resize(primCount, 0.0f);
-  if (_restirTemporalScore.size() < primCount)
-    _restirTemporalScore.resize(primCount, 0.0f);
-  if (_restirSortedIndices.size() != primCount) {
-    _restirSortedIndices.resize(primCount);
-    std::iota(_restirSortedIndices.begin(), _restirSortedIndices.end(), size_t(0));
-  }
-
-  size_t minActive =
-      std::min(_residencyConfig.probabilityMinActivePrimitives, primCount);
-  size_t targetActive = static_cast<size_t>(std::ceil(
-      _residencyConfig.probabilityTargetFraction * static_cast<float>(primCount)));
-  targetActive = std::max(targetActive, minActive);
-  targetActive = std::min(targetActive, primCount);
-  _frameProbabilityTargetPrimitives = targetActive;
-
-  std::vector<float> candidateWeights(primCount, 0.0f);
-  std::vector<float> combinedWeights(primCount, 0.0f);
-  std::vector<float> sortJitter(primCount, 0.0f);
-
-  for (float &j : sortJitter)
-    j = (randomFloat() - 0.5f) * 1e-3f;
-
-  float totalCandidateWeight = 0.0f;
-  for (size_t i = 0; i < primCount; ++i) {
-    float probability = (i < _primitiveHitProbability.size())
-                            ? _primitiveHitProbability[i]
-                            : 0.5f;
-    float variance =
-        (i < _primitiveHitVariance.size()) ? _primitiveHitVariance[i] : 1.0f / 12.0f;
-    float exploration = (i < _primitiveExplorationScore.size())
-                            ? _primitiveExplorationScore[i]
-                            : 0.0f;
-    bool visible = (i < _primitiveVisible.size())
-                       ? (_primitiveVisible[i] != 0)
-                       : ((i < _primitiveBounds.size()) ? isInView(_primitiveBounds[i])
-                                                       : true);
-    float visibilityWeight = visible ? 1.25f : 0.85f;
-    float candidateWeight = probability * visibilityWeight;
-    candidateWeight += std::sqrt(std::max(variance, 0.0f)) * 0.25f;
-    if (exploration > 0.0f)
-      candidateWeight += std::min(exploration, 8.0f) * 0.05f;
-    candidateWeight = std::max(candidateWeight, 0.0f);
-
-    candidateWeight = std::max(candidateWeight + explorationFloor,
-                               explorationFloor);
-    candidateWeight += explorationFloor * (randomFloat() * 0.25f);
-    candidateWeights[i] = candidateWeight;
-    totalCandidateWeight += candidateWeight;
-  }
-
-  double reuseWeightSum = 0.0;
-  double candidateWeightSum = 0.0;
-
-  struct ReservoirCandidate {
-    float key = 0.0f;
-    float weight = 0.0f;
-    size_t index = 0;
-  };
-
-  auto sampleIndex = [&](float r) {
-    float accum = 0.0f;
-    for (size_t i = 0; i < candidateWeights.size(); ++i) {
-      accum += candidateWeights[i];
-      if (r <= accum)
-        return i;
-    }
-    return candidateWeights.empty() ? size_t(0) : candidateWeights.size() - 1;
-  };
-
-  if (reuseWeight > 0.0f) {
-    for (size_t i = 0; i < primCount; ++i) {
-      float prevWeight = _restirReservoirWeight[i];
-      if (!(prevWeight > 0.0f))
-        continue;
-      float reused = prevWeight * reuseWeight;
-      if (!(reused > 0.0f))
-        continue;
-      reuseWeightSum += static_cast<double>(reused);
-      combinedWeights[i] += reused;
-    }
-  }
-
-  if (totalCandidateWeight <= 0.0f)
-    totalCandidateWeight = static_cast<float>(primCount) * explorationFloor;
-
-  for (size_t c = 0; c < candidateCount; ++c) {
-    float r = randomPositive() * totalCandidateWeight;
-    size_t sampled = sampleIndex(r);
-    float weight = (sampled < candidateWeights.size()) ? candidateWeights[sampled]
-                                                       : explorationFloor;
-    candidateWeightSum += static_cast<double>(weight);
-    combinedWeights[sampled] += weight;
-  }
-
-  std::fill(_restirReservoirWeight.begin(), _restirReservoirWeight.end(), 0.0f);
-  std::fill(_restirTemporalScore.begin(), _restirTemporalScore.end(), 0.0f);
-
-  using Heap =
-      std::priority_queue<ReservoirCandidate, std::vector<ReservoirCandidate>,
-                          std::function<bool(const ReservoirCandidate &,
-                                             const ReservoirCandidate &)>>;
-  auto cmp = [](const ReservoirCandidate &a, const ReservoirCandidate &b) {
-    return a.key > b.key;
-  };
-  Heap heap(cmp);
-
-  auto considerCandidate = [&](Heap &heap, size_t index, float weight) {
-    if (!(weight > 0.0f))
-      return;
-    float key = std::pow(randomPositive(), 1.0f / std::max(weight, 1e-6f));
-    key += (randomFloat() - 0.5f) * 1e-4f;
-    ReservoirCandidate candidate{key, weight, index};
-    if (heap.size() < reservoirSize) {
-      heap.push(candidate);
-      return;
-    }
-    if (key > heap.top().key) {
-      heap.pop();
-      heap.push(candidate);
-    }
-  };
-
-  for (size_t i = 0; i < primCount; ++i)
-    considerCandidate(heap, i, combinedWeights[i]);
-
-  std::vector<ReservoirCandidate> selected;
-  selected.reserve(heap.size());
-  while (!heap.empty()) {
-    selected.push_back(heap.top());
-    heap.pop();
-  }
-
-  float selectedWeightSum = 0.0f;
-  for (const auto &entry : selected)
-    selectedWeightSum += entry.weight;
-
-  for (const auto &entry : selected) {
-    size_t idx = entry.index;
-    if (idx >= _restirReservoirWeight.size() || selectedWeightSum <= 0.0f)
-      continue;
-    float normalized = entry.weight / selectedWeightSum;
-    bool visible = (idx < _primitiveVisible.size())
-                       ? (_primitiveVisible[idx] != 0)
-                       : true;
-    if (!visible)
-      normalized *= 0.9f;
-    _restirReservoirWeight[idx] = entry.weight;
-    _restirTemporalScore[idx] = normalized;
-  }
-
-  size_t sortCount = std::max<size_t>(1, targetActive);
-  sortCount = std::min(sortCount, primCount);
-  auto comparator = [this, &sortJitter](size_t a, size_t b) {
-    float scoreA = (a < _restirTemporalScore.size()) ? _restirTemporalScore[a] : 0.0f;
-    float scoreB = (b < _restirTemporalScore.size()) ? _restirTemporalScore[b] : 0.0f;
-    float jitterA = (a < sortJitter.size()) ? sortJitter[a] : 0.0f;
-    float jitterB = (b < sortJitter.size()) ? sortJitter[b] : 0.0f;
-    scoreA += jitterA;
-    scoreB += jitterB;
-    float sanA = sanitizeSortValue(scoreA);
-    float sanB = sanitizeSortValue(scoreB);
-    if (sanA == sanB)
-      return jitterA == jitterB ? a < b : jitterA > jitterB;
-    return sanA > sanB;
-  };
-  std::partial_sort(_restirSortedIndices.begin(),
-                    _restirSortedIndices.begin() + sortCount,
-                    _restirSortedIndices.end(), comparator);
-
-  std::vector<bool> desired(primCount, false);
-  size_t enabled = 0;
-  float thresholdScore = 0.0f;
-  for (size_t idx : _restirSortedIndices) {
-    if (enabled >= targetActive)
-      break;
-    desired[idx] = true;
-    thresholdScore =
-        (idx < _restirTemporalScore.size()) ? _restirTemporalScore[idx] : 0.0f;
-    ++enabled;
-  }
-  _frameProbabilityInitialDesiredPrimitives = enabled;
-
-  if (targetActive > 0) {
-    for (size_t i = 0; i < primCount; ++i) {
-      if (desired[i])
-        continue;
-      if (i >= _restirTemporalScore.size())
-        continue;
-      if (!_activePrimitive[i])
-        continue;
-      float score = _restirTemporalScore[i];
-      if (score + hysteresis >= thresholdScore) {
-        desired[i] = true;
-        ++enabled;
-      }
-    }
-  }
-
-  _frameProbabilityFinalDesiredPrimitives = enabled;
-  if (enabled > targetActive)
-    _frameProbabilityTrimmedPrimitives = enabled - targetActive;
-
-  size_t toggles = 0;
-  bool changed = false;
-  for (size_t i = 0; i < primCount; ++i) {
-    bool shouldBeActive = desired[i];
-    if (shouldBeActive == _activePrimitive[i])
-      continue;
-    if (!forceAllToggles) {
-      if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
-        continue;
-      if (toggleBudget > 0 && toggles >= toggleBudget) {
-        _frameProbabilityBudgetHit = true;
-        break;
-      }
-    }
-    if (setPrimitiveActive(i, shouldBeActive)) {
-      ++toggles;
-      changed = true;
-    }
-  }
-  _frameProbabilisticToggles = toggles;
-
-  size_t activeCount = 0;
-  for (bool active : _activePrimitive)
-    if (active)
-      ++activeCount;
-
-  if (activeCount == 0 && !_activePrimitive.empty()) {
-    size_t fallback = !_restirSortedIndices.empty() ? _restirSortedIndices.front()
-                                                    : size_t(0);
-    if (setPrimitiveActive(fallback, true))
-      changed = true;
-  }
-
-  activeCount = 0;
-  for (bool active : _activePrimitive)
-    if (active)
-      ++activeCount;
-
-  double totalWeight = reuseWeightSum + candidateWeightSum;
-  _frameRestirReuseRate =
-      (totalWeight > 0.0) ? (reuseWeightSum / totalWeight) : 0.0;
-  _frameRestirCandidateAcceptance =
-      primCount > 0 ? static_cast<double>(activeCount) /
-                          static_cast<double>(primCount)
-                    : 0.0;
-
-  return changed;
-}
 bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
@@ -11959,9 +11790,6 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
-    _restirReservoirWeight.clear();
-    _restirTemporalScore.clear();
-    _restirSortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
@@ -11992,9 +11820,6 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
-    _restirReservoirWeight.clear();
-    _restirTemporalScore.clear();
-    _restirSortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
@@ -12023,9 +11848,6 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
-    _restirReservoirWeight.clear();
-    _restirTemporalScore.clear();
-    _restirSortedIndices.clear();
     _rayHitCopyError = false;
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
@@ -12048,7 +11870,6 @@ void Renderer::processRayHitCounters() {
   bool strategyUsesHits =
       strategy == ResidencyStrategy::RayHitBudget ||
       strategy == ResidencyStrategy::Probabilistic ||
-      strategy == ResidencyStrategy::ReSTIR ||
       strategy == ResidencyStrategy::EnvironmentHit ||
       strategy == ResidencyStrategy::PredictiveEnvironment ||
       strategy == ResidencyStrategy::UnifiedScore;
@@ -12065,9 +11886,6 @@ void Renderer::processRayHitCounters() {
     _primitivePosteriorMass.clear();
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
-    _restirReservoirWeight.clear();
-    _restirTemporalScore.clear();
-    _restirSortedIndices.clear();
     _objectHitAlpha.clear();
     _objectHitBeta.clear();
     _objectHitProbability.clear();
@@ -12132,15 +11950,6 @@ void Renderer::processRayHitCounters() {
     std::iota(_probabilitySortedIndices.begin(), _probabilitySortedIndices.end(),
               size_t(0));
   }
-  if (_restirReservoirWeight.size() < totalPrimitiveCount)
-    _restirReservoirWeight.resize(totalPrimitiveCount, 0.0f);
-  if (_restirTemporalScore.size() < totalPrimitiveCount)
-    _restirTemporalScore.resize(totalPrimitiveCount, 0.0f);
-  if (_restirSortedIndices.size() != totalPrimitiveCount) {
-    _restirSortedIndices.resize(totalPrimitiveCount);
-    std::iota(_restirSortedIndices.begin(), _restirSortedIndices.end(), size_t(0));
-  }
-
   float rayHitDecay = _residencyConfig.rayHitDecay;
   float probabilityDecay = _residencyConfig.probabilityDecay;
   float probabilityThreshold = _residencyConfig.probabilityThreshold;
@@ -12843,6 +12652,23 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   } else {
     _lastRaysPerSecond = 0.0;
   }
+  if (_pRestirStatsBuffer) {
+    if (auto *stats =
+            static_cast<uint32_t *>(_pRestirStatsBuffer->contents())) {
+      uint32_t total = stats[0];
+      uint32_t reused = stats[1];
+      uint32_t accepted = stats[2];
+      if (total > 0) {
+        _frameRestirReuseRate =
+            static_cast<double>(reused) / static_cast<double>(total);
+        _frameRestirCandidateAcceptance =
+            static_cast<double>(accepted) / static_cast<double>(total);
+      } else {
+        _frameRestirReuseRate = 0.0;
+        _frameRestirCandidateAcceptance = 0.0;
+      }
+    }
+  }
   bool canRecalculateNodes =
       (_blasNodeCount > 0 && _cachedBVHNodes.size() >= _blasNodeCount * 2) ||
       (_tlasNodeCount > 0 && _cachedTLASNodes.size() >= _tlasNodeCount * 2) ||
@@ -12862,6 +12688,10 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   printf("Active nodes: %zu Resident nodes: %zu Offloaded nodes: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
          _activeNodeCount, _residentNodeCount, offloaded,
          _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond);
+  if (_residencyConfig.restirSamplingEnabled) {
+    printf("ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f\n",
+           _frameRestirReuseRate, _frameRestirCandidateAcceptance);
+  }
   if (isAlwaysResidentStrategy() && offloaded > 0) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",
            offloaded);
@@ -12872,6 +12702,8 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty()) {
     BenchmarkSample sample = std::move(_pendingBenchmarkSamples.front());
     _pendingBenchmarkSamples.pop_front();
+    sample.restirReuseRate = _frameRestirReuseRate;
+    sample.restirCandidateAcceptance = _frameRestirCandidateAcceptance;
     sample.cpuTimeSeconds = _lastCPUTime;
     sample.gpuTimeSeconds = _lastGPUTime;
     sample.raysPerSecond = _lastRaysPerSecond;

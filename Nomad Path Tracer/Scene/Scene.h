@@ -94,10 +94,6 @@ struct ResidencyParameters {
   float probabilityVisibleFloor = 0.0f;
   uint32_t probabilityVisibleDemotionDwellFrames = 0;
 
-  size_t restirReservoirSize = 8;
-  float restirReuseWeight = 0.85f;
-  size_t restirCandidateCount = 4;
-  size_t restirMaxTogglesPerFrame = 16;
   bool restirBaselineMode = false;
   bool restirSamplingEnabled = false;
 

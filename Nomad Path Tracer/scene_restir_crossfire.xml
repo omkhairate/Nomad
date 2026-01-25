@@ -1,9 +1,6 @@
 <Scene width="960" height="540" maxRayDepth="4" startCompacted="true"
-       residencyStrategy="restir"
-       restirReservoirSize="8"
-       restirReuseWeight="0.85"
-       restirCandidateCount="4"
-       restirToggleBudget="16">
+       residencyStrategy="distance"
+       restirSampling="true">
     <CameraPath>
         <!-- Same crossfire walk as other residency strategy tests -->
         <Keyframe frame="0"   position="-40,8,20" lookAt="0,6,-20" />

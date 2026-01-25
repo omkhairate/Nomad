@@ -19,16 +19,23 @@ kernel void pathTraceKernel(
     device const uint *primitiveRemap [[buffer(11)]],
     device atomic_uint *primitiveRayStats [[buffer(12)]],
     device const InstanceRecord *instanceRecords [[buffer(13)]],
+    device atomic_uint *restirStats [[buffer(14)]],
     texture2d<float, access::read> lastFrame [[texture(0)]],
     texture2d<float, access::write> currentFrame [[texture(1)]],
     texture2d<float, access::read_write> sampleCount [[texture(2)]],
     texture2d<half, access::read> sampleImportance [[texture(3)]],
     texture2d<float, access::read_write> albedoAccum [[texture(4)]],
     texture2d<float, access::read_write> normalAccum [[texture(5)]],
+    texture2d<float, access::read> restirPrevSample [[texture(6)]],
+    texture2d<float, access::read> restirPrevNormal [[texture(7)]],
+    texture2d<float, access::read> restirPrevState [[texture(8)]],
+    texture2d<float, access::write> restirOutSample [[texture(9)]],
+    texture2d<float, access::write> restirOutNormal [[texture(10)]],
+    texture2d<float, access::write> restirOutState [[texture(11)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
-        materialTextures [[texture(6)]],
+        materialTextures [[texture(12)]],
     texture2d<float, access::sample> environmentMap
-        [[texture(6 + kMaxMaterialTextures)]],
+        [[texture(12 + kMaxMaterialTextures)]],
     sampler environmentSampler [[sampler(0)]],
     constant TileRegion &tile [[buffer(16)]],
     uint2 gid [[thread_position_in_grid]]) {
@@ -75,6 +82,26 @@ kernel void pathTraceKernel(
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
 
+  bool restirEnabled = (u.restirSamplingEnabled != 0u);
+  RestirReservoir restir{};
+  if (restirEnabled) {
+    float4 prevState = restirPrevState.read(pixel);
+    float4 prevSample = restirPrevSample.read(pixel);
+    float4 prevNormal = restirPrevNormal.read(pixel);
+    if (isfinite(prevState.x) && isfinite(prevState.y) &&
+        prevState.x > 0.0f && prevState.y > 0.0f && isfinite(prevSample.w) &&
+        prevSample.w >= 0.0f) {
+      restir.valid = 1u;
+      restir.W = prevState.x;
+      restir.M = prevState.y;
+      restir.sample.position = prevSample.xyz;
+      restir.sample.normal = prevNormal.xyz;
+      restir.sample.area = prevNormal.w;
+      restir.sample.lightIndex = uint(prevSample.w);
+      restir.selectedFromTemporal = 1u;
+    }
+  }
+
   for (uint sampleIdx = 0; sampleIdx < samplesThisFrame; ++sampleIdx) {
     float xOff = (randomFloat(seed) - 0.5f) / screenSize.x;
     seed = random(seed);
@@ -120,10 +147,44 @@ kernel void pathTraceKernel(
                                       materialTextures, u.textureCount,
                                       environmentMap, environmentSampler,
                                       u.environmentMapEnabled,
-                                      u.environmentMapIntensity);
+                                      u.environmentMapIntensity,
+                                      restirEnabled && sampleIdx == 0
+                                          ? &restir
+                                          : nullptr,
+                                      restirEnabled && sampleIdx == 0);
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;
+  }
+
+  if (restirEnabled) {
+    float4 outSample = float4(0.0f);
+    float4 outNormal = float4(0.0f);
+    float4 outState = float4(0.0f);
+    if (restir.valid != 0u && restir.W > 0.0f && restir.M > 0.0f) {
+      outSample = float4(restir.sample.position,
+                         float(restir.sample.lightIndex));
+      outNormal = float4(restir.sample.normal, restir.sample.area);
+      outState = float4(restir.W, restir.M, 0.0f, 1.0f);
+    }
+    restirOutSample.write(outSample, pixel);
+    restirOutNormal.write(outNormal, pixel);
+    restirOutState.write(outState, pixel);
+
+    if (restirStats) {
+      atomic_fetch_add_explicit(&restirStats[0], 1u, memory_order_relaxed);
+      if (restir.valid != 0u) {
+        if (restir.selectedFromTemporal != 0u) {
+          atomic_fetch_add_explicit(&restirStats[1], 1u, memory_order_relaxed);
+        } else {
+          atomic_fetch_add_explicit(&restirStats[2], 1u, memory_order_relaxed);
+        }
+      }
+    }
+  } else {
+    restirOutSample.write(float4(0.0f), pixel);
+    restirOutNormal.write(float4(0.0f), pixel);
+    restirOutState.write(float4(0.0f), pixel);
   }
 
   float totalSamples = previousSampleCount + float(samplesThisFrame);
