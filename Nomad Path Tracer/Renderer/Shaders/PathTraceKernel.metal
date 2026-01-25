@@ -48,14 +48,32 @@ inline void writeRestirReservoir(texture2d<float, access::write> restirSample,
 
 kernel void restirSpatialKernel(
     device const UniformsData *uniforms [[buffer(0)]],
-    texture2d<float, access::read> restirInSample [[texture(0)]],
-    texture2d<float, access::read> restirInNormal [[texture(1)]],
-    texture2d<float, access::read> restirInState [[texture(2)]],
-    texture2d<float, access::write> restirOutSample [[texture(3)]],
-    texture2d<float, access::write> restirOutNormal [[texture(4)]],
-    texture2d<float, access::write> restirOutState [[texture(5)]],
+    device const float4 *bvhNodes [[buffer(1)]],
+    device const float4 *primitives [[buffer(2)]],
+    device const float4 *materials [[buffer(3)]],
+    device const int *primitiveIndices [[buffer(4)]],
+    device const float4 *tlasNodes [[buffer(5)]],
+    device const uchar *activeMask [[buffer(6)]],
+    device const uint *lightIndices [[buffer(7)]],
+    device const float *lightCdf [[buffer(8)]],
+    device const uint *primitiveRemap [[buffer(9)]],
+    device atomic_uint *primitiveRayStats [[buffer(10)]],
+    device const InstanceRecord *instanceRecords [[buffer(11)]],
+    texture2d<float, access::read> albedoAccum [[texture(0)]],
+    texture2d<float, access::read> normalAccum [[texture(1)]],
+    texture2d<float, access::read> positionAccum [[texture(2)]],
+    texture2d<float, access::read> restirInSample [[texture(3)]],
+    texture2d<float, access::read> restirInNormal [[texture(4)]],
+    texture2d<float, access::read> restirInState [[texture(5)]],
+    texture2d<float, access::write> restirOutSample [[texture(6)]],
+    texture2d<float, access::write> restirOutNormal [[texture(7)]],
+    texture2d<float, access::write> restirOutState [[texture(8)]],
     uint2 gid [[thread_position_in_grid]]) {
   if (!uniforms)
+    return;
+  if (!bvhNodes || !primitives || !materials || !primitiveIndices || !tlasNodes ||
+      !activeMask || !lightIndices || !lightCdf || !primitiveRemap ||
+      !instanceRecords)
     return;
 
   uint width = restirInSample.get_width();
@@ -77,6 +95,45 @@ kernel void restirSpatialKernel(
   combined.W = 0.0f;
   combined.M = 0.0f;
 
+  if (u.lightCount == 0 || u.lightTotalWeight <= 0.0f) {
+    writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
+                         combined);
+    return;
+  }
+
+  float3 shadingPosition = positionAccum.read(gid).xyz;
+  float3 shadingNormal = normalAccum.read(gid).xyz;
+  float3 diffuseColor = albedoAccum.read(gid).xyz;
+  if (!all(isfinite(shadingPosition)) || !all(isfinite(shadingNormal)) ||
+      !all(isfinite(diffuseColor))) {
+    writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
+                         combined);
+    return;
+  }
+
+  float normalLen = length(shadingNormal);
+  if (normalLen <= 1e-4f) {
+    writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
+                         combined);
+    return;
+  }
+  shadingNormal = shadingNormal / normalLen;
+
+  float diffuseLum = luminance(diffuseColor);
+  if (diffuseLum <= 0.0f) {
+    writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
+                         combined);
+    return;
+  }
+
+  intersection bestHit{};
+  bestHit.point = shadingPosition;
+  bestHit.normal = shadingNormal;
+  bestHit.primitiveId = -1;
+  TlasLeafCache bounceCache;
+  bounceCache.valid = false;
+  float4 absorption = float4(1.0f);
+
   constexpr int kSpatialTapCount = 5;
   const int2 offsets[kSpatialTapCount] = {
       int2(0, 0), int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1)};
@@ -94,16 +151,32 @@ kernel void restirSpatialKernel(
       continue;
     if (candidate.W <= 0.0f || candidate.M <= 0.0f)
       continue;
+    uint lightOffset = candidate.sample.lightIndex;
+    if (lightOffset >= u.lightCount)
+      continue;
+    if (!isfinite(candidate.sample.area) || candidate.sample.area <= 0.0f)
+      continue;
+    uint lightPrimIndex = lightIndices[lightOffset];
+    RestirEvaluation eval = evaluateLightCandidate(
+        lightOffset, lightPrimIndex, candidate.sample.position,
+        candidate.sample.normal, candidate.sample.area, shadingNormal,
+        diffuseColor, absorption, bestHit, bounceCache, tlasNodes,
+        uint(u.tlasNodeCount), bvhNodes, primitives, primitiveIndices, activeMask,
+        instanceRecords, primitiveRemap, uint(u.primitiveCount),
+        uint(u.totalPrimitiveCount), primitiveRayStats, materials, lightCdf,
+        u.lightTotalWeight);
+    if (!eval.valid || eval.pdf <= 0.0f)
+      continue;
 
-    float weight = candidate.W;
-    combined.M += candidate.M;
-    combined.W += weight;
-    float select = randomFloat(seed);
-    seed = random(seed);
-    if (combined.W > 0.0f && select < (weight / combined.W)) {
-      combined.sample = candidate.sample;
-      combined.valid = 1u;
-    }
+    float candidateM = candidate.M;
+    if (!isfinite(candidateM) || candidateM <= 0.0f)
+      continue;
+    float weight = (eval.target / eval.pdf) * candidateM;
+    if (weight <= 0.0f || !isfinite(weight))
+      continue;
+    updateRestirReservoir(combined, candidate.sample, weight, false, seed);
+    if (candidateM > 1.0f)
+      combined.M += candidateM - 1.0f;
   }
 
   writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
@@ -132,16 +205,17 @@ kernel void pathTraceKernel(
     texture2d<half, access::read> sampleImportance [[texture(3)]],
     texture2d<float, access::read_write> albedoAccum [[texture(4)]],
     texture2d<float, access::read_write> normalAccum [[texture(5)]],
-    texture2d<float, access::read> restirPrevSample [[texture(6)]],
-    texture2d<float, access::read> restirPrevNormal [[texture(7)]],
-    texture2d<float, access::read> restirPrevState [[texture(8)]],
-    texture2d<float, access::write> restirOutSample [[texture(9)]],
-    texture2d<float, access::write> restirOutNormal [[texture(10)]],
-    texture2d<float, access::write> restirOutState [[texture(11)]],
+    texture2d<float, access::read_write> positionAccum [[texture(6)]],
+    texture2d<float, access::read> restirPrevSample [[texture(7)]],
+    texture2d<float, access::read> restirPrevNormal [[texture(8)]],
+    texture2d<float, access::read> restirPrevState [[texture(9)]],
+    texture2d<float, access::write> restirOutSample [[texture(10)]],
+    texture2d<float, access::write> restirOutNormal [[texture(11)]],
+    texture2d<float, access::write> restirOutState [[texture(12)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
-        materialTextures [[texture(12)]],
+        materialTextures [[texture(13)]],
     texture2d<float, access::sample> environmentMap
-        [[texture(12 + kMaxMaterialTextures)]],
+        [[texture(13 + kMaxMaterialTextures)]],
     sampler environmentSampler [[sampler(0)]],
     constant TileRegion &tile [[buffer(16)]],
     uint2 gid [[thread_position_in_grid]]) {
@@ -184,6 +258,7 @@ kernel void pathTraceKernel(
   float3 accumulatedColor = float3(0.0);
   float3 accumulatedAlbedo = float3(0.0);
   float3 accumulatedNormal = float3(0.0);
+  float3 accumulatedPosition = float3(0.0);
 
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
@@ -261,6 +336,7 @@ kernel void pathTraceKernel(
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;
+    accumulatedPosition += sample.position;
   }
 
   if (restirEnabled) {
@@ -303,18 +379,25 @@ kernel void pathTraceKernel(
       float3(float4(albedoAccum.read(pixel)).xyz);
   float3 previousNormal =
       float3(float4(normalAccum.read(pixel)).xyz);
+  float3 previousPosition =
+      float3(float4(positionAccum.read(pixel)).xyz);
   float3 albedoSum = previousAlbedo * previousSampleCount + accumulatedAlbedo;
   float3 normalSum = previousNormal * previousSampleCount + accumulatedNormal;
+  float3 positionSum =
+      previousPosition * previousSampleCount + accumulatedPosition;
   float3 averagedAlbedo =
       (totalSamples > 0.0f) ? albedoSum / totalSamples : float3(0.0f);
   averagedAlbedo = clamp(averagedAlbedo, 0.0f, 1.0f);
   float3 averagedNormal =
       (totalSamples > 0.0f) ? normalSum / totalSamples : float3(0.0f);
   averagedNormal = clamp(averagedNormal, -1.0f, 1.0f);
+  float3 averagedPosition =
+      (totalSamples > 0.0f) ? positionSum / totalSamples : float3(0.0f);
 
   float4 result = float4(averaged, 1.0f);
   currentFrame.write(result, pixel);
   albedoAccum.write(float4(averagedAlbedo, 1.0f), pixel);
   normalAccum.write(float4(averagedNormal, 1.0f), pixel);
+  positionAccum.write(float4(averagedPosition, 1.0f), pixel);
   sampleCount.write(float4(totalSamples, 0.0f, 0.0f, 0.0f), pixel);
 }

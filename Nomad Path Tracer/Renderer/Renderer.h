@@ -377,6 +377,7 @@ private:
   ManagedTextureSlot _sampleImportanceSlot;
   ManagedTextureSlot _albedoSlot;
   ManagedTextureSlot _normalSlot;
+  ManagedTextureSlot _positionSlot;
   ManagedTextureSlot _restirSampleSlots[2];
   ManagedTextureSlot _restirNormalSlots[2];
   ManagedTextureSlot _restirStateSlots[2];
