@@ -6667,10 +6667,6 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
 void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
   if (!cmd || _needsAccumulationReset)
     return;
-  if (_residencyConfig.restirBaselineMode) {
-    std::printf("[TextureResidency] Skipping eviction: ReSTIR baseline mode enabled.\n");
-    return;
-  }
 
   bool belowBudget = _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
   double totalMemoryMB = currentGPUMemoryMB();
@@ -6679,6 +6675,15 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
   bool overMemory = residencyMB > _textureResidencyMemoryCapMB;
   bool totalOverCap =
       _totalGpuMemoryCapMB > 0.0 && totalMemoryMB > _totalGpuMemoryCapMB;
+  if (_residencyConfig.restirBaselineMode) {
+    if (!overMemory && !totalOverCap) {
+      std::printf("[TextureResidency] Baseline mode: skipping eviction; caps not exceeded.\n");
+      return;
+    }
+    std::printf("[TextureResidency] Baseline mode: caps exceeded, allowing eviction "
+                "(residency=%.2f MB, total=%.2f MB, cap=%.2f MB, total cap=%.2f MB).\n",
+                residencyMB, totalMemoryMB, _textureResidencyMemoryCapMB, _totalGpuMemoryCapMB);
+  }
 
   if (!overMemory && totalMemoryMB > _textureResidencyMemoryCapMB &&
       scratchMB > 0.0) {
