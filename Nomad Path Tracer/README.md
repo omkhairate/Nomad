@@ -10,12 +10,12 @@ Long-running path tracing commands can trigger GPU timeout errors when the pixel
 
 The renderer clamps the budget so each command can still process at least one full tile, based on the current tile dimensions and sample count.
 
-## ReSTIR sampling (temporal reuse)
+## ReSTIR sampling (temporal + spatial reuse)
 
 ReSTIR is now strictly a sampling feature in the path tracing stage. The residency strategy is unchanged unless you explicitly set it on the `<Scene>` root.
 
 - **Scene XML:** add `restirSampling="true"` (or `restirSamplingEnabled="true"`) to the `<Scene>` root.
-- **Behavior:** when enabled, ReSTIR sampling runs regardless of the configured residency strategy.
+- **Behavior:** when enabled, ReSTIR sampling runs regardless of the configured residency strategy, and the spatial reuse pass is always on (no separate toggle).
 - **Metrics:** benchmark logs report `restir_reuse_rate` and `restir_candidate_acceptance` to compare temporal reuse against baseline runs.
 - **Deprecated:** `residencyStrategy="restir"` now falls back to distance LOD (use `restirSampling="true"` instead).
 
