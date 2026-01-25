@@ -26,7 +26,8 @@ ReSTIR is now strictly a sampling feature in the path tracing stage. The residen
 To keep ReSTIR temporal reuse stable for baseline comparisons, you can disable texture history eviction:
 
 - **Scene XML:** add `restirBaselineMode="true"` (or `restirBaseline="true"`) to the `<Scene>` root.
-- **Behavior:** no history eviction; maintains stable ReSTIR temporal reuse for baseline comparisons.
+- **Behavior:** no history eviction unless GPU or texture residency caps are exceeded; maintains stable ReSTIR temporal reuse for baseline comparisons.
+- **Warning:** do not use `restirBaselineMode` to compare residency strategies unless caps are still enforced to keep eviction behavior consistent.
 
 ## Geometry residency memory cap
 
