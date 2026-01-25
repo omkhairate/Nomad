@@ -708,6 +708,7 @@ private:
   size_t _frameGeometryResidencyCapHitCount = 0;
   size_t _frameGeometryResidencyHardCapDeniedCount = 0;
   size_t _frameTotalMemoryOverageWarnings = 0;
+  size_t _totalOverCapFrameStreak = 0;
   size_t _geometryResidencyCapHitCount = 0;
   size_t _geometryResidencyHardCapDeniedCount = 0;
   size_t _pendingGeometryResidencyOverageBytes = 0;

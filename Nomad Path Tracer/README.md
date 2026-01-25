@@ -35,6 +35,8 @@ The renderer now treats `totalGpuMemoryCapMB` as the single residency budget for
 
 The legacy per-pool caps (`geometryResidencyMemoryCapMB` and `textureResidencyMemoryCapMB`) are still accepted on the `<Scene>` root, but the renderer syncs them to `totalGpuMemoryCapMB` for compatibility and reporting.
 
+When the total GPU memory soft cap is exceeded, residency updates can pause to avoid allocating additional history buffers. If the renderer stays over the cap for 120 consecutive frames, it forces an accumulation reset and allows a minimal residency refresh (accumulation + sample count/importance) so rendering can recover. Benchmark runs should note that exceeding the soft cap can temporarily stall residency updates before this fallback kicks in.
+
 ## Bistro test scenes with ReSTIR sampling enabled
 
 The `scene_bistro_test_v2_*_restir_on.xml` variants mirror their corresponding bistro test scenes but explicitly enable ReSTIR sampling via `restirSampling="true"` on the `<Scene>` root. Use these for A/B comparisons that isolate the sampling toggle from other settings.
