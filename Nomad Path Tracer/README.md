@@ -6,7 +6,9 @@ Long-running path tracing commands can trigger GPU timeout errors when the pixel
 
 - **Environment variable:** set `MPT_MAX_TILE_WORK` to the maximum number of pixel/sample operations per command buffer. Example: `MPT_MAX_TILE_WORK=20000`.
 - **Scene XML:** add `maxTileWorkPerCommand="<value>"` (or the alias `maxTileWork`) to the `<Scene>` root to bake a limit into a scene file.
-- **Default:** when unset, the renderer uses a conservative default budget. For `AlwaysResident` residency, the default budget is halved to keep command buffers short while more geometry remains resident.
+- **Default:** when unset, the renderer uses a conservative default budget.
+- **AlwaysResident override (opt-in):** set `MPT_ALWAYS_RESIDENT_TILE_WORK_HALF=1` to halve the default budget when the `AlwaysResident` residency strategy is active.
+- **Benchmarking tip:** set `MPT_MAX_TILE_WORK` (or `maxTileWorkPerCommand` in the scene) to lock the same budget across residency strategies and avoid `MPT_ALWAYS_RESIDENT_TILE_WORK_HALF`.
 
 The renderer clamps the budget so each command can still process at least one full tile, based on the current tile dimensions and sample count.
 
