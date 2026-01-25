@@ -89,6 +89,7 @@ void Scene::clear() {
   startCompacted = false;
   textureResidencyMemoryCapMB = 2048.0;
   geometryResidencyMemoryCapMB = 2048.0;
+  totalGpuMemoryCapMB = 4096.0;
   maxTileSampleWorkPerCommand = kDefaultMaxTileSampleWorkPerCommand;
   maxTileSampleWorkPerCommandSet = false;
   observerCameraValid = false;
@@ -289,6 +290,12 @@ double Scene::getGeometryResidencyMemoryCapMB() const {
 
 void Scene::setGeometryResidencyMemoryCapMB(double capMB) {
   geometryResidencyMemoryCapMB = capMB;
+}
+
+double Scene::getTotalGpuMemoryCapMB() const { return totalGpuMemoryCapMB; }
+
+void Scene::setTotalGpuMemoryCapMB(double capMB) {
+  totalGpuMemoryCapMB = capMB;
 }
 
 void Scene::setObserverCamera(const ObserverCamera &camera) {

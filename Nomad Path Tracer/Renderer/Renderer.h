@@ -418,6 +418,7 @@ private:
     double residencyMemoryMB = 0.0;
     double textureMemoryCapMB = 0.0;
     double geometryMemoryCapMB = 0.0;
+    double totalMemoryCapMB = 0.0;
     double deltaTimeSeconds = 0.0;
     double wallSeconds = 0.0;
     double cpuTimeSeconds = 0.0;
@@ -455,8 +456,10 @@ private:
     bool residentCompacted = false;
     bool overMemoryCap = false;
     bool geometryOverMemoryCap = false;
+    bool totalOverMemoryCap = false;
     size_t geometryCapHitCount = 0;
     size_t geometryHardCapDeniedCount = 0;
+    size_t totalMemoryOverageWarnings = 0;
   };
 
   struct FrameCaptureRequest {
@@ -553,6 +556,7 @@ private:
   float _totalPrimitiveImportance = 0.0f;
   double _textureResidencyMemoryCapMB = 2048.0;
   double _geometryResidencyMemoryCapMB = 2048.0;
+  double _totalGpuMemoryCapMB = 4096.0;
 
   std::vector<BlasInstanceRecord> _instanceRecords;
   std::vector<Primitive> _residentPrimitives;
@@ -681,6 +685,7 @@ private:
   size_t _frameEnvironmentActivationFloor = 0;
   size_t _frameGeometryResidencyCapHitCount = 0;
   size_t _frameGeometryResidencyHardCapDeniedCount = 0;
+  size_t _frameTotalMemoryOverageWarnings = 0;
   size_t _geometryResidencyCapHitCount = 0;
   size_t _geometryResidencyHardCapDeniedCount = 0;
   size_t _pendingGeometryResidencyOverageBytes = 0;
