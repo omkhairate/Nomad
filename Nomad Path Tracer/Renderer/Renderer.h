@@ -204,6 +204,13 @@ private:
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   size_t residentGeometryMemoryBytes() const;
   size_t geometryResidencyCapBytes() const;
+  double effectiveTotalGpuMemoryCapMB() const;
+  size_t totalGpuMemoryCapBytes() const;
+  size_t minimumResidentFootprintBytes() const;
+  size_t essentialGeometryMemoryBytes() const;
+  size_t historyFootprintBytes() const;
+  bool checkTotalMemoryCap(size_t requestedBytes, size_t existingBytes,
+                           const char *context);
   void recordGeometryResidencyHardCapDenied(size_t objectIndex,
                                             size_t requestedBytes,
                                             size_t existingBytes,
@@ -440,6 +447,8 @@ private:
     double textureMemoryCapMB = 0.0;
     double geometryMemoryCapMB = 0.0;
     double totalMemoryCapMB = 0.0;
+    double minimumResidentFootprintMB = 0.0;
+    double totalMemoryCapRelaxedMB = 0.0;
     double deltaTimeSeconds = 0.0;
     double wallSeconds = 0.0;
     double cpuTimeSeconds = 0.0;
@@ -480,9 +489,11 @@ private:
     bool overMemoryCap = false;
     bool geometryOverMemoryCap = false;
     bool totalOverMemoryCap = false;
+    bool totalMemoryEvictionStall = false;
     size_t geometryCapHitCount = 0;
     size_t geometryHardCapDeniedCount = 0;
     size_t totalMemoryOverageWarnings = 0;
+    size_t totalMemoryCapDeniedCount = 0;
   };
 
   struct FrameCaptureRequest {
@@ -712,9 +723,17 @@ private:
   size_t _frameGeometryResidencyCapHitCount = 0;
   size_t _frameGeometryResidencyHardCapDeniedCount = 0;
   size_t _frameTotalMemoryOverageWarnings = 0;
+  size_t _frameTotalMemoryCapDeniedCount = 0;
+  bool _frameTotalMemoryEvictionStall = false;
+  double _frameMinimumResidentFootprintMB = 0.0;
   size_t _geometryResidencyCapHitCount = 0;
   size_t _geometryResidencyHardCapDeniedCount = 0;
+  size_t _totalMemoryCapDeniedCount = 0;
   size_t _pendingGeometryResidencyOverageBytes = 0;
+  size_t _pendingTotalMemoryOverageBytes = 0;
+  size_t _totalMemoryBelowFootprintFrames = 0;
+  double _totalMemoryCapRelaxedMB = 0.0;
+  bool _memoryCapFallbackActive = false;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
   AlwaysResidentCache _alwaysResidentCache;
@@ -758,6 +777,7 @@ private:
   bool isRestirHistorySlot(const ManagedTextureSlot &slot) const;
   void updateTextureResidency(MTL::CommandBuffer *cmd);
   void updateGeometryResidency(MTL::CommandBuffer *cmd);
+  void disableHistoryForMemoryCap();
 };
 
 } // namespace NomadPathTracer
