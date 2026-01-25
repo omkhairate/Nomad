@@ -137,6 +137,9 @@ kernel void restirSpatialKernel(
   constexpr int kSpatialTapCount = 5;
   const int2 offsets[kSpatialTapCount] = {
       int2(0, 0), int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1)};
+  constexpr float kSpatialNormalThreshold = 0.85f;
+  constexpr float kSpatialDepthThreshold = 0.25f;
+  constexpr float kSpatialPositionThreshold = 0.5f;
 
   for (int tap = 0; tap < kSpatialTapCount; ++tap) {
     int2 offset = offsets[tap];
@@ -144,6 +147,25 @@ kernel void restirSpatialKernel(
     sampleCoord.x = clamp(sampleCoord.x, 0, int(width) - 1);
     sampleCoord.y = clamp(sampleCoord.y, 0, int(height) - 1);
     uint2 pixel = uint2(sampleCoord);
+
+    float3 neighborPosition = positionAccum.read(pixel).xyz;
+    float3 neighborNormal = normalAccum.read(pixel).xyz;
+    if (!all(isfinite(neighborPosition)) || !all(isfinite(neighborNormal)))
+      continue;
+    float neighborNormalLen = length(neighborNormal);
+    if (neighborNormalLen <= 1e-4f)
+      continue;
+    neighborNormal /= neighborNormalLen;
+
+    float normalSimilarity = dot(shadingNormal, neighborNormal);
+    if (normalSimilarity < kSpatialNormalThreshold)
+      continue;
+    float3 delta = neighborPosition - shadingPosition;
+    float depthDelta = abs(dot(delta, shadingNormal));
+    if (depthDelta > kSpatialDepthThreshold)
+      continue;
+    if (length(delta) > kSpatialPositionThreshold)
+      continue;
 
     RestirReservoir candidate{};
     if (!loadRestirReservoir(restirInSample, restirInNormal, restirInState,
