@@ -20,6 +20,7 @@
 #include "AlwaysResidentCache.h"
 #include "DeferredPurgeQueue.h"
 #include "GpuHeapResources.h"
+#include "GpuMemoryTracker.h"
 #include "ResidencyBudget.h"
 #include "TlasScratchTracker.h"
 #include "Camera.h"
@@ -156,8 +157,22 @@ private:
                             bool allowShrink = false,
                             MTL::ResourceOptions storageMode =
                                 MTL::ResourceStorageModeManaged,
+                            GpuMemoryTracker::Category category =
+                                GpuMemoryTracker::Category::RendererBuffers,
                             const char *label = nullptr,
                             const char *resizeContext = nullptr);
+  MTL::Buffer *allocateBuffer(NS::UInteger size,
+                              MTL::ResourceOptions storageMode,
+                              GpuMemoryTracker::Category category,
+                              const char *label = nullptr);
+  MTL::Texture *allocateTexture(MTL::TextureDescriptor *descriptor,
+                                GpuMemoryTracker::Category category,
+                                const char *label = nullptr);
+  void trackResource(MTL::Resource *resource,
+                     GpuMemoryTracker::Category category);
+  void releaseTrackedResource(MTL::Resource *resource);
+  GpuMemoryTracker::Category textureCategoryForSlot(
+      const ManagedTextureSlot &slot) const;
   void rebuildEnvironmentTexture();
   void releaseEnvironmentTexture();
   struct BoundingSphere {
@@ -324,6 +339,7 @@ private:
   size_t _tlasScratchResidentBytes = 0;
   TlasScratchTracker _tlasScratchTracker;
   ResidencyBudget _residencyBudget;
+  GpuMemoryTracker _gpuMemoryTracker;
   size_t _blasNodeCount = 0;
   size_t _tlasNodeCount = 0;
   size_t _activeNodeCount = 0;

@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "../Scene/Primitive.h"
+#include "GpuMemoryTracker.h"
 
 namespace NomadPathTracer {
 
@@ -161,6 +162,11 @@ MTL::Buffer *GpuHeapResources::ensureOnHeapBuffer(BufferKind kind,
   info.options = options;
   info.usage = usage;
 
+  if (_memoryTracker) {
+    _memoryTracker->trackResource(buffer, static_cast<size_t>(requiredCapacity),
+                                  GpuMemoryTracker::Category::HeapsAS);
+  }
+
   return buffer;
 }
 
@@ -218,11 +224,17 @@ GpuHeapResources::ensureAccelerationStructure(NS::UInteger requiredSize,
 
   _accelerationStructure = structure;
   _accelerationSize = alignedSize;
+  if (_memoryTracker) {
+    _memoryTracker->trackResource(structure, static_cast<size_t>(alignedSize),
+                                  GpuMemoryTracker::Category::HeapsAS);
+  }
   return structure;
 }
 
 void GpuHeapResources::releaseBuffer(BufferInfo &info) {
   if (info.buffer) {
+    if (_memoryTracker)
+      _memoryTracker->releaseResource(info.buffer);
     info.buffer->release();
     info.buffer = nullptr;
   }
@@ -233,6 +245,8 @@ void GpuHeapResources::releaseBuffer(BufferInfo &info) {
 
 void GpuHeapResources::releaseAccelerationStructure() {
   if (_accelerationStructure) {
+    if (_memoryTracker)
+      _memoryTracker->releaseResource(_accelerationStructure);
     _accelerationStructure->release();
     _accelerationStructure = nullptr;
   }
@@ -301,4 +315,3 @@ NS::UInteger GpuHeapResources::primitiveDataSize(size_t primitiveCount) {
 }
 
 } // namespace NomadPathTracer
-

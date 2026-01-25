@@ -5,6 +5,8 @@
 
 namespace NomadPathTracer {
 
+class GpuMemoryTracker;
+
 class GpuHeapResources {
 public:
   enum class BufferKind { Vertex, Index };
@@ -18,6 +20,7 @@ public:
                       MTL::StorageMode::StorageModePrivate,
                   MTL::HazardTrackingMode hazardMode =
                       MTL::HazardTrackingModeTracked);
+  void setMemoryTracker(GpuMemoryTracker *tracker) { _memoryTracker = tracker; }
   void destroy();
 
   void ensureHeapCapacity(NS::UInteger requiredBytes);
@@ -84,9 +87,9 @@ private:
   NS::UInteger _heapSize = 0;
   NS::UInteger _defaultHeapSize = 0;
   NS::UInteger _accelerationSize = 0;
+  GpuMemoryTracker *_memoryTracker = nullptr;
   MTL::StorageMode _storageMode = MTL::StorageMode::StorageModePrivate;
   MTL::HazardTrackingMode _hazardMode = MTL::HazardTrackingModeTracked;
 };
 
 } // namespace NomadPathTracer
-
