@@ -150,6 +150,7 @@ public:
 private:
   struct BenchmarkSample;
   struct FrameCaptureRequest;
+  struct ManagedTextureSlot;
   void recalculateNodeCounters(const std::vector<bool> &residentMask);
   void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
