@@ -173,15 +173,23 @@ kernel void restirSpatialKernel(
       continue;
     if (candidate.W <= 0.0f || candidate.M <= 0.0f)
       continue;
+    if (!all(isfinite(candidate.sample.position)) ||
+        !all(isfinite(candidate.sample.normal)))
+      continue;
+    float candidateNormalLen = length(candidate.sample.normal);
+    if (candidateNormalLen <= 1e-4f)
+      continue;
+    RestirSampleData candidateSample = candidate.sample;
+    candidateSample.normal = candidate.sample.normal / candidateNormalLen;
     uint lightOffset = candidate.sample.lightIndex;
     if (lightOffset >= u.lightCount)
       continue;
-    if (!isfinite(candidate.sample.area) || candidate.sample.area <= 0.0f)
+    if (!isfinite(candidateSample.area) || candidateSample.area <= 0.0f)
       continue;
     uint lightPrimIndex = lightIndices[lightOffset];
     RestirEvaluation eval = evaluateLightCandidate(
-        lightOffset, lightPrimIndex, candidate.sample.position,
-        candidate.sample.normal, candidate.sample.area, shadingNormal,
+        lightOffset, lightPrimIndex, candidateSample.position,
+        candidateSample.normal, candidateSample.area, shadingNormal,
         diffuseColor, absorption, bestHit, bounceCache, tlasNodes,
         uint(u.tlasNodeCount), bvhNodes, primitives, primitiveIndices, activeMask,
         instanceRecords, primitiveRemap, uint(u.primitiveCount),
@@ -190,14 +198,12 @@ kernel void restirSpatialKernel(
     if (!eval.valid || eval.pdf <= 0.0f)
       continue;
 
-    float candidateM = candidate.M;
-    if (!isfinite(candidateM) || candidateM <= 0.0f)
-      continue;
-    float weight = (eval.target / eval.pdf) * candidateM;
+    float weight = eval.target / eval.pdf;
     if (weight <= 0.0f || !isfinite(weight))
       continue;
-    updateRestirReservoir(combined, candidate.sample, weight, false, seed);
-    if (candidateM > 1.0f)
+    updateRestirReservoir(combined, candidateSample, weight, false, seed);
+    float candidateM = candidate.M;
+    if (isfinite(candidateM) && candidateM > 1.0f)
       combined.M += candidateM - 1.0f;
   }
 
