@@ -731,6 +731,7 @@ private:
   bool _historyStreamingActive = false;
   bool _historyStreamingUsedProxy = false;
   size_t _historyStreamingRestoreCount = 0;
+  size_t _frameRestirHistoryEvictions = 0;
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
@@ -748,6 +749,7 @@ private:
                         MTL::BlitCommandEncoder *&blit);
   void releaseTextureSlot(ManagedTextureSlot &slot);
   const char *textureSlotLabel(const ManagedTextureSlot &slot) const;
+  bool isRestirHistorySlot(const ManagedTextureSlot &slot) const;
   void updateTextureResidency(MTL::CommandBuffer *cmd);
   void updateGeometryResidency(MTL::CommandBuffer *cmd);
 };

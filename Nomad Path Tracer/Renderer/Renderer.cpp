@@ -6224,6 +6224,12 @@ const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
   return "<unknown texture slot>";
 }
 
+bool Renderer::isRestirHistorySlot(const ManagedTextureSlot &slot) const {
+  return &slot == &_restirSampleSlots[0] || &slot == &_restirSampleSlots[1] ||
+         &slot == &_restirNormalSlots[0] || &slot == &_restirNormalSlots[1] ||
+         &slot == &_restirStateSlots[0] || &slot == &_restirStateSlots[1];
+}
+
 void Renderer::configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
                                     NS::UInteger height,
                                     MTL::PixelFormat format,
@@ -6650,6 +6656,13 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     }
   }
 
+  if (isRestirHistorySlot(slot)) {
+    ++_frameRestirHistoryEvictions;
+    std::printf(
+        "[TextureResidency] ReSTIR history slot %s evicted (%s).\n", label,
+        preservedHistory ? "history preserved" : "history lost");
+  }
+
   if (!preservedHistory) {
     clearTextureHistory(slot);
     slot.stagingValid = false;
@@ -6704,6 +6717,20 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
                 totalMemoryMB, residencyMB, scratchMB, _totalGpuMemoryCapMB);
   }
 
+  constexpr double kRestirEvictionOverageFactor = 1.25;
+  double restirEvictionThresholdMB =
+      _textureResidencyMemoryCapMB * kRestirEvictionOverageFactor;
+  bool allowRestirEviction =
+      totalOverCap || _textureResidencyMemoryCapMB <= 0.0 ||
+      totalMemoryMB > restirEvictionThresholdMB;
+  if ((overMemory || totalOverCap) && !allowRestirEviction &&
+      _textureResidencyMemoryCapMB > 0.0) {
+    std::printf(
+        "[TextureResidency] Protecting ReSTIR history slots: total=%.2f MB "
+        "(soft cap=%.2f MB, threshold=%.2f MB).\n",
+        totalMemoryMB, _textureResidencyMemoryCapMB, restirEvictionThresholdMB);
+  }
+
   std::array<ManagedTextureSlot *, 13> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
       &_sampleImportanceSlot, &_albedoSlot, &_normalSlot, &_positionSlot,
@@ -6734,6 +6761,8 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
   candidates.reserve(slots.size());
   for (ManagedTextureSlot *slot : slots) {
     if (!slot->texture)
+      continue;
+    if (!allowRestirEviction && isRestirHistorySlot(*slot))
       continue;
     candidates.push_back(scoreSlot(slot));
   }
@@ -7331,21 +7360,61 @@ void Renderer::updateUniforms(bool cameraChanged) {
 
 void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
+  _frameRestirHistoryEvictions = 0;
   bool cameraChanged = updateCameraStates();
   Camera::State viewCamera =
       _observerActive ? _observerCameraState : _primaryCameraState;
 
+  auto historyBackingName = [](ManagedTextureSlot::HistoryBacking backing) {
+    switch (backing) {
+    case ManagedTextureSlot::HistoryBacking::SharedBuffer:
+      return "staging";
+    case ManagedTextureSlot::HistoryBacking::CpuData:
+      return "cpu";
+    case ManagedTextureSlot::HistoryBacking::None:
+    default:
+      return "none";
+    }
+  };
+
   auto historyMissing = [&](const ManagedTextureSlot &slot) {
     if (slot.texture && !slot.needsGpuRefresh)
       return false;
+    const char *label = textureSlotLabel(slot);
     switch (slot.historyBacking) {
     case ManagedTextureSlot::HistoryBacking::SharedBuffer:
-      return !slot.stagingBuffer || !slot.stagingValid;
+      if (!slot.stagingBuffer || !slot.stagingValid) {
+        if (isRestirHistorySlot(slot)) {
+          std::printf(
+              "[TextureResidency] ReSTIR history missing for %s (backing=%s, "
+              "staging_valid=%d).\n",
+              label, historyBackingName(slot.historyBacking),
+              slot.stagingValid ? 1 : 0);
+        }
+        return true;
+      }
+      return false;
     case ManagedTextureSlot::HistoryBacking::CpuData:
-      return slot.historyData.empty() || slot.historyWidth == 0 ||
-             slot.historyHeight == 0;
+      if (slot.historyData.empty() || slot.historyWidth == 0 ||
+          slot.historyHeight == 0) {
+        if (isRestirHistorySlot(slot)) {
+          std::printf(
+              "[TextureResidency] ReSTIR history missing for %s (backing=%s, "
+              "size=%ux%u).\n",
+              label, historyBackingName(slot.historyBacking),
+              static_cast<unsigned>(slot.historyWidth),
+              static_cast<unsigned>(slot.historyHeight));
+        }
+        return true;
+      }
+      return false;
     case ManagedTextureSlot::HistoryBacking::None:
     default:
+      if (isRestirHistorySlot(slot)) {
+        std::printf(
+            "[TextureResidency] ReSTIR history missing for %s (backing=%s).\n",
+            label, historyBackingName(slot.historyBacking));
+      }
       return true;
     }
   };
@@ -13102,8 +13171,11 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       totalMemoryMB, scratchMB, geometryMB, textureMB, restirMB, rendererMB,
       heapsMB, stagingMB, otherMB);
   if (_residencyConfig.restirSamplingEnabled) {
-    printf("ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f\n",
-           _frameRestirReuseRate, _frameRestirCandidateAcceptance);
+    printf(
+        "ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f "
+        "history_evictions=%zu\n",
+        _frameRestirReuseRate, _frameRestirCandidateAcceptance,
+        _frameRestirHistoryEvictions);
   }
   if (isAlwaysResidentStrategy() && offloaded > 0) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",
