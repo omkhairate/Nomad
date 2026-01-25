@@ -505,7 +505,6 @@ private:
   std::vector<size_t> _rayHitSortedIndices;
   std::vector<size_t> _probabilitySortedIndices;
   std::vector<float> _restirReservoirWeight;
-  std::vector<float> _restirReservoirSampleCount;
   std::vector<float> _restirTemporalScore;
   std::vector<size_t> _restirSortedIndices;
   std::vector<float> _objectHitAlpha;
