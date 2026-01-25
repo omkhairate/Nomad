@@ -1411,8 +1411,6 @@ void Renderer::resetProbabilisticResidencyState() {
   std::fill(_primitiveExplorationScore.begin(),
             _primitiveExplorationScore.end(), 0.0f);
   std::fill(_restirReservoirWeight.begin(), _restirReservoirWeight.end(), 0.0f);
-  std::fill(_restirReservoirSampleCount.begin(),
-            _restirReservoirSampleCount.end(), 0.0f);
   std::fill(_restirTemporalScore.begin(), _restirTemporalScore.end(), 0.0f);
 
   std::fill(_objectHitAlpha.begin(), _objectHitAlpha.end(), 1.0f);
@@ -2569,7 +2567,6 @@ void Renderer::updateVisibleScene() {
   _rayHitSortedIndices.resize(primCount);
   _probabilitySortedIndices.resize(primCount);
   _restirReservoirWeight.assign(primCount, 0.0f);
-  _restirReservoirSampleCount.assign(primCount, 0.0f);
   _restirTemporalScore.assign(primCount, 0.0f);
   _restirSortedIndices.resize(primCount);
   _primitiveScreenCoverage.assign(primCount, 0.0f);
@@ -10523,8 +10520,6 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
 
   if (_restirReservoirWeight.size() < primCount)
     _restirReservoirWeight.resize(primCount, 0.0f);
-  if (_restirReservoirSampleCount.size() < primCount)
-    _restirReservoirSampleCount.resize(primCount, 0.0f);
   if (_restirTemporalScore.size() < primCount)
     _restirTemporalScore.resize(primCount, 0.0f);
   if (_restirSortedIndices.size() != primCount) {
@@ -10620,8 +10615,6 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
   }
 
   std::fill(_restirReservoirWeight.begin(), _restirReservoirWeight.end(), 0.0f);
-  std::fill(_restirReservoirSampleCount.begin(), _restirReservoirSampleCount.end(),
-            0.0f);
   std::fill(_restirTemporalScore.begin(), _restirTemporalScore.end(), 0.0f);
 
   using Heap =
@@ -10674,7 +10667,6 @@ bool Renderer::updateReSTIRResidency(bool forceAllToggles) {
     if (!visible)
       normalized *= 0.9f;
     _restirReservoirWeight[idx] = entry.weight;
-    _restirReservoirSampleCount[idx] = entry.weight;
     _restirTemporalScore[idx] = normalized;
   }
 
@@ -11968,7 +11960,6 @@ void Renderer::processRayHitCounters() {
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _restirReservoirWeight.clear();
-    _restirReservoirSampleCount.clear();
     _restirTemporalScore.clear();
     _restirSortedIndices.clear();
     _objectHitAlpha.clear();
@@ -12002,7 +11993,6 @@ void Renderer::processRayHitCounters() {
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _restirReservoirWeight.clear();
-    _restirReservoirSampleCount.clear();
     _restirTemporalScore.clear();
     _restirSortedIndices.clear();
     _objectHitAlpha.clear();
@@ -12034,7 +12024,6 @@ void Renderer::processRayHitCounters() {
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _restirReservoirWeight.clear();
-    _restirReservoirSampleCount.clear();
     _restirTemporalScore.clear();
     _restirSortedIndices.clear();
     _rayHitCopyError = false;
@@ -12077,7 +12066,6 @@ void Renderer::processRayHitCounters() {
     _primitiveExplorationScore.clear();
     _probabilitySortedIndices.clear();
     _restirReservoirWeight.clear();
-    _restirReservoirSampleCount.clear();
     _restirTemporalScore.clear();
     _restirSortedIndices.clear();
     _objectHitAlpha.clear();
@@ -12146,8 +12134,6 @@ void Renderer::processRayHitCounters() {
   }
   if (_restirReservoirWeight.size() < totalPrimitiveCount)
     _restirReservoirWeight.resize(totalPrimitiveCount, 0.0f);
-  if (_restirReservoirSampleCount.size() < totalPrimitiveCount)
-    _restirReservoirSampleCount.resize(totalPrimitiveCount, 0.0f);
   if (_restirTemporalScore.size() < totalPrimitiveCount)
     _restirTemporalScore.resize(totalPrimitiveCount, 0.0f);
   if (_restirSortedIndices.size() != totalPrimitiveCount) {
