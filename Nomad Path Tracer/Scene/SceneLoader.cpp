@@ -690,7 +690,13 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             scene->setResidencyStrategy(ResidencyStrategy::Probabilistic);
         } else if (value == "restir" || value == "restir_ris" ||
                    value == "ris") {
-            scene->setResidencyStrategy(ResidencyStrategy::ReSTIR);
+            printf("Residency strategy '%s' is deprecated; using distance LOD and enabling "
+                   "ReSTIR sampling.\n",
+                   residencyAttr);
+            scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
+            ResidencyParameters params = scene->getResidencyParameters();
+            params.restirSamplingEnabled = true;
+            scene->setResidencyParameters(params);
         } else if (value == "alwaysresident" || value == "always_resident" ||
                    value == "always" || value == "none" || value == "off") {
             scene->setResidencyStrategy(ResidencyStrategy::AlwaysResident);
@@ -794,14 +800,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.probabilityVisibleDemotionDwellFrames = root->UnsignedAttribute(
         "probabilityVisibleDemotionDwellFrames",
         params.probabilityVisibleDemotionDwellFrames);
-    params.restirReservoirSize = static_cast<size_t>(root->Unsigned64Attribute(
-        "restirReservoirSize", static_cast<uint64_t>(params.restirReservoirSize)));
-    params.restirReuseWeight =
-        root->FloatAttribute("restirReuseWeight", params.restirReuseWeight);
-    params.restirCandidateCount = static_cast<size_t>(root->Unsigned64Attribute(
-        "restirCandidateCount", static_cast<uint64_t>(params.restirCandidateCount)));
-    params.restirMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
-        "restirToggleBudget", static_cast<uint64_t>(params.restirMaxTogglesPerFrame)));
     params.restirBaselineMode = root->BoolAttribute(
         "restirBaselineMode", params.restirBaselineMode);
     params.restirBaselineMode = root->BoolAttribute(
@@ -883,10 +881,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "bufferShrinkActiveRatio", params.bufferShrinkActiveRatio);
     params.buildCachedBlas = root->BoolAttribute(
         "buildCachedBlas", params.buildCachedBlas);
-
-    if (scene->getResidencyStrategy() == ResidencyStrategy::ReSTIR) {
-        params.restirSamplingEnabled = true;
-    }
 
     scene->setResidencyParameters(params);
 

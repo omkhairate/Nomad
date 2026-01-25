@@ -172,7 +172,6 @@ private:
   bool updateUnifiedResidency(bool forceAllToggles);
   bool updateRayHitBudget(bool forceAllToggles);
   bool updateProbabilisticResidency(bool forceAllToggles);
-  bool updateReSTIRResidency(bool forceAllToggles);
   void resetProbabilisticResidencyState();
   bool updateScreenSpaceFootprint(bool forceAllToggles);
   bool updatePrimitiveScreenCoverageForFrame();
@@ -306,6 +305,7 @@ private:
   bool _pathTraceCommandTimeout = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
+  MTL::Buffer *_pRestirStatsBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
@@ -350,6 +350,9 @@ private:
   ManagedTextureSlot _sampleImportanceSlot;
   ManagedTextureSlot _albedoSlot;
   ManagedTextureSlot _normalSlot;
+  ManagedTextureSlot _restirSampleSlots[2];
+  ManagedTextureSlot _restirNormalSlots[2];
+  ManagedTextureSlot _restirStateSlots[2];
 
   struct PendingBlasBuild {
     Renderer *renderer = nullptr;
@@ -504,9 +507,6 @@ private:
   std::vector<uint8_t> _primitiveVisible;
   std::vector<size_t> _rayHitSortedIndices;
   std::vector<size_t> _probabilitySortedIndices;
-  std::vector<float> _restirReservoirWeight;
-  std::vector<float> _restirTemporalScore;
-  std::vector<size_t> _restirSortedIndices;
   std::vector<float> _objectHitAlpha;
   std::vector<float> _objectHitBeta;
   std::vector<float> _objectHitProbability;

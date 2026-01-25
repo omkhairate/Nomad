@@ -78,6 +78,7 @@ struct UniformsData
     uint sampleImportanceTextureIndex;
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
+    uint restirSamplingEnabled;
     uint textureCount;
     uint environmentMapEnabled;
     float environmentMapIntensity;

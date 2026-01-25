@@ -20,6 +20,23 @@ struct PathTraceSample {
   float3 normal;
 };
 
+constexpr uint kRestirCandidateCount = 4;
+
+struct RestirSampleData {
+  float3 position;
+  float3 normal;
+  uint lightIndex;
+  float area;
+};
+
+struct RestirReservoir {
+  RestirSampleData sample;
+  float W = 0.0f;
+  float M = 0.0f;
+  uint valid = 0;
+  uint selectedFromTemporal = 0;
+};
+
 struct Ray {
   float3 origin;
   float3 direction;
@@ -158,6 +175,133 @@ inline uint selectLightOffset(float xi, device const float *lightCdf,
       high = mid;
   }
   return min(low, lightCount - 1);
+}
+
+inline float lightPdfFromCdf(uint offset, device const float *lightCdf,
+                             float lightTotalWeight) {
+  if (lightTotalWeight <= 0.0f)
+    return 0.0f;
+  float currentCdf = lightCdf[offset];
+  float prevCdf = (offset > 0) ? lightCdf[offset - 1] : 0.0f;
+  float weight = currentCdf - prevCdf;
+  if (weight <= 0.0f)
+    return 0.0f;
+  return weight / lightTotalWeight;
+}
+
+struct RestirEvaluation {
+  float3 contribution;
+  float target;
+  float pdf;
+  bool valid;
+};
+
+inline RestirEvaluation evaluateLightCandidate(
+    uint lightOffset, uint lightPrimIndex, float3 lightPoint,
+    float3 lightNormal, float area, float3 offsetNormal,
+    float3 diffuseColor, float4 absorption, intersection bestHit,
+    thread TlasLeafCache &bounceCache, device const float4 *tlasNodes,
+    uint tlasNodeCount, device const float4 *bvhNodes,
+    device const float4 *primitives, device const int *primitiveIndices,
+    device const uchar *activeMask,
+    device const InstanceRecord *instanceRecords,
+    device const uint *primitiveRemap, uint primitiveCount,
+    uint totalPrimitiveCount, device atomic_uint *primitiveRayStats,
+    device const float4 *materials, device const float *lightCdf,
+    float lightTotalWeight) {
+  RestirEvaluation result{};
+  result.contribution = float3(0.0f);
+  result.target = 0.0f;
+  result.pdf = 0.0f;
+  result.valid = false;
+
+  if (area <= 0.0f)
+    return result;
+
+  float3 toLight = lightPoint - bestHit.point;
+  float dist2 = dot(toLight, toLight);
+  if (dist2 <= 1e-6f)
+    return result;
+  float dist = sqrt(dist2);
+  float3 wi = toLight / dist;
+  float cosTheta = max(dot(offsetNormal, wi), 0.0f);
+  float cosLight = max(dot(lightNormal, -wi), 0.0f);
+  if (cosTheta <= 0.0f || cosLight <= 0.0f)
+    return result;
+
+  float lightPdf = lightPdfFromCdf(lightOffset, lightCdf, lightTotalWeight);
+  if (lightPdf <= 0.0f)
+    return result;
+
+  float pdfArea = 1.0f / area;
+  float pdfSolid = pdfArea * dist2 / cosLight;
+  float totalPdf = lightPdf * pdfSolid;
+  if (totalPdf <= 0.0f)
+    return result;
+
+  Ray shadowRay;
+  shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
+  shadowRay.direction = wi;
+  shadowRay.minDistance = 0.0001f;
+  shadowRay.maxDistance = dist - 0.0001f;
+  if (shadowRay.maxDistance < shadowRay.minDistance)
+    shadowRay.maxDistance = shadowRay.minDistance;
+
+  intersection shadowHit;
+  bool usedCache = false;
+  if (bounceCache.valid) {
+    bool intersectsCached =
+        intersectAABB(shadowRay, bounceCache.boundsMin, bounceCache.boundsMax,
+                      shadowRay.minDistance, shadowRay.maxDistance);
+    if (intersectsCached && bounceCache.blasRootIndex >= 0) {
+      intersection cachedHit =
+          firstHitBVH(shadowRay, bvhNodes, primitives, primitiveIndices,
+                      activeMask, primitiveRemap, primitiveCount,
+                      totalPrimitiveCount, primitiveRayStats,
+                      bounceCache.blasRootIndex);
+      if (cachedHit.primitiveId != -1 &&
+          cachedHit.primitiveId != int(lightPrimIndex) &&
+          cachedHit.t <= shadowRay.maxDistance) {
+        shadowHit = cachedHit;
+        usedCache = true;
+      }
+    }
+  }
+  if (!usedCache) {
+    shadowHit = firstHitTLAS(
+        shadowRay, tlasNodes, tlasNodeCount, bvhNodes, primitives,
+        primitiveIndices, activeMask, instanceRecords, primitiveRemap,
+        primitiveCount, totalPrimitiveCount, primitiveRayStats, nullptr);
+  }
+
+  bool visible = false;
+  if (shadowHit.primitiveId == -1) {
+    visible = true;
+  } else if (shadowHit.primitiveId == int(lightPrimIndex) &&
+             shadowHit.t >= dist - 0.001f) {
+    visible = true;
+  }
+  if (!visible)
+    return result;
+
+  int lightMatIndex = int(lightPrimIndex) * int(kMaterialFloat4Count);
+  if (lightMatIndex + int(kMaterialFloat4Count) >
+      int(primitiveCount) * int(kMaterialFloat4Count)) {
+    return result;
+  }
+  MaterialPayload lightMaterial =
+      decodeMaterial(lightMatIndex, materials, 1.0f);
+  float3 lightRadiance =
+      lightMaterial.emissionColor * lightMaterial.emissionPower;
+  float3 throughput = absorption.xyz * (diffuseColor / M_PI);
+  float3 contribution = throughput * lightRadiance * (cosTheta / totalPdf);
+  float target = luminance(contribution);
+
+  result.contribution = contribution;
+  result.target = max(target, 0.0f);
+  result.pdf = totalPdf;
+  result.valid = (result.target > 0.0f);
+  return result;
 }
 
 inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,
@@ -662,7 +806,9 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 texture2d<float, access::sample> environmentMap,
                                 sampler environmentSampler,
                                 uint environmentEnabled,
-                                float environmentIntensity) {
+                                float environmentIntensity,
+                                thread RestirReservoir *restirReservoir,
+                                bool restirEnabled) {
   PathTraceSample sampleResult;
   sampleResult.radiance = float3(0.0f);
   sampleResult.albedo = float3(0.0f);
@@ -861,13 +1007,29 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
     float3 diffuseColor = material.diffuseColor * material.opacity;
     float diffuseLum = luminance(diffuseColor);
     if (diffuseLum > 0.0f && lightCount > 0 && lightTotalWeight > 0.0f) {
-      float lightXi = randomFloat(seed);
-      seed = random(seed);
-      uint selectedOffset =
-          selectLightOffset(lightXi, lightCdf, lightCount, lightTotalWeight);
-      if (selectedOffset < lightCount) {
-        uint lightPrimIndex = lightIndices[selectedOffset];
-        if (int(lightPrimIndex) != bestHit.primitiveId) {
+      if (restirEnabled && restirReservoir && depth == 0) {
+        // ReSTIR direct-light reuse (temporal-only): reservoir stores W and M,
+        // with target = luminance(contribution). The final estimator uses
+        // weight = W / (M * target) so the contribution remains unbiased.
+        if (restirReservoir->valid == 0) {
+          restirReservoir->W = 0.0f;
+          restirReservoir->M = 0.0f;
+          restirReservoir->selectedFromTemporal = 0;
+        } else {
+          restirReservoir->selectedFromTemporal = 1;
+        }
+
+        for (uint candidateIdx = 0; candidateIdx < kRestirCandidateCount;
+             ++candidateIdx) {
+          float lightXi = randomFloat(seed);
+          seed = random(seed);
+          uint selectedOffset =
+              selectLightOffset(lightXi, lightCdf, lightCount, lightTotalWeight);
+          if (selectedOffset >= lightCount)
+            continue;
+          uint lightPrimIndex = lightIndices[selectedOffset];
+          if (int(lightPrimIndex) == bestHit.primitiveId)
+            continue;
           int base = int(lightPrimIndex) * int(kPrimitiveFloat4Count);
           float4 lp0 = primitives[base + 0];
           float4 lp1 = primitives[base + 1];
@@ -875,85 +1037,154 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
           float3 lightPoint;
           float3 lightNormal;
           float area = 0.0f;
-          if (sampleLightPoint(int(lp0.w), lp0, lp1, lp2, seed, lightPoint,
-                               lightNormal, area) && area > 0.0f) {
-            float3 toLight = lightPoint - bestHit.point;
-            float dist2 = dot(toLight, toLight);
-            if (dist2 > 1e-6f) {
-              float dist = sqrt(dist2);
-              float3 wi = toLight / dist;
-              float cosTheta = max(dot(offsetNormal, wi), 0.0f);
-              float cosLight = max(dot(lightNormal, -wi), 0.0f);
-              if (cosTheta > 0.0f && cosLight > 0.0f) {
-                float currentCdf = lightCdf[selectedOffset];
-                float prevCdf =
-                    (selectedOffset > 0) ? lightCdf[selectedOffset - 1] : 0.0f;
-                float weight = currentCdf - prevCdf;
-                float lightPdf =
-                    (lightTotalWeight > 0.0f && weight > 0.0f)
-                        ? weight / lightTotalWeight
-                    : 0.0f;
-                if (lightPdf > 0.0f) {
-                  float pdfArea = 1.0f / area;
-                  float pdfSolid = pdfArea * dist2 / cosLight;
-                  float totalPdf = lightPdf * pdfSolid;
-                  if (totalPdf > 0.0f) {
-                    Ray shadowRay;
-                    shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
-                    shadowRay.direction = wi;
-                    shadowRay.minDistance = 0.0001f;
-                    shadowRay.maxDistance = dist - 0.0001f;
-                    if (shadowRay.maxDistance < shadowRay.minDistance)
-                      shadowRay.maxDistance = shadowRay.minDistance;
-                    intersection shadowHit;
-                    bool usedCache = false;
-                    if (bounceCache.valid) {
-                      bool intersectsCached = intersectAABB(
-                          shadowRay, bounceCache.boundsMin,
-                          bounceCache.boundsMax, shadowRay.minDistance,
-                          shadowRay.maxDistance);
-                      if (intersectsCached && bounceCache.blasRootIndex >= 0) {
-                        intersection cachedHit = firstHitBVH(
-                            shadowRay, bvhNodes, primitives, primitiveIndices,
-                            activeMask, primitiveRemap, primitiveCount,
-                            totalPrimitiveCount, primitiveRayStats,
-                            bounceCache.blasRootIndex);
-                        if (cachedHit.primitiveId != -1 &&
-                            cachedHit.primitiveId != int(lightPrimIndex) &&
-                            cachedHit.t <= shadowRay.maxDistance) {
-                          shadowHit = cachedHit;
-                          usedCache = true;
+          if (!sampleLightPoint(int(lp0.w), lp0, lp1, lp2, seed, lightPoint,
+                                lightNormal, area))
+            continue;
+
+          RestirEvaluation eval = evaluateLightCandidate(
+              selectedOffset, lightPrimIndex, lightPoint, lightNormal, area,
+              offsetNormal, diffuseColor, absorption, bestHit, bounceCache,
+              tlasNodes, tlasNodeCount, bvhNodes, primitives, primitiveIndices,
+              activeMask, instanceRecords, primitiveRemap, primitiveCount,
+              totalPrimitiveCount, primitiveRayStats, materials, lightCdf,
+              lightTotalWeight);
+          if (!eval.valid)
+            continue;
+
+          float weight = eval.target / eval.pdf;
+          restirReservoir->M += 1.0f;
+          restirReservoir->W += weight;
+          float select = randomFloat(seed);
+          seed = random(seed);
+          if (restirReservoir->W > 0.0f &&
+              select < (weight / restirReservoir->W)) {
+            restirReservoir->sample.position = lightPoint;
+            restirReservoir->sample.normal = lightNormal;
+            restirReservoir->sample.lightIndex = selectedOffset;
+            restirReservoir->sample.area = area;
+            restirReservoir->valid = 1;
+            restirReservoir->selectedFromTemporal = 0;
+          }
+        }
+
+        if (restirReservoir->valid != 0 && restirReservoir->W > 0.0f &&
+            restirReservoir->M > 0.0f) {
+          uint selectedOffset = restirReservoir->sample.lightIndex;
+          if (selectedOffset < lightCount) {
+            uint lightPrimIndex = lightIndices[selectedOffset];
+            if (int(lightPrimIndex) != bestHit.primitiveId) {
+              RestirEvaluation eval = evaluateLightCandidate(
+                  selectedOffset, lightPrimIndex,
+                  restirReservoir->sample.position,
+                  restirReservoir->sample.normal, restirReservoir->sample.area,
+                  offsetNormal, diffuseColor, absorption, bestHit, bounceCache,
+                  tlasNodes, tlasNodeCount, bvhNodes, primitives,
+                  primitiveIndices, activeMask, instanceRecords, primitiveRemap,
+                  primitiveCount, totalPrimitiveCount, primitiveRayStats,
+                  materials, lightCdf, lightTotalWeight);
+              if (eval.valid && eval.target > 0.0f) {
+                float weight =
+                    restirReservoir->W / (restirReservoir->M * eval.target);
+                light.xyz += eval.contribution * weight;
+              }
+            }
+          }
+        }
+      } else {
+        float lightXi = randomFloat(seed);
+        seed = random(seed);
+        uint selectedOffset =
+            selectLightOffset(lightXi, lightCdf, lightCount, lightTotalWeight);
+        if (selectedOffset < lightCount) {
+          uint lightPrimIndex = lightIndices[selectedOffset];
+          if (int(lightPrimIndex) != bestHit.primitiveId) {
+            int base = int(lightPrimIndex) * int(kPrimitiveFloat4Count);
+            float4 lp0 = primitives[base + 0];
+            float4 lp1 = primitives[base + 1];
+            float4 lp2 = primitives[base + 2];
+            float3 lightPoint;
+            float3 lightNormal;
+            float area = 0.0f;
+            if (sampleLightPoint(int(lp0.w), lp0, lp1, lp2, seed, lightPoint,
+                                 lightNormal, area) && area > 0.0f) {
+              float3 toLight = lightPoint - bestHit.point;
+              float dist2 = dot(toLight, toLight);
+              if (dist2 > 1e-6f) {
+                float dist = sqrt(dist2);
+                float3 wi = toLight / dist;
+                float cosTheta = max(dot(offsetNormal, wi), 0.0f);
+                float cosLight = max(dot(lightNormal, -wi), 0.0f);
+                if (cosTheta > 0.0f && cosLight > 0.0f) {
+                  float currentCdf = lightCdf[selectedOffset];
+                  float prevCdf =
+                      (selectedOffset > 0) ? lightCdf[selectedOffset - 1] : 0.0f;
+                  float weight = currentCdf - prevCdf;
+                  float lightPdf =
+                      (lightTotalWeight > 0.0f && weight > 0.0f)
+                          ? weight / lightTotalWeight
+                          : 0.0f;
+                  if (lightPdf > 0.0f) {
+                    float pdfArea = 1.0f / area;
+                    float pdfSolid = pdfArea * dist2 / cosLight;
+                    float totalPdf = lightPdf * pdfSolid;
+                    if (totalPdf > 0.0f) {
+                      Ray shadowRay;
+                      shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
+                      shadowRay.direction = wi;
+                      shadowRay.minDistance = 0.0001f;
+                      shadowRay.maxDistance = dist - 0.0001f;
+                      if (shadowRay.maxDistance < shadowRay.minDistance)
+                        shadowRay.maxDistance = shadowRay.minDistance;
+                      intersection shadowHit;
+                      bool usedCache = false;
+                      if (bounceCache.valid) {
+                        bool intersectsCached = intersectAABB(
+                            shadowRay, bounceCache.boundsMin,
+                            bounceCache.boundsMax, shadowRay.minDistance,
+                            shadowRay.maxDistance);
+                        if (intersectsCached && bounceCache.blasRootIndex >= 0) {
+                          intersection cachedHit = firstHitBVH(
+                              shadowRay, bvhNodes, primitives, primitiveIndices,
+                              activeMask, primitiveRemap, primitiveCount,
+                              totalPrimitiveCount, primitiveRayStats,
+                              bounceCache.blasRootIndex);
+                          if (cachedHit.primitiveId != -1 &&
+                              cachedHit.primitiveId != int(lightPrimIndex) &&
+                              cachedHit.t <= shadowRay.maxDistance) {
+                            shadowHit = cachedHit;
+                            usedCache = true;
+                          }
                         }
                       }
-                    }
-                    if (!usedCache) {
-                      shadowHit = firstHitTLAS(
-                          shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
-                          primitives, primitiveIndices, activeMask,
-                          instanceRecords, primitiveRemap, primitiveCount,
-                          totalPrimitiveCount, primitiveRayStats, nullptr);
-                    }
-                    bool visible = false;
-                    if (shadowHit.primitiveId == -1) {
-                      visible = true;
-                    } else if (shadowHit.primitiveId == int(lightPrimIndex) &&
-                               shadowHit.t >= dist - 0.001f) {
-                      visible = true;
-                    }
-                    if (visible) {
-                      int lightMatIndex = int(lightPrimIndex) *
-                                          int(kMaterialFloat4Count);
-                      if (lightMatIndex + int(kMaterialFloat4Count) <=
-                          int(primitiveCount) * int(kMaterialFloat4Count)) {
-                        MaterialPayload lightMaterial =
-                            decodeMaterial(lightMatIndex, materials, 1.0f);
-                        float3 lightRadiance = lightMaterial.emissionColor *
-                                              lightMaterial.emissionPower;
-                        float3 throughput =
-                            absorption.xyz * (diffuseColor / M_PI);
-                        float3 contribution =
-                            throughput * lightRadiance * (cosTheta / totalPdf);
-                        light.xyz += contribution;
+                      if (!usedCache) {
+                        shadowHit = firstHitTLAS(
+                            shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
+                            primitives, primitiveIndices, activeMask,
+                            instanceRecords, primitiveRemap, primitiveCount,
+                            totalPrimitiveCount, primitiveRayStats, nullptr);
+                      }
+                      bool visible = false;
+                      if (shadowHit.primitiveId == -1) {
+                        visible = true;
+                      } else if (shadowHit.primitiveId == int(lightPrimIndex) &&
+                                 shadowHit.t >= dist - 0.001f) {
+                        visible = true;
+                      }
+                      if (visible) {
+                        int lightMatIndex = int(lightPrimIndex) *
+                                            int(kMaterialFloat4Count);
+                        if (lightMatIndex + int(kMaterialFloat4Count) <=
+                            int(primitiveCount) * int(kMaterialFloat4Count)) {
+                          MaterialPayload lightMaterial =
+                              decodeMaterial(lightMatIndex, materials, 1.0f);
+                          float3 lightRadiance = lightMaterial.emissionColor *
+                                                lightMaterial.emissionPower;
+                          float3 throughput =
+                              absorption.xyz * (diffuseColor / M_PI);
+                          float3 contribution =
+                              throughput * lightRadiance * (cosTheta / totalPdf);
+                          light.xyz += contribution;
+                        }
                       }
                     }
                   }
