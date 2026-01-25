@@ -578,7 +578,6 @@ private:
   double _textureResidencyMemoryCapMB = 2048.0;
   double _geometryResidencyMemoryCapMB = 2048.0;
   double _totalGpuMemoryCapMB = 4096.0;
-  bool _useUnifiedResidencyCap = false;
 
   std::vector<BlasInstanceRecord> _instanceRecords;
   std::vector<Primitive> _residentPrimitives;
