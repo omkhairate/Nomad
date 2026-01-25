@@ -6754,11 +6754,6 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
       &_restirNormalSlots[0], &_restirNormalSlots[1],
       &_restirStateSlots[0], &_restirStateSlots[1]};
 
-  size_t nonEvictableBytes = 0;
-  for (MTL::Texture *texture : _materialTextures)
-    nonEvictableBytes += textureByteSize(texture);
-  nonEvictableBytes += textureByteSize(_environmentTexture);
-
   struct ResidencyCandidate {
     ManagedTextureSlot *slot = nullptr;
     double score = 0.0;
@@ -6784,26 +6779,6 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
     if (!slot->texture)
       continue;
     candidates.push_back(scoreSlot(slot));
-  }
-
-  if (overMemory || totalOverCap) {
-    double nonEvictableMB =
-        static_cast<double>(nonEvictableBytes) / (1024.0 * 1024.0);
-    size_t effectiveCapBytes =
-        static_cast<size_t>(std::max(0.0, effectiveCapMB) * 1024.0 * 1024.0);
-    std::printf(
-        "[TextureResidency] Non-evictable resident bytes this frame: %zu (%.2f "
-        "MB).\n",
-        nonEvictableBytes, nonEvictableMB);
-    if (effectiveCapBytes > 0 && effectiveCapBytes < nonEvictableBytes) {
-      double capMB =
-          static_cast<double>(effectiveCapBytes) / (1024.0 * 1024.0);
-      std::printf(
-          "[TextureResidency][Warning] Eviction cannot resolve over-cap "
-          "condition: cap=%.2f MB below minimum resident footprint of %.2f "
-          "MB (non-evictable=%zu bytes).\n",
-          capMB, nonEvictableMB, nonEvictableBytes);
-    }
   }
 
   std::sort(candidates.begin(), candidates.end(),
@@ -6897,7 +6872,6 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
 
   std::vector<GeometryCandidate> candidates;
   candidates.reserve(_residentObjectGpuResources.size());
-  size_t evictableBytes = 0;
   for (size_t objectIndex = 0; objectIndex < _residentObjectGpuResources.size();
        ++objectIndex) {
     const auto &resident = _residentObjectGpuResources[objectIndex];
@@ -6911,7 +6885,6 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
     if (bytesMB <= 0.0)
       continue;
 
-    evictableBytes += resident.byteSize;
     uint64_t lastHitFrame = 0;
     if (objectIndex < _objectHitLastFrame.size())
       lastHitFrame = _objectHitLastFrame[objectIndex];
@@ -6926,22 +6899,6 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
       score += 1.0;
 
     candidates.push_back({objectIndex, score, bytesMB});
-  }
-
-  size_t nonEvictableBytes =
-      residentBytes > evictableBytes ? residentBytes - evictableBytes : 0;
-  double nonEvictableMB =
-      static_cast<double>(nonEvictableBytes) / (1024.0 * 1024.0);
-  std::printf(
-      "[GeometryResidency] Non-evictable resident bytes this frame: %zu (%.2f "
-      "MB).\n",
-      nonEvictableBytes, nonEvictableMB);
-  if (targetBytes < nonEvictableBytes) {
-    std::printf(
-        "[GeometryResidency][Warning] Eviction cannot resolve over-cap "
-        "condition: target=%.2f MB below minimum resident footprint of %.2f "
-        "MB (non-evictable=%zu bytes).\n",
-        targetMB, nonEvictableMB, nonEvictableBytes);
   }
 
   std::sort(candidates.begin(), candidates.end(),
