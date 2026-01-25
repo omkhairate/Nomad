@@ -522,6 +522,7 @@ double Renderer::residentTextureMemoryMB() const {
   addSlot(_sampleImportanceSlot);
   addSlot(_albedoSlot);
   addSlot(_normalSlot);
+  addSlot(_positionSlot);
 
   for (MTL::Texture *texture : _materialTextures) {
     totalBytes += textureByteSize(texture);
@@ -1477,6 +1478,7 @@ Renderer::~Renderer() {
   releaseTextureSlot(_sampleImportanceSlot);
   releaseTextureSlot(_albedoSlot);
   releaseTextureSlot(_normalSlot);
+  releaseTextureSlot(_positionSlot);
   for (auto &slot : _restirSampleSlots)
     releaseTextureSlot(slot);
   for (auto &slot : _restirNormalSlots)
@@ -2954,6 +2956,7 @@ void Renderer::prewarmAlwaysResidentResources() {
   MTL::Texture *sampleImportance = ensureSlotReady(_sampleImportanceSlot);
   MTL::Texture *albedoTexture = ensureSlotReady(_albedoSlot);
   MTL::Texture *normalTexture = ensureSlotReady(_normalSlot);
+  MTL::Texture *positionTexture = ensureSlotReady(_positionSlot);
   MTL::Texture *restirPrevSample = ensureSlotReady(_restirSampleSlots[0]);
   MTL::Texture *restirPrevNormal = ensureSlotReady(_restirNormalSlots[0]);
   MTL::Texture *restirPrevState = ensureSlotReady(_restirStateSlots[0]);
@@ -2966,8 +2969,8 @@ void Renderer::prewarmAlwaysResidentResources() {
 
   bool haveAllTextures =
       accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
-      normalTexture && restirPrevSample && restirPrevNormal && restirPrevState &&
-      restirOutSample && restirOutNormal && restirOutState;
+      normalTexture && positionTexture && restirPrevSample && restirPrevNormal &&
+      restirPrevState && restirOutSample && restirOutNormal && restirOutState;
 
   bool useAccelerationStructureLayout =
       _useAccelerationStructureBindings && _pTlasStructure &&
@@ -3049,21 +3052,22 @@ void Renderer::prewarmAlwaysResidentResources() {
   compute->setTexture(sampleImportance, 3);
   compute->setTexture(albedoTexture, 4);
   compute->setTexture(normalTexture, 5);
-  compute->setTexture(restirPrevSample, 6);
-  compute->setTexture(restirPrevNormal, 7);
-  compute->setTexture(restirPrevState, 8);
-  compute->setTexture(restirOutSample, 9);
-  compute->setTexture(restirOutNormal, 10);
-  compute->setTexture(restirOutState, 11);
+  compute->setTexture(positionTexture, 6);
+  compute->setTexture(restirPrevSample, 7);
+  compute->setTexture(restirPrevNormal, 8);
+  compute->setTexture(restirPrevState, 9);
+  compute->setTexture(restirOutSample, 10);
+  compute->setTexture(restirOutNormal, 11);
+  compute->setTexture(restirOutState, 12);
 
   for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
     MTL::Texture *materialTex =
         (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
                                             : nullptr;
-    compute->setTexture(materialTex, 12 + texIdx);
+    compute->setTexture(materialTex, 13 + texIdx);
   }
 
-  compute->setTexture(_environmentTexture, 12 + kMaxMaterialTextureSlots);
+  compute->setTexture(_environmentTexture, 13 + kMaxMaterialTextureSlots);
   if (_environmentSampler)
     compute->setSamplerState(_environmentSampler, 0);
 
@@ -6200,6 +6204,8 @@ const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
     return "_albedoSlot";
   if (&slot == &_normalSlot)
     return "_normalSlot";
+  if (&slot == &_positionSlot)
+    return "_positionSlot";
   if (&slot == &_restirSampleSlots[0])
     return "_restirSampleSlots[0]";
   if (&slot == &_restirSampleSlots[1])
@@ -6534,7 +6540,8 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
                 label);
     if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
         &slot == &_sampleCountSlot || &slot == &_albedoSlot ||
-        &slot == &_normalSlot || &slot == &_restirSampleSlots[0] ||
+        &slot == &_normalSlot || &slot == &_positionSlot ||
+        &slot == &_restirSampleSlots[0] ||
         &slot == &_restirSampleSlots[1] || &slot == &_restirNormalSlots[0] ||
         &slot == &_restirNormalSlots[1] || &slot == &_restirStateSlots[0] ||
         &slot == &_restirStateSlots[1]) {
@@ -6683,9 +6690,9 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
                 residencyMB, totalMemoryMB, scratchMB, _textureResidencyMemoryCapMB);
   }
 
-  std::array<ManagedTextureSlot *, 12> slots = {
+  std::array<ManagedTextureSlot *, 13> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot,
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot, &_positionSlot,
       &_restirSampleSlots[0], &_restirSampleSlots[1],
       &_restirNormalSlots[0], &_restirNormalSlots[1],
       &_restirStateSlots[0], &_restirStateSlots[1]};
@@ -7015,6 +7022,8 @@ void Renderer::buildTextures() {
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_normalSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  configureTextureSlot(_positionSlot, width, height,
+                       MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   for (auto &slot : _restirSampleSlots)
     configureTextureSlot(slot, width, height,
                          MTL::PixelFormat::PixelFormatRGBA32Float, usage);
@@ -7033,9 +7042,9 @@ bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
   if (!cmd)
     return false;
 
-  std::array<ManagedTextureSlot *, 12> slots = {
+  std::array<ManagedTextureSlot *, 13> slots = {
       &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot,
+      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot, &_positionSlot,
       &_restirSampleSlots[0], &_restirSampleSlots[1],
       &_restirNormalSlots[0], &_restirNormalSlots[1],
       &_restirStateSlots[0], &_restirStateSlots[1]};
@@ -7427,6 +7436,7 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *sampleImportance = _sampleImportanceSlot.texture;
   MTL::Texture *albedoTexture = _albedoSlot.texture;
   MTL::Texture *normalTexture = _normalSlot.texture;
+  MTL::Texture *positionTexture = _positionSlot.texture;
   MTL::Texture *restirPrevSample = _restirSampleSlots[0].texture;
   MTL::Texture *restirPrevNormal = _restirNormalSlots[0].texture;
   MTL::Texture *restirPrevState = _restirStateSlots[0].texture;
@@ -7441,6 +7451,8 @@ void Renderer::draw(MTK::View *pView) {
         requestResidentTexture(_sampleImportanceSlot, prepCmd, restoreBlit);
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
     normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
+    positionTexture =
+        requestResidentTexture(_positionSlot, prepCmd, restoreBlit);
     restirPrevSample =
         requestResidentTexture(_restirSampleSlots[0], prepCmd, restoreBlit);
     restirPrevNormal =
@@ -7471,6 +7483,7 @@ void Renderer::draw(MTK::View *pView) {
   ensureSlotReady(_sampleImportanceSlot, sampleImportance);
   ensureSlotReady(_albedoSlot, albedoTexture);
   ensureSlotReady(_normalSlot, normalTexture);
+  ensureSlotReady(_positionSlot, positionTexture);
   ensureSlotReady(_restirSampleSlots[0], restirPrevSample);
   ensureSlotReady(_restirNormalSlots[0], restirPrevNormal);
   ensureSlotReady(_restirStateSlots[0], restirPrevState);
@@ -7489,6 +7502,7 @@ void Renderer::draw(MTK::View *pView) {
   markSlotUsed(_sampleImportanceSlot, sampleImportance);
   markSlotUsed(_albedoSlot, albedoTexture);
   markSlotUsed(_normalSlot, normalTexture);
+  markSlotUsed(_positionSlot, positionTexture);
   markSlotUsed(_restirSampleSlots[0], restirPrevSample);
   markSlotUsed(_restirNormalSlots[0], restirPrevNormal);
   markSlotUsed(_restirStateSlots[0], restirPrevState);
@@ -7501,8 +7515,8 @@ void Renderer::draw(MTK::View *pView) {
 
   bool haveAllTextures =
       accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
-      normalTexture && restirPrevSample && restirPrevNormal && restirPrevState &&
-      restirOutSample && restirOutNormal && restirOutState;
+      normalTexture && positionTexture && restirPrevSample && restirPrevNormal &&
+      restirPrevState && restirOutSample && restirOutNormal && restirOutState;
 
   if (_accumulationTargetsNeedClear && haveAllTextures) {
     if (resetAccumulationTargets(prepCmd)) {
@@ -7745,22 +7759,23 @@ void Renderer::draw(MTK::View *pView) {
       pCompute->setTexture(sampleImportance, 3);
       pCompute->setTexture(albedoTexture, 4);
       pCompute->setTexture(normalTexture, 5);
-      pCompute->setTexture(restirPrevSample, 6);
-      pCompute->setTexture(restirPrevNormal, 7);
-      pCompute->setTexture(restirPrevState, 8);
-      pCompute->setTexture(restirOutSample, 9);
-      pCompute->setTexture(restirOutNormal, 10);
-      pCompute->setTexture(restirOutState, 11);
+      pCompute->setTexture(positionTexture, 6);
+      pCompute->setTexture(restirPrevSample, 7);
+      pCompute->setTexture(restirPrevNormal, 8);
+      pCompute->setTexture(restirPrevState, 9);
+      pCompute->setTexture(restirOutSample, 10);
+      pCompute->setTexture(restirOutNormal, 11);
+      pCompute->setTexture(restirOutState, 12);
 
       for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
         MTL::Texture *materialTex =
             (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
                                                 : nullptr;
-        pCompute->setTexture(materialTex, 12 + texIdx);
+        pCompute->setTexture(materialTex, 13 + texIdx);
       }
 
       pCompute->setTexture(_environmentTexture,
-                            12 + kMaxMaterialTextureSlots);
+                            13 + kMaxMaterialTextureSlots);
       if (_environmentSampler)
         pCompute->setSamplerState(_environmentSampler, 0);
 
@@ -7799,7 +7814,11 @@ void Renderer::draw(MTK::View *pView) {
   bool restirSpatialDispatched = false;
   if (_residencyConfig.restirSamplingEnabled && restirPrevSample &&
       restirPrevNormal && restirPrevState && restirOutSample &&
-      restirOutNormal && restirOutState) {
+      restirOutNormal && restirOutState && albedoTexture && normalTexture &&
+      positionTexture && _pBVHBuffer && _pSphereBuffer &&
+      _pSphereMaterialBuffer && _pPrimitiveIndexBuffer && _pTLASBuffer &&
+      _pActiveBuffer && _pLightIndexBuffer && _pLightCdfBuffer &&
+      _pPrimitiveRemapBuffer && _pPrimitiveHitBufferGPU && _pInstanceBuffer) {
     if (_pRestirSpatialPSO) {
       MTL::CommandBuffer *restirCmd = _pCommandQueue->commandBuffer();
       if (restirCmd) {
@@ -7808,12 +7827,26 @@ void Renderer::draw(MTK::View *pView) {
         if (pCompute) {
           pCompute->setComputePipelineState(_pRestirSpatialPSO);
           pCompute->setBuffer(_pUniformsBuffer, 0, 0);
-          pCompute->setTexture(restirOutSample, 0);
-          pCompute->setTexture(restirOutNormal, 1);
-          pCompute->setTexture(restirOutState, 2);
-          pCompute->setTexture(restirPrevSample, 3);
-          pCompute->setTexture(restirPrevNormal, 4);
-          pCompute->setTexture(restirPrevState, 5);
+          pCompute->setBuffer(_pBVHBuffer, 0, 1);
+          pCompute->setBuffer(_pSphereBuffer, 0, 2);
+          pCompute->setBuffer(_pSphereMaterialBuffer, 0, 3);
+          pCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 4);
+          pCompute->setBuffer(_pTLASBuffer, 0, 5);
+          pCompute->setBuffer(_pActiveBuffer, 0, 6);
+          pCompute->setBuffer(_pLightIndexBuffer, 0, 7);
+          pCompute->setBuffer(_pLightCdfBuffer, 0, 8);
+          pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 9);
+          pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 10);
+          pCompute->setBuffer(_pInstanceBuffer, 0, 11);
+          pCompute->setTexture(albedoTexture, 0);
+          pCompute->setTexture(normalTexture, 1);
+          pCompute->setTexture(positionTexture, 2);
+          pCompute->setTexture(restirOutSample, 3);
+          pCompute->setTexture(restirOutNormal, 4);
+          pCompute->setTexture(restirOutState, 5);
+          pCompute->setTexture(restirPrevSample, 6);
+          pCompute->setTexture(restirPrevNormal, 7);
+          pCompute->setTexture(restirPrevState, 8);
 
           NS::UInteger width = restirOutSample->width();
           NS::UInteger height = restirOutSample->height();

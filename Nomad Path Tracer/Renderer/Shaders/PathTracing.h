@@ -18,6 +18,7 @@ struct PathTraceSample {
   float3 radiance;
   float3 albedo;
   float3 normal;
+  float3 position;
 };
 
 constant uint kRestirCandidateCount = 4;
@@ -852,6 +853,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
   sampleResult.radiance = float3(0.0f);
   sampleResult.albedo = float3(0.0f);
   sampleResult.normal = float3(0.0f);
+  sampleResult.position = float3(0.0f);
   bool recordedFirstHit = false;
 
   float footprint = length(cross(rayDx, rayDy));
@@ -1040,6 +1042,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
     if (!recordedFirstHit) {
       sampleResult.albedo = material.diffuseColor;
       sampleResult.normal = offsetNormal;
+      sampleResult.position = bestHit.point;
       recordedFirstHit = true;
     }
 
