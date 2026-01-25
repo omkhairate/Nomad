@@ -1308,13 +1308,6 @@ Renderer::Renderer(MTL::Device *pDevice)
   _pCommandQueue = _pDevice->newCommandQueue();
   _tlasHeap.initialize(_pDevice);
   _dummyBlasResources.initialize(_pDevice);
-  constexpr size_t kRestirDummyBytes = 16;
-  _pRestirStatsDummyBuffer =
-      _pDevice->newBuffer(kRestirDummyBytes, MTL::ResourceStorageModeShared);
-  if (_pRestirStatsDummyBuffer) {
-    if (void *ptr = _pRestirStatsDummyBuffer->contents())
-      std::memset(ptr, 0, kRestirDummyBytes);
-  }
 
   Camera::reset();
   _primaryCameraState = Camera::captureState();
@@ -1370,8 +1363,6 @@ Renderer::~Renderer() {
     _pLightCdfBuffer->release();
   if (_pRestirStatsBuffer)
     _pRestirStatsBuffer->release();
-  if (_pRestirStatsDummyBuffer)
-    _pRestirStatsDummyBuffer->release();
   if (_pInstanceBuffer)
     _pInstanceBuffer->release();
   if (_pGeometryHandleBuffer)
@@ -2951,8 +2942,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pInstanceBuffer, 0, 10);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(
-        restirEnabled ? _pRestirStatsBuffer : _pRestirStatsDummyBuffer, 0, 14);
+    compute->setBuffer(restirEnabled ? _pRestirStatsBuffer : nullptr, 0, 14);
   } else {
     compute->setBuffer(_pBVHBuffer, 0, 0);
     compute->setBuffer(_pSphereBuffer, 0, 1);
@@ -2968,8 +2958,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(
-        restirEnabled ? _pRestirStatsBuffer : _pRestirStatsDummyBuffer, 0, 14);
+    compute->setBuffer(restirEnabled ? _pRestirStatsBuffer : nullptr, 0, 14);
   }
 
   compute->setTexture(accum0, 0);
@@ -7668,9 +7657,8 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(
-            restirEnabled ? _pRestirStatsBuffer : _pRestirStatsDummyBuffer, 0,
-            14);
+        pCompute->setBuffer(restirEnabled ? _pRestirStatsBuffer : nullptr, 0,
+                            14);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -7686,9 +7674,8 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(
-            restirEnabled ? _pRestirStatsBuffer : _pRestirStatsDummyBuffer, 0,
-            14);
+        pCompute->setBuffer(restirEnabled ? _pRestirStatsBuffer : nullptr, 0,
+                            14);
       }
 
       pCompute->setTexture(accum0, 0);
