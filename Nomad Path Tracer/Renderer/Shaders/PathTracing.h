@@ -196,6 +196,23 @@ struct RestirEvaluation {
   bool valid;
 };
 
+inline void updateRestirReservoir(thread RestirReservoir &reservoir,
+                                  thread const RestirSampleData &sample,
+                                  float candidateWeight, bool fromTemporal,
+                                  thread uint32_t &seed) {
+  if (candidateWeight <= 0.0f)
+    return;
+  reservoir.M += 1.0f;
+  reservoir.W += candidateWeight;
+  float select = randomFloat(seed);
+  seed = random(seed);
+  if (reservoir.W > 0.0f && select < (candidateWeight / reservoir.W)) {
+    reservoir.sample = sample;
+    reservoir.valid = 1u;
+    reservoir.selectedFromTemporal = fromTemporal ? 1u : 0u;
+  }
+}
+
 inline bool intersectAABB(thread const Ray &r, float3 bmin, float3 bmax,
                           float tMin, float tMax);
 inline intersection firstHitBVH(thread const Ray &r,
@@ -315,8 +332,9 @@ inline RestirEvaluation evaluateLightCandidate(
   float3 lightRadiance =
       lightMaterial.emissionColor * lightMaterial.emissionPower;
   float3 throughput = absorption.xyz * (diffuseColor / M_PI);
-  float3 contribution = throughput * lightRadiance * (cosTheta / totalPdf);
-  float target = luminance(contribution);
+  float3 unshadowed = throughput * lightRadiance * cosTheta;
+  float3 contribution = unshadowed / totalPdf;
+  float target = luminance(unshadowed);
 
   result.contribution = contribution;
   result.target = max(target, 0.0f);
@@ -1029,15 +1047,35 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
     float diffuseLum = luminance(diffuseColor);
     if (diffuseLum > 0.0f && lightCount > 0 && lightTotalWeight > 0.0f) {
       if (restirEnabled && restirReservoir && depth == 0) {
-        // ReSTIR direct-light reuse (temporal-only): reservoir stores W and M,
-        // with target = luminance(contribution). The final estimator uses
-        // weight = W / (M * target) so the contribution remains unbiased.
-        if (restirReservoir->valid == 0) {
-          restirReservoir->W = 0.0f;
-          restirReservoir->M = 0.0f;
-          restirReservoir->selectedFromTemporal = 0;
-        } else {
-          restirReservoir->selectedFromTemporal = 1;
+        // ReSTIR direct-light reuse: combine temporal/spatial candidates with
+        // current samples using canonical reservoir updates.
+        RestirReservoir combined{};
+        combined.valid = 0u;
+        combined.W = 0.0f;
+        combined.M = 0.0f;
+        combined.selectedFromTemporal = 0u;
+
+        if (restirReservoir->valid != 0u) {
+          uint selectedOffset = restirReservoir->sample.lightIndex;
+          if (selectedOffset < lightCount) {
+            uint lightPrimIndex = lightIndices[selectedOffset];
+            if (int(lightPrimIndex) != bestHit.primitiveId) {
+              RestirEvaluation eval = evaluateLightCandidate(
+                  selectedOffset, lightPrimIndex,
+                  restirReservoir->sample.position,
+                  restirReservoir->sample.normal, restirReservoir->sample.area,
+                  offsetNormal, diffuseColor, absorption, bestHit, bounceCache,
+                  tlasNodes, tlasNodeCount, bvhNodes, primitives,
+                  primitiveIndices, activeMask, instanceRecords, primitiveRemap,
+                  primitiveCount, totalPrimitiveCount, primitiveRayStats,
+                  materials, lightCdf, lightTotalWeight);
+              if (eval.valid && eval.pdf > 0.0f) {
+                float weight = eval.target / eval.pdf;
+                updateRestirReservoir(combined, restirReservoir->sample, weight,
+                                      true, seed);
+              }
+            }
+          }
         }
 
         for (uint candidateIdx = 0; candidateIdx < kRestirCandidateCount;
@@ -1073,20 +1111,15 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             continue;
 
           float weight = eval.target / eval.pdf;
-          restirReservoir->M += 1.0f;
-          restirReservoir->W += weight;
-          float select = randomFloat(seed);
-          seed = random(seed);
-          if (restirReservoir->W > 0.0f &&
-              select < (weight / restirReservoir->W)) {
-            restirReservoir->sample.position = lightPoint;
-            restirReservoir->sample.normal = lightNormal;
-            restirReservoir->sample.lightIndex = selectedOffset;
-            restirReservoir->sample.area = area;
-            restirReservoir->valid = 1;
-            restirReservoir->selectedFromTemporal = 0;
-          }
+          RestirSampleData candidateSample{};
+          candidateSample.position = lightPoint;
+          candidateSample.normal = lightNormal;
+          candidateSample.lightIndex = selectedOffset;
+          candidateSample.area = area;
+          updateRestirReservoir(combined, candidateSample, weight, false, seed);
         }
+
+        *restirReservoir = combined;
 
         if (restirReservoir->valid != 0 && restirReservoir->W > 0.0f &&
             restirReservoir->M > 0.0f) {
