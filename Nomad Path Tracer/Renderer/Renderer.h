@@ -434,6 +434,8 @@ private:
     double gpuMemoryMB = 0.0;
     double scratchMemoryMB = 0.0;
     double residentGeometryMemoryMB = 0.0;
+    double residentTextureMemoryMB = 0.0;
+    double restirMemoryMB = 0.0;
     double residencyMemoryMB = 0.0;
     double textureMemoryCapMB = 0.0;
     double geometryMemoryCapMB = 0.0;
