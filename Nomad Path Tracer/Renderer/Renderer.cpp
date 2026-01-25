@@ -689,6 +689,7 @@ size_t alignTo(size_t value, size_t alignment) {
 constexpr size_t kTextureResidencyPrimitiveBudget = 1;
 constexpr double kDefaultTextureResidencyMemoryCapMB = 2048.0;
 constexpr double kDefaultGeometryResidencyMemoryCapMB = 2048.0;
+constexpr double kDefaultTotalGpuMemoryCapMB = 4096.0;
 constexpr size_t kMaxTextureHistoryBytes = 16ull * 1024ull * 1024ull;
 constexpr float kFrustumDebugNear = 0.1f;
 constexpr float kFrustumDebugFarMultiplier = 5.0f;
@@ -1587,7 +1588,8 @@ void Renderer::writeBenchmarkHeader() {
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,resident_geometry_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,geometry_memory_cap_mb,"
-         "over_memory_cap,geometry_over_memory_cap,geometry_cap_hits,"
+         "total_memory_cap_mb,over_memory_cap,geometry_over_memory_cap,"
+         "total_over_memory_cap,total_memory_overage_warnings,geometry_cap_hits,"
          "geometry_hard_cap_denials,residency_compacted,"
          "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
@@ -1683,8 +1685,11 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.residencyMemoryMB, 3) << ','
       << formatFixed(sample.textureMemoryCapMB, 3) << ','
       << formatFixed(sample.geometryMemoryCapMB, 3) << ','
+      << formatFixed(sample.totalMemoryCapMB, 3) << ','
       << boolToInt(sample.overMemoryCap) << ','
       << boolToInt(sample.geometryOverMemoryCap) << ','
+      << boolToInt(sample.totalOverMemoryCap) << ','
+      << sample.totalMemoryOverageWarnings << ','
       << sample.geometryCapHitCount << ','
       << sample.geometryHardCapDeniedCount << ','
       << boolToInt(sample.residentCompacted) << ','
@@ -2545,6 +2550,10 @@ void Renderer::updateVisibleScene() {
     _geometryResidencyMemoryCapMB = kDefaultGeometryResidencyMemoryCapMB;
   printf("Geometry residency memory cap: %.1f MB\n",
          _geometryResidencyMemoryCapMB);
+  _totalGpuMemoryCapMB = std::max(_pScene->getTotalGpuMemoryCapMB(), 0.0);
+  if (_totalGpuMemoryCapMB <= 0.0)
+    _totalGpuMemoryCapMB = kDefaultTotalGpuMemoryCapMB;
+  printf("Total GPU memory soft cap: %.1f MB\n", _totalGpuMemoryCapMB);
   _residentCompacted = _pScene->getStartCompacted();
   _compactionCooldown = 0;
 
@@ -7253,11 +7262,23 @@ void Renderer::draw(MTK::View *pView) {
   bool geometryOverCap = geometryMemory > _geometryResidencyMemoryCapMB;
   double contentMemory = residencyMemoryMB();
   bool overCap = contentMemory > _textureResidencyMemoryCapMB;
+  double totalMemoryMB = currentGPUMemoryMB();
+  bool totalOverCap = _totalGpuMemoryCapMB > 0.0 &&
+                      totalMemoryMB > _totalGpuMemoryCapMB;
 
-  if (geometryOverCap || _pendingGeometryResidencyOverageBytes > 0)
+  if (totalOverCap) {
+    ++_frameTotalMemoryOverageWarnings;
+    std::printf(
+        "[MemoryBudget] Total GPU memory over soft cap: total=%.3f MB "
+        "cap=%.3f MB (residency=%.3f MB, scratch=%.3f MB)\n",
+        totalMemoryMB, _totalGpuMemoryCapMB, contentMemory, scratchMemoryMB());
+  }
+
+  if (geometryOverCap || _pendingGeometryResidencyOverageBytes > 0 ||
+      totalOverCap)
     updateGeometryResidency(prepCmd);
 
-  if (!_needsAccumulationReset && (belowBudget || overCap))
+  if (!_needsAccumulationReset && (belowBudget || overCap || totalOverCap))
     updateTextureResidency(prepCmd);
 
   bool allowResidency =
@@ -7788,6 +7809,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameEnvironmentActivationFloor = 0;
   _frameGeometryResidencyCapHitCount = 0;
   _frameGeometryResidencyHardCapDeniedCount = 0;
+  _frameTotalMemoryOverageWarnings = 0;
   _frameRestirReuseRate = 0.0;
   _frameRestirCandidateAcceptance = 0.0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
@@ -12598,6 +12620,7 @@ void Renderer::beginFrameMetrics() {
         std::max(0.0, sample.gpuMemoryMB - sample.scratchMemoryMB);
     sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
     sample.geometryMemoryCapMB = _geometryResidencyMemoryCapMB;
+    sample.totalMemoryCapMB = _totalGpuMemoryCapMB;
     double geometryResidentMB = residentGeometryMemoryMB();
     sample.residentGeometryMemoryMB = geometryResidentMB;
     sample.avgHitProbability = 0.0;
@@ -12732,9 +12755,12 @@ void Renderer::beginFrameMetrics() {
         sample.residencyMemoryMB > _textureResidencyMemoryCapMB;
     sample.geometryOverMemoryCap =
         geometryResidentMB > _geometryResidencyMemoryCapMB;
+    sample.totalOverMemoryCap =
+        _totalGpuMemoryCapMB > 0.0 && sample.gpuMemoryMB > _totalGpuMemoryCapMB;
     sample.geometryCapHitCount = _frameGeometryResidencyCapHitCount;
     sample.geometryHardCapDeniedCount =
         _frameGeometryResidencyHardCapDeniedCount;
+    sample.totalMemoryOverageWarnings = _frameTotalMemoryOverageWarnings;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
 }
