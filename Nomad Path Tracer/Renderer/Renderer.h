@@ -126,6 +126,10 @@ public:
   void dumpAccelerationStructure(const std::string &path);
 
   double currentGPUMemoryMB() const;
+  double scratchMemoryMB() const;
+  double residentGeometryMemoryMB() const;
+  double residentTextureMemoryMB() const;
+  double restirMemoryMB() const;
 
   double lastCPUTime() const;
   double lastGPUTime() const;
@@ -198,7 +202,6 @@ private:
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
-  double residentGeometryMemoryMB() const;
   size_t residentGeometryMemoryBytes() const;
   size_t geometryResidencyCapBytes() const;
   void recordGeometryResidencyHardCapDenied(size_t objectIndex,
@@ -286,10 +289,7 @@ private:
   void recycleBlasScratchBuffer(MTL::Buffer *buffer, NS::UInteger size);
   void releaseBlasScratchPool();
   void updateBlasScratchResidencyBudget();
-  double scratchMemoryMB() const;
   double residencyMemoryMB() const;
-  double residentTextureMemoryMB() const;
-  double restirMemoryMB() const;
   size_t textureByteSize(MTL::Texture *texture) const;
   
   MTL::Device *_pDevice = nullptr;
