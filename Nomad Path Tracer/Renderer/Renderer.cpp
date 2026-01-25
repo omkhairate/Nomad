@@ -87,7 +87,6 @@ TaskLimiter &sceneBvhTaskLimiter() {
 
 namespace {
 constexpr float kIdleVisibleExploreSeed = 1.0f;
-constexpr size_t kTotalOverCapResidencyResetFrames = 120;
 }
 
 namespace NomadPathTracer {
@@ -7485,27 +7484,11 @@ void Renderer::draw(MTK::View *pView) {
                       totalMemoryMB > _totalGpuMemoryCapMB;
 
   if (totalOverCap) {
-    ++_totalOverCapFrameStreak;
     ++_frameTotalMemoryOverageWarnings;
     std::printf(
         "[MemoryBudget] Total GPU memory over soft cap: total=%.3f MB "
         "cap=%.3f MB (residency=%.3f MB, scratch=%.3f MB)\n",
         totalMemoryMB, _totalGpuMemoryCapMB, contentMemory, scratchMemoryMB());
-  } else {
-    _totalOverCapFrameStreak = 0;
-  }
-
-  bool totalOverCapPersisted =
-      totalOverCap &&
-      _totalOverCapFrameStreak >= kTotalOverCapResidencyResetFrames;
-  if (totalOverCap &&
-      _totalOverCapFrameStreak == kTotalOverCapResidencyResetFrames) {
-    std::printf(
-        "[MemoryBudget] Total GPU memory over soft cap for %zu frames; "
-        "forcing accumulation reset and minimal residency updates.\n",
-        _totalOverCapFrameStreak);
-    _needsAccumulationReset = true;
-    _accumulationTargetsNeedClear = true;
   }
 
   if (geometryOverCap || _pendingGeometryResidencyOverageBytes > 0 ||
@@ -7515,12 +7498,8 @@ void Renderer::draw(MTK::View *pView) {
   if (!_needsAccumulationReset && (belowBudget || overCap || totalOverCap))
     updateTextureResidency(prepCmd);
 
-  enum class ResidencyRequestMode { None, Minimal, Full };
-  ResidencyRequestMode residencyMode = ResidencyRequestMode::None;
-  if (_needsAccumulationReset || (!belowBudget && !overCap && !totalOverCap))
-    residencyMode = ResidencyRequestMode::Full;
-  if (totalOverCapPersisted)
-    residencyMode = ResidencyRequestMode::Minimal;
+  bool allowResidency =
+      _needsAccumulationReset || (!belowBudget && !overCap && !totalOverCap);
 
   MTL::BlitCommandEncoder *restoreBlit = nullptr;
   MTL::Texture *accum0 = _accumulationSlots[0].texture;
@@ -7536,7 +7515,7 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *restirOutSample = _restirSampleSlots[1].texture;
   MTL::Texture *restirOutNormal = _restirNormalSlots[1].texture;
   MTL::Texture *restirOutState = _restirStateSlots[1].texture;
-  if (residencyMode == ResidencyRequestMode::Full) {
+  if (allowResidency) {
     accum0 = requestResidentTexture(_accumulationSlots[0], prepCmd, restoreBlit);
     accum1 = requestResidentTexture(_accumulationSlots[1], prepCmd, restoreBlit);
     sampleCount = requestResidentTexture(_sampleCountSlot, prepCmd, restoreBlit);
@@ -7558,17 +7537,6 @@ void Renderer::draw(MTK::View *pView) {
         requestResidentTexture(_restirNormalSlots[1], prepCmd, restoreBlit);
     restirOutState =
         requestResidentTexture(_restirStateSlots[1], prepCmd, restoreBlit);
-  } else if (residencyMode == ResidencyRequestMode::Minimal) {
-    accum0 = requestResidentTexture(_accumulationSlots[0], prepCmd, restoreBlit);
-    accum1 = requestResidentTexture(_accumulationSlots[1], prepCmd, restoreBlit);
-    sampleCount = requestResidentTexture(_sampleCountSlot, prepCmd, restoreBlit);
-    sampleImportance =
-        requestResidentTexture(_sampleImportanceSlot, prepCmd, restoreBlit);
-  } else if (totalOverCap) {
-    std::printf(
-        "[MemoryBudget] Residency updates paused: total=%.3f MB "
-        "cap=%.3f MB.\n",
-        totalMemoryMB, _totalGpuMemoryCapMB);
   }
 
   auto ensureSlotReady = [&](ManagedTextureSlot &slot, MTL::Texture *&handle) {
