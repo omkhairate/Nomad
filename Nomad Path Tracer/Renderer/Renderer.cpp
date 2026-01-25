@@ -6852,13 +6852,22 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
       static_cast<size_t>(effectiveCapMB * 1024.0 * 1024.0);
   size_t residentBytes = residentGeometryMemoryBytes();
   size_t targetBytes = capBytes;
+  size_t totalBytes = static_cast<size_t>(
+      std::max(0.0, currentGPUMemoryMB()) * 1024.0 * 1024.0);
+  size_t nonGeometryBytes =
+      totalBytes > residentBytes ? totalBytes - residentBytes : 0;
   if (_useUnifiedResidencyCap) {
-    size_t totalBytes = static_cast<size_t>(
-        std::max(0.0, currentGPUMemoryMB()) * 1024.0 * 1024.0);
-    size_t nonGeometryBytes =
-        totalBytes > residentBytes ? totalBytes - residentBytes : 0;
     targetBytes =
         capBytes > nonGeometryBytes ? capBytes - nonGeometryBytes : 0;
+  } else if (_totalGpuMemoryCapMB > 0.0 &&
+             totalBytes >
+                 static_cast<size_t>(_totalGpuMemoryCapMB * 1024.0 * 1024.0)) {
+    size_t totalCapBytes =
+        static_cast<size_t>(_totalGpuMemoryCapMB * 1024.0 * 1024.0);
+    size_t totalTargetBytes =
+        totalCapBytes > nonGeometryBytes ? totalCapBytes - nonGeometryBytes : 0;
+    if (totalTargetBytes < targetBytes)
+      targetBytes = totalTargetBytes;
   }
   if (_pendingGeometryResidencyOverageBytes > 0) {
     if (targetBytes > _pendingGeometryResidencyOverageBytes)
