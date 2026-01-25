@@ -1541,7 +1541,7 @@ void Renderer::writeBenchmarkHeader() {
          "probability_budget_hit,restir_reuse_rate,restir_candidate_acceptance,"
          "primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
-         "gpu_memory_mb,scratch_memory_mb,"
+         "gpu_memory_mb,scratch_memory_mb,resident_geometry_memory_mb,"
          "residency_memory_mb,texture_memory_cap_mb,geometry_memory_cap_mb,"
          "over_memory_cap,geometry_over_memory_cap,geometry_cap_hits,"
          "geometry_hard_cap_denials,residency_compacted,"
@@ -1635,6 +1635,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.probabilisticToggles << ','
       << formatFixed(sample.gpuMemoryMB, 3) << ','
       << formatFixed(sample.scratchMemoryMB, 3) << ','
+      << formatFixed(sample.residentGeometryMemoryMB, 3) << ','
       << formatFixed(sample.residencyMemoryMB, 3) << ','
       << formatFixed(sample.textureMemoryCapMB, 3) << ','
       << formatFixed(sample.geometryMemoryCapMB, 3) << ','
@@ -12541,6 +12542,7 @@ void Renderer::beginFrameMetrics() {
     sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
     sample.geometryMemoryCapMB = _geometryResidencyMemoryCapMB;
     double geometryResidentMB = residentGeometryMemoryMB();
+    sample.residentGeometryMemoryMB = geometryResidentMB;
     sample.avgHitProbability = 0.0;
     sample.p95HitProbability = 0.0;
     sample.probabilityThreshold = _residencyConfig.probabilityThreshold;
@@ -12726,9 +12728,11 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   size_t offloaded = _totalNodeCount > _residentNodeCount ?
                          _totalNodeCount - _residentNodeCount :
                          0;
-  printf("Active nodes: %zu Resident nodes: %zu Offloaded nodes: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f\n",
+  double geometryResidentMB = residentGeometryMemoryMB();
+  printf("Active nodes: %zu Resident nodes: %zu Offloaded nodes: %zu CPU: %.3f ms GPU: %.3f ms Rays/s: %.2f Resident geometry: %.3f MB\n",
          _activeNodeCount, _residentNodeCount, offloaded,
-         _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond);
+         _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond,
+         geometryResidentMB);
   if (_residencyConfig.restirSamplingEnabled) {
     printf("ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f\n",
            _frameRestirReuseRate, _frameRestirCandidateAcceptance);
