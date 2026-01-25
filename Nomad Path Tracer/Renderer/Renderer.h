@@ -184,6 +184,11 @@ private:
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   double residentGeometryMemoryMB() const;
+  size_t residentGeometryMemoryBytes() const;
+  size_t geometryResidencyCapBytes() const;
+  bool checkGeometryResidencyCap(size_t objectIndex, size_t requestedBytes,
+                                 size_t existingBytes,
+                                 const char *context);
   std::vector<bool> buildResidentMaskFromGpuResources() const;
   void trackFrameCommandBuffer(MTL::CommandBuffer *commandBuffer);
   void recordPathTraceCommandTime(double gpuMs, size_t tileCount);
@@ -217,7 +222,9 @@ private:
   struct PendingBlasBuild;
   void enqueueBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void processBlasBuildQueue();
-  bool startBlasBuild(const std::shared_ptr<PendingBlasBuild> &buildRequest);
+  enum class BlasBuildStartResult { Started, DeferredCap, Failed };
+  BlasBuildStartResult startBlasBuild(
+      const std::shared_ptr<PendingBlasBuild> &buildRequest);
   void handleCompletedBlasBuild(
       const std::shared_ptr<PendingBlasBuild> &buildRequest, bool success);
   void requestResidentEviction(size_t objectIndex,
@@ -435,6 +442,7 @@ private:
     bool residentCompacted = false;
     bool overMemoryCap = false;
     bool geometryOverMemoryCap = false;
+    size_t geometryCapHitCount = 0;
   };
 
   struct FrameCaptureRequest {
@@ -661,6 +669,9 @@ private:
   bool _frameProbabilityBudgetHit = false;
   size_t _frameScreenMinPixelCoverageSkips = 0;
   size_t _frameEnvironmentActivationFloor = 0;
+  size_t _frameGeometryResidencyCapHitCount = 0;
+  size_t _geometryResidencyCapHitCount = 0;
+  size_t _pendingGeometryResidencyOverageBytes = 0;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
   AlwaysResidentCache _alwaysResidentCache;
