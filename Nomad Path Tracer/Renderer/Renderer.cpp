@@ -560,6 +560,10 @@ double Renderer::residentTextureMemoryMB() const {
     addSlot(slot);
   for (const auto &slot : _restirData2Slots)
     addSlot(slot);
+  for (const auto &slot : _restirSurfacePosSlots)
+    addSlot(slot);
+  for (const auto &slot : _restirSurfaceNormalSlots)
+    addSlot(slot);
 
   for (MTL::Texture *texture : _materialTextures) {
     totalBytes += textureByteSize(texture);
@@ -1627,6 +1631,10 @@ Renderer::~Renderer() {
   for (auto &slot : _restirData1Slots)
     releaseTextureSlot(slot);
   for (auto &slot : _restirData2Slots)
+    releaseTextureSlot(slot);
+  for (auto &slot : _restirSurfacePosSlots)
+    releaseTextureSlot(slot);
+  for (auto &slot : _restirSurfaceNormalSlots)
     releaseTextureSlot(slot);
 
   if (_pTextureClearBuffer)
@@ -3089,12 +3097,20 @@ void Renderer::prewarmAlwaysResidentResources() {
       ensureSlotReady(_restirData1Slots[restirWriteIndex]);
   MTL::Texture *restirData2Write =
       ensureSlotReady(_restirData2Slots[restirWriteIndex]);
+  MTL::Texture *restirSurfacePosWrite =
+      ensureSlotReady(_restirSurfacePosSlots[restirWriteIndex]);
+  MTL::Texture *restirSurfaceNormalWrite =
+      ensureSlotReady(_restirSurfaceNormalSlots[restirWriteIndex]);
   MTL::Texture *restirData0Read =
       ensureSlotReady(_restirData0Slots[restirReadIndex]);
   MTL::Texture *restirData1Read =
       ensureSlotReady(_restirData1Slots[restirReadIndex]);
   MTL::Texture *restirData2Read =
       ensureSlotReady(_restirData2Slots[restirReadIndex]);
+  MTL::Texture *restirSurfacePosRead =
+      ensureSlotReady(_restirSurfacePosSlots[restirReadIndex]);
+  MTL::Texture *restirSurfaceNormalRead =
+      ensureSlotReady(_restirSurfaceNormalSlots[restirReadIndex]);
 
   if (blit)
     blit->endEncoding();
@@ -3102,7 +3118,9 @@ void Renderer::prewarmAlwaysResidentResources() {
   bool haveAllTextures =
       colorTexture && albedoTexture && normalTexture && positionTexture &&
       restirData0Write && restirData1Write && restirData2Write &&
-      restirData0Read && restirData1Read && restirData2Read;
+      restirSurfacePosWrite && restirSurfaceNormalWrite && restirData0Read &&
+      restirData1Read && restirData2Read && restirSurfacePosRead &&
+      restirSurfaceNormalRead;
 
   bool useAccelerationStructureLayout =
       _useAccelerationStructureBindings && _pTlasStructure &&
@@ -3186,15 +3204,19 @@ void Renderer::prewarmAlwaysResidentResources() {
   compute->setTexture(restirData0Read, 7);
   compute->setTexture(restirData1Read, 8);
   compute->setTexture(restirData2Read, 9);
+  compute->setTexture(restirSurfacePosWrite, 10);
+  compute->setTexture(restirSurfaceNormalWrite, 11);
+  compute->setTexture(restirSurfacePosRead, 12);
+  compute->setTexture(restirSurfaceNormalRead, 13);
 
   for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
     MTL::Texture *materialTex =
         (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
                                             : nullptr;
-    compute->setTexture(materialTex, 13 + texIdx);
+    compute->setTexture(materialTex, 14 + texIdx);
   }
 
-  compute->setTexture(_environmentTexture, 13 + kMaxMaterialTextureSlots);
+  compute->setTexture(_environmentTexture, 14 + kMaxMaterialTextureSlots);
   if (_environmentSampler)
     compute->setSamplerState(_environmentSampler, 0);
 
@@ -6333,6 +6355,14 @@ const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
     return "_restirData2Slot0";
   if (&slot == &_restirData2Slots[1])
     return "_restirData2Slot1";
+  if (&slot == &_restirSurfacePosSlots[0])
+    return "_restirSurfacePosSlot0";
+  if (&slot == &_restirSurfacePosSlots[1])
+    return "_restirSurfacePosSlot1";
+  if (&slot == &_restirSurfaceNormalSlots[0])
+    return "_restirSurfaceNormalSlot0";
+  if (&slot == &_restirSurfaceNormalSlots[1])
+    return "_restirSurfaceNormalSlot1";
   return "<unknown texture slot>";
 }
 
@@ -6418,6 +6448,10 @@ void Renderer::disableHistoryForMemoryCap() {
   for (auto &slot : _restirData1Slots)
     disableSlot(slot);
   for (auto &slot : _restirData2Slots)
+    disableSlot(slot);
+  for (auto &slot : _restirSurfacePosSlots)
+    disableSlot(slot);
+  for (auto &slot : _restirSurfaceNormalSlots)
     disableSlot(slot);
 }
 
@@ -6532,6 +6566,10 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
   for (auto &slot : _restirData1Slots)
     slots.push_back(&slot);
   for (auto &slot : _restirData2Slots)
+    slots.push_back(&slot);
+  for (auto &slot : _restirSurfacePosSlots)
+    slots.push_back(&slot);
+  for (auto &slot : _restirSurfaceNormalSlots)
     slots.push_back(&slot);
 
   struct ResidencyCandidate {
@@ -6912,6 +6950,10 @@ void Renderer::buildTextures() {
                          MTL::PixelFormat::PixelFormatRGBA32Float, usage);
     configureTextureSlot(_restirData2Slots[i], width, height,
                          MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+    configureTextureSlot(_restirSurfacePosSlots[i], width, height,
+                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+    configureTextureSlot(_restirSurfaceNormalSlots[i], width, height,
+                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   }
 
 }
@@ -7222,9 +7264,17 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *restirData0Write = _restirData0Slots[restirWriteIndex].texture;
   MTL::Texture *restirData1Write = _restirData1Slots[restirWriteIndex].texture;
   MTL::Texture *restirData2Write = _restirData2Slots[restirWriteIndex].texture;
+  MTL::Texture *restirSurfacePosWrite =
+      _restirSurfacePosSlots[restirWriteIndex].texture;
+  MTL::Texture *restirSurfaceNormalWrite =
+      _restirSurfaceNormalSlots[restirWriteIndex].texture;
   MTL::Texture *restirData0Read = _restirData0Slots[restirReadIndex].texture;
   MTL::Texture *restirData1Read = _restirData1Slots[restirReadIndex].texture;
   MTL::Texture *restirData2Read = _restirData2Slots[restirReadIndex].texture;
+  MTL::Texture *restirSurfacePosRead =
+      _restirSurfacePosSlots[restirReadIndex].texture;
+  MTL::Texture *restirSurfaceNormalRead =
+      _restirSurfaceNormalSlots[restirReadIndex].texture;
   if (allowResidency) {
     colorTexture = requestResidentTexture(_colorSlot, prepCmd, restoreBlit);
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
@@ -7237,12 +7287,24 @@ void Renderer::draw(MTK::View *pView) {
                                               prepCmd, restoreBlit);
     restirData2Write = requestResidentTexture(_restirData2Slots[restirWriteIndex],
                                               prepCmd, restoreBlit);
+    restirSurfacePosWrite =
+        requestResidentTexture(_restirSurfacePosSlots[restirWriteIndex],
+                               prepCmd, restoreBlit);
+    restirSurfaceNormalWrite =
+        requestResidentTexture(_restirSurfaceNormalSlots[restirWriteIndex],
+                               prepCmd, restoreBlit);
     restirData0Read = requestResidentTexture(_restirData0Slots[restirReadIndex],
                                              prepCmd, restoreBlit);
     restirData1Read = requestResidentTexture(_restirData1Slots[restirReadIndex],
                                              prepCmd, restoreBlit);
     restirData2Read = requestResidentTexture(_restirData2Slots[restirReadIndex],
                                              prepCmd, restoreBlit);
+    restirSurfacePosRead =
+        requestResidentTexture(_restirSurfacePosSlots[restirReadIndex],
+                               prepCmd, restoreBlit);
+    restirSurfaceNormalRead =
+        requestResidentTexture(_restirSurfaceNormalSlots[restirReadIndex],
+                               prepCmd, restoreBlit);
   }
 
   auto ensureSlotReady = [&](ManagedTextureSlot &slot, MTL::Texture *&handle) {
@@ -7262,9 +7324,16 @@ void Renderer::draw(MTK::View *pView) {
   ensureSlotReady(_restirData0Slots[restirWriteIndex], restirData0Write);
   ensureSlotReady(_restirData1Slots[restirWriteIndex], restirData1Write);
   ensureSlotReady(_restirData2Slots[restirWriteIndex], restirData2Write);
+  ensureSlotReady(_restirSurfacePosSlots[restirWriteIndex],
+                  restirSurfacePosWrite);
+  ensureSlotReady(_restirSurfaceNormalSlots[restirWriteIndex],
+                  restirSurfaceNormalWrite);
   ensureSlotReady(_restirData0Slots[restirReadIndex], restirData0Read);
   ensureSlotReady(_restirData1Slots[restirReadIndex], restirData1Read);
   ensureSlotReady(_restirData2Slots[restirReadIndex], restirData2Read);
+  ensureSlotReady(_restirSurfacePosSlots[restirReadIndex], restirSurfacePosRead);
+  ensureSlotReady(_restirSurfaceNormalSlots[restirReadIndex],
+                  restirSurfaceNormalRead);
 
   auto markSlotUsed = [&](ManagedTextureSlot &slot, MTL::Texture *handle) {
     if (handle)
@@ -7278,9 +7347,15 @@ void Renderer::draw(MTK::View *pView) {
   markSlotUsed(_restirData0Slots[restirWriteIndex], restirData0Write);
   markSlotUsed(_restirData1Slots[restirWriteIndex], restirData1Write);
   markSlotUsed(_restirData2Slots[restirWriteIndex], restirData2Write);
+  markSlotUsed(_restirSurfacePosSlots[restirWriteIndex], restirSurfacePosWrite);
+  markSlotUsed(_restirSurfaceNormalSlots[restirWriteIndex],
+               restirSurfaceNormalWrite);
   markSlotUsed(_restirData0Slots[restirReadIndex], restirData0Read);
   markSlotUsed(_restirData1Slots[restirReadIndex], restirData1Read);
   markSlotUsed(_restirData2Slots[restirReadIndex], restirData2Read);
+  markSlotUsed(_restirSurfacePosSlots[restirReadIndex], restirSurfacePosRead);
+  markSlotUsed(_restirSurfaceNormalSlots[restirReadIndex],
+               restirSurfaceNormalRead);
 
   if (restoreBlit)
     restoreBlit->endEncoding();
@@ -7288,7 +7363,9 @@ void Renderer::draw(MTK::View *pView) {
   bool haveAllTextures =
       colorTexture && albedoTexture && normalTexture && positionTexture &&
       restirData0Write && restirData1Write && restirData2Write &&
-      restirData0Read && restirData1Read && restirData2Read;
+      restirSurfacePosWrite && restirSurfaceNormalWrite && restirData0Read &&
+      restirData1Read && restirData2Read && restirSurfacePosRead &&
+      restirSurfaceNormalRead;
 
   prepCmd->commit();
 
@@ -7528,16 +7605,20 @@ void Renderer::draw(MTK::View *pView) {
       pCompute->setTexture(restirData0Read, 7);
       pCompute->setTexture(restirData1Read, 8);
       pCompute->setTexture(restirData2Read, 9);
+      pCompute->setTexture(restirSurfacePosWrite, 10);
+      pCompute->setTexture(restirSurfaceNormalWrite, 11);
+      pCompute->setTexture(restirSurfacePosRead, 12);
+      pCompute->setTexture(restirSurfaceNormalRead, 13);
 
       for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
         MTL::Texture *materialTex =
             (texIdx < _materialTextures.size()) ? _materialTextures[texIdx]
                                                 : nullptr;
-        pCompute->setTexture(materialTex, 13 + texIdx);
+        pCompute->setTexture(materialTex, 14 + texIdx);
       }
 
       pCompute->setTexture(_environmentTexture,
-                            13 + kMaxMaterialTextureSlots);
+                            14 + kMaxMaterialTextureSlots);
       if (_environmentSampler)
         pCompute->setSamplerState(_environmentSampler, 0);
 

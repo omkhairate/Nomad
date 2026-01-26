@@ -29,10 +29,14 @@ kernel void pathTraceKernel(
     texture2d<float, access::read> restirData0Prev [[texture(7)]],
     texture2d<float, access::read> restirData1Prev [[texture(8)]],
     texture2d<float, access::read> restirData2Prev [[texture(9)]],
+    texture2d<float, access::write> restirSurfacePosOut [[texture(10)]],
+    texture2d<float, access::write> restirSurfaceNormalOut [[texture(11)]],
+    texture2d<float, access::read> restirSurfacePosPrev [[texture(12)]],
+    texture2d<float, access::read> restirSurfaceNormalPrev [[texture(13)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
-        materialTextures [[texture(13)]],
+        materialTextures [[texture(14)]],
     texture2d<float, access::sample> environmentMap
-        [[texture(13 + kMaxMaterialTextures)]],
+        [[texture(14 + kMaxMaterialTextures)]],
     sampler environmentSampler [[sampler(0)]],
     constant TileRegion &tile [[buffer(16)]],
     uint2 gid [[thread_position_in_grid]]) {
@@ -119,9 +123,10 @@ kernel void pathTraceKernel(
         u.textureCount, environmentMap, environmentSampler,
         u.environmentMapEnabled, u.environmentMapIntensity, pixel,
         restirData0Out, restirData1Out, restirData2Out, restirData0Prev,
-        restirData1Prev, restirData2Prev, u.restirEnabled,
-        u.restirCandidateCount, u.restirTemporalReuse, u.prevViewProjection,
-        u.cameraMotionMetric, restirWriteEnabled);
+        restirData1Prev, restirData2Prev, restirSurfacePosOut,
+        restirSurfaceNormalOut, restirSurfacePosPrev, restirSurfaceNormalPrev,
+        u.restirEnabled, u.restirCandidateCount, u.restirTemporalReuse,
+        u.prevViewProjection, u.cameraMotionMetric, restirWriteEnabled);
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;
