@@ -7708,7 +7708,8 @@ void Renderer::draw(MTK::View *pView) {
 
   const bool restirShadeValid =
       _pRestirReservoirBuffer && _restirSettings.enabled &&
-      (_restirSettings.enableTemporal || _restirSettings.enableSpatial);
+      (_restirSettings.enableTemporal || _restirSettings.enableSpatial) &&
+      _restirSettings.debugMode != 0;
   if (_pRestirShadePSO && colorTexture && restirShadeValid) {
     MTL::CommandBuffer *shadeCmd = _pCommandQueue->commandBuffer();
     if (shadeCmd) {
