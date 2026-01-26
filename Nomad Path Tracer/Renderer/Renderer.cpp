@@ -24,6 +24,7 @@
 #include <thread>
 #include <limits>
 #include <functional>
+#include <utility>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -550,6 +551,9 @@ double Renderer::residentTextureMemoryMB() const {
   addSlot(_albedoSlot);
   addSlot(_normalSlot);
   addSlot(_positionSlot);
+  addSlot(_albedoHistorySlot);
+  addSlot(_normalHistorySlot);
+  addSlot(_positionHistorySlot);
 
   for (MTL::Texture *texture : _materialTextures) {
     totalBytes += textureByteSize(texture);
@@ -739,6 +743,7 @@ struct UniformsData {
   float environmentPadding0 = 0.0f;
   float environmentPadding1 = 0.0f;
   float cameraMotionMetric = 0.0f;
+  simd::float4x4 viewProjection{};
   simd::float4x4 prevViewProjection{};
 };
 
@@ -1562,6 +1567,8 @@ Renderer::~Renderer() {
     releaseTrackedResource(_pPrimitiveHitReadback);
   if (_pReservoirBuffer)
     releaseTrackedResource(_pReservoirBuffer);
+  if (_pReservoirHistoryBuffer)
+    releaseTrackedResource(_pReservoirHistoryBuffer);
   if (_pLightIndexBuffer)
     releaseTrackedResource(_pLightIndexBuffer);
   if (_pLightCdfBuffer)
@@ -1606,6 +1613,9 @@ Renderer::~Renderer() {
   releaseTextureSlot(_albedoSlot);
   releaseTextureSlot(_normalSlot);
   releaseTextureSlot(_positionSlot);
+  releaseTextureSlot(_albedoHistorySlot);
+  releaseTextureSlot(_normalHistorySlot);
+  releaseTextureSlot(_positionHistorySlot);
 
   if (_pTextureClearBuffer)
     releaseTrackedResource(_pTextureClearBuffer);
@@ -1614,6 +1624,8 @@ Renderer::~Renderer() {
     _pPathTracePSO->release();
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
+  if (_pRestirTemporalPSO)
+    _pRestirTemporalPSO->release();
   if (_pOverlayPSO)
     _pOverlayPSO->release();
 
@@ -2500,6 +2512,10 @@ void Renderer::buildShaders() {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
   }
+  if (_pRestirTemporalPSO) {
+    _pRestirTemporalPSO->release();
+    _pRestirTemporalPSO = nullptr;
+  }
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
@@ -2608,6 +2624,18 @@ void Renderer::buildShaders() {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
     pAdaptiveFn->release();
+  }
+
+  pError = nullptr;
+  MTL::Function *pRestirTemporalFn = pLibrary->newFunction(
+      NS::String::string("restirTemporalMain", UTF8StringEncoding));
+  if (pRestirTemporalFn) {
+    _pRestirTemporalPSO =
+        _pDevice->newComputePipelineState(pRestirTemporalFn, &pError);
+    if (!_pRestirTemporalPSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    }
+    pRestirTemporalFn->release();
   }
 
   pVertexFn->release();
@@ -6274,6 +6302,12 @@ const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
     return "_normalSlot";
   if (&slot == &_positionSlot)
     return "_positionSlot";
+  if (&slot == &_albedoHistorySlot)
+    return "_albedoHistorySlot";
+  if (&slot == &_normalHistorySlot)
+    return "_normalHistorySlot";
+  if (&slot == &_positionHistorySlot)
+    return "_positionHistorySlot";
   return "<unknown texture slot>";
 }
 
@@ -6351,6 +6385,9 @@ void Renderer::disableHistoryForMemoryCap() {
   disableSlot(_albedoSlot);
   disableSlot(_normalSlot);
   disableSlot(_positionSlot);
+  disableSlot(_albedoHistorySlot);
+  disableSlot(_normalHistorySlot);
+  disableSlot(_positionHistorySlot);
 }
 
 
@@ -6455,8 +6492,10 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
                 totalMemoryMB, residencyMB, scratchMB, totalCapMB);
   }
 
-  std::array<ManagedTextureSlot *, 4> slots = {
-      &_colorSlot, &_albedoSlot, &_normalSlot, &_positionSlot};
+  std::array<ManagedTextureSlot *, 7> slots = {
+      &_colorSlot,          &_albedoSlot,          &_normalSlot,
+      &_positionSlot,       &_albedoHistorySlot,   &_normalHistorySlot,
+      &_positionHistorySlot};
 
   struct ResidencyCandidate {
     ManagedTextureSlot *slot = nullptr;
@@ -6823,6 +6862,12 @@ void Renderer::buildTextures() {
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_positionSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  configureTextureSlot(_albedoHistorySlot, width, height,
+                       MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  configureTextureSlot(_normalHistorySlot, width, height,
+                       MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+  configureTextureSlot(_positionHistorySlot, width, height,
+                       MTL::PixelFormat::PixelFormatRGBA32Float, usage);
 
   size_t reservoirBytes = static_cast<size_t>(width) *
                           static_cast<size_t>(height) * kRestirReservoirStride;
@@ -6831,6 +6876,12 @@ void Renderer::buildTextures() {
                        MTL::ResourceStorageModePrivate,
                        GpuMemoryTracker::Category::RendererBuffers,
                        "RestirReservoirBuffer", "buildTextures");
+  ensureBufferCapacity(_pReservoirHistoryBuffer, reservoirBytes,
+                       _reservoirHistoryBufferCapacity, true,
+                       MTL::ResourceStorageModePrivate,
+                       GpuMemoryTracker::Category::RendererBuffers,
+                       "RestirReservoirHistoryBuffer", "buildTextures");
+  _restirHistoryValid = false;
 }
 
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
@@ -6964,6 +7015,11 @@ void Renderer::updateUniforms(bool cameraChanged) {
   float aspect = Camera::screenSize.y > 0.0f
                      ? Camera::screenSize.x / Camera::screenSize.y
                      : 1.0f;
+  u.viewProjection =
+      simd_mul(makePerspectiveMatrix(activeView.verticalFov, aspect,
+                                     kReprojectionNearPlane,
+                                     kReprojectionFarPlane),
+               makeViewMatrix(activeView));
   if (_lastUniformCameraStateValid) {
     u.prevViewProjection =
         simd_mul(makePerspectiveMatrix(_lastUniformCameraState.verticalFov,
@@ -7022,6 +7078,8 @@ void Renderer::updateUniforms(bool cameraChanged) {
 void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
   bool cameraChanged = updateCameraStates();
+  if (cameraChanged)
+    _restirHistoryValid = false;
   Camera::State viewCamera =
       _observerActive ? _observerCameraState : _primaryCameraState;
 
@@ -7125,12 +7183,23 @@ void Renderer::draw(MTK::View *pView) {
   MTL::Texture *albedoTexture = _albedoSlot.texture;
   MTL::Texture *normalTexture = _normalSlot.texture;
   MTL::Texture *positionTexture = _positionSlot.texture;
+  MTL::Texture *albedoHistoryTexture = _albedoHistorySlot.texture;
+  MTL::Texture *normalHistoryTexture = _normalHistorySlot.texture;
+  MTL::Texture *positionHistoryTexture = _positionHistorySlot.texture;
   if (allowResidency) {
     colorTexture = requestResidentTexture(_colorSlot, prepCmd, restoreBlit);
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
     normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
     positionTexture =
         requestResidentTexture(_positionSlot, prepCmd, restoreBlit);
+    if (_restirHistoryValid) {
+      albedoHistoryTexture =
+          requestResidentTexture(_albedoHistorySlot, prepCmd, restoreBlit);
+      normalHistoryTexture =
+          requestResidentTexture(_normalHistorySlot, prepCmd, restoreBlit);
+      positionHistoryTexture =
+          requestResidentTexture(_positionHistorySlot, prepCmd, restoreBlit);
+    }
   }
 
   auto ensureSlotReady = [&](ManagedTextureSlot &slot, MTL::Texture *&handle) {
@@ -7157,6 +7226,11 @@ void Renderer::draw(MTK::View *pView) {
   markSlotUsed(_albedoSlot, albedoTexture);
   markSlotUsed(_normalSlot, normalTexture);
   markSlotUsed(_positionSlot, positionTexture);
+  if (_restirHistoryValid) {
+    markSlotUsed(_albedoHistorySlot, albedoHistoryTexture);
+    markSlotUsed(_normalHistorySlot, normalHistoryTexture);
+    markSlotUsed(_positionHistorySlot, positionHistoryTexture);
+  }
 
   if (restoreBlit)
     restoreBlit->endEncoding();
@@ -7443,6 +7517,53 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
+  if (_pRestirTemporalPSO && _restirHistoryValid && _pReservoirBuffer &&
+      _pReservoirHistoryBuffer && positionTexture && normalTexture &&
+      albedoTexture && positionHistoryTexture && normalHistoryTexture &&
+      albedoHistoryTexture) {
+    MTL::CommandBuffer *temporalCmd = _pCommandQueue->commandBuffer();
+    if (temporalCmd) {
+      MTL::ComputeCommandEncoder *temporalCompute =
+          temporalCmd->computeCommandEncoder();
+      if (temporalCompute) {
+        temporalCompute->setComputePipelineState(_pRestirTemporalPSO);
+        temporalCompute->setBuffer(_pReservoirHistoryBuffer, 0, 0);
+        temporalCompute->setBuffer(_pReservoirBuffer, 0, 1);
+        temporalCompute->setBuffer(_pUniformsBuffer, 0, 2);
+        temporalCompute->setTexture(positionTexture, 0);
+        temporalCompute->setTexture(normalTexture, 1);
+        temporalCompute->setTexture(albedoTexture, 2);
+        temporalCompute->setTexture(positionHistoryTexture, 3);
+        temporalCompute->setTexture(normalHistoryTexture, 4);
+        temporalCompute->setTexture(albedoHistoryTexture, 5);
+
+        NS::UInteger tgWidth =
+            std::max<NS::UInteger>(1,
+                                   _pRestirTemporalPSO->threadExecutionWidth());
+        NS::UInteger maxThreads = std::max<NS::UInteger>(
+            tgWidth, _pRestirTemporalPSO->maxTotalThreadsPerThreadgroup());
+        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
+        MTL::Size threadsPerThreadgroup =
+            MTL::Size::Make(tgWidth, tgHeight, 1);
+
+        MTL::Size threadgroups = MTL::Size::Make(
+            (width + threadsPerThreadgroup.width - 1) /
+                threadsPerThreadgroup.width,
+            (height + threadsPerThreadgroup.height - 1) /
+                threadsPerThreadgroup.height,
+            1);
+        temporalCompute->dispatchThreadgroups(threadgroups,
+                                              threadsPerThreadgroup);
+        temporalCompute->endEncoding();
+        trackFrameCommandBuffer(temporalCmd);
+        temporalCmd->commit();
+      } else {
+        trackFrameCommandBuffer(temporalCmd);
+        temporalCmd->commit();
+      }
+    }
+  }
+
   MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
   if (!presentCmd) {
     completeFrameMetrics(nullptr);
@@ -7570,6 +7691,19 @@ void Renderer::draw(MTK::View *pView) {
 
   ++_renderedFrameCount;
   pPool->release();
+
+  if (_positionSlot.texture && _positionHistorySlot.texture) {
+    std::swap(_positionSlot, _positionHistorySlot);
+    std::swap(_normalSlot, _normalHistorySlot);
+    std::swap(_albedoSlot, _albedoHistorySlot);
+  }
+  if (_pReservoirBuffer && _pReservoirHistoryBuffer) {
+    std::swap(_pReservoirBuffer, _pReservoirHistoryBuffer);
+  }
+  if (!_restirHistoryValid && _pReservoirBuffer && _pReservoirHistoryBuffer &&
+      _positionSlot.texture && _positionHistorySlot.texture) {
+    _restirHistoryValid = true;
+  }
 }
 
 void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
