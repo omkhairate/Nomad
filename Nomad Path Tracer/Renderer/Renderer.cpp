@@ -94,7 +94,10 @@ namespace NomadPathTracer {
 
 ResidentObjectGpuResources::ResidentObjectGpuResources(
     ResidentObjectGpuResources &&other) noexcept {
-  std::scoped_lock lock(other.pendingCommandsMutex);
+  std::unique_lock<std::mutex> otherLock;
+  if (other.pendingCommandState) {
+    otherLock = std::unique_lock<std::mutex>(other.pendingCommandState->mutex);
+  }
   resources = std::move(other.resources);
   byteSize = other.byteSize;
   triangleCount = other.triangleCount;
@@ -104,7 +107,7 @@ ResidentObjectGpuResources::ResidentObjectGpuResources(
   geometryValid = other.geometryValid;
   state = other.state;
   lastStateChange = other.lastStateChange;
-  pendingCommands = std::move(other.pendingCommands);
+  pendingCommandState = std::move(other.pendingCommandState);
 }
 
 ResidentObjectGpuResources &
@@ -112,7 +115,19 @@ ResidentObjectGpuResources::operator=(ResidentObjectGpuResources &&other) noexce
   if (this == &other)
     return *this;
 
-  std::scoped_lock lock(pendingCommandsMutex, other.pendingCommandsMutex);
+  std::unique_lock<std::mutex> thisLock;
+  std::unique_lock<std::mutex> otherLock;
+  if (pendingCommandState && other.pendingCommandState) {
+    thisLock = std::unique_lock<std::mutex>(pendingCommandState->mutex,
+                                            std::defer_lock);
+    otherLock = std::unique_lock<std::mutex>(other.pendingCommandState->mutex,
+                                             std::defer_lock);
+    std::lock(thisLock, otherLock);
+  } else if (pendingCommandState) {
+    thisLock = std::unique_lock<std::mutex>(pendingCommandState->mutex);
+  } else if (other.pendingCommandState) {
+    otherLock = std::unique_lock<std::mutex>(other.pendingCommandState->mutex);
+  }
   resources = std::move(other.resources);
   byteSize = other.byteSize;
   triangleCount = other.triangleCount;
@@ -122,12 +137,15 @@ ResidentObjectGpuResources::operator=(ResidentObjectGpuResources &&other) noexce
   geometryValid = other.geometryValid;
   state = other.state;
   lastStateChange = other.lastStateChange;
-  pendingCommands = std::move(other.pendingCommands);
+  pendingCommandState = std::move(other.pendingCommandState);
   return *this;
 }
 
 void ResidentObjectGpuResources::clearPendingCommand() {
-  std::lock_guard<std::mutex> lock(pendingCommandsMutex);
+  if (!pendingCommandState)
+    return;
+
+  std::lock_guard<std::mutex> lock(pendingCommandState->mutex);
   using Status = MTL::CommandBufferStatus;
 
   auto isComplete = [](PendingCommand &pending) {
@@ -156,15 +174,16 @@ void ResidentObjectGpuResources::clearPendingCommand() {
     }
   };
 
-  pendingCommands.erase(
-      std::remove_if(pendingCommands.begin(), pendingCommands.end(),
+  auto &commands = pendingCommandState->commands;
+  commands.erase(
+      std::remove_if(commands.begin(), commands.end(),
                      [&](PendingCommand &pending) {
                        if (!isComplete(pending))
                          return false;
                        releaseCommand(pending);
                        return true;
                      }),
-      pendingCommands.end());
+      commands.end());
 }
 
 void ResidentObjectGpuResources::transitionToStreaming(
@@ -175,10 +194,15 @@ void ResidentObjectGpuResources::transitionToStreaming(
     pendingRecord.command = pending;
     pendingRecord.command->retain();
 
+    std::weak_ptr<PendingCommandState> weakState = pendingCommandState;
     pendingRecord.command->addCompletedHandler(
-        [this](MTL::CommandBuffer *cmd) {
-          std::lock_guard<std::mutex> lock(pendingCommandsMutex);
-          for (auto &pending : pendingCommands) {
+        [weakState](MTL::CommandBuffer *cmd) {
+          auto state = weakState.lock();
+          if (!state)
+            return;
+
+          std::lock_guard<std::mutex> lock(state->mutex);
+          for (auto &pending : state->commands) {
             if (pending.command == cmd) {
               auto status = cmd->status();
               pending.completed =
@@ -189,16 +213,21 @@ void ResidentObjectGpuResources::transitionToStreaming(
           }
         });
 
-    std::lock_guard<std::mutex> lock(pendingCommandsMutex);
-    pendingCommands.push_back(std::move(pendingRecord));
+    if (pendingCommandState) {
+      std::lock_guard<std::mutex> lock(pendingCommandState->mutex);
+      pendingCommandState->commands.push_back(std::move(pendingRecord));
+    }
   }
   state = ResidencyState::Streaming;
   lastStateChange = std::chrono::steady_clock::now();
 }
 
 bool ResidentObjectGpuResources::hasPendingCommands() {
-  std::lock_guard<std::mutex> lock(pendingCommandsMutex);
-  for (auto &pending : pendingCommands) {
+  if (!pendingCommandState)
+    return false;
+
+  std::lock_guard<std::mutex> lock(pendingCommandState->mutex);
+  for (auto &pending : pendingCommandState->commands) {
     if (pending.completed || pending.error)
       continue;
 

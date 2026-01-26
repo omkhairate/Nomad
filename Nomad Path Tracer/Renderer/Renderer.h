@@ -91,8 +91,13 @@ struct ResidentObjectGpuResources {
     bool error = false;
   };
 
-  std::vector<PendingCommand> pendingCommands;
-  std::mutex pendingCommandsMutex;
+  struct PendingCommandState {
+    std::mutex mutex;
+    std::vector<PendingCommand> commands;
+  };
+
+  std::shared_ptr<PendingCommandState> pendingCommandState =
+      std::make_shared<PendingCommandState>();
 };
 
 class Renderer {
