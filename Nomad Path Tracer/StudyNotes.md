@@ -15,7 +15,7 @@ mandatory buffers + essential geometry
 When the configured total cap stays below this footprint for several frames, the renderer:
 
 1. Logs a warning that the total cap is below the minimum footprint.
-2. Forces an accumulation reset.
+2. Disables texture history to free memory.
 3. Temporarily relaxes the effective total cap to the minimum footprint value.
 
 The benchmark CSV exposes the minimum footprint, relaxed cap, and eviction-stall status to make the fallback visible when comparing study runs.

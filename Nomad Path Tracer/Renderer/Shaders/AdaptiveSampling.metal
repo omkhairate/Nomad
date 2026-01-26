@@ -9,22 +9,22 @@ inline float luminance(float3 color)
     return dot(color, float3(0.2126, 0.7152, 0.0722));
 }
 
-inline float fetchLuminance(texture2d<float, access::read> accumulation,
+inline float fetchLuminance(texture2d<float, access::read> currentFrame,
                             uint width, uint height, int2 coord)
 {
     int x = clamp(coord.x, 0, int(width - 1));
     int y = clamp(coord.y, 0, int(height - 1));
-    return luminance(float3(accumulation.read(uint2(x, y)).xyz));
+    return luminance(float3(currentFrame.read(uint2(x, y)).xyz));
 }
 
 kernel void adaptiveSamplingMain(
-    texture2d<float, access::read> accumulation [[texture(0)]],
+    texture2d<float, access::read> currentFrame [[texture(0)]],
     texture2d<half, access::write> importance [[texture(1)]],
     constant UniformsData& uniforms [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]])
 {
-    uint width = accumulation.get_width();
-    uint height = accumulation.get_height();
+    uint width = currentFrame.get_width();
+    uint height = currentFrame.get_height();
 
     if (gid.x >= width || gid.y >= height)
     {
@@ -33,15 +33,15 @@ kernel void adaptiveSamplingMain(
 
     int2 coord = int2(gid);
 
-    float center = fetchLuminance(accumulation, width, height, coord);
-    float left = fetchLuminance(accumulation, width, height, coord + int2(-1, 0));
-    float right = fetchLuminance(accumulation, width, height, coord + int2(1, 0));
-    float up = fetchLuminance(accumulation, width, height, coord + int2(0, -1));
-    float down = fetchLuminance(accumulation, width, height, coord + int2(0, 1));
-    float diag0 = fetchLuminance(accumulation, width, height, coord + int2(-1, -1));
-    float diag1 = fetchLuminance(accumulation, width, height, coord + int2(1, -1));
-    float diag2 = fetchLuminance(accumulation, width, height, coord + int2(-1, 1));
-    float diag3 = fetchLuminance(accumulation, width, height, coord + int2(1, 1));
+    float center = fetchLuminance(currentFrame, width, height, coord);
+    float left = fetchLuminance(currentFrame, width, height, coord + int2(-1, 0));
+    float right = fetchLuminance(currentFrame, width, height, coord + int2(1, 0));
+    float up = fetchLuminance(currentFrame, width, height, coord + int2(0, -1));
+    float down = fetchLuminance(currentFrame, width, height, coord + int2(0, 1));
+    float diag0 = fetchLuminance(currentFrame, width, height, coord + int2(-1, -1));
+    float diag1 = fetchLuminance(currentFrame, width, height, coord + int2(1, -1));
+    float diag2 = fetchLuminance(currentFrame, width, height, coord + int2(-1, 1));
+    float diag3 = fetchLuminance(currentFrame, width, height, coord + int2(1, 1));
 
     float gradient = fabs(right - left) + fabs(down - up);
     float diagonal = fabs(diag0 - diag3) + fabs(diag1 - diag2);

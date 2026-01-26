@@ -517,10 +517,7 @@ double Renderer::residentTextureMemoryMB() const {
     totalBytes += textureByteSize(slot);
   };
 
-  for (const auto &slot : _accumulationSlots)
-    addSlot(slot);
-  addSlot(_sampleCountSlot);
-  addSlot(_sampleImportanceSlot);
+  addSlot(_colorSlot);
   addSlot(_albedoSlot);
   addSlot(_normalSlot);
   addSlot(_positionSlot);
@@ -698,7 +695,6 @@ struct UniformsData {
 
   uint64_t primitiveCount;
   uint64_t triangleCount;
-  uint64_t frameCount = 0;
   uint64_t totalPrimitiveCount;
   uint64_t tlasNodeCount;
   uint64_t blasNodeCount;
@@ -706,8 +702,6 @@ struct UniformsData {
   uint32_t debugAS;
   uint32_t lightCount;
   float lightTotalWeight;
-  uint32_t sampleCountTextureIndex = 0;
-  uint32_t sampleImportanceTextureIndex = 0;
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
   uint32_t textureCount = 0;
@@ -1577,10 +1571,7 @@ Renderer::~Renderer() {
   _tlasHeap.destroy();
   _dummyBlasResources.destroy();
 
-  for (auto &slot : _accumulationSlots)
-    releaseTextureSlot(slot);
-  releaseTextureSlot(_sampleCountSlot);
-  releaseTextureSlot(_sampleImportanceSlot);
+  releaseTextureSlot(_colorSlot);
   releaseTextureSlot(_albedoSlot);
   releaseTextureSlot(_normalSlot);
   releaseTextureSlot(_positionSlot);
@@ -1771,7 +1762,7 @@ void Renderer::writeBenchmarkHeader() {
          "total_over_memory_cap,total_memory_overage_warnings,"
          "total_memory_cap_denials,total_memory_eviction_stall,geometry_cap_hits,"
          "geometry_hard_cap_denials,residency_compacted,"
-         "accumulation_reset,ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
+         "ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
          "rayhit_target_fraction,rayhit_min_active,rayhit_rebuild_cooldown,"
          "rayhit_prior_enabled_low_hit_shrink,rayhit_prior_scale_low_hit_shrink,"
@@ -1877,7 +1868,6 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.geometryCapHitCount << ','
       << sample.geometryHardCapDeniedCount << ','
       << boolToInt(sample.residentCompacted) << ','
-      << boolToInt(sample.accumulationReset) << ','
       << formatFixed(_residencyConfig.rayHitDecay, 3) << ','
       << _residencyConfig.stateCooldownFrames << ','
       << _residencyConfig.lodMaxTogglesPerFrame << ','
@@ -3035,10 +3025,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     return requestResidentTexture(slot, cmd, blit);
   };
 
-  MTL::Texture *accum0 = ensureSlotReady(_accumulationSlots[0]);
-  MTL::Texture *accum1 = ensureSlotReady(_accumulationSlots[1]);
-  MTL::Texture *sampleCount = ensureSlotReady(_sampleCountSlot);
-  MTL::Texture *sampleImportance = ensureSlotReady(_sampleImportanceSlot);
+  MTL::Texture *colorTexture = ensureSlotReady(_colorSlot);
   MTL::Texture *albedoTexture = ensureSlotReady(_albedoSlot);
   MTL::Texture *normalTexture = ensureSlotReady(_normalSlot);
   MTL::Texture *positionTexture = ensureSlotReady(_positionSlot);
@@ -3047,8 +3034,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     blit->endEncoding();
 
   bool haveAllTextures =
-      accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
-      normalTexture && positionTexture;
+      colorTexture && albedoTexture && normalTexture && positionTexture;
 
   bool useAccelerationStructureLayout =
       _useAccelerationStructureBindings && _pTlasStructure &&
@@ -3122,13 +3108,10 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pInstanceBuffer, 0, 13);
   }
 
-  compute->setTexture(accum0, 0);
-  compute->setTexture(accum1, 1);
-  compute->setTexture(sampleCount, 2);
-  compute->setTexture(sampleImportance, 3);
-  compute->setTexture(albedoTexture, 4);
-  compute->setTexture(normalTexture, 5);
-  compute->setTexture(positionTexture, 6);
+  compute->setTexture(colorTexture, 0);
+  compute->setTexture(albedoTexture, 1);
+  compute->setTexture(normalTexture, 2);
+  compute->setTexture(positionTexture, 3);
 
   for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
     MTL::Texture *materialTex =
@@ -5856,7 +5839,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   _recentlyActivated.clear();
   _recentlyDeactivated.clear();
 
-  _needsAccumulationReset = true;
 }
 
 std::vector<bool> Renderer::buildResidentMaskFromGpuResources() const {
@@ -6251,14 +6233,8 @@ void Renderer::releaseTextureSlot(ManagedTextureSlot &slot) {
 }
 
 const char *Renderer::textureSlotLabel(const ManagedTextureSlot &slot) const {
-  if (&slot == &_accumulationSlots[0])
-    return "_accumulationSlots[0]";
-  if (&slot == &_accumulationSlots[1])
-    return "_accumulationSlots[1]";
-  if (&slot == &_sampleCountSlot)
-    return "_sampleCountSlot";
-  if (&slot == &_sampleImportanceSlot)
-    return "_sampleImportanceSlot";
+  if (&slot == &_colorSlot)
+    return "_colorSlot";
   if (&slot == &_albedoSlot)
     return "_albedoSlot";
   if (&slot == &_normalSlot)
@@ -6289,12 +6265,6 @@ void Renderer::configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width
   slot.storageMode = MTL::StorageMode::StorageModePrivate;
   slot.descriptorValid = true;
   slot.stagingValid = false;
-
-  if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
-      &slot == &_sampleCountSlot) {
-    _needsAccumulationReset = true;
-    _accumulationTargetsNeedClear = true;
-  }
 }
 
 size_t Renderer::textureByteSize(const ManagedTextureSlot &slot) const {
@@ -6344,12 +6314,10 @@ void Renderer::disableHistoryForMemoryCap() {
     }
   };
 
-  disableSlot(_accumulationSlots[0]);
-  disableSlot(_accumulationSlots[1]);
-  disableSlot(_sampleCountSlot);
-  disableSlot(_sampleImportanceSlot);
-  _needsAccumulationReset = true;
-  _accumulationTargetsNeedClear = true;
+  disableSlot(_colorSlot);
+  disableSlot(_albedoSlot);
+  disableSlot(_normalSlot);
+  disableSlot(_positionSlot);
 }
 
 
@@ -6369,8 +6337,6 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
     std::printf(
         "[TextureResidency] Deferring slot %s: total memory cap would be exceeded.\n",
         label);
-    _needsAccumulationReset = true;
-    _accumulationTargetsNeedClear = true;
     return nullptr;
   }
   MTL::TextureDescriptor *descriptor =
@@ -6389,58 +6355,11 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
   if (!slot.texture) {
     std::printf("[TextureResidency] Failed to restore slot %s: texture allocation returned null.\n",
                 label);
-    _needsAccumulationReset = true;
-    _accumulationTargetsNeedClear = true;
     return nullptr;
-  }
-
-  auto clearSlotTexture = [&](ManagedTextureSlot &slotToClear) {
-    if (!cmd || !slotToClear.texture)
-      return;
-    size_t pixelBytes = bytesPerPixel(slotToClear.pixelFormat);
-    if (pixelBytes == 0)
-      return;
-    size_t rowBytes = slotToClear.width * pixelBytes;
-    size_t alignedRowBytes = alignTo(rowBytes, 256);
-    size_t totalBytes = alignedRowBytes * slotToClear.height;
-    if (totalBytes == 0)
-      return;
-    ensureBufferCapacity(_pTextureClearBuffer, totalBytes,
-                         _textureClearBufferCapacity, false,
-                         MTL::ResourceStorageModeShared,
-                         GpuMemoryTracker::Category::RendererBuffers);
-    if (!_pTextureClearBuffer)
-      return;
-    if (void *ptr = _pTextureClearBuffer->contents())
-      std::memset(ptr, 0, totalBytes);
-    if (!blit)
-      blit = cmd->blitCommandEncoder();
-    if (!blit)
-      return;
-    MTL::Size size =
-        MTL::Size::Make(slotToClear.width, slotToClear.height, 1);
-    MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-    blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
-                         size, slotToClear.texture, 0, 0, origin);
-    slotToClear.stagingValid = false;
-  };
-
-  if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
-      &slot == &_sampleCountSlot) {
-    _needsAccumulationReset = true;
-    _accumulationTargetsNeedClear = true;
   }
 
   std::printf("[TextureResidency] Restored slot %s without history data.\n",
               label);
-  if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
-      &slot == &_sampleCountSlot || &slot == &_albedoSlot ||
-      &slot == &_normalSlot || &slot == &_positionSlot) {
-    _needsAccumulationReset = true;
-    _accumulationTargetsNeedClear = true;
-  }
-  if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1])
-    clearSlotTexture(slot);
 
   slot.lastUsedFrame = _renderedFrameCount;
   return slot.texture;
@@ -6463,8 +6382,6 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
     slot.stagingBuffer = nullptr;
     slot.stagingCapacity = 0;
   }
-  _needsAccumulationReset = true;
-  _accumulationTargetsNeedClear = true;
 
   if (slot.texture) {
     releaseTrackedResource(slot.texture);
@@ -6474,7 +6391,7 @@ bool Renderer::evictTextureSlot(ManagedTextureSlot &slot,
 }
 
 void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
-  if (!cmd || _needsAccumulationReset)
+  if (!cmd)
     return;
 
   bool belowBudget = _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
@@ -6505,9 +6422,8 @@ void Renderer::updateTextureResidency(MTL::CommandBuffer *cmd) {
                 totalMemoryMB, residencyMB, scratchMB, totalCapMB);
   }
 
-  std::array<ManagedTextureSlot *, 7> slots = {
-      &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot, &_positionSlot};
+  std::array<ManagedTextureSlot *, 4> slots = {
+      &_colorSlot, &_albedoSlot, &_normalSlot, &_positionSlot};
 
   struct ResidencyCandidate {
     ManagedTextureSlot *slot = nullptr;
@@ -6866,119 +6782,18 @@ void Renderer::buildTextures() {
   MTL::TextureUsage usage = static_cast<MTL::TextureUsage>(
       MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
 
-  for (auto &slot : _accumulationSlots)
-    configureTextureSlot(slot, width, height,
-                         MTL::PixelFormat::PixelFormatRGBA32Float, usage);
-  configureTextureSlot(_sampleCountSlot, width, height,
-                       MTL::PixelFormat::PixelFormatR32Float, usage);
-  configureTextureSlot(_sampleImportanceSlot, width, height,
-                       MTL::PixelFormat::PixelFormatR16Float, usage);
+  configureTextureSlot(_colorSlot, width, height,
+                       MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_albedoSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_normalSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_positionSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
-
-  _needsAccumulationReset = true;
-  _accumulationTargetsNeedClear = true;
-}
-
-bool Renderer::resetAccumulationTargets(MTL::CommandBuffer *cmd) {
-  if (!cmd)
-    return false;
-
-  std::array<ManagedTextureSlot *, 7> slots = {
-      &_accumulationSlots[0], &_accumulationSlots[1], &_sampleCountSlot,
-      &_sampleImportanceSlot, &_albedoSlot, &_normalSlot, &_positionSlot};
-
-  bool anyDescriptors = false;
-  bool allResident = true;
-  size_t maxBytes = 0;
-  for (ManagedTextureSlot *slot : slots) {
-    if (!slot->descriptorValid)
-      continue;
-    anyDescriptors = true;
-    if (!slot->texture)
-      allResident = false;
-    size_t bytes = textureByteSize(*slot);
-    maxBytes = std::max(maxBytes, bytes);
-  }
-
-  if (!anyDescriptors)
-    return true;
-
-  if (maxBytes == 0)
-    return allResident;
-
-  ensureBufferCapacity(_pTextureClearBuffer, maxBytes,
-                       _textureClearBufferCapacity, false,
-                       MTL::ResourceStorageModeShared,
-                       GpuMemoryTracker::Category::RendererBuffers);
-  if (!_pTextureClearBuffer)
-    return false;
-
-  if (void *ptr = _pTextureClearBuffer->contents())
-    std::memset(ptr, 0, maxBytes);
-
-  MTL::BlitCommandEncoder *blit = cmd->blitCommandEncoder();
-  if (!blit)
-    return false;
-
-  for (ManagedTextureSlot *slot : slots) {
-    if (!slot->texture)
-      continue;
-    size_t pixelBytes = bytesPerPixel(slot->pixelFormat);
-    if (pixelBytes == 0)
-      continue;
-    size_t rowBytes = slot->width * pixelBytes;
-    size_t alignedRowBytes = alignTo(rowBytes, 256);
-    size_t totalBytes = alignedRowBytes * slot->height;
-    if (totalBytes == 0)
-      continue;
-    MTL::Size size = MTL::Size::Make(slot->width, slot->height, 1);
-    MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
-    blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
-                         size, slot->texture, 0, 0, origin);
-    slot->stagingValid = false;
-  }
-
-  blit->endEncoding();
-  return allResident;
 }
 
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
-  if (!_pAdaptiveSamplingPSO || !pCmd)
-    return;
-  MTL::Texture *importance = _sampleImportanceSlot.texture;
-  MTL::Texture *accumulation = _accumulationSlots[0].texture;
-  if (!importance || !accumulation || !_pUniformsBuffer)
-    return;
-
-  NS::UInteger width = importance->width();
-  NS::UInteger height = importance->height();
-  if (width == 0 || height == 0)
-    return;
-
-  MTL::ComputeCommandEncoder *pCompute = pCmd->computeCommandEncoder();
-  if (!pCompute)
-    return;
-
-  pCompute->setComputePipelineState(_pAdaptiveSamplingPSO);
-  pCompute->setTexture(accumulation, 0);
-  pCompute->setTexture(importance, 1);
-  pCompute->setBuffer(_pUniformsBuffer, 0, 0);
-
-  const NS::UInteger threadWidth = 8;
-  const NS::UInteger threadHeight = 8;
-  MTL::Size threadsPerThreadgroup =
-      MTL::Size::Make(threadWidth, threadHeight, 1);
-  MTL::Size threadgroups = MTL::Size::Make(
-      (width + threadWidth - 1) / threadWidth,
-      (height + threadHeight - 1) / threadHeight, 1);
-
-  pCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-  pCompute->endEncoding();
+  (void)pCmd;
 }
 
 bool Renderer::updateCameraStates() {
@@ -7086,30 +6901,13 @@ void Renderer::updateUniforms(bool cameraChanged) {
     motionMetric = computeCameraMotionMetric(activeView, _lastUniformCameraState);
   }
 
-  constexpr float kAccumulationResetMotionThreshold = 0.35f;
-  if (cameraChanged) {
-    if (!_lastUniformCameraStateValid ||
-        motionMetric >= kAccumulationResetMotionThreshold) {
-      _needsAccumulationReset = true;
-    }
-  }
-
-  if (_needsAccumulationReset) {
-    if (!_accumulationTargetsNeedClear) {
-      _accumulationTargetsNeedClear = true;
-      u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
-    }
-    // frameCount tracks how many frames are already accumulated in lastFrame.
-    u.frameCount = 0;
-  }
+  u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
 
   uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
   uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
   minSamples = std::max<uint32_t>(minSamples, 1);
   maxSamples = std::max(maxSamples, minSamples);
 
-  u.sampleCountTextureIndex = 2;
-  u.sampleImportanceTextureIndex = 3;
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
   size_t boundTextureCount = std::min(
@@ -7230,7 +7028,6 @@ void Renderer::draw(MTK::View *pView) {
   if (_memoryCapFallbackActive)
     _frameTotalMemoryEvictionStall = true;
   beginFrameMetrics();
-  std::swap(_accumulationSlots[0], _accumulationSlots[1]);
 
   uint64_t frameIndex = _renderedFrameCount;
   bool captureThisFrame = _frameCaptureEnabled && _frameCaptureInterval > 0 &&
@@ -7245,10 +7042,6 @@ void Renderer::draw(MTK::View *pView) {
   if (!prepCmd) {
     if (_benchmarkEnabled && !_pendingBenchmarkSamples.empty())
       _pendingBenchmarkSamples.pop_back();
-    if (_accumulationTargetsNeedClear) {
-      _accumulationTargetsNeedClear = false;
-      _needsAccumulationReset = false;
-    }
     completeFrameMetrics(nullptr);
     pPool->release();
     return;
@@ -7277,30 +7070,22 @@ void Renderer::draw(MTK::View *pView) {
         totalMemoryMB, effectiveTotalCapMB, contentMemory, scratchMemoryMB());
   }
 
-  if (!_needsAccumulationReset && (belowBudget || overCap || totalOverCap))
+  if (belowBudget || overCap || totalOverCap)
     updateTextureResidency(prepCmd);
 
   if (geometryOverCap || _pendingGeometryResidencyOverageBytes > 0 ||
       totalOverCap)
     updateGeometryResidency(prepCmd);
 
-  bool allowResidency =
-      _needsAccumulationReset || (!belowBudget && !overCap && !totalOverCap);
+  bool allowResidency = !belowBudget && !overCap && !totalOverCap;
 
   MTL::BlitCommandEncoder *restoreBlit = nullptr;
-  MTL::Texture *accum0 = _accumulationSlots[0].texture;
-  MTL::Texture *accum1 = _accumulationSlots[1].texture;
-  MTL::Texture *sampleCount = _sampleCountSlot.texture;
-  MTL::Texture *sampleImportance = _sampleImportanceSlot.texture;
+  MTL::Texture *colorTexture = _colorSlot.texture;
   MTL::Texture *albedoTexture = _albedoSlot.texture;
   MTL::Texture *normalTexture = _normalSlot.texture;
   MTL::Texture *positionTexture = _positionSlot.texture;
   if (allowResidency) {
-    accum0 = requestResidentTexture(_accumulationSlots[0], prepCmd, restoreBlit);
-    accum1 = requestResidentTexture(_accumulationSlots[1], prepCmd, restoreBlit);
-    sampleCount = requestResidentTexture(_sampleCountSlot, prepCmd, restoreBlit);
-    sampleImportance =
-        requestResidentTexture(_sampleImportanceSlot, prepCmd, restoreBlit);
+    colorTexture = requestResidentTexture(_colorSlot, prepCmd, restoreBlit);
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
     normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
     positionTexture =
@@ -7317,10 +7102,7 @@ void Renderer::draw(MTK::View *pView) {
     }
   };
 
-  ensureSlotReady(_accumulationSlots[0], accum0);
-  ensureSlotReady(_accumulationSlots[1], accum1);
-  ensureSlotReady(_sampleCountSlot, sampleCount);
-  ensureSlotReady(_sampleImportanceSlot, sampleImportance);
+  ensureSlotReady(_colorSlot, colorTexture);
   ensureSlotReady(_albedoSlot, albedoTexture);
   ensureSlotReady(_normalSlot, normalTexture);
   ensureSlotReady(_positionSlot, positionTexture);
@@ -7330,10 +7112,7 @@ void Renderer::draw(MTK::View *pView) {
       slot.lastUsedFrame = _renderedFrameCount;
   };
 
-  markSlotUsed(_accumulationSlots[0], accum0);
-  markSlotUsed(_accumulationSlots[1], accum1);
-  markSlotUsed(_sampleCountSlot, sampleCount);
-  markSlotUsed(_sampleImportanceSlot, sampleImportance);
+  markSlotUsed(_colorSlot, colorTexture);
   markSlotUsed(_albedoSlot, albedoTexture);
   markSlotUsed(_normalSlot, normalTexture);
   markSlotUsed(_positionSlot, positionTexture);
@@ -7342,17 +7121,7 @@ void Renderer::draw(MTK::View *pView) {
     restoreBlit->endEncoding();
 
   bool haveAllTextures =
-      accum0 && accum1 && sampleCount && sampleImportance && albedoTexture &&
-      normalTexture && positionTexture;
-
-  if (_accumulationTargetsNeedClear && haveAllTextures) {
-    if (resetAccumulationTargets(prepCmd)) {
-      _accumulationTargetsNeedClear = false;
-      _needsAccumulationReset = false;
-    }
-  }
-
-  updateAdaptiveSamplingMaps(prepCmd);
+      colorTexture && albedoTexture && normalTexture && positionTexture;
 
   prepCmd->commit();
 
@@ -7383,9 +7152,9 @@ void Renderer::draw(MTK::View *pView) {
   std::vector<TileDispatchRegion> tiles;
   NS::UInteger generatedTileWidth = 0;
   NS::UInteger generatedTileHeight = 0;
-  if (_pPathTracePSO && accum1) {
-    NS::UInteger width = accum1->width();
-    NS::UInteger height = accum1->height();
+  if (_pPathTracePSO && colorTexture) {
+    NS::UInteger width = colorTexture->width();
+    NS::UInteger height = colorTexture->height();
     if (width > 0 && height > 0) {
       NS::UInteger tileWidth =
           std::max<NS::UInteger>(kPathTraceTileWidth, 1);
@@ -7582,13 +7351,10 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
       }
 
-      pCompute->setTexture(accum0, 0);
-      pCompute->setTexture(accum1, 1);
-      pCompute->setTexture(sampleCount, 2);
-      pCompute->setTexture(sampleImportance, 3);
-      pCompute->setTexture(albedoTexture, 4);
-      pCompute->setTexture(normalTexture, 5);
-      pCompute->setTexture(positionTexture, 6);
+      pCompute->setTexture(colorTexture, 0);
+      pCompute->setTexture(albedoTexture, 1);
+      pCompute->setTexture(normalTexture, 2);
+      pCompute->setTexture(positionTexture, 3);
 
       for (uint32_t texIdx = 0; texIdx < kMaxMaterialTextureSlots; ++texIdx) {
         MTL::Texture *materialTex =
@@ -7652,7 +7418,7 @@ void Renderer::draw(MTK::View *pView) {
   MTL::RenderCommandEncoder *pEnc = presentCmd->renderCommandEncoder(pRpd);
 
   pEnc->setRenderPipelineState(_pPSO);
-  pEnc->setFragmentTexture(accum1, 0);
+  pEnc->setFragmentTexture(colorTexture, 0);
 
   pEnc->drawPrimitives(MTL::PrimitiveType::PrimitiveTypeTriangle,
                        NS::UInteger(0), NS::UInteger(6));
@@ -7708,7 +7474,7 @@ void Renderer::draw(MTK::View *pView) {
                            NS::UInteger(vertexCount));
 
       pEnc->setRenderPipelineState(_pPSO);
-      pEnc->setFragmentTexture(accum1, 0);
+      pEnc->setFragmentTexture(colorTexture, 0);
     }
   }
 
@@ -7717,8 +7483,8 @@ void Renderer::draw(MTK::View *pView) {
   MTL::BlitCommandEncoder *pBlit = nullptr;
   bool performedRayHitReadback = false;
 
-  if (captureThisFrame && accum1) {
-    if (auto capture = encodeFrameCapture(accum1, albedoTexture, normalTexture,
+  if (captureThisFrame && colorTexture) {
+    if (auto capture = encodeFrameCapture(colorTexture, albedoTexture, normalTexture,
                                           frameIndex, presentCmd, pBlit))
       captureList->push_back(capture);
   }
@@ -7747,15 +7513,6 @@ void Renderer::draw(MTK::View *pView) {
     presentCmd->presentDrawable(drawable);
   trackFrameCommandBuffer(presentCmd);
   presentCmd->commit();
-  {
-    UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
-    // Increment after submission so the shader sees the count of frames already
-    // accumulated in lastFrame during the draw.
-    u.frameCount++;
-    markBufferModified(_pUniformsBuffer,
-                       NS::Range::Make(0, sizeof(UniformsData)));
-  }
-
   if (!_frameCaptureEnabled &&
       _captureOutputsPending.load(std::memory_order_acquire))
     processPendingCapturedFrames();
@@ -11697,12 +11454,6 @@ void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 
   buildTextures();
   recalculateViewport();
-  if (_pUniformsBuffer) {
-    UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
-    u.frameCount = 0;
-    markBufferModified(_pUniformsBuffer,
-                       NS::Range::Make(0, sizeof(UniformsData)));
-  }
 }
 
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
@@ -12731,7 +12482,6 @@ void Renderer::beginFrameMetrics() {
     sample.strategyName = residencyStrategyName(currentStrategy);
     sample.minSamplesPerPixel = _minSamplesPerPixel;
     sample.maxSamplesPerPixel = _maxSamplesPerPixel;
-    sample.accumulationReset = _needsAccumulationReset;
     sample.residentCompacted = _residentCompacted;
     sample.overMemoryCap =
         sample.residencyMemoryMB > _textureResidencyMemoryCapMB;

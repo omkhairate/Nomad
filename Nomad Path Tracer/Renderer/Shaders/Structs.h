@@ -66,7 +66,6 @@ struct UniformsData
 
     uint64_t primitiveCount;
     uint64_t triangleCount;
-    uint64_t frameCount = 0;
     uint64_t totalPrimitiveCount;
     uint64_t tlasNodeCount;
     uint64_t blasNodeCount;
@@ -74,8 +73,6 @@ struct UniformsData
     uint debugAS;
     uint lightCount;
     float lightTotalWeight;
-    uint sampleCountTextureIndex;
-    uint sampleImportanceTextureIndex;
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
     uint textureCount;
