@@ -125,6 +125,7 @@ struct ResidencyParameters {
 };
 
 struct ReSTIRSettings {
+  bool enabled = true;
   bool enableTemporal = true;
   bool enableSpatial = true;
   uint32_t candidateCount = 1;

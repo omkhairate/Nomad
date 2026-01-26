@@ -883,6 +883,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     scene->setResidencyParameters(params);
 
     ReSTIRSettings restirSettings = scene->getReSTIRSettings();
+    restirSettings.enabled =
+        root->BoolAttribute("restirEnabled", restirSettings.enabled);
     restirSettings.enableTemporal =
         root->BoolAttribute("restirEnableTemporal", restirSettings.enableTemporal);
     restirSettings.enableSpatial =

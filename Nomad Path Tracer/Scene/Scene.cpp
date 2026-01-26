@@ -266,6 +266,10 @@ const ReSTIRSettings &Scene::getReSTIRSettings() const {
 
 void Scene::setReSTIRSettings(const ReSTIRSettings &settings) {
   restirSettings = settings;
+  if (!restirSettings.enabled) {
+    restirSettings.enableTemporal = false;
+    restirSettings.enableSpatial = false;
+  }
 }
 
 size_t Scene::getMaxTileSampleWorkPerCommand() const {
