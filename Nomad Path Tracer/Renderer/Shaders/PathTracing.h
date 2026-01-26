@@ -219,6 +219,15 @@ inline float3 restirTargetContribution(thread const RestirReservoir &reservoir) 
   return restirTargetContribution(reservoir.sampleRadiance, reservoir.geometryFactor);
 }
 
+inline float3 directLightingBsdfFromAlbedo(float3 albedo) {
+  float3 clamped = max(albedo, float3(0.0f));
+  return clamped / M_PI;
+}
+
+inline float3 directLightingBsdfFromMaterial(thread const MaterialPayload &material) {
+  return directLightingBsdfFromAlbedo(material.diffuseColor * material.opacity);
+}
+
 inline void updateReservoir(thread RestirReservoir &reservoir,
                             thread const LightSampleCandidate &candidate,
                             float weight, float xi) {
@@ -268,7 +277,7 @@ inline bool isLightVisible(
     uint totalPrimitiveCount, device atomic_uint *primitiveRayStats);
 
 inline bool sampleDirectLightCandidate(
-    float3 hitPoint, float3 offsetNormal, float3 diffuseColor,
+    float3 hitPoint, float3 offsetNormal, float3 directLightingBsdf,
     int hitPrimitiveId, device const float4 *tlasNodes, uint tlasNodeCount,
     device const float4 *bvhNodes, device const float4 *primitives,
     device const float4 *materials, uint primitiveCount,
@@ -349,7 +358,7 @@ inline bool sampleDirectLightCandidate(
   MaterialPayload lightMaterial = decodeMaterial(lightMatIndex, materials, 1.0f);
   float3 lightRadiance =
       lightMaterial.emissionColor * lightMaterial.emissionPower;
-  float3 throughput = diffuseColor / M_PI;
+  float3 throughput = directLightingBsdf;
   float geometryFactor = cosLight / max(dist2, RAY_EPS);
   candidate.radiance = throughput * lightRadiance * cosTheta;
   candidate.geometryFactor = geometryFactor;
@@ -1285,8 +1294,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                             decodeMaterial(lightMatIndex, materials, 1.0f);
                         float3 lightRadiance = lightMaterial.emissionColor *
                                               lightMaterial.emissionPower;
-                        float3 throughput =
-                            absorption.xyz * (diffuseColor / M_PI);
+    float3 throughput =
+        absorption.xyz * directLightingBsdfFromAlbedo(diffuseColor);
                         float3 contribution =
                             throughput * lightRadiance * (cosTheta / totalPdf);
                         light.xyz += contribution;

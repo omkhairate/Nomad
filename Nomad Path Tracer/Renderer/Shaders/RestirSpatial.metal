@@ -110,7 +110,7 @@ inline bool reevaluateReservoirSample(
     MaterialPayload lightMaterial = decodeMaterial(lightMatIndex, materials, 1.0f);
     float3 lightRadiance =
         lightMaterial.emissionColor * lightMaterial.emissionPower;
-    float3 throughput = currentAlbedo / M_PI;
+    float3 throughput = directLightingBsdfFromAlbedo(currentAlbedo);
     float3 radiance = throughput * lightRadiance * cosTheta;
     float geometryFactor = cosLight / max(dist2, RAY_EPS);
     float target = luminance(restirTargetContribution(radiance, geometryFactor));
