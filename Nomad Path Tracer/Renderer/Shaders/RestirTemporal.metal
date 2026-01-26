@@ -32,6 +32,7 @@ struct RestirSampleData {
     float3 radiance = float3(0.0f);
     float3 wi = float3(0.0f);
     float pdf = 0.0f;
+    float geometryFactor = 0.0f;
     uint packedLightId = 0u;
     float3 lightPosition = float3(0.0f);
     float3 lightNormal = float3(0.0f);
@@ -118,7 +119,8 @@ inline bool reevaluateReservoirSample(
         lightMaterial.emissionColor * lightMaterial.emissionPower;
     float3 throughput = currentAlbedo / M_PI;
     float3 radiance = throughput * lightRadiance * cosTheta;
-    float target = luminance(radiance);
+    float geometryFactor = cosLight / max(dist2, RAY_EPS);
+    float target = luminance(restirTargetContribution(radiance, geometryFactor));
     float weight = target / max(totalPdf, RAY_EPS);
     if (weight <= 0.0f || !isfinite(weight)) {
         return false;
@@ -127,6 +129,7 @@ inline bool reevaluateReservoirSample(
     outSample.radiance = radiance;
     outSample.wi = wi;
     outSample.pdf = totalPdf;
+    outSample.geometryFactor = geometryFactor;
     outSample.packedLightId = source.packedLightId;
     outSample.lightPosition = source.lightPosition;
     outSample.lightNormal = source.lightNormal;
@@ -158,6 +161,7 @@ inline void mergeReservoir(thread RestirReservoir &current,
         current.sampleRadiance = candidate.radiance;
         current.wi = candidate.wi;
         current.pdf = candidate.pdf;
+        current.geometryFactor = candidate.geometryFactor;
         current.packedLightId = candidate.packedLightId;
         current.lightPosition = candidate.lightPosition;
         current.lightNormal = candidate.lightNormal;

@@ -246,7 +246,7 @@ kernel void pathTraceKernel(
                     primitiveRemap, primitiveRayStats, bounceCache, seed,
                     u.lightCount, u.lightTotalWeight,
                     static_cast<uint>(u.totalPrimitiveCount), candidate)) {
-              float weight = luminance(candidate.radiance) /
+              float weight = luminance(restirTargetContribution(candidate)) /
                              max(candidate.pdf, RAY_EPS);
               float xi = randomFloat(seed);
               seed = random(seed);
