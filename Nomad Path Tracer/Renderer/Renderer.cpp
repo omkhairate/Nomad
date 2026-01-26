@@ -739,6 +739,13 @@ struct UniformsData {
   uint32_t maxSamplesPerPixel = 1;
   uint32_t restirSpatialRadius = 2;
   uint32_t restirSpatialNeighborCount = 8;
+  uint32_t restirCandidateCount = 1;
+  uint32_t restirMaxTemporalM = 32;
+  uint32_t restirEnableTemporal = 1;
+  uint32_t restirEnableSpatial = 1;
+  simd::float4 restirNormalDepthThresholds =
+      simd::make_float4(0.8f, 0.95f, 0.02f, 0.005f);
+  uint32_t restirDebugMode = 0;
   uint32_t textureCount = 0;
   uint32_t environmentMapEnabled = 0;
   float environmentMapIntensity = 1.0f;
@@ -2829,6 +2836,10 @@ void Renderer::updateVisibleScene() {
          _totalGpuMemoryCapMB);
   _residentCompacted = _pScene->getStartCompacted();
   _compactionCooldown = 0;
+
+  _restirSettings = _pScene->getReSTIRSettings();
+  _restirSpatialRadius = _restirSettings.spatialRadius;
+  _restirHistoryValid = false;
 
   printf("LOD activation threshold: %.1f, deactivation threshold: %.1f (cooldown "
          "%u frames, toggle budget %zu)\n",
@@ -7042,6 +7053,12 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.maxSamplesPerPixel = maxSamples;
   u.restirSpatialRadius = _restirSpatialRadius;
   u.restirSpatialNeighborCount = _restirSpatialNeighborCount;
+  u.restirCandidateCount = std::max<uint32_t>(_restirSettings.candidateCount, 1);
+  u.restirMaxTemporalM = std::max<uint32_t>(_restirSettings.maxTemporalM, 1);
+  u.restirEnableTemporal = _restirSettings.enableTemporal ? 1u : 0u;
+  u.restirEnableSpatial = _restirSettings.enableSpatial ? 1u : 0u;
+  u.restirNormalDepthThresholds = _restirSettings.normalDepthThresholds;
+  u.restirDebugMode = _restirSettings.debugMode;
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
@@ -7217,6 +7234,10 @@ void Renderer::draw(MTK::View *pView) {
     updateGeometryResidency(prepCmd);
 
   bool allowResidency = !belowBudget && !overCap && !totalOverCap;
+
+  if (!_restirSettings.enableTemporal) {
+    _restirHistoryValid = false;
+  }
 
   MTL::BlitCommandEncoder *restoreBlit = nullptr;
   MTL::Texture *colorTexture = _colorSlot.texture;
@@ -7563,7 +7584,8 @@ void Renderer::draw(MTK::View *pView) {
     _restirHistoryValid = false;
   }
 
-  if (_pRestirTemporalPSO && _restirHistoryValid && _pRestirReservoirBuffer &&
+  if (_pRestirTemporalPSO && _restirSettings.enableTemporal &&
+      _restirHistoryValid && _pRestirReservoirBuffer &&
       _pRestirReservoirHistoryBuffer && positionTexture && normalTexture &&
       albedoTexture && positionHistoryTexture && normalHistoryTexture &&
       albedoHistoryTexture) {
@@ -7610,7 +7632,8 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
-  if (_pRestirSpatialPSO && _pRestirReservoirBuffer && positionTexture &&
+  if (_pRestirSpatialPSO && _restirSettings.enableSpatial &&
+      _pRestirReservoirBuffer && positionTexture &&
       normalTexture && albedoTexture) {
     MTL::CommandBuffer *spatialCmd = _pCommandQueue->commandBuffer();
     if (spatialCmd) {
@@ -7660,6 +7683,7 @@ void Renderer::draw(MTK::View *pView) {
       if (shadeCompute) {
         shadeCompute->setComputePipelineState(_pRestirShadePSO);
         shadeCompute->setBuffer(_pRestirReservoirBuffer, 0, 0);
+        shadeCompute->setBuffer(_pUniformsBuffer, 0, 1);
         shadeCompute->setTexture(colorTexture, 0);
 
         NS::UInteger width = colorTexture->width();
@@ -7817,17 +7841,22 @@ void Renderer::draw(MTK::View *pView) {
   ++_renderedFrameCount;
   pPool->release();
 
-  if (_positionSlot.texture && _positionHistorySlot.texture) {
-    std::swap(_positionSlot, _positionHistorySlot);
-    std::swap(_normalSlot, _normalHistorySlot);
-    std::swap(_albedoSlot, _albedoHistorySlot);
-  }
-  if (_pRestirReservoirBuffer && _pRestirReservoirHistoryBuffer) {
-    std::swap(_pRestirReservoirBuffer, _pRestirReservoirHistoryBuffer);
-  }
-  if (!_restirHistoryValid && _pRestirReservoirBuffer && _pRestirReservoirHistoryBuffer &&
-      _positionSlot.texture && _positionHistorySlot.texture) {
-    _restirHistoryValid = true;
+  if (_restirSettings.enableTemporal) {
+    if (_positionSlot.texture && _positionHistorySlot.texture) {
+      std::swap(_positionSlot, _positionHistorySlot);
+      std::swap(_normalSlot, _normalHistorySlot);
+      std::swap(_albedoSlot, _albedoHistorySlot);
+    }
+    if (_pRestirReservoirBuffer && _pRestirReservoirHistoryBuffer) {
+      std::swap(_pRestirReservoirBuffer, _pRestirReservoirHistoryBuffer);
+    }
+    if (!_restirHistoryValid && _pRestirReservoirBuffer &&
+        _pRestirReservoirHistoryBuffer && _positionSlot.texture &&
+        _positionHistorySlot.texture) {
+      _restirHistoryValid = true;
+    }
+  } else {
+    _restirHistoryValid = false;
   }
 }
 

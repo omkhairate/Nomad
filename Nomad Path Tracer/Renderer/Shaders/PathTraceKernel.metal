@@ -63,6 +63,7 @@ kernel void pathTraceKernel(
   float3 accumulatedPosition = float3(0.0);
   float accumulatedRoughness = 0.0f;
   RestirReservoir reservoir = initReservoir();
+  uint restirCandidateCount = max(u.restirCandidateCount, 1u);
 
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
@@ -214,20 +215,23 @@ kernel void pathTraceKernel(
         float3 diffuseColor = material.diffuseColor * material.opacity;
         if (luminance(diffuseColor) > 0.0f && u.lightCount > 0 &&
             u.lightTotalWeight > 0.0f) {
-          LightSampleCandidate candidate;
-          if (sampleDirectLightCandidate(
-                  bestHit.point, shadingNormal, diffuseColor,
-                  bestHit.primitiveId, tlasNodes, u.tlasNodeCount, bvhNodes,
-                  primitives, materials, u.primitiveCount, primitiveIndices,
-                  activeMask, instanceRecords, lightIndices, lightCdf,
-                  primitiveRemap, primitiveRayStats, bounceCache, seed,
-                  u.lightCount, u.lightTotalWeight,
-                  static_cast<uint>(u.totalPrimitiveCount), candidate)) {
-            float weight = luminance(candidate.radiance) /
-                           max(candidate.pdf, RAY_EPS);
-            float xi = randomFloat(seed);
-            seed = random(seed);
-            updateReservoir(reservoir, candidate, weight, xi);
+          for (uint candidateIdx = 0u; candidateIdx < restirCandidateCount;
+               ++candidateIdx) {
+            LightSampleCandidate candidate;
+            if (sampleDirectLightCandidate(
+                    bestHit.point, shadingNormal, diffuseColor,
+                    bestHit.primitiveId, tlasNodes, u.tlasNodeCount, bvhNodes,
+                    primitives, materials, u.primitiveCount, primitiveIndices,
+                    activeMask, instanceRecords, lightIndices, lightCdf,
+                    primitiveRemap, primitiveRayStats, bounceCache, seed,
+                    u.lightCount, u.lightTotalWeight,
+                    static_cast<uint>(u.totalPrimitiveCount), candidate)) {
+              float weight = luminance(candidate.radiance) /
+                             max(candidate.pdf, RAY_EPS);
+              float xi = randomFloat(seed);
+              seed = random(seed);
+              updateReservoir(reservoir, candidate, weight, xi);
+            }
           }
         }
       }

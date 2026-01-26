@@ -51,6 +51,10 @@ kernel void restirSpatialMain(
     texture2d<float, access::read> normalAccum [[texture(1)]],
     texture2d<float, access::read> albedoAccum [[texture(2)]],
     uint2 gid [[thread_position_in_grid]]) {
+    if (uniforms.restirEnableSpatial == 0u) {
+        return;
+    }
+
     uint width = positionAccum.get_width();
     uint height = positionAccum.get_height();
     if (gid.x >= width || gid.y >= height) {

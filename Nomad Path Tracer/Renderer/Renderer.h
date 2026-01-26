@@ -750,6 +750,7 @@ private:
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
+  ReSTIRSettings _restirSettings{};
   uint32_t _restirSpatialRadius = 2;
   uint32_t _restirSpatialNeighborCount = 8;
   MTL::Buffer *_pTextureClearBuffer = nullptr;

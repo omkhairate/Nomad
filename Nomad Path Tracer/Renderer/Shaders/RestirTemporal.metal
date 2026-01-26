@@ -62,6 +62,10 @@ kernel void restirTemporalMain(
     texture2d<float, access::read> historyNormal [[texture(4)]],
     texture2d<float, access::read> historyAlbedo [[texture(5)]],
     uint2 gid [[thread_position_in_grid]]) {
+    if (uniforms.restirEnableTemporal == 0u) {
+        return;
+    }
+
     uint width = positionAccum.get_width();
     uint height = positionAccum.get_height();
     if (gid.x >= width || gid.y >= height) {
@@ -118,8 +122,12 @@ kernel void restirTemporalMain(
     }
 
     float motion = clamp(uniforms.cameraMotionMetric, 0.0f, 1.0f);
-    float depthThreshold = mix(0.02f, 0.005f, motion);
-    float normalThreshold = mix(0.8f, 0.95f, motion);
+    float normalLow = uniforms.restirNormalDepthThresholds.x;
+    float normalHigh = uniforms.restirNormalDepthThresholds.y;
+    float depthLow = uniforms.restirNormalDepthThresholds.z;
+    float depthHigh = uniforms.restirNormalDepthThresholds.w;
+    float depthThreshold = mix(depthLow, depthHigh, motion);
+    float normalThreshold = mix(normalLow, normalHigh, motion);
     float albedoThreshold = mix(0.25f, 0.1f, motion);
 
     float4 historyClip =
@@ -151,6 +159,9 @@ kernel void restirTemporalMain(
                              uint(fabs(uniforms.randomSeed.x) * 4096.0f));
         float xi = hashToFloat(seed);
         mergeReservoir(current, history, xi);
+        if (uniforms.restirMaxTemporalM > 0u) {
+            current.m = min(current.m, uniforms.restirMaxTemporalM);
+        }
     }
 
     currentReservoir[index] = current;
