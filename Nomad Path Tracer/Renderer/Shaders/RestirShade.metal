@@ -26,6 +26,9 @@ kernel void restirShadeMain(
   if (gid.x >= width || gid.y >= height)
     return;
 
+  if (uniforms.restirDebugMode == 0u)
+    return;
+
   uint index = gid.y * width + gid.x;
   RestirReservoir reservoir = reservoirBuffer[index];
   float3 reservoirEstimate = finalizeReservoir(reservoir);
