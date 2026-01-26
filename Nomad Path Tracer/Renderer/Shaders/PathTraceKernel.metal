@@ -5,7 +5,7 @@ using namespace metal;
 #include "PathTracing.h"
 
 kernel void pathTraceKernel(
-    device const BVHNodeGPU *bvhNodes [[buffer(0)]],
+    device const float4 *bvhNodes [[buffer(0)]],
     device const float4 *primitives [[buffer(1)]],
     device const float4 *materials [[buffer(2)]],
     device const UniformsData *uniforms [[buffer(3)]],
@@ -19,7 +19,6 @@ kernel void pathTraceKernel(
     device const uint *primitiveRemap [[buffer(11)]],
     device atomic_uint *primitiveRayStats [[buffer(12)]],
     device const InstanceRecord *instanceRecords [[buffer(13)]],
-    device const ChunkEntry *chunkTable [[buffer(14)]],
     texture2d<float, access::write> currentFrame [[texture(0)]],
     texture2d<float, access::write> albedoAccum [[texture(1)]],
     texture2d<float, access::write> normalAccum [[texture(2)]],
@@ -103,9 +102,9 @@ kernel void pathTraceKernel(
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
 
-  PathTraceSample sample = rayColor(
-        r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes, chunkTable,
-        primitives, materials, u.primitiveCount, primitiveIndices, activeMask,
+    PathTraceSample sample = rayColor(
+        r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes, primitives,
+        materials, u.primitiveCount, primitiveIndices, activeMask,
         instanceRecords, lightIndices, lightCdf, primitiveRemap,
         primitiveRayStats, seed, u.maxRayDepth, u.debugAS, u.blasNodeCount,
         u.lightCount, u.lightTotalWeight,
