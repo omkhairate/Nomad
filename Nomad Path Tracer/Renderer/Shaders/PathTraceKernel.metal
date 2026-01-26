@@ -16,6 +16,7 @@ kernel void pathTraceKernel(
     device const uchar *activeMask [[buffer(8)]],
     device const uint *lightIndices [[buffer(9)]],
     device const float *lightCdf [[buffer(10)]],
+    device const float *lightPdfLookup [[buffer(14)]],
     device const uint *primitiveRemap [[buffer(11)]],
     device atomic_uint *primitiveRayStats [[buffer(12)]],
     device const InstanceRecord *instanceRecords [[buffer(13)]],
@@ -116,7 +117,7 @@ kernel void pathTraceKernel(
     PathTraceSample sample = rayColor(
         r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes, primitives,
         materials, u.primitiveCount, primitiveIndices, activeMask,
-        instanceRecords, lightIndices, lightCdf, primitiveRemap,
+        instanceRecords, lightIndices, lightCdf, lightPdfLookup, primitiveRemap,
         primitiveRayStats, seed, u.maxRayDepth, u.debugAS, u.blasNodeCount,
         u.lightCount, u.lightTotalWeight,
         static_cast<uint>(u.totalPrimitiveCount), materialTextures,

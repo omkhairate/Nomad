@@ -406,7 +406,8 @@ inline bool buildRestirCandidateFromStored(
     float3 hitPoint, float3 offsetNormal, float3 viewDir,
     thread const MaterialPayload &material, float3 absorption,
     int hitPrimitiveId, uint lightPrimIndex, float3 lightPoint,
-    float3 lightNormal, float lightArea, float lightPdf,
+    float3 lightNormal, float lightArea,
+    device const float *lightPdfLookup,
     device const float4 *tlasNodes, uint tlasNodeCount,
     device const float4 *bvhNodes, device const float4 *primitives,
     device const float4 *materials, uint primitiveCount,
@@ -416,11 +417,15 @@ inline bool buildRestirCandidateFromStored(
     thread TlasLeafCache &bounceCache, uint totalPrimitiveCount,
     thread LightSampleCandidate &candidate) {
   candidate = LightSampleCandidate();
-  if (lightArea <= 0.0f || lightPdf <= 0.0f)
+  if (lightArea <= 0.0f)
     return false;
   if (int(lightPrimIndex) == hitPrimitiveId)
     return false;
-  if (lightPrimIndex >= primitiveCount)
+  if (lightPrimIndex >= primitiveCount || lightPrimIndex >= totalPrimitiveCount)
+    return false;
+
+  float lightPdf = lightPdfLookup[lightPrimIndex];
+  if (lightPdf <= 0.0f)
     return false;
 
   float3 toLight = lightPoint - hitPoint;
@@ -1071,6 +1076,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 device const InstanceRecord *instanceRecords,
                                 device const uint *lightIndices,
                                 device const float *lightCdf,
+                                device const float *lightPdfLookup,
                                 device const uint *primitiveRemap,
                                 device atomic_uint *primitiveRayStats,
                                 thread uint32_t &seed, uint maxRayDepth,
@@ -1443,7 +1449,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                     if (buildRestirCandidateFromStored(
                             bestHit.point, offsetNormal, viewDir, material,
                             absorption.xyz, bestHit.primitiveId, prevLightId,
-                            prev0.xyz, prev1.xyz, prev1.w, prev2.x, tlasNodes,
+                            prev0.xyz, prev1.xyz, prev1.w, lightPdfLookup,
+                            tlasNodes,
                             tlasNodeCount, bvhNodes, primitives, materials,
                             primitiveCount, primitiveIndices, activeMask,
                             instanceRecords, primitiveRemap, primitiveRayStats,
