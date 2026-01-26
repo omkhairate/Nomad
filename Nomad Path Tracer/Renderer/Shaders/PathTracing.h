@@ -1079,6 +1079,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 device const float *lightPdfLookup,
                                 device const uint *primitiveRemap,
                                 device atomic_uint *primitiveRayStats,
+                                device RestirStats *restirStats,
                                 thread uint32_t &seed, uint maxRayDepth,
                                 uint debugAS, uint blasNodeCount, uint lightCount,
                                 float lightTotalWeight, uint totalPrimitiveCount,
@@ -1435,6 +1436,10 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                       normalDot >= normalThreshold;
                 }
                 if (temporalSurfaceValid) {
+                  if (restirStats) {
+                    atomic_fetch_add_explicit(&restirStats->reuseCandidates, 1u,
+                                              memory_order_relaxed);
+                  }
                   float4 prev0 = restirData0Prev.read(prevPixel);
                   float4 prev1 = restirData1Prev.read(prevPixel);
                   float4 prev2 = restirData2Prev.read(prevPixel);
@@ -1456,6 +1461,10 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                             instanceRecords, primitiveRemap, primitiveRayStats,
                             bounceCache, totalPrimitiveCount,
                             temporalCandidate)) {
+                      if (restirStats) {
+                        atomic_fetch_add_explicit(&restirStats->reuseAccepted, 1u,
+                                                  memory_order_relaxed);
+                      }
                       float3 contribution =
                           restirContribution(temporalCandidate);
                       float weight =

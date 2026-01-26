@@ -1601,6 +1601,10 @@ Renderer::~Renderer() {
     releaseTrackedResource(_pPrimitiveHitBufferGPU);
   if (_pPrimitiveHitReadback)
     releaseTrackedResource(_pPrimitiveHitReadback);
+  if (_pRestirStatsBuffer)
+    releaseTrackedResource(_pRestirStatsBuffer);
+  if (_pRestirStatsReadback)
+    releaseTrackedResource(_pRestirStatsReadback);
   if (_pLightIndexBuffer)
     releaseTrackedResource(_pLightIndexBuffer);
   if (_pLightCdfBuffer)
@@ -3159,7 +3163,7 @@ void Renderer::prewarmAlwaysResidentResources() {
   if (useAccelerationStructureLayout) {
     if (!_pSphereBuffer || !_pSphereMaterialBuffer || !_pUniformsBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
-        !_pLightPdfLookupBuffer ||
+        !_pLightPdfLookupBuffer || !_pRestirStatsBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
         !_pInstanceBuffer) {
       trackFrameCommandBuffer(cmd);
@@ -3171,7 +3175,7 @@ void Renderer::prewarmAlwaysResidentResources() {
         !_pUniformsBuffer || !_pTriangleVertexBuffer ||
         !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
-        !_pLightPdfLookupBuffer ||
+        !_pLightPdfLookupBuffer || !_pRestirStatsBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
         !_pInstanceBuffer) {
       trackFrameCommandBuffer(cmd);
@@ -3202,6 +3206,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
     compute->setBuffer(_pInstanceBuffer, 0, 10);
     compute->setBuffer(_pLightPdfLookupBuffer, 0, 14);
+    compute->setBuffer(_pRestirStatsBuffer, 0, 15);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
   } else {
@@ -3220,6 +3225,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
     compute->setBuffer(_pLightPdfLookupBuffer, 0, 14);
+    compute->setBuffer(_pRestirStatsBuffer, 0, 15);
   }
 
   compute->setTexture(colorTexture, 0);
@@ -7289,6 +7295,20 @@ void Renderer::draw(MTK::View *pView) {
     return;
   }
 
+  const size_t restirStatsBytes = sizeof(RestirStatsHost);
+  ensureBufferCapacity(_pRestirStatsBuffer, restirStatsBytes,
+                       _restirStatsBufferCapacity, false,
+                       MTL::ResourceStorageModePrivate,
+                       GpuMemoryTracker::Category::RendererBuffers,
+                       "ReSTIR Stats Buffer",
+                       "ReSTIR stats buffer allocation");
+  ensureBufferCapacity(_pRestirStatsReadback, restirStatsBytes,
+                       _restirStatsReadbackCapacity, false,
+                       MTL::ResourceStorageModeShared,
+                       GpuMemoryTracker::Category::Staging,
+                       "ReSTIR Stats Readback",
+                       "ReSTIR stats readback allocation");
+
   bool belowBudget =
       _residentPrimitiveCount < kTextureResidencyPrimitiveBudget;
   double geometryMemory = residentGeometryMemoryMB();
@@ -7399,6 +7419,18 @@ void Renderer::draw(MTK::View *pView) {
   ensureSlotReady(_restirSurfacePosSlots[restirReadIndex], restirSurfacePosRead);
   ensureSlotReady(_restirSurfaceNormalSlots[restirReadIndex],
                   restirSurfaceNormalRead);
+
+  if (_pRestirStatsBuffer) {
+    if (!restoreBlit)
+      restoreBlit = prepCmd->blitCommandEncoder();
+    if (restoreBlit) {
+      size_t bytes = _pRestirStatsBuffer->length();
+      if (bytes > 0) {
+        restoreBlit->fillBuffer(_pRestirStatsBuffer,
+                                NS::Range::Make(0, bytes), 0);
+      }
+    }
+  }
 
   auto markSlotUsed = [&](ManagedTextureSlot &slot, MTL::Texture *handle) {
     if (handle)
@@ -7642,6 +7674,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         pCompute->setBuffer(_pLightPdfLookupBuffer, 0, 14);
+        pCompute->setBuffer(_pRestirStatsBuffer, 0, 15);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
       } else {
@@ -7660,6 +7693,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
         pCompute->setBuffer(_pLightPdfLookupBuffer, 0, 14);
+        pCompute->setBuffer(_pRestirStatsBuffer, 0, 15);
       }
 
       pCompute->setTexture(colorTexture, 0);
@@ -7823,6 +7857,18 @@ void Renderer::draw(MTK::View *pView) {
         pBlit->fillBuffer(_pPrimitiveHitBufferGPU,
                           NS::Range::Make(0, bytes), 0);
         performedRayHitReadback = true;
+      }
+    }
+  }
+  if (_pRestirStatsBuffer && _pRestirStatsReadback) {
+    if (!pBlit)
+      pBlit = presentCmd->blitCommandEncoder();
+    if (pBlit) {
+      size_t bytes = std::min(_pRestirStatsBuffer->length(),
+                              _pRestirStatsReadback->length());
+      if (bytes > 0) {
+        pBlit->copyFromBuffer(_pRestirStatsBuffer, 0, _pRestirStatsReadback, 0,
+                              bytes);
       }
     }
   }
@@ -12835,6 +12881,16 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   } else {
     _lastRaysPerSecond = 0.0;
   }
+  _lastRestirReuseCandidates = 0;
+  _lastRestirReuseAccepted = 0;
+  if (pCmd && _pRestirStatsReadback) {
+    RestirStatsHost *stats =
+        static_cast<RestirStatsHost *>(_pRestirStatsReadback->contents());
+    if (stats) {
+      _lastRestirReuseCandidates = stats->reuseCandidates;
+      _lastRestirReuseAccepted = stats->reuseAccepted;
+    }
+  }
   bool canRecalculateNodes =
       (_blasNodeCount > 0 && _cachedBVHNodes.size() >= _blasNodeCount * 2) ||
       (_tlasNodeCount > 0 && _cachedTLASNodes.size() >= _tlasNodeCount * 2) ||
@@ -12884,6 +12940,25 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       "GPU mem (MB) total=%.3f scratch=%.3f geometry=%.3f textures=%.3f restir=%.3f renderer=%.3f heaps=%.3f staging=%.3f other=%.3f\n",
       totalMemoryMB, scratchMB, geometryMB, textureMB, restirMB, rendererMB,
       heapsMB, stagingMB, otherMB);
+  double restirReuseRate =
+      (_lastRayCount > 0)
+          ? static_cast<double>(_lastRestirReuseCandidates) /
+                static_cast<double>(_lastRayCount)
+          : 0.0;
+  double restirAcceptRate =
+      (_lastRestirReuseCandidates > 0)
+          ? static_cast<double>(_lastRestirReuseAccepted) /
+                static_cast<double>(_lastRestirReuseCandidates)
+          : 0.0;
+  printf(
+      "ReSTIR temporal reuse stats: restirReuseCandidates=%u "
+      "restirReuseAccepted=%u restirReuseRate=%.6f restirAcceptRate=%.6f "
+      "(reuseCandidates=temporal surface valid attempts; reuseAccepted=temporal "
+      "candidate built and fed into restirUpdateReservoir; "
+      "reuseRate=reuseCandidates/primaryRays; acceptRate=reuseAccepted/"
+      "reuseCandidates)\n",
+      _lastRestirReuseCandidates, _lastRestirReuseAccepted, restirReuseRate,
+      restirAcceptRate);
   if (isAlwaysResidentStrategy() && offloaded > 0) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",
            offloaded);

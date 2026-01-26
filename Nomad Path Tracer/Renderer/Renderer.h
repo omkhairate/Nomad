@@ -53,6 +53,11 @@ struct TextureInfo {
   uint32_t flags = 0;
 };
 
+struct RestirStatsHost {
+  uint32_t reuseCandidates = 0;
+  uint32_t reuseAccepted = 0;
+};
+
 class Renderer;
 
 struct ResidentObjectGpuResources {
@@ -326,6 +331,12 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
+  MTL::Buffer *_pRestirStatsBuffer = nullptr;
+  MTL::Buffer *_pRestirStatsReadback = nullptr;
+  size_t _restirStatsBufferCapacity = 0;
+  size_t _restirStatsReadbackCapacity = 0;
+  uint32_t _lastRestirReuseCandidates = 0;
+  uint32_t _lastRestirReuseAccepted = 0;
   struct FrameCommandBufferRecord {
     MTL::CommandBuffer *buffer = nullptr;
     std::chrono::steady_clock::time_point trackedSince{};
