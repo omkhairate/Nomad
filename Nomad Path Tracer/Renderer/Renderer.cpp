@@ -4729,7 +4729,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                          NS::Range::Make(0, uniformsDataSize));
   }
   if (!_pRestirStatsBuffer) {
-    constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 4;
+    constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 5;
     _pRestirStatsBuffer =
         allocateBuffer(kRestirStatsBytes, MTL::ResourceStorageModeShared,
                        GpuMemoryTracker::Category::Restir, "RestirStats");
@@ -7943,7 +7943,7 @@ void Renderer::draw(MTK::View *pView) {
   updateAdaptiveSamplingMaps(prepCmd);
 
   if (_pRestirStatsBuffer) {
-    constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 4;
+    constexpr size_t kRestirStatsBytes = sizeof(uint32_t) * 5;
     if (MTL::BlitCommandEncoder *statsBlit = prepCmd->blitCommandEncoder()) {
       statsBlit->fillBuffer(_pRestirStatsBuffer,
                             NS::Range::Make(0, kRestirStatsBytes), 0);
@@ -8465,6 +8465,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameMinimumResidentFootprintMB = 0.0;
   _frameRestirReuseRate = 0.0;
   _frameRestirCandidateAcceptance = 0.0;
+  _frameRestirReseedEvents = 0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
   if (strategy != _lastResidencyStrategy) {
     if (strategy == ResidencyStrategy::AlwaysResident) {
@@ -13450,6 +13451,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       uint32_t reused = stats[1];
       uint32_t accepted = stats[2];
       uint32_t visibilityRejects = stats[3];
+      uint32_t reseedEvents = stats[4];
       if (total > 0) {
         _frameRestirReuseRate =
             static_cast<double>(reused) / static_cast<double>(total);
@@ -13460,6 +13462,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
         _frameRestirCandidateAcceptance = 0.0;
       }
       _frameRestirVisibilityRejects = visibilityRejects;
+      _frameRestirReseedEvents = reseedEvents;
     }
   }
   bool canRecalculateNodes =
@@ -13515,10 +13518,11 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   if (_residencyConfig.restirSamplingEnabled) {
     printf(
         "ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f "
-        "visibility_rejects=%zu camera_motion=%.3f history_evictions=%zu\n",
+        "visibility_rejects=%zu reseed_events=%zu camera_motion=%.3f "
+        "history_evictions=%zu\n",
         _frameRestirReuseRate, _frameRestirCandidateAcceptance,
-        _frameRestirVisibilityRejects, _frameCameraMotionMetric,
-        _frameRestirHistoryEvictions);
+        _frameRestirVisibilityRejects, _frameRestirReseedEvents,
+        _frameCameraMotionMetric, _frameRestirHistoryEvictions);
   }
   if (isAlwaysResidentStrategy() && offloaded > 0) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",
