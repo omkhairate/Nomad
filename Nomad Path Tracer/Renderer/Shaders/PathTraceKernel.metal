@@ -277,7 +277,7 @@ kernel void pathTraceKernel(
       (totalSamples > 0.0f) ? accumulatedRoughness / totalSamples : 0.0f;
   averagedRoughness = clamp(averagedRoughness, 0.0f, 1.0f);
 
-  float3 outputColor = averaged;
+  float3 outputColor = useRestir ? reservoirEstimate : averaged;
   float4 result = float4(outputColor, 1.0f);
   currentFrame.write(result, pixel);
   albedoAccum.write(float4(averagedAlbedo, 1.0f), pixel);
