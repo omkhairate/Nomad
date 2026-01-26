@@ -271,7 +271,6 @@ private:
   bool submitAsyncCommandBuffer(MTL::CommandBuffer *commandBuffer,
                                std::function<void(bool)> completion);
   void updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd);
-  bool resetAccumulationTargets(MTL::CommandBuffer *cmd);
   void rebuildMaterialTextures();
   void clearMaterialTextures();
   void initializeBenchmarking();
@@ -375,10 +374,8 @@ private:
     uint64_t lastUsedFrame = 0;
   };
 
-  // Accumulation framebuffers
-  ManagedTextureSlot _accumulationSlots[2];
-  ManagedTextureSlot _sampleCountSlot;
-  ManagedTextureSlot _sampleImportanceSlot;
+  // Framebuffers
+  ManagedTextureSlot _colorSlot;
   ManagedTextureSlot _albedoSlot;
   ManagedTextureSlot _normalSlot;
   ManagedTextureSlot _positionSlot;
@@ -474,7 +471,6 @@ private:
     std::string strategyName;
     uint32_t minSamplesPerPixel = 1;
     uint32_t maxSamplesPerPixel = 1;
-    bool accumulationReset = false;
     bool residentCompacted = false;
     bool overMemoryCap = false;
     bool geometryOverMemoryCap = false;
@@ -736,8 +732,6 @@ private:
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
-  bool _needsAccumulationReset = true;
-  bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
 

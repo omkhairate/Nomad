@@ -19,13 +19,10 @@ kernel void pathTraceKernel(
     device const uint *primitiveRemap [[buffer(11)]],
     device atomic_uint *primitiveRayStats [[buffer(12)]],
     device const InstanceRecord *instanceRecords [[buffer(13)]],
-    texture2d<float, access::read> lastFrame [[texture(0)]],
-    texture2d<float, access::write> currentFrame [[texture(1)]],
-    texture2d<float, access::read_write> sampleCount [[texture(2)]],
-    texture2d<half, access::read> sampleImportance [[texture(3)]],
-    texture2d<float, access::read_write> albedoAccum [[texture(4)]],
-    texture2d<float, access::read_write> normalAccum [[texture(5)]],
-    texture2d<float, access::read_write> positionAccum [[texture(6)]],
+    texture2d<float, access::write> currentFrame [[texture(0)]],
+    texture2d<float, access::write> albedoAccum [[texture(1)]],
+    texture2d<float, access::write> normalAccum [[texture(2)]],
+    texture2d<float, access::write> positionAccum [[texture(3)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
         materialTextures [[texture(13)]],
     texture2d<float, access::sample> environmentMap
@@ -58,21 +55,7 @@ kernel void pathTraceKernel(
   float2 uv = (float2(pixel) + 0.5f) / screenSize;
   uint32_t seed = random(uv, u.randomSeed.xyz) * ((uint32_t)-1);
 
-  float desiredSamples = float(sampleImportance.read(pixel).x);
-  if (!isfinite(desiredSamples))
-    desiredSamples = float(u.minSamplesPerPixel);
-
-  uint samplesThisFrame = uint(round(desiredSamples));
-  samplesThisFrame = clamp(samplesThisFrame, u.minSamplesPerPixel, u.maxSamplesPerPixel);
-  samplesThisFrame = max(samplesThisFrame, 1u);
-
-  float previousSampleCount = float(sampleCount.read(pixel).x);
-  float4 previousColor = float4(lastFrame.read(pixel));
-  float3 previousAlbedo = float3(float4(albedoAccum.read(pixel)).xyz);
-  float4 previousNormalData = float4(normalAccum.read(pixel));
-  float3 previousNormal = previousNormalData.xyz;
-  float previousRoughness = previousNormalData.w;
-  float3 previousPosition = float3(float4(positionAccum.read(pixel)).xyz);
+  uint samplesThisFrame = max(u.maxSamplesPerPixel, 1u);
 
   float3 accumulatedColor = float3(0.0);
   float3 accumulatedAlbedo = float3(0.0);
@@ -136,28 +119,21 @@ kernel void pathTraceKernel(
     accumulatedRoughness += sample.roughness;
   }
 
-  float totalSamples = previousSampleCount + float(samplesThisFrame);
-  float3 previousSum = previousColor.xyz * previousSampleCount;
-  float3 combinedSum = previousSum + accumulatedColor;
-  float3 averaged = (totalSamples > 0.0f) ? combinedSum / totalSamples : float3(0.0f);
+  float totalSamples = float(samplesThisFrame);
+  float3 averaged =
+      (totalSamples > 0.0f) ? accumulatedColor / totalSamples : float3(0.0f);
   averaged = clamp(averaged, 0.0f, 1.0f);
 
-  float3 albedoSum = previousAlbedo * previousSampleCount + accumulatedAlbedo;
-  float3 normalSum = previousNormal * previousSampleCount + accumulatedNormal;
-  float3 positionSum =
-      previousPosition * previousSampleCount + accumulatedPosition;
-  float roughnessSum =
-      previousRoughness * previousSampleCount + accumulatedRoughness;
   float3 averagedAlbedo =
-      (totalSamples > 0.0f) ? albedoSum / totalSamples : float3(0.0f);
+      (totalSamples > 0.0f) ? accumulatedAlbedo / totalSamples : float3(0.0f);
   averagedAlbedo = clamp(averagedAlbedo, 0.0f, 1.0f);
   float3 averagedNormal =
-      (totalSamples > 0.0f) ? normalSum / totalSamples : float3(0.0f);
+      (totalSamples > 0.0f) ? accumulatedNormal / totalSamples : float3(0.0f);
   averagedNormal = clamp(averagedNormal, -1.0f, 1.0f);
   float3 averagedPosition =
-      (totalSamples > 0.0f) ? positionSum / totalSamples : float3(0.0f);
+      (totalSamples > 0.0f) ? accumulatedPosition / totalSamples : float3(0.0f);
   float averagedRoughness =
-      (totalSamples > 0.0f) ? roughnessSum / totalSamples : 0.0f;
+      (totalSamples > 0.0f) ? accumulatedRoughness / totalSamples : 0.0f;
   averagedRoughness = clamp(averagedRoughness, 0.0f, 1.0f);
 
   float4 result = float4(averaged, 1.0f);
@@ -165,5 +141,4 @@ kernel void pathTraceKernel(
   albedoAccum.write(float4(averagedAlbedo, 1.0f), pixel);
   normalAccum.write(float4(averagedNormal, averagedRoughness), pixel);
   positionAccum.write(float4(averagedPosition, 1.0f), pixel);
-  sampleCount.write(float4(totalSamples, 0.0f, 0.0f, 0.0f), pixel);
 }
