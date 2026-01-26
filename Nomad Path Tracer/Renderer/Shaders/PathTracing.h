@@ -227,6 +227,19 @@ inline float3 finalizeReservoir(thread const RestirReservoir &reservoir) {
   return reservoir.sampleRadiance * normalization;
 }
 
+inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,
+                             thread uint32_t &seed, thread float3 &position,
+                             thread float3 &normal, thread float &area);
+inline bool isLightVisible(
+    float3 origin, float3 offsetNormal, float3 wi, float dist,
+    uint lightPrimIndex, thread TlasLeafCache &bounceCache,
+    device const float4 *tlasNodes, uint tlasNodeCount,
+    device const float4 *bvhNodes, device const float4 *primitives,
+    device const int *primitiveIndices, device const uchar *activeMask,
+    device const InstanceRecord *instanceRecords,
+    device const uint *primitiveRemap, uint primitiveCount,
+    uint totalPrimitiveCount, device atomic_uint *primitiveRayStats);
+
 inline bool sampleDirectLightCandidate(
     float3 hitPoint, float3 offsetNormal, float3 diffuseColor,
     int hitPrimitiveId, device const float4 *tlasNodes, uint tlasNodeCount,
