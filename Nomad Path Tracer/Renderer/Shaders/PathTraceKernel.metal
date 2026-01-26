@@ -232,14 +232,17 @@ kernel void pathTraceKernel(
         accumulatedPosition += bestHit.point;
         accumulatedRoughness += clamp(material.roughness, 0.0f, 1.0f);
 
-        float3 directLightingBsdf = directLightingBsdfFromMaterial(material);
-        if (luminance(directLightingBsdf) > 0.0f && u.lightCount > 0 &&
+        float3 viewDir = -rayDirection;
+        float materialEnergy =
+            luminance(material.diffuseColor * material.opacity) +
+            luminance(material.specularColor * material.opacity);
+        if (materialEnergy > 0.0f && u.lightCount > 0 &&
             u.lightTotalWeight > 0.0f) {
           for (uint candidateIdx = 0u; candidateIdx < restirCandidateCount;
                ++candidateIdx) {
             LightSampleCandidate candidate;
             if (sampleDirectLightCandidate(
-                    bestHit.point, shadingNormal, directLightingBsdf,
+                    bestHit.point, shadingNormal, viewDir, material,
                     bestHit.primitiveId, tlasNodes, u.tlasNodeCount, bvhNodes,
                     primitives, materials, u.primitiveCount, primitiveIndices,
                     activeMask, instanceRecords, lightIndices, lightCdf,
