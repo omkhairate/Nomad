@@ -198,10 +198,6 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     if(event.keyCode == 31) { // o - toggle observer camera
         NomadPathTracer::InputSystem::observerToggleRequest = true;
     }
-    if(event.keyCode == 16) { // y - toggle ReSTIR
-        NomadPathTracer::InputSystem::restirEnabled =
-            !NomadPathTracer::InputSystem::restirEnabled;
-    }
 }
 
 - (void)keyUp:(NSEvent *)event {

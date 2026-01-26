@@ -7044,7 +7044,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.environmentMapIntensity = _environmentBrightness;
   u.environmentPadding0 = 0.0f;
   u.environmentPadding1 = 0.0f;
-  u.restirEnabled = InputSystem::restirEnabled ? 1u : 0u;
+  u.restirEnabled = (_pScene && _pScene->getRestirEnabled()) ? 1u : 0u;
   u.restirCandidateCount = 8u;
   u.restirTemporalReuse = (u.restirEnabled && _renderedFrameCount > 0) ? 1u : 0u;
   u.restirPadding0 = 0u;
