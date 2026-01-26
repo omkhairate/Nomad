@@ -258,12 +258,9 @@ kernel void restirSpatialMain(
 
         float normalWeight = max(dot(currentNormalUnit, normalize(neighborNormal)), 0.0f);
         float positionDelta = length(currentPosition - neighborPosition);
-        float positionWeight = 1.0f / (1.0f + positionDelta);
         float albedoDiff = length(currentAlbedo - neighborAlbedo);
-        float albedoWeight = 1.0f / (1.0f + albedoDiff * 4.0f);
-        float similarity = normalWeight * positionWeight * albedoWeight;
-
-        if (similarity <= 0.0f || !isfinite(similarity)) {
+        if (normalWeight <= 0.0f || !isfinite(positionDelta) ||
+            !isfinite(albedoDiff) || albedoDiff > 0.5f) {
             continue;
         }
 
@@ -276,8 +273,7 @@ kernel void restirSpatialMain(
                 primitiveIndices, activeMask, instanceRecords, primitiveRemap,
                 primitiveRayStats, candidate, candidateWeight)) {
             float xi = hashToFloat(seed);
-            mergeReservoir(current, candidate, candidateWeight * similarity,
-                           neighbor.m, xi);
+            mergeReservoir(current, candidate, candidateWeight, neighbor.m, xi);
         }
     }
 
