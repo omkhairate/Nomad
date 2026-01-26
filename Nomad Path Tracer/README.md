@@ -18,6 +18,6 @@ The `geometryResidencyMemoryCapMB` scene parameter remains a hard ceiling. Geome
 
 For the memory-budget study, `totalGpuMemoryCapMB` is now the single authoritative (hard) budget. Both texture and geometry allocations check the total cap before proceeding; if the next allocation would exceed the cap, the renderer blocks the allocation and evicts residency from textures and geometry until the total budget is satisfied.
 
-To prevent eviction scheduling deadlocks, the renderer estimates a minimum resident footprint (history + mandatory buffers + essential geometry). If the configured total cap remains below this footprint for several frames, it logs a warning, disables history, forces an accumulation reset, and temporarily relaxes the effective total cap to the minimum footprint. Benchmark metrics report the minimum footprint, relaxed cap, and whether the frame is in eviction-stall mode.
+To prevent eviction scheduling deadlocks, the renderer estimates a minimum resident footprint (mandatory buffers + essential geometry). If the configured total cap remains below this footprint for several frames, it logs a warning, forces an accumulation reset, and temporarily relaxes the effective total cap to the minimum footprint. Benchmark metrics report the minimum footprint, relaxed cap, and whether the frame is in eviction-stall mode.
 
 See `StudyNotes.md` for the study-specific memory budget notes and recommended interpretation of the new metrics.

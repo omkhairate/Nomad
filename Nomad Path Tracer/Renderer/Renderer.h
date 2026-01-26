@@ -740,9 +740,6 @@ private:
   bool _accumulationTargetsNeedClear = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
-  bool _historyStreamingActive = false;
-  bool _historyStreamingUsedProxy = false;
-  size_t _historyStreamingRestoreCount = 0;
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
@@ -750,9 +747,6 @@ private:
                             MTL::TextureUsage usage);
   size_t textureByteSize(const ManagedTextureSlot &slot) const;
   void clearTextureHistory(ManagedTextureSlot &slot);
-  bool captureCpuHistoryProxy(ManagedTextureSlot &slot);
-  bool uploadHistoryToTexture(ManagedTextureSlot &slot, MTL::CommandBuffer *cmd,
-                              MTL::BlitCommandEncoder *&blit);
   MTL::Texture *requestResidentTexture(ManagedTextureSlot &slot,
                                        MTL::CommandBuffer *cmd,
                                        MTL::BlitCommandEncoder *&blit);
