@@ -77,6 +77,13 @@ inline void restirWriteDefaults(texture2d<float, access::write> out0,
   out2.write(float4(0.0f), pixel);
 }
 
+inline void restirWriteSurfaceDefaults(
+    texture2d<float, access::write> outSurfacePos,
+    texture2d<float, access::write> outSurfaceNormal, uint2 pixel) {
+  outSurfacePos.write(float4(0.0f), pixel);
+  outSurfaceNormal.write(float4(0.0f), pixel);
+}
+
 inline float3 restirContribution(thread const LightSampleCandidate &candidate) {
   if (candidate.pdf <= 0.0f)
     return float3(0.0f);
@@ -1081,6 +1088,12 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 texture2d<float, access::read> restirData0Prev,
                                 texture2d<float, access::read> restirData1Prev,
                                 texture2d<float, access::read> restirData2Prev,
+                                texture2d<float, access::write> restirSurfacePosOut,
+                                texture2d<float, access::write>
+                                    restirSurfaceNormalOut,
+                                texture2d<float, access::read> restirSurfacePosPrev,
+                                texture2d<float, access::read>
+                                    restirSurfaceNormalPrev,
                                 uint restirEnabled, uint restirCandidateCount,
                                 uint restirTemporalReuse,
                                 float4x4 prevViewProjection,
@@ -1107,12 +1120,16 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         if (restirWriteEnabled) {
           restirWriteDefaults(restirData0Out, restirData1Out, restirData2Out,
                               pixel);
+          restirWriteSurfaceDefaults(restirSurfacePosOut,
+                                     restirSurfaceNormalOut, pixel);
         }
         return sampleResult;
       }
     }
     if (restirWriteEnabled) {
       restirWriteDefaults(restirData0Out, restirData1Out, restirData2Out, pixel);
+      restirWriteSurfaceDefaults(restirSurfacePosOut, restirSurfaceNormalOut,
+                                 pixel);
     }
     return sampleResult;
   } else if (debugAS == 2) {
@@ -1127,11 +1144,15 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
       if (restirWriteEnabled) {
         restirWriteDefaults(restirData0Out, restirData1Out, restirData2Out,
                             pixel);
+        restirWriteSurfaceDefaults(restirSurfacePosOut, restirSurfaceNormalOut,
+                                   pixel);
       }
       return sampleResult;
     }
     if (restirWriteEnabled) {
       restirWriteDefaults(restirData0Out, restirData1Out, restirData2Out, pixel);
+      restirWriteSurfaceDefaults(restirSurfacePosOut, restirSurfaceNormalOut,
+                                 pixel);
     }
     return sampleResult;
   }
@@ -1219,6 +1240,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
       if (restirWriteEnabled) {
         restirWriteDefaults(restirData0Out, restirData1Out, restirData2Out,
                             pixel);
+        restirWriteSurfaceDefaults(restirSurfacePosOut, restirSurfaceNormalOut,
+                                   pixel);
       }
       return sampleResult;
     }
@@ -1334,6 +1357,16 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
       if (useRestir) {
         RestirReservoir reservoir;
         float3 viewDir = normalize(-r.direction);
+        float restirSurfaceDepth = 0.0f;
+        float3 restirSurfacePosition = float3(0.0f);
+        float3 restirSurfaceNormal = float3(0.0f);
+        bool restirSurfaceValid =
+            (depth == 0 && bestHit.primitiveId != -1);
+        if (restirSurfaceValid) {
+          restirSurfacePosition = bestHit.point;
+          restirSurfaceNormal = offsetNormal;
+          restirSurfaceDepth = length(bestHit.point - r.origin);
+        }
 
         uint candidateCount = max(restirCandidateCount, 1u);
         for (uint candidateIdx = 0; candidateIdx < candidateCount;
@@ -1370,33 +1403,62 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                 uint prevY =
                     min(uint(prevUv.y * float(prevHeight)), prevHeight - 1);
                 uint2 prevPixel = uint2(prevX, prevY);
-                float4 prev0 = restirData0Prev.read(prevPixel);
-                float4 prev1 = restirData1Prev.read(prevPixel);
-                float4 prev2 = restirData2Prev.read(prevPixel);
-                float prevWeightSum = prev2.y;
-                float prevSampleCount = prev2.z;
-                float prevSelectedWeight = prev2.w;
-                if (prevWeightSum > 0.0f && prevSampleCount > 0.0f &&
-                    prevSelectedWeight > 0.0f) {
-                  uint prevLightId =
-                      static_cast<uint>(max(prev0.w, 0.0f));
-                  LightSampleCandidate temporalCandidate;
-                  if (buildRestirCandidateFromStored(
-                          bestHit.point, offsetNormal, viewDir, material,
-                          absorption.xyz, bestHit.primitiveId, prevLightId,
-                          prev0.xyz, prev1.xyz, prev1.w, prev2.x, tlasNodes,
-                          tlasNodeCount, bvhNodes, primitives, materials,
-                          primitiveCount, primitiveIndices, activeMask,
-                          instanceRecords, primitiveRemap, primitiveRayStats,
-                          bounceCache, totalPrimitiveCount,
-                          temporalCandidate)) {
-                    float3 contribution = restirContribution(temporalCandidate);
-                    float weight = restirWeightFromContribution(contribution);
-                    float temporalWeight =
-                        prevWeightSum * (weight / prevSelectedWeight);
-                    restirUpdateReservoir(reservoir, temporalCandidate,
-                                          contribution, temporalWeight,
-                                          prevSampleCount, seed);
+                float4 prevSurfacePos =
+                    restirSurfacePosPrev.read(prevPixel);
+                float4 prevSurfaceNormal =
+                    restirSurfaceNormalPrev.read(prevPixel);
+                float prevDepth = prevSurfacePos.w;
+                float prevNormalLen2 =
+                    dot(prevSurfaceNormal.xyz, prevSurfaceNormal.xyz);
+                float currentDepth = length(bestHit.point - r.origin);
+                float positionThreshold =
+                    max(0.01f * currentDepth, 0.02f);
+                float depthThreshold = max(0.02f * currentDepth, 0.05f);
+                float normalThreshold = 0.9f;
+                bool temporalSurfaceValid = false;
+                if (prevDepth > 0.0f && prevNormalLen2 > RAY_EPS) {
+                  float positionDelta =
+                      length(prevSurfacePos.xyz - bestHit.point);
+                  float depthDelta = abs(prevDepth - currentDepth);
+                  float3 prevNormal = normalize(prevSurfaceNormal.xyz);
+                  float3 currentNormal = normalize(offsetNormal);
+                  float normalDot = dot(prevNormal, currentNormal);
+                  temporalSurfaceValid =
+                      positionDelta <= positionThreshold &&
+                      depthDelta <= depthThreshold &&
+                      normalDot >= normalThreshold;
+                }
+                if (temporalSurfaceValid) {
+                  float4 prev0 = restirData0Prev.read(prevPixel);
+                  float4 prev1 = restirData1Prev.read(prevPixel);
+                  float4 prev2 = restirData2Prev.read(prevPixel);
+                  float prevWeightSum = prev2.y;
+                  float prevSampleCount = prev2.z;
+                  float prevSelectedWeight = prev2.w;
+                  if (prevWeightSum > 0.0f && prevSampleCount > 0.0f &&
+                      prevSelectedWeight > 0.0f) {
+                    uint prevLightId =
+                        static_cast<uint>(max(prev0.w, 0.0f));
+                    LightSampleCandidate temporalCandidate;
+                    if (buildRestirCandidateFromStored(
+                            bestHit.point, offsetNormal, viewDir, material,
+                            absorption.xyz, bestHit.primitiveId, prevLightId,
+                            prev0.xyz, prev1.xyz, prev1.w, prev2.x, tlasNodes,
+                            tlasNodeCount, bvhNodes, primitives, materials,
+                            primitiveCount, primitiveIndices, activeMask,
+                            instanceRecords, primitiveRemap, primitiveRayStats,
+                            bounceCache, totalPrimitiveCount,
+                            temporalCandidate)) {
+                      float3 contribution =
+                          restirContribution(temporalCandidate);
+                      float weight =
+                          restirWeightFromContribution(contribution);
+                      float temporalWeight =
+                          prevWeightSum * (weight / prevSelectedWeight);
+                      restirUpdateReservoir(reservoir, temporalCandidate,
+                                            contribution, temporalWeight,
+                                            prevSampleCount, seed);
+                    }
                   }
                 }
               }
@@ -1426,12 +1488,20 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                 float4(reservoir.sample.lightPdf, reservoir.weightSum,
                        reservoir.sampleCount, reservoir.selectedWeight),
                 pixel);
-            restirOutputWritten = true;
           } else {
             restirWriteDefaults(restirData0Out, restirData1Out, restirData2Out,
                                 pixel);
-            restirOutputWritten = true;
           }
+          if (restirSurfaceValid) {
+            restirSurfacePosOut.write(
+                float4(restirSurfacePosition, restirSurfaceDepth), pixel);
+            restirSurfaceNormalOut.write(
+                float4(restirSurfaceNormal, 0.0f), pixel);
+          } else {
+            restirWriteSurfaceDefaults(restirSurfacePosOut,
+                                       restirSurfaceNormalOut, pixel);
+          }
+          restirOutputWritten = true;
         }
       } else {
         float lightXi = randomFloat(seed);
@@ -1565,6 +1635,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
 
   if (restirWriteEnabled && !restirOutputWritten) {
     restirWriteDefaults(restirData0Out, restirData1Out, restirData2Out, pixel);
+    restirWriteSurfaceDefaults(restirSurfacePosOut, restirSurfaceNormalOut,
+                               pixel);
   }
 
   sampleResult.radiance = clamp(light.xyz, 0.0, 1.0);

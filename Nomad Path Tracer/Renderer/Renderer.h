@@ -391,6 +391,8 @@ private:
   std::array<ManagedTextureSlot, 2> _restirData0Slots;
   std::array<ManagedTextureSlot, 2> _restirData1Slots;
   std::array<ManagedTextureSlot, 2> _restirData2Slots;
+  std::array<ManagedTextureSlot, 2> _restirSurfacePosSlots;
+  std::array<ManagedTextureSlot, 2> _restirSurfaceNormalSlots;
 
   struct PendingBlasBuild {
     Renderer *renderer = nullptr;
