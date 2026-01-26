@@ -23,6 +23,8 @@ struct PathTraceSample {
 };
 
 constant uint kRestirCandidateCount = 4;
+constant uint kRestirReseedCandidateBoost = 4;
+constant uint kRestirReseedFrameCount = 3;
 constant float kVisibilityRayEpsilon = 1e-4f;
 constant float kVisibilityRayOffset = 5e-4f;
 
@@ -880,6 +882,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 float restirTemporalPositionEpsilon,
                                 float restirTemporalNormalThreshold,
                                 float restirTemporalRoughnessBucketSize,
+                                thread uint &restirReseedFrames,
                                 thread RestirReservoir *restirReservoir,
                                 bool restirEnabled,
                                 float temporalReuseChance) {
@@ -1094,6 +1097,10 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         combined.M = 0.0f;
         combined.selectedFromTemporal = 0u;
 
+        uint reseedFramesRemaining = restirReseedFrames;
+        if (reseedFramesRemaining > 0) {
+          reseedFramesRemaining -= 1;
+        }
         float reuseChance = clamp(temporalReuseChance, 0.0f, 1.0f);
         bool allowTemporal = reuseChance > 0.0f;
         bool historyValid = false;
@@ -1138,6 +1145,17 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                     prevBucket == currentBucket;
               }
             }
+          }
+        }
+        bool historyInvalid =
+            restirReservoir->valid != 0u && allowTemporal && !historyValid;
+        if (historyInvalid) {
+          bool reseedTriggered = (reseedFramesRemaining == 0);
+          reseedFramesRemaining =
+              max(reseedFramesRemaining, kRestirReseedFrameCount);
+          if (reseedTriggered && restirStats) {
+            atomic_fetch_add_explicit(&restirStats[4], 1u,
+                                      memory_order_relaxed);
           }
         }
         allowTemporal = allowTemporal && historyValid;
@@ -1190,7 +1208,11 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
           }
         }
 
-        for (uint candidateIdx = 0; candidateIdx < kRestirCandidateCount;
+        uint candidateCount = kRestirCandidateCount;
+        if (reseedFramesRemaining > 0) {
+          candidateCount *= kRestirReseedCandidateBoost;
+        }
+        for (uint candidateIdx = 0; candidateIdx < candidateCount;
              ++candidateIdx) {
           float lightXi = randomFloat(seed);
           seed = random(seed);
@@ -1232,6 +1254,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         }
 
         *restirReservoir = combined;
+        restirReseedFrames = reseedFramesRemaining;
 
         if (restirReservoir->valid != 0 && restirReservoir->W > 0.0f &&
             restirReservoir->M > 0.0f) {

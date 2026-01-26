@@ -529,6 +529,7 @@ private:
   double _frameRestirReuseRate = 0.0;
   double _frameRestirCandidateAcceptance = 0.0;
   size_t _frameRestirVisibilityRejects = 0;
+  size_t _frameRestirReseedEvents = 0;
   double _frameCameraMotionMetric = 0.0;
   Camera::State _lastUniformCameraState{};
   bool _lastUniformCameraStateValid = false;

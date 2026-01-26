@@ -315,10 +315,14 @@ kernel void pathTraceKernel(
 
   bool restirEnabled = (u.restirSamplingEnabled != 0u);
   RestirReservoir restir{};
+  uint restirReseedFrames = 0u;
   if (restirEnabled) {
     float4 prevState = restirPrevState.read(pixel);
     float4 prevSample = restirPrevSample.read(pixel);
     float4 prevNormal = restirPrevNormal.read(pixel);
+    if (isfinite(prevState.z) && prevState.z > 0.0f) {
+      restirReseedFrames = uint(prevState.z);
+    }
     if (isfinite(prevState.x) && isfinite(prevState.y) &&
         prevState.x > 0.0f && prevState.y > 0.0f && isfinite(prevSample.w) &&
         prevSample.w >= 0.0f) {
@@ -388,6 +392,7 @@ kernel void pathTraceKernel(
                                       u.restirTemporalPositionEpsilon,
                                       u.restirTemporalNormalThreshold,
                                       u.restirTemporalRoughnessBucketSize,
+                                      restirReseedFrames,
                                       restirEnabled && sampleIdx == 0
                                           ? &restir
                                           : nullptr,
@@ -403,12 +408,12 @@ kernel void pathTraceKernel(
   if (restirEnabled) {
     float4 outSample = float4(0.0f);
     float4 outNormal = float4(0.0f);
-    float4 outState = float4(0.0f);
+    float4 outState = float4(0.0f, 0.0f, float(restirReseedFrames), 1.0f);
     if (restir.valid != 0u && restir.W > 0.0f && restir.M > 0.0f) {
       outSample = float4(restir.sample.position,
                          float(restir.sample.lightIndex));
       outNormal = float4(restir.sample.normal, restir.sample.area);
-      outState = float4(restir.W, restir.M, 0.0f, 1.0f);
+      outState = float4(restir.W, restir.M, float(restirReseedFrames), 1.0f);
     }
     restirOutSample.write(outSample, pixel);
     restirOutNormal.write(outNormal, pixel);
