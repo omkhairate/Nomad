@@ -47,6 +47,10 @@ struct LightSampleCandidate {
   float3 wi = float3(0.0f);
   float pdf = 0.0f;
   uint lightId = 0u;
+  float3 lightPosition = float3(0.0f);
+  float3 lightNormal = float3(0.0f);
+  float lightArea = 0.0f;
+  float lightPdf = 0.0f;
 };
 
 #include "Intersect.h"
@@ -194,6 +198,10 @@ inline RestirReservoir initReservoir() {
   reservoir.wSum = 0.0f;
   reservoir.m = 0u;
   reservoir.packedLightId = 0xffffffffu;
+  reservoir.lightPosition = float3(0.0f);
+  reservoir.lightNormal = float3(0.0f);
+  reservoir.lightArea = 0.0f;
+  reservoir.lightPdf = 0.0f;
   return reservoir;
 }
 
@@ -211,6 +219,10 @@ inline void updateReservoir(thread RestirReservoir &reservoir,
     reservoir.wi = candidate.wi;
     reservoir.pdf = candidate.pdf;
     reservoir.packedLightId = candidate.lightId;
+    reservoir.lightPosition = candidate.lightPosition;
+    reservoir.lightNormal = candidate.lightNormal;
+    reservoir.lightArea = candidate.lightArea;
+    reservoir.lightPdf = candidate.lightPdf;
   }
 }
 
@@ -327,6 +339,10 @@ inline bool sampleDirectLightCandidate(
   candidate.wi = wi;
   candidate.pdf = totalPdf;
   candidate.lightId = lightPrimIndex;
+  candidate.lightPosition = lightPoint;
+  candidate.lightNormal = lightNormal;
+  candidate.lightArea = area;
+  candidate.lightPdf = lightPdf;
   return true;
 }
 

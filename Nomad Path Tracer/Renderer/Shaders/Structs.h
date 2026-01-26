@@ -116,6 +116,10 @@ struct RestirReservoir
     float wSum = 0.0f;
     uint m = 0u;
     uint packedLightId = 0u;
+    float3 lightPosition = float3(0.0f);
+    float3 lightNormal = float3(0.0f);
+    float lightArea = 0.0f;
+    float lightPdf = 0.0f;
 };
 
 

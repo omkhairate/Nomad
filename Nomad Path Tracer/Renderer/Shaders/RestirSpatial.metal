@@ -2,7 +2,7 @@
 
 using namespace metal;
 
-#include "Structs.h"
+#include "PathTracing.h"
 
 inline uint hashUint(uint x) {
     x ^= x >> 16;
@@ -21,32 +21,158 @@ inline bool isFinite3(float3 v) {
     return all(isfinite(v));
 }
 
+struct RestirSampleData {
+    float3 radiance = float3(0.0f);
+    float3 wi = float3(0.0f);
+    float pdf = 0.0f;
+    uint packedLightId = 0u;
+    float3 lightPosition = float3(0.0f);
+    float3 lightNormal = float3(0.0f);
+    float lightArea = 0.0f;
+    float lightPdf = 0.0f;
+};
+
+inline bool reevaluateReservoirSample(
+    thread const RestirReservoir &source,
+    float3 currentPosition,
+    float3 currentNormal,
+    float3 currentAlbedo,
+    constant UniformsData &uniforms,
+    device const float4 *materials,
+    device const float4 *tlasNodes,
+    device const float4 *bvhNodes,
+    device const float4 *primitives,
+    device const int *primitiveIndices,
+    device const uchar *activeMask,
+    device const InstanceRecord *instanceRecords,
+    device const uint *primitiveRemap,
+    device atomic_uint *primitiveRayStats,
+    thread RestirSampleData &outSample,
+    thread float &outWeight) {
+    if (source.m == 0u || source.packedLightId == 0xffffffffu) {
+        return false;
+    }
+
+    uint primitiveCount = uint(uniforms.primitiveCount);
+    uint totalPrimitiveCount = uint(uniforms.totalPrimitiveCount);
+    uint tlasNodeCount = uint(uniforms.tlasNodeCount);
+
+    float3 toLight = source.lightPosition - currentPosition;
+    float dist2 = dot(toLight, toLight);
+    if (dist2 <= RAY_EPS || !isfinite(dist2)) {
+        return false;
+    }
+
+    float dist = sqrt(dist2);
+    float3 wi = toLight / dist;
+    float3 normalUnit = normalize(currentNormal);
+    float3 lightNormal = normalize(source.lightNormal);
+    float cosTheta = max(dot(normalUnit, wi), 0.0f);
+    float cosLight = max(dot(lightNormal, -wi), 0.0f);
+    if (cosTheta <= 0.0f || cosLight <= 0.0f) {
+        return false;
+    }
+
+    float lightArea = source.lightArea;
+    float lightPdf = source.lightPdf;
+    if (lightArea <= 0.0f || lightPdf <= 0.0f) {
+        return false;
+    }
+
+    float totalPdf = lightPdf * dist2 / (cosLight * lightArea);
+    if (totalPdf <= 0.0f || !isfinite(totalPdf)) {
+        return false;
+    }
+
+    TlasLeafCache cache;
+    bool visible = isLightVisible(
+        currentPosition, normalUnit, wi, dist, source.packedLightId, cache,
+        tlasNodes, tlasNodeCount, bvhNodes, primitives,
+        primitiveIndices, activeMask, instanceRecords, primitiveRemap,
+        primitiveCount, totalPrimitiveCount,
+        primitiveRayStats);
+    if (!visible) {
+        return false;
+    }
+
+    if (source.packedLightId >= primitiveCount) {
+        return false;
+    }
+
+    int lightMatIndex = int(source.packedLightId) * int(kMaterialFloat4Count);
+    int totalEntries = int(primitiveCount) * int(kMaterialFloat4Count);
+    if (lightMatIndex < 0 ||
+        lightMatIndex + int(kMaterialFloat4Count) > totalEntries) {
+        return false;
+    }
+
+    MaterialPayload lightMaterial = decodeMaterial(lightMatIndex, materials, 1.0f);
+    float3 lightRadiance =
+        lightMaterial.emissionColor * lightMaterial.emissionPower;
+    float3 throughput = currentAlbedo / M_PI;
+    float3 radiance = throughput * lightRadiance * cosTheta;
+    float target = luminance(radiance);
+    float weight = target / max(totalPdf, RAY_EPS);
+    if (weight <= 0.0f || !isfinite(weight)) {
+        return false;
+    }
+
+    outSample.radiance = radiance;
+    outSample.wi = wi;
+    outSample.pdf = totalPdf;
+    outSample.packedLightId = source.packedLightId;
+    outSample.lightPosition = source.lightPosition;
+    outSample.lightNormal = source.lightNormal;
+    outSample.lightArea = source.lightArea;
+    outSample.lightPdf = source.lightPdf;
+    outWeight = weight;
+    return true;
+}
+
 inline void mergeReservoir(thread RestirReservoir &current,
-                           thread const RestirReservoir &neighbor,
-                           float neighborWeight,
+                           thread const RestirSampleData &candidate,
+                           float weight,
+                           uint candidateCount,
                            float xi) {
-    if (neighbor.m == 0u || neighborWeight <= 0.0f || !isfinite(neighborWeight)) {
+    if (candidateCount == 0u || weight <= 0.0f || !isfinite(weight)) {
+        return;
+    }
+    float scaledWeight = weight * float(candidateCount);
+    if (scaledWeight <= 0.0f || !isfinite(scaledWeight)) {
         return;
     }
     float currentWeight = max(current.wSum, 0.0f);
-    float totalWeight = currentWeight + neighborWeight;
+    float totalWeight = currentWeight + scaledWeight;
     if (totalWeight <= 0.0f || !isfinite(totalWeight)) {
         return;
     }
-    float neighborProb = neighborWeight / totalWeight;
-    if (xi < neighborProb) {
-        current.sampleRadiance = neighbor.sampleRadiance;
-        current.wi = neighbor.wi;
-        current.pdf = neighbor.pdf;
-        current.packedLightId = neighbor.packedLightId;
+    float candidateProb = scaledWeight / totalWeight;
+    if (xi < candidateProb) {
+        current.sampleRadiance = candidate.radiance;
+        current.wi = candidate.wi;
+        current.pdf = candidate.pdf;
+        current.packedLightId = candidate.packedLightId;
+        current.lightPosition = candidate.lightPosition;
+        current.lightNormal = candidate.lightNormal;
+        current.lightArea = candidate.lightArea;
+        current.lightPdf = candidate.lightPdf;
     }
     current.wSum = totalWeight;
-    current.m += neighbor.m;
+    current.m += candidateCount;
 }
 
 kernel void restirSpatialMain(
     device RestirReservoir *reservoirBuffer [[buffer(0)]],
     constant UniformsData &uniforms [[buffer(1)]],
+    device const float4 *bvhNodes [[buffer(2)]],
+    device const float4 *primitives [[buffer(3)]],
+    device const float4 *materials [[buffer(4)]],
+    device const int *primitiveIndices [[buffer(5)]],
+    device const float4 *tlasNodes [[buffer(6)]],
+    device const uchar *activeMask [[buffer(7)]],
+    device const uint *primitiveRemap [[buffer(8)]],
+    device atomic_uint *primitiveRayStats [[buffer(9)]],
+    device const InstanceRecord *instanceRecords [[buffer(10)]],
     texture2d<float, access::read> positionAccum [[texture(0)]],
     texture2d<float, access::read> normalAccum [[texture(1)]],
     texture2d<float, access::read> albedoAccum [[texture(2)]],
@@ -128,9 +254,17 @@ kernel void restirSpatialMain(
             continue;
         }
 
-        float neighborWeight = max(neighbor.wSum, 0.0f) * similarity;
-        float xi = hashToFloat(seed);
-        mergeReservoir(current, neighbor, neighborWeight, xi);
+        RestirSampleData candidate;
+        float candidateWeight = 0.0f;
+        if (reevaluateReservoirSample(
+                neighbor, currentPosition, currentNormal, currentAlbedo,
+                uniforms, materials, tlasNodes, bvhNodes, primitives,
+                primitiveIndices, activeMask, instanceRecords, primitiveRemap,
+                primitiveRayStats, candidate, candidateWeight)) {
+            float xi = hashToFloat(seed);
+            mergeReservoir(current, candidate, candidateWeight * similarity,
+                           neighbor.m, xi);
+        }
     }
 
     reservoirBuffer[index] = current;
