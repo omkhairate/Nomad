@@ -7592,9 +7592,11 @@ void Renderer::draw(MTK::View *pView) {
   if (_pRestirTemporalPSO && _restirSettings.enabled &&
       _restirSettings.enableTemporal &&
       _restirHistoryValid && _pRestirReservoirBuffer &&
-      _pRestirReservoirHistoryBuffer && positionTexture && normalTexture &&
-      albedoTexture && positionHistoryTexture && normalHistoryTexture &&
-      albedoHistoryTexture) {
+      _pRestirReservoirHistoryBuffer && _pBVHBuffer && _pSphereBuffer &&
+      _pSphereMaterialBuffer && _pPrimitiveIndexBuffer && _pTLASBuffer &&
+      _pActiveBuffer && _pPrimitiveRemapBuffer && _pInstanceBuffer &&
+      positionTexture && normalTexture && albedoTexture && positionHistoryTexture &&
+      normalHistoryTexture && albedoHistoryTexture) {
     MTL::CommandBuffer *temporalCmd = _pCommandQueue->commandBuffer();
     if (temporalCmd) {
       MTL::ComputeCommandEncoder *temporalCompute =
@@ -7604,6 +7606,15 @@ void Renderer::draw(MTK::View *pView) {
         temporalCompute->setBuffer(_pRestirReservoirHistoryBuffer, 0, 0);
         temporalCompute->setBuffer(_pRestirReservoirBuffer, 0, 1);
         temporalCompute->setBuffer(_pUniformsBuffer, 0, 2);
+        temporalCompute->setBuffer(_pBVHBuffer, 0, 3);
+        temporalCompute->setBuffer(_pSphereBuffer, 0, 4);
+        temporalCompute->setBuffer(_pSphereMaterialBuffer, 0, 5);
+        temporalCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
+        temporalCompute->setBuffer(_pTLASBuffer, 0, 7);
+        temporalCompute->setBuffer(_pActiveBuffer, 0, 8);
+        temporalCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 9);
+        temporalCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 10);
+        temporalCompute->setBuffer(_pInstanceBuffer, 0, 11);
         temporalCompute->setTexture(positionTexture, 0);
         temporalCompute->setTexture(normalTexture, 1);
         temporalCompute->setTexture(albedoTexture, 2);
@@ -7642,8 +7653,10 @@ void Renderer::draw(MTK::View *pView) {
 
   if (_pRestirSpatialPSO && _restirSettings.enabled &&
       _restirSettings.enableSpatial &&
-      _pRestirReservoirBuffer && positionTexture &&
-      normalTexture && albedoTexture) {
+      _pRestirReservoirBuffer && _pBVHBuffer && _pSphereBuffer &&
+      _pSphereMaterialBuffer && _pPrimitiveIndexBuffer && _pTLASBuffer &&
+      _pActiveBuffer && _pPrimitiveRemapBuffer && _pInstanceBuffer &&
+      positionTexture && normalTexture && albedoTexture) {
     MTL::CommandBuffer *spatialCmd = _pCommandQueue->commandBuffer();
     if (spatialCmd) {
       MTL::ComputeCommandEncoder *spatialCompute =
@@ -7652,6 +7665,15 @@ void Renderer::draw(MTK::View *pView) {
         spatialCompute->setComputePipelineState(_pRestirSpatialPSO);
         spatialCompute->setBuffer(_pRestirReservoirBuffer, 0, 0);
         spatialCompute->setBuffer(_pUniformsBuffer, 0, 1);
+        spatialCompute->setBuffer(_pBVHBuffer, 0, 2);
+        spatialCompute->setBuffer(_pSphereBuffer, 0, 3);
+        spatialCompute->setBuffer(_pSphereMaterialBuffer, 0, 4);
+        spatialCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 5);
+        spatialCompute->setBuffer(_pTLASBuffer, 0, 6);
+        spatialCompute->setBuffer(_pActiveBuffer, 0, 7);
+        spatialCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
+        spatialCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
+        spatialCompute->setBuffer(_pInstanceBuffer, 0, 10);
         spatialCompute->setTexture(positionTexture, 0);
         spatialCompute->setTexture(normalTexture, 1);
         spatialCompute->setTexture(albedoTexture, 2);

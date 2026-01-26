@@ -385,7 +385,7 @@ private:
     uint64_t lastUsedFrame = 0;
   };
 
-  static constexpr size_t kRestirReservoirStride = 48;
+  static constexpr size_t kRestirReservoirStride = 96;
 
   // Framebuffers
   ManagedTextureSlot _colorSlot;
