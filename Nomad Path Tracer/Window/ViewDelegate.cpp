@@ -34,7 +34,7 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
     if (_gpuMemLog.is_open())
       _gpuMemLog << "frame,gpu_memory_mb,scratch_memory_mb,"
                     "resident_geometry_memory_mb,resident_texture_memory_mb,"
-                    "restir_memory_mb,residency_memory_mb\n";
+                    "residency_memory_mb\n";
   }
 
   auto parseBoolEnv = [](const char *value) {
@@ -98,11 +98,10 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
     double scratchMemory = _pRenderer->scratchMemoryMB();
     double geometryMemory = _pRenderer->residentGeometryMemoryMB();
     double textureMemory = _pRenderer->residentTextureMemoryMB();
-    double restirMemory = _pRenderer->restirMemoryMB();
-    double residencyMemory = geometryMemory + textureMemory + restirMemory;
+    double residencyMemory = geometryMemory + textureMemory;
     _gpuMemLog << _frameCount << "," << totalMemory << "," << scratchMemory
                << "," << geometryMemory << "," << textureMemory << ","
-               << restirMemory << "," << residencyMemory << "\n";
+               << residencyMemory << "\n";
     _gpuMemLog.flush();
   }
   if (!_dumpPath.empty()) {

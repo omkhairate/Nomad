@@ -129,7 +129,6 @@ public:
   double scratchMemoryMB() const;
   double residentGeometryMemoryMB() const;
   double residentTextureMemoryMB() const;
-  double restirMemoryMB() const;
 
   double lastCPUTime() const;
   double lastGPUTime() const;
@@ -304,7 +303,6 @@ private:
   MTL::RenderPipelineState *_pPSO = nullptr;
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
-  MTL::ComputePipelineState *_pRestirSpatialPSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
 
   // Core scene and geometry data
@@ -338,7 +336,6 @@ private:
   bool _pathTraceCommandTimeout = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
-  MTL::Buffer *_pRestirStatsBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
@@ -385,9 +382,6 @@ private:
   ManagedTextureSlot _albedoSlot;
   ManagedTextureSlot _normalSlot;
   ManagedTextureSlot _positionSlot;
-  ManagedTextureSlot _restirSampleSlots[2];
-  ManagedTextureSlot _restirNormalSlots[2];
-  ManagedTextureSlot _restirStateSlots[2];
 
   struct PendingBlasBuild {
     Renderer *renderer = nullptr;
@@ -442,7 +436,6 @@ private:
     double scratchMemoryMB = 0.0;
     double residentGeometryMemoryMB = 0.0;
     double residentTextureMemoryMB = 0.0;
-    double restirMemoryMB = 0.0;
     double residencyMemoryMB = 0.0;
     double textureMemoryCapMB = 0.0;
     double geometryMemoryCapMB = 0.0;
@@ -459,10 +452,6 @@ private:
     double probabilityThreshold = 0.0;
     double probabilityTargetFraction = 0.0;
     double probabilityVisibleFloor = 0.0;
-    double restirReuseRate = 0.0;
-    bool restirHistoryReset = false;
-    double restirCandidateAcceptance = 0.0;
-    size_t restirVisibilityRejects = 0;
     double cameraMotionMetric = 0.0;
     std::string primitiveProbabilities;
     std::string objectProbabilities;
@@ -526,10 +515,6 @@ private:
   std::vector<size_t> _primitiveToObject;
   std::vector<BoundingSphere> _primitiveBounds;
   std::vector<SceneObject> _allSceneObjects;
-  double _frameRestirReuseRate = 0.0;
-  double _frameRestirCandidateAcceptance = 0.0;
-  size_t _frameRestirVisibilityRejects = 0;
-  size_t _frameRestirReseedEvents = 0;
   double _frameCameraMotionMetric = 0.0;
   Camera::State _lastUniformCameraState{};
   bool _lastUniformCameraStateValid = false;
@@ -758,8 +743,6 @@ private:
   bool _historyStreamingActive = false;
   bool _historyStreamingUsedProxy = false;
   size_t _historyStreamingRestoreCount = 0;
-  size_t _frameRestirHistoryEvictions = 0;
-  bool _frameRestirHistoryReset = false;
 
   size_t setObjectActive(size_t objectIndex, bool active);
   void configureTextureSlot(ManagedTextureSlot &slot, NS::UInteger width,
@@ -777,7 +760,6 @@ private:
                         MTL::BlitCommandEncoder *&blit);
   void releaseTextureSlot(ManagedTextureSlot &slot);
   const char *textureSlotLabel(const ManagedTextureSlot &slot) const;
-  bool isRestirHistorySlot(const ManagedTextureSlot &slot) const;
   void updateTextureResidency(MTL::CommandBuffer *cmd);
   void updateGeometryResidency(MTL::CommandBuffer *cmd);
   void disableHistoryForMemoryCap();

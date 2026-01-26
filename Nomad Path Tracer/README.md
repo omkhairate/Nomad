@@ -12,23 +12,6 @@ Long-running path tracing commands can trigger GPU timeout errors when the pixel
 
 The renderer clamps the budget so each command can still process at least one full tile, based on the current tile dimensions and sample count.
 
-## ReSTIR sampling (temporal + spatial reuse)
-
-ReSTIR is now strictly a sampling feature in the path tracing stage. The residency strategy is unchanged unless you explicitly set it on the `<Scene>` root.
-
-- **Scene XML:** add `restirSampling="true"` (or `restirSamplingEnabled="true"`) to the `<Scene>` root.
-- **Behavior:** when enabled, ReSTIR sampling runs regardless of the configured residency strategy, and the spatial reuse pass is always on (no separate toggle).
-- **Metrics:** benchmark logs report `restir_reuse_rate` and `restir_candidate_acceptance` to compare temporal reuse against baseline runs.
-- **Deprecated:** `residencyStrategy="restir"` now falls back to distance LOD (use `restirSampling="true"` instead).
-
-## ReSTIR baseline mode
-
-To keep ReSTIR temporal reuse stable for baseline comparisons, you can disable texture history eviction:
-
-- **Scene XML:** add `restirBaselineMode="true"` (or `restirBaseline="true"`) to the `<Scene>` root.
-- **Behavior:** no history eviction unless GPU or texture residency caps are exceeded; maintains stable ReSTIR temporal reuse for baseline comparisons.
-- **Warning:** do not use `restirBaselineMode` to compare residency strategies unless caps are still enforced to keep eviction behavior consistent.
-
 ## Geometry residency memory cap
 
 The `geometryResidencyMemoryCapMB` scene parameter remains a hard ceiling. Geometry residency allocations (including streaming uploads, prewarm passes, and rebuilds) are rejected if the next allocation would exceed the cap; the renderer queues the request and triggers eviction until enough space is available to retry.
@@ -38,21 +21,3 @@ For the memory-budget study, `totalGpuMemoryCapMB` is now the single authoritati
 To prevent eviction scheduling deadlocks, the renderer estimates a minimum resident footprint (history + mandatory buffers + essential geometry). If the configured total cap remains below this footprint for several frames, it logs a warning, disables history, forces an accumulation reset, and temporarily relaxes the effective total cap to the minimum footprint. Benchmark metrics report the minimum footprint, relaxed cap, and whether the frame is in eviction-stall mode.
 
 See `StudyNotes.md` for the study-specific memory budget notes and recommended interpretation of the new metrics.
-
-## Bistro test scenes with ReSTIR sampling enabled
-
-The `scene_bistro_test_v2_*_restir_on.xml` variants mirror their corresponding bistro test scenes but explicitly enable ReSTIR sampling via `restirSampling="true"` on the `<Scene>` root. Use these for A/B comparisons that isolate the sampling toggle from other settings.
-
-- `scene_bistro_test_v2_distance_restir_on.xml`
-- `scene_bistro_test_v2_energy_restir_on.xml`
-- `scene_bistro_test_v2_environment_restir_on.xml`
-- `scene_bistro_test_v2_predictive_restir_on.xml`
-- `scene_bistro_test_v2_probabilistic_restir_on.xml`
-- `scene_bistro_test_v2_rayhit_restir_on.xml`
-- `scene_bistro_test_v2_restir_restir_on.xml`
-- `scene_bistro_test_v2_screenspace_restir_on.xml`
-- `scene_bistro_test_v2_unified_restir_on.xml`
-
-## Additional ReSTIR sampling scenes
-
-- `scene_restir_crossfire.xml` (now uses `restirSampling="true"` while keeping residency independent).

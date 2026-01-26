@@ -13,7 +13,6 @@ public:
     Scratch,
     Geometry,
     Textures,
-    Restir,
     RendererBuffers,
     HeapsAS,
     Staging,

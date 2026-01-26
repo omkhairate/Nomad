@@ -22,7 +22,6 @@ enum class ResidencyStrategy {
   EnvironmentHit = 6,
   PredictiveEnvironment = 7,
   UnifiedScore = 8,
-  ReSTIR = 9,
 };
 
 // Default budget for the amount of tile/sample work recorded into a single
@@ -93,9 +92,6 @@ struct ResidencyParameters {
   float probabilityIdleDecay = 0.9f;
   float probabilityVisibleFloor = 0.0f;
   uint32_t probabilityVisibleDemotionDwellFrames = 0;
-
-  bool restirBaselineMode = false;
-  bool restirSamplingEnabled = false;
 
   float screenFootprintTargetFraction = 0.65f;
   float screenFootprintMinPixelCoverage = 32.0f;

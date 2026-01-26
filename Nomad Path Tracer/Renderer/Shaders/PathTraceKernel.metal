@@ -4,243 +4,6 @@ using namespace metal;
 
 #include "PathTracing.h"
 
-inline bool loadRestirReservoir(texture2d<float, access::read> restirSample,
-                                texture2d<float, access::read> restirNormal,
-                                texture2d<float, access::read> restirState,
-                                uint2 pixel,
-                                thread RestirReservoir &reservoir) {
-  float4 state = restirState.read(pixel);
-  float4 sample = restirSample.read(pixel);
-  float4 normal = restirNormal.read(pixel);
-  if (isfinite(state.x) && isfinite(state.y) && state.x > 0.0f &&
-      state.y > 0.0f && isfinite(sample.w) && sample.w >= 0.0f) {
-    reservoir.valid = 1u;
-    reservoir.W = state.x;
-    reservoir.M = state.y;
-    reservoir.sample.position = sample.xyz;
-    reservoir.sample.normal = normal.xyz;
-    reservoir.sample.area = normal.w;
-    reservoir.sample.lightIndex = uint(sample.w);
-    reservoir.selectedFromTemporal = 0u;
-    return true;
-  }
-  return false;
-}
-
-inline void writeRestirReservoir(texture2d<float, access::write> restirSample,
-                                 texture2d<float, access::write> restirNormal,
-                                 texture2d<float, access::write> restirState,
-                                 uint2 pixel,
-                                 thread const RestirReservoir &reservoir) {
-  float4 outSample = float4(0.0f);
-  float4 outNormal = float4(0.0f);
-  float4 outState = float4(0.0f);
-  if (reservoir.valid != 0u && reservoir.W > 0.0f && reservoir.M > 0.0f) {
-    outSample = float4(reservoir.sample.position,
-                       float(reservoir.sample.lightIndex));
-    outNormal = float4(reservoir.sample.normal, reservoir.sample.area);
-    outState = float4(reservoir.W, reservoir.M, 0.0f, 1.0f);
-  }
-  restirSample.write(outSample, pixel);
-  restirNormal.write(outNormal, pixel);
-  restirState.write(outState, pixel);
-}
-
-kernel void restirSpatialKernel(
-    device const UniformsData *uniforms [[buffer(0)]],
-    device const float4 *bvhNodes [[buffer(1)]],
-    device const float4 *primitives [[buffer(2)]],
-    device const float4 *materials [[buffer(3)]],
-    device const int *primitiveIndices [[buffer(4)]],
-    device const float4 *tlasNodes [[buffer(5)]],
-    device const uchar *activeMask [[buffer(6)]],
-    device const uint *lightIndices [[buffer(7)]],
-    device const float *lightCdf [[buffer(8)]],
-    device const uint *primitiveRemap [[buffer(9)]],
-    device atomic_uint *primitiveRayStats [[buffer(10)]],
-    device const InstanceRecord *instanceRecords [[buffer(11)]],
-    texture2d<float, access::read> albedoAccum [[texture(0)]],
-    texture2d<float, access::read> normalAccum [[texture(1)]],
-    texture2d<float, access::read> positionAccum [[texture(2)]],
-    texture2d<float, access::read> restirInSample [[texture(3)]],
-    texture2d<float, access::read> restirInNormal [[texture(4)]],
-    texture2d<float, access::read> restirInState [[texture(5)]],
-    texture2d<float, access::write> restirOutSample [[texture(6)]],
-    texture2d<float, access::write> restirOutNormal [[texture(7)]],
-    texture2d<float, access::write> restirOutState [[texture(8)]],
-    uint2 gid [[thread_position_in_grid]]) {
-  if (!uniforms)
-    return;
-  if (!bvhNodes || !primitives || !materials || !primitiveIndices || !tlasNodes ||
-      !activeMask || !lightIndices || !lightCdf || !primitiveRemap ||
-      !instanceRecords)
-    return;
-
-  uint width = restirInSample.get_width();
-  uint height = restirInSample.get_height();
-  if (gid.x >= width || gid.y >= height)
-    return;
-
-  const device UniformsData &u = *uniforms;
-  float2 screenSize = float2(u.screenSize);
-  if (screenSize.x <= 0.0f || screenSize.y <= 0.0f)
-    return;
-
-  float2 uv = (float2(gid) + 0.5f) / screenSize;
-  uint32_t seed = random(uv, u.randomSeed.xyz) * ((uint32_t)-1);
-  seed ^= uint32_t(u.frameCount + gid.x * 1973u + gid.y * 9277u);
-
-  RestirReservoir combined{};
-  combined.valid = 0u;
-  combined.W = 0.0f;
-  combined.M = 0.0f;
-
-  if (u.lightCount == 0 || u.lightTotalWeight <= 0.0f) {
-    writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
-                         combined);
-    return;
-  }
-
-  float3 shadingPosition = positionAccum.read(gid).xyz;
-  float4 shadingNormalData = normalAccum.read(gid);
-  float3 shadingNormal = shadingNormalData.xyz;
-  float shadingRoughness = shadingNormalData.w;
-  float3 diffuseColor = albedoAccum.read(gid).xyz;
-  if (!all(isfinite(shadingPosition)) || !all(isfinite(shadingNormal)) ||
-      !all(isfinite(diffuseColor)) || !isfinite(shadingRoughness)) {
-    writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
-                         combined);
-    return;
-  }
-
-  float normalLen = length(shadingNormal);
-  if (normalLen <= 1e-4f) {
-    writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
-                         combined);
-    return;
-  }
-  shadingNormal = shadingNormal / normalLen;
-
-  float diffuseLum = luminance(diffuseColor);
-  if (diffuseLum <= 0.0f) {
-    writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
-                         combined);
-    return;
-  }
-
-  intersection bestHit{};
-  bestHit.point = shadingPosition;
-  bestHit.normal = shadingNormal;
-  bestHit.primitiveId = -1;
-  TlasLeafCache bounceCache;
-  bounceCache.valid = false;
-  float4 absorption = float4(1.0f);
-
-  constexpr int kSpatialTapCount = 5;
-  const int2 offsets[kSpatialTapCount] = {
-      int2(0, 0), int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1)};
-  constexpr float kSpatialNormalThreshold = 0.85f;
-  constexpr float kSpatialDepthThreshold = 0.25f;
-  constexpr float kSpatialPositionThreshold = 0.5f;
-  float roughnessBucketSize =
-      max(u.restirTemporalRoughnessBucketSize, 1e-4f);
-  uint shadingBucket = uint(floor(
-      clamp(shadingRoughness, 0.0f, 1.0f) / roughnessBucketSize));
-
-  for (int tap = 0; tap < kSpatialTapCount; ++tap) {
-    int2 offset = offsets[tap];
-    int2 sampleCoord = int2(gid) + offset;
-    sampleCoord.x = clamp(sampleCoord.x, 0, int(width) - 1);
-    sampleCoord.y = clamp(sampleCoord.y, 0, int(height) - 1);
-    uint2 pixel = uint2(sampleCoord);
-
-    float3 neighborPosition = positionAccum.read(pixel).xyz;
-    float4 neighborNormalData = normalAccum.read(pixel);
-    float3 neighborNormal = neighborNormalData.xyz;
-    float neighborRoughness = neighborNormalData.w;
-    if (!all(isfinite(neighborPosition)) || !all(isfinite(neighborNormal)) ||
-        !isfinite(neighborRoughness))
-      continue;
-    float neighborNormalLen = length(neighborNormal);
-    if (neighborNormalLen <= 1e-4f)
-      continue;
-    neighborNormal /= neighborNormalLen;
-
-    float normalSimilarity = dot(shadingNormal, neighborNormal);
-    if (normalSimilarity < kSpatialNormalThreshold)
-      continue;
-    uint neighborBucket = uint(floor(
-        clamp(neighborRoughness, 0.0f, 1.0f) / roughnessBucketSize));
-    if (neighborBucket != shadingBucket)
-      continue;
-    float3 delta = neighborPosition - shadingPosition;
-    float depthDelta = abs(dot(delta, shadingNormal));
-    float neighborDepthDelta = abs(dot(delta, neighborNormal));
-    bool depthSimilar = depthDelta <= kSpatialDepthThreshold &&
-                        neighborDepthDelta <= kSpatialDepthThreshold;
-    float dist2_neighbor = dot(delta, delta);
-    bool positionSimilar =
-        dist2_neighbor <= kSpatialPositionThreshold * kSpatialPositionThreshold;
-    if (!depthSimilar && !positionSimilar)
-      continue;
-
-    RestirReservoir candidate{};
-    if (!loadRestirReservoir(restirInSample, restirInNormal, restirInState,
-                             pixel, candidate))
-      continue;
-    if (candidate.W <= 0.0f || candidate.M <= 0.0f)
-      continue;
-    if (!all(isfinite(candidate.sample.position)) ||
-        !all(isfinite(candidate.sample.normal)))
-      continue;
-    float candidateNormalLen = length(candidate.sample.normal);
-    if (candidateNormalLen <= 1e-4f)
-      continue;
-    RestirSampleData candidateSample = candidate.sample;
-    candidateSample.normal = candidate.sample.normal / candidateNormalLen;
-    uint lightOffset = candidate.sample.lightIndex;
-    if (lightOffset >= u.lightCount)
-      continue;
-    if (!isfinite(candidateSample.area) || candidateSample.area <= 0.0f)
-      continue;
-    uint lightPrimIndex = lightIndices[lightOffset];
-    float3 toLight = candidateSample.position - bestHit.point;
-    float dist2_light = dot(toLight, toLight);
-    if (dist2_light <= 1e-6f)
-      continue;
-    float dist = sqrt(dist2_light);
-    float3 wi = toLight / dist;
-    bool visible = isLightVisible(
-        bestHit.point, shadingNormal, wi, dist, lightPrimIndex, bounceCache,
-        tlasNodes, uint(u.tlasNodeCount), bvhNodes, primitives, primitiveIndices,
-        activeMask, instanceRecords, primitiveRemap, uint(u.primitiveCount),
-        uint(u.totalPrimitiveCount), primitiveRayStats);
-    if (!visible)
-      continue;
-    RestirEvaluation eval = evaluateLightCandidate(
-        lightOffset, lightPrimIndex, candidateSample.position,
-        candidateSample.normal, candidateSample.area, shadingNormal,
-        diffuseColor, absorption, bestHit, bounceCache, tlasNodes,
-        uint(u.tlasNodeCount), bvhNodes, primitives, primitiveIndices, activeMask,
-        instanceRecords, primitiveRemap, uint(u.primitiveCount),
-        uint(u.totalPrimitiveCount), primitiveRayStats, materials, lightCdf,
-        u.lightTotalWeight, true, visible);
-    if (!eval.valid || eval.pdf <= 0.0f)
-      continue;
-
-    float weight = eval.target / eval.pdf;
-    if (weight <= 0.0f || !isfinite(weight))
-      continue;
-    updateRestirReservoir(combined, candidateSample, weight, false, seed);
-    float candidateM = candidate.M;
-    if (isfinite(candidateM) && candidateM > 1.0f)
-      combined.M += candidateM - 1.0f;
-  }
-
-  writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
-                       combined);
-}
-
 kernel void pathTraceKernel(
     device const float4 *bvhNodes [[buffer(0)]],
     device const float4 *primitives [[buffer(1)]],
@@ -256,7 +19,6 @@ kernel void pathTraceKernel(
     device const uint *primitiveRemap [[buffer(11)]],
     device atomic_uint *primitiveRayStats [[buffer(12)]],
     device const InstanceRecord *instanceRecords [[buffer(13)]],
-    device atomic_uint *restirStats [[buffer(14)]],
     texture2d<float, access::read> lastFrame [[texture(0)]],
     texture2d<float, access::write> currentFrame [[texture(1)]],
     texture2d<float, access::read_write> sampleCount [[texture(2)]],
@@ -264,12 +26,6 @@ kernel void pathTraceKernel(
     texture2d<float, access::read_write> albedoAccum [[texture(4)]],
     texture2d<float, access::read_write> normalAccum [[texture(5)]],
     texture2d<float, access::read_write> positionAccum [[texture(6)]],
-    texture2d<float, access::read> restirPrevSample [[texture(7)]],
-    texture2d<float, access::read> restirPrevNormal [[texture(8)]],
-    texture2d<float, access::read> restirPrevState [[texture(9)]],
-    texture2d<float, access::write> restirOutSample [[texture(10)]],
-    texture2d<float, access::write> restirOutNormal [[texture(11)]],
-    texture2d<float, access::write> restirOutState [[texture(12)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
         materialTextures [[texture(13)]],
     texture2d<float, access::sample> environmentMap
@@ -327,30 +83,6 @@ kernel void pathTraceKernel(
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
 
-  bool restirEnabled = (u.restirSamplingEnabled != 0u);
-  RestirReservoir restir{};
-  uint restirReseedFrames = 0u;
-  if (restirEnabled) {
-    float4 prevState = restirPrevState.read(pixel);
-    float4 prevSample = restirPrevSample.read(pixel);
-    float4 prevNormal = restirPrevNormal.read(pixel);
-    if (isfinite(prevState.z) && prevState.z > 0.0f) {
-      restirReseedFrames = uint(prevState.z);
-    }
-    if (isfinite(prevState.x) && isfinite(prevState.y) &&
-        prevState.x > 0.0f && prevState.y > 0.0f && isfinite(prevSample.w) &&
-        prevSample.w >= 0.0f) {
-      restir.valid = 1u;
-      restir.W = prevState.x;
-      restir.M = prevState.y;
-      restir.sample.position = prevSample.xyz;
-      restir.sample.normal = prevNormal.xyz;
-      restir.sample.area = prevNormal.w;
-      restir.sample.lightIndex = uint(prevSample.w);
-      restir.selectedFromTemporal = 1u;
-    }
-  }
-
   for (uint sampleIdx = 0; sampleIdx < samplesThisFrame; ++sampleIdx) {
     float xOff = (randomFloat(seed) - 0.5f) / screenSize.x;
     seed = random(seed);
@@ -385,68 +117,23 @@ kernel void pathTraceKernel(
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
 
-    float temporalReuseChance =
-        clamp(1.0f - u.cameraMotionMetric, 0.0f, 1.0f);
     PathTraceSample sample = rayColor(r, rayDx, rayDy, tlasNodes, u.tlasNodeCount,
                                       bvhNodes, primitives, materials,
                                       u.primitiveCount, primitiveIndices,
                                       activeMask, instanceRecords, lightIndices,
                                       lightCdf, primitiveRemap, primitiveRayStats,
-                                      restirStats, seed, u.maxRayDepth, u.debugAS,
+                                      seed, u.maxRayDepth, u.debugAS,
                                       u.blasNodeCount, u.lightCount, u.lightTotalWeight,
                                       static_cast<uint>(u.totalPrimitiveCount),
                                       materialTextures, u.textureCount,
                                       environmentMap, environmentSampler,
                                       u.environmentMapEnabled,
-                                      u.environmentMapIntensity,
-                                      positionAccum,
-                                      normalAccum,
-                                      screenSize,
-                                      u.prevViewProjection,
-                                      u.restirTemporalPositionEpsilon,
-                                      u.restirTemporalNormalThreshold,
-                                      u.restirTemporalRoughnessBucketSize,
-                                      restirReseedFrames,
-                                      restirEnabled && sampleIdx == 0
-                                          ? &restir
-                                          : nullptr,
-                                      restirEnabled && sampleIdx == 0,
-                                      temporalReuseChance);
+                                      u.environmentMapIntensity);
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;
     accumulatedPosition += sample.position;
     accumulatedRoughness += sample.roughness;
-  }
-
-  if (restirEnabled) {
-    float4 outSample = float4(0.0f);
-    float4 outNormal = float4(0.0f);
-    float4 outState = float4(0.0f, 0.0f, float(restirReseedFrames), 1.0f);
-    if (restir.valid != 0u && restir.W > 0.0f && restir.M > 0.0f) {
-      outSample = float4(restir.sample.position,
-                         float(restir.sample.lightIndex));
-      outNormal = float4(restir.sample.normal, restir.sample.area);
-      outState = float4(restir.W, restir.M, float(restirReseedFrames), 1.0f);
-    }
-    restirOutSample.write(outSample, pixel);
-    restirOutNormal.write(outNormal, pixel);
-    restirOutState.write(outState, pixel);
-
-    if (restirStats) {
-      atomic_fetch_add_explicit(&restirStats[0], 1u, memory_order_relaxed);
-      if (restir.valid != 0u) {
-        if (restir.selectedFromTemporal != 0u) {
-          atomic_fetch_add_explicit(&restirStats[1], 1u, memory_order_relaxed);
-        } else {
-          atomic_fetch_add_explicit(&restirStats[2], 1u, memory_order_relaxed);
-        }
-      }
-    }
-  } else {
-    restirOutSample.write(float4(0.0f), pixel);
-    restirOutNormal.write(float4(0.0f), pixel);
-    restirOutState.write(float4(0.0f), pixel);
   }
 
   float totalSamples = previousSampleCount + float(samplesThisFrame);

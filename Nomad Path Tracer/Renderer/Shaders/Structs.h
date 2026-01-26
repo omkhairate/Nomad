@@ -78,7 +78,6 @@ struct UniformsData
     uint sampleImportanceTextureIndex;
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
-    uint restirSamplingEnabled;
     uint textureCount;
     uint environmentMapEnabled;
     float environmentMapIntensity;
@@ -86,10 +85,6 @@ struct UniformsData
     float environmentPadding1;
     float cameraMotionMetric;
     simd::float4x4 prevViewProjection;
-    float restirTemporalPositionEpsilon;
-    float restirTemporalNormalThreshold;
-    float restirTemporalRoughnessBucketSize;
-    float restirTemporalPadding0;
 };
 
 struct TileRegion
