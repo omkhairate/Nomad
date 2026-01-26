@@ -7452,7 +7452,6 @@ bool Renderer::updateCameraStates() {
 
   double originalDelta = _deltaTimeSeconds;
 
-  bool pathFrameAdvanced = false;
   if (!path.empty()) {
     Camera::State newState = _primaryCameraState;
     if (_animationFrame <= path.front().frame) {
@@ -7506,7 +7505,6 @@ bool Renderer::updateCameraStates() {
       _observerCameraState = Camera::captureState();
 
     _animationFrame++;
-    pathFrameAdvanced = true;
   } else {
     Camera::State *target =
         _observerActive ? &_observerCameraState : &_primaryCameraState;
@@ -7522,7 +7520,7 @@ bool Renderer::updateCameraStates() {
   Camera::deltaTime = _observerActive ? 0.0f
                                       : static_cast<float>(_deltaTimeSeconds);
 
-  bool viewChanged = toggled || pathFrameAdvanced ||
+  bool viewChanged = toggled ||
                      cameraStatesDiffer(activeView, previousViewState) ||
                      hadObserver != _observerActive;
   if (viewChanged) {
@@ -7537,8 +7535,20 @@ bool Renderer::updateCameraStates() {
 void Renderer::updateUniforms(bool cameraChanged) {
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
-  if (cameraChanged)
-    _needsAccumulationReset = true;
+  const Camera::State &activeView =
+      _observerActive ? _observerCameraState : _primaryCameraState;
+  float motionMetric = 0.0f;
+  if (_lastUniformCameraStateValid) {
+    motionMetric = computeCameraMotionMetric(activeView, _lastUniformCameraState);
+  }
+
+  constexpr float kAccumulationResetMotionThreshold = 0.35f;
+  if (cameraChanged) {
+    if (!_lastUniformCameraStateValid ||
+        motionMetric >= kAccumulationResetMotionThreshold) {
+      _needsAccumulationReset = true;
+    }
+  }
 
   if (_needsAccumulationReset) {
     if (!_accumulationTargetsNeedClear) {
@@ -7563,8 +7573,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
-  const Camera::State &activeView =
-      _observerActive ? _observerCameraState : _primaryCameraState;
   u.aperture = activeView.aperture;
   u.focusDistance = activeView.focusDistance;
   u.environmentMapEnabled =
@@ -7592,12 +7600,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.restirTemporalNormalThreshold = kRestirTemporalNormalThreshold;
   u.restirTemporalRoughnessBucketSize = kRestirTemporalRoughnessBucketSize;
   u.restirTemporalPadding0 = 0.0f;
-  if (_lastUniformCameraStateValid) {
-    u.cameraMotionMetric =
-        computeCameraMotionMetric(activeView, _lastUniformCameraState);
-  } else {
-    u.cameraMotionMetric = 0.0f;
-  }
+  u.cameraMotionMetric = _lastUniformCameraStateValid ? motionMetric : 0.0f;
   _frameCameraMotionMetric = u.cameraMotionMetric;
   _lastUniformCameraState = activeView;
   _lastUniformCameraStateValid = true;
