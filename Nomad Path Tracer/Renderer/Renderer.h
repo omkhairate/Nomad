@@ -319,6 +319,7 @@ private:
   MTL::Buffer *_pTriangleIndexBuffer = nullptr;
   MTL::Buffer *_pUniformsBuffer = nullptr;
   MTL::Buffer *_pBVHBuffer = nullptr;
+  MTL::Buffer *_pChunkTableBuffer = nullptr;
   MTL::Buffer *_pPrimitiveIndexBuffer = nullptr;
   MTL::Buffer *_pTLASBuffer = nullptr;
   MTL::Buffer *_pActiveBuffer = nullptr;
@@ -671,6 +672,7 @@ private:
   size_t _triangleVertexBufferCapacity = 0;
   size_t _triangleIndexBufferCapacity = 0;
   size_t _bvhBufferCapacity = 0;
+  size_t _chunkTableBufferCapacity = 0;
   size_t _tlasBufferCapacity = 0;
   size_t _primitiveIndexBufferCapacity = 0;
   size_t _activeBufferCapacity = 0;
