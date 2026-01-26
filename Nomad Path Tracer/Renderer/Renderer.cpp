@@ -7784,9 +7784,6 @@ void Renderer::draw(MTK::View *pView) {
     _frameTotalMemoryEvictionStall = true;
   beginFrameMetrics();
   std::swap(_accumulationSlots[0], _accumulationSlots[1]);
-  std::swap(_restirSampleSlots[0], _restirSampleSlots[1]);
-  std::swap(_restirNormalSlots[0], _restirNormalSlots[1]);
-  std::swap(_restirStateSlots[0], _restirStateSlots[1]);
 
   _historyStreamingActive = false;
   _historyStreamingRestoreCount = 0;
@@ -8306,10 +8303,12 @@ void Renderer::draw(MTK::View *pView) {
       }
     }
   }
-  if (restirSpatialDispatched) {
-    std::swap(_restirSampleSlots[0], _restirSampleSlots[1]);
-    std::swap(_restirNormalSlots[0], _restirNormalSlots[1]);
-    std::swap(_restirStateSlots[0], _restirStateSlots[1]);
+  if (_residencyConfig.restirSamplingEnabled) {
+    if (!restirSpatialDispatched) {
+      std::swap(_restirSampleSlots[0], _restirSampleSlots[1]);
+      std::swap(_restirNormalSlots[0], _restirNormalSlots[1]);
+      std::swap(_restirStateSlots[0], _restirStateSlots[1]);
+    }
   }
 
   MTL::CommandBuffer *presentCmd = _pCommandQueue->commandBuffer();
