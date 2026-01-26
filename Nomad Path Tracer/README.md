@@ -12,6 +12,13 @@ Long-running path tracing commands can trigger GPU timeout errors when the pixel
 
 The renderer clamps the budget so each command can still process at least one full tile, based on the current tile dimensions and sample count.
 
+## ReSTIR toggle
+
+Scenes can disable ReSTIR sampling entirely by setting the `restirEnabled` flag on the `<Scene>` root:
+
+- **Scene XML:** add `restirEnabled="false"` to disable ReSTIR (temporal + spatial passes).
+- **Default:** when unset, ReSTIR remains enabled (equivalent to `restirEnabled="true"`).
+
 ## Geometry residency memory cap
 
 The `geometryResidencyMemoryCapMB` scene parameter remains a hard ceiling. Geometry residency allocations (including streaming uploads, prewarm passes, and rebuilds) are rejected if the next allocation would exceed the cap; the renderer queues the request and triggers eviction until enough space is available to retry.
