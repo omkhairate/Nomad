@@ -14,6 +14,8 @@ constant uint kMaxMaterialTextures = 64;
 
 constant sampler kMaterialTextureSampler(address::repeat, filter::linear);
 
+constexpr float RAY_EPS = 1e-4f;
+
 struct PathTraceSample {
   float3 radiance;
   float3 albedo;
@@ -22,8 +24,8 @@ struct PathTraceSample {
   float roughness;
 };
 
-constant float kVisibilityRayEpsilon = 1e-4f;
-constant float kVisibilityRayOffset = 5e-4f;
+constant float kVisibilityRayEpsilon = RAY_EPS;
+constant float kVisibilityRayOffset = 5.0f * RAY_EPS;
 
 struct Ray {
   float3 origin;
@@ -253,6 +255,30 @@ inline bool isLightVisible(
   return false;
 }
 
+inline bool isVisibleToLight(
+    float3 hitPoint, float3 hitNormal, float3 lightPos,
+    device const float4 *bvhNodes, device const float4 *primitives,
+    device const int *primitiveIndices, device const uchar *activeMask,
+    device const uint *primitiveRemap, uint residentPrimitiveCount,
+    uint totalPrimitiveCount, device atomic_uint *primitiveRayStats,
+    int startNode) {
+  float3 dir = lightPos - hitPoint;
+  float dist = length(dir);
+  if (dist <= RAY_EPS || !isfinite(dist))
+    return false;
+
+  Ray shadowRay;
+  shadowRay.origin = hitPoint + hitNormal * RAY_EPS;
+  shadowRay.direction = dir / dist;
+  shadowRay.minDistance = RAY_EPS;
+  shadowRay.maxDistance = dist - RAY_EPS;
+  intersection shadowHit =
+      firstHitBVH(shadowRay, bvhNodes, primitives, primitiveIndices, activeMask,
+                  primitiveRemap, residentPrimitiveCount, totalPrimitiveCount,
+                  primitiveRayStats, startNode);
+  return shadowHit.primitiveId == -1;
+}
+
 inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,
                              thread uint32_t &seed, thread float3 &position,
                              thread float3 &normal, thread float &area) {
@@ -320,7 +346,13 @@ inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,
 inline bool intersectAABB(thread const Ray &r, float3 bmin, float3 bmax,
                           float tMin, float tMax) {
   for (int i = 0; i < 3; ++i) {
-    float invD = 1.0 / r.direction[i];
+    float dir = r.direction[i];
+    if (abs(dir) < RAY_EPS) {
+      if (r.origin[i] < bmin[i] || r.origin[i] > bmax[i])
+        return false;
+      continue;
+    }
+    float invD = 1.0 / dir;
     float t0 = (bmin[i] - r.origin[i]) * invD;
     float t1 = (bmax[i] - r.origin[i]) * invD;
     if (invD < 0.0)
@@ -366,7 +398,7 @@ inline intersection firstHitBVH(thread const Ray &r,
     int leftFirst = as_type<int>(bvhNodes[2 * nodeIdx + 0].w);
     int second = as_type<int>(bvhNodes[2 * nodeIdx + 1].w);
 
-    if (!intersectAABB(r, bmin, bmax, 0.0001, in.t))
+    if (!intersectAABB(r, bmin, bmax, RAY_EPS, in.t))
       continue;
 
     if (second > 0) {
@@ -428,7 +460,7 @@ inline intersection firstHitBVH(thread const Ray &r,
           if (discriminant > 0.0) {
             float sqrtD = sqrt(discriminant);
             float temp = (-b - sqrtD) / a;
-            if (temp < in.t && temp > 0.0001) {
+            if (temp < in.t && temp > RAY_EPS) {
               tHit = temp;
               hit = r.origin + tHit * r.direction;
               n = normalize(hit - center);
@@ -462,49 +494,49 @@ inline intersection firstHitBVH(thread const Ray &r,
               float v = f * dot(r.direction, q);
               if (v >= 0.0 && u + v <= 1.0) {
                 float tt = f * dot(edge2, q);
-                if (tt > 0.0001 && tt < in.t) {
+                if (tt > RAY_EPS && tt < in.t) {
                   tHit = tt;
                   hit = r.origin + tHit * r.direction;
                   float storedLenSq = dot(storedNormal, storedNormal);
-                  if (storedLenSq > 1e-6f && all(isfinite(storedNormal)))
+                  if (storedLenSq > RAY_EPS && all(isfinite(storedNormal)))
                     n = normalize(storedNormal);
                   else
                     n = fallbackNormal;
-                  if (!all(isfinite(n)) || dot(n, n) <= 1e-6f)
+                  if (!all(isfinite(n)) || dot(n, n) <= RAY_EPS)
                     n = fallbackNormal;
                   float tanLenSq = dot(storedTangent, storedTangent);
                   bool tangentValid =
-                      tanLenSq > 1e-6f && all(isfinite(storedTangent));
+                      tanLenSq > RAY_EPS && all(isfinite(storedTangent));
                   if (tangentValid)
                     candidateTangent = normalize(storedTangent);
                   float bitLenSq = dot(storedBitangent, storedBitangent);
                   bool bitangentValid =
-                      bitLenSq > 1e-6f && all(isfinite(storedBitangent));
+                      bitLenSq > RAY_EPS && all(isfinite(storedBitangent));
                   if (bitangentValid)
                     candidateBitangent = normalize(storedBitangent);
-                  if (dot(candidateTangent, candidateTangent) <= 1e-6f ||
+                  if (dot(candidateTangent, candidateTangent) <= RAY_EPS ||
                       !all(isfinite(candidateTangent))) {
                     float3 refAxis = (abs(fallbackNormal.y) < 0.999f)
                                          ? float3(0.0f, 1.0f, 0.0f)
                                          : float3(1.0f, 0.0f, 0.0f);
                     candidateTangent = normalize(cross(refAxis, fallbackNormal));
                   }
-                  if (dot(candidateBitangent, candidateBitangent) <= 1e-6f ||
+                  if (dot(candidateBitangent, candidateBitangent) <= RAY_EPS ||
                       !all(isfinite(candidateBitangent)))
                     candidateBitangent = normalize(cross(fallbackNormal,
                                                           candidateTangent));
-                  if (dot(candidateTangent, candidateTangent) > 1e-6f &&
+                  if (dot(candidateTangent, candidateTangent) > RAY_EPS &&
                       all(isfinite(candidateTangent))) {
                     candidateTangent = normalize(candidateTangent);
                     float3 orthBitangent = cross(n, candidateTangent);
-                    if (dot(orthBitangent, orthBitangent) > 1e-6f &&
+                    if (dot(orthBitangent, orthBitangent) > RAY_EPS &&
                         all(isfinite(orthBitangent)))
                       candidateBitangent = normalize(orthBitangent);
                   }
                   candidateSupportsNormalMap =
                       (storedSupportsNormalMap && tangentValid &&
                        bitangentValid &&
-                       (dot(n, n) > 1e-6f))
+                       (dot(n, n) > RAY_EPS))
                           ? 1
                           : 0;
                   hitThis = true;
@@ -520,19 +552,19 @@ inline intersection firstHitBVH(thread const Ray &r,
           float3 e2 = p2.xyz;
           float3 fallbackNormal = cross(e1, e2);
           float fallbackLenSq = dot(fallbackNormal, fallbackNormal);
-          if (fallbackLenSq > 1e-6f && all(isfinite(fallbackNormal)))
+          if (fallbackLenSq > RAY_EPS && all(isfinite(fallbackNormal)))
             fallbackNormal = normalize(fallbackNormal);
           else
             fallbackNormal = float3(0.0f, 1.0f, 0.0f);
           float3 normalCandidate = fallbackNormal;
           float normalLenSq = dot(storedNormal, storedNormal);
-          bool normalValid = normalLenSq > 1e-6f && all(isfinite(storedNormal));
+          bool normalValid = normalLenSq > RAY_EPS && all(isfinite(storedNormal));
           if (normalValid)
             normalCandidate = normalize(storedNormal);
           float denom = dot(normalCandidate, r.direction);
           if (fabs(denom) > 1e-5) {
             float tt = dot(center - r.origin, normalCandidate) / denom;
-            if (tt > 0.0001 && tt < in.t) {
+            if (tt > RAY_EPS && tt < in.t) {
               float3 hitPoint = r.origin + tt * r.direction;
               float3 rel = hitPoint - center;
               float u = dot(rel, e1) / dot(e1, e1);
@@ -542,30 +574,30 @@ inline intersection firstHitBVH(thread const Ray &r,
                 hit = hitPoint;
                 n = normalCandidate;
                 bool tangentValid =
-                    dot(storedTangent, storedTangent) > 1e-6f &&
+                    dot(storedTangent, storedTangent) > RAY_EPS &&
                     all(isfinite(storedTangent));
                 bool bitangentValid =
-                    dot(storedBitangent, storedBitangent) > 1e-6f &&
+                    dot(storedBitangent, storedBitangent) > RAY_EPS &&
                     all(isfinite(storedBitangent));
                 if (tangentValid)
                   candidateTangent = normalize(storedTangent);
                 if (bitangentValid)
                   candidateBitangent = normalize(storedBitangent);
-                if (dot(candidateTangent, candidateTangent) <= 1e-6f ||
+                if (dot(candidateTangent, candidateTangent) <= RAY_EPS ||
                     !all(isfinite(candidateTangent))) {
                   float3 refAxis = (abs(fallbackNormal.y) < 0.999f)
                                        ? float3(0.0f, 1.0f, 0.0f)
                                        : float3(1.0f, 0.0f, 0.0f);
                   candidateTangent = normalize(cross(refAxis, fallbackNormal));
                 }
-                if (dot(candidateBitangent, candidateBitangent) <= 1e-6f ||
+                if (dot(candidateBitangent, candidateBitangent) <= RAY_EPS ||
                     !all(isfinite(candidateBitangent)))
                   candidateBitangent = normalize(
                       cross(fallbackNormal, candidateTangent));
-                if (dot(candidateTangent, candidateTangent) > 1e-6f &&
+                if (dot(candidateTangent, candidateTangent) > RAY_EPS &&
                     all(isfinite(candidateTangent))) {
                   float3 orthBitangent = cross(n, candidateTangent);
-                  if (dot(orthBitangent, orthBitangent) > 1e-6f &&
+                  if (dot(orthBitangent, orthBitangent) > RAY_EPS &&
                       all(isfinite(orthBitangent)))
                     candidateBitangent = normalize(orthBitangent);
                 }
@@ -614,10 +646,10 @@ inline intersection firstHitBVH(thread const Ray &r,
     in.frontFace = dot(in.normal, r.direction) < 0.0;
     if (!in.frontFace) {
       in.normal = -in.normal;
-      if (dot(in.tangent, in.tangent) > 1e-6f && all(isfinite(in.tangent)))
+      if (dot(in.tangent, in.tangent) > RAY_EPS && all(isfinite(in.tangent)))
         in.tangent = -in.tangent;
       float3 adjustedBitangent = cross(in.normal, in.tangent);
-      if (dot(adjustedBitangent, adjustedBitangent) > 1e-6f &&
+      if (dot(adjustedBitangent, adjustedBitangent) > RAY_EPS &&
           all(isfinite(adjustedBitangent)))
         in.bitangent = normalize(adjustedBitangent);
     }
@@ -661,7 +693,7 @@ inline intersection firstHitTLAS(
     float3 bmin = tlasNodes[2 * nodeIdx + 0].xyz;
     float3 bmax = tlasNodes[2 * nodeIdx + 1].xyz;
 
-    if (!intersectAABB(r, bmin, bmax, 0.0001, bestHit.t))
+    if (!intersectAABB(r, bmin, bmax, RAY_EPS, bestHit.t))
       continue;
 
     int leftChild = as_type<int>(tlasNodes[2 * nodeIdx + 0].w);
@@ -698,14 +730,14 @@ inline intersection firstHitTLAS(
     if (leftChild >= 0) {
       float3 leftMin = tlasNodes[2 * leftChild + 0].xyz;
       float3 leftMax = tlasNodes[2 * leftChild + 1].xyz;
-      leftHit = intersectAABB(r, leftMin, leftMax, 0.0001, bestHit.t);
+      leftHit = intersectAABB(r, leftMin, leftMax, RAY_EPS, bestHit.t);
       leftKey = dot((leftMin + leftMax) * 0.5 - r.origin, r.direction);
     }
 
     if (rightChild >= 0) {
       float3 rightMin = tlasNodes[2 * rightChild + 0].xyz;
       float3 rightMax = tlasNodes[2 * rightChild + 1].xyz;
-      rightHit = intersectAABB(r, rightMin, rightMax, 0.0001, bestHit.t);
+      rightHit = intersectAABB(r, rightMin, rightMax, RAY_EPS, bestHit.t);
       rightKey = dot((rightMin + rightMax) * 0.5 - r.origin, r.direction);
     }
 
@@ -770,7 +802,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
     for (uint i = 0; i < tlasNodeCount; ++i) {
       float3 bmin = tlasNodes[2 * i + 0].xyz;
       float3 bmax = tlasNodes[2 * i + 1].xyz;
-      if (intersectAABB(r, bmin, bmax, 0.0001, INFINITY)) {
+      if (intersectAABB(r, bmin, bmax, RAY_EPS, INFINITY)) {
         float t = (tlasNodeCount > 1) ? float(i) / float(tlasNodeCount - 1) : 0.0;
         sampleResult.radiance = float3(t, 1.0 - t, 0.0);
         return sampleResult;
@@ -850,6 +882,29 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         }
       }
     }
+    if (debugAS == 3) {
+      float3 debugLightPos = float3(0.0f, 5.0f, 0.0f);
+      float3 hitNormal = bestHit.normal;
+      if (!all(isfinite(hitNormal)) || dot(hitNormal, hitNormal) <= RAY_EPS) {
+        if (dot(r.direction, r.direction) > RAY_EPS &&
+            all(isfinite(r.direction))) {
+          hitNormal = -normalize(r.direction);
+        } else {
+          hitNormal = float3(0.0f, 1.0f, 0.0f);
+        }
+      }
+      int rootIndex =
+          (bounceCache.valid && bounceCache.blasRootIndex >= 0)
+              ? bounceCache.blasRootIndex
+              : 0;
+      bool visible = isVisibleToLight(
+          bestHit.point, hitNormal, debugLightPos, bvhNodes, primitives,
+          primitiveIndices, activeMask, primitiveRemap, primitiveCount,
+          totalPrimitiveCount, primitiveRayStats, rootIndex);
+      sampleResult.radiance =
+          visible ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+      return sampleResult;
+    }
     int matBase = bestHit.primitiveId * int(kMaterialFloat4Count);
     int totalEntries = int(primitiveCount) * int(kMaterialFloat4Count);
     if (matBase + int(kMaterialFloat4Count) > totalEntries)
@@ -927,8 +982,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
       float3 bitangent = bestHit.bitangent;
 
       bool validFrame =
-          dot(tangent, tangent) > 1e-6f && dot(bitangent, bitangent) > 1e-6f &&
-          dot(geomNormal, geomNormal) > 1e-6f && all(isfinite(tangent)) &&
+          dot(tangent, tangent) > RAY_EPS && dot(bitangent, bitangent) > RAY_EPS &&
+          dot(geomNormal, geomNormal) > RAY_EPS && all(isfinite(tangent)) &&
           all(isfinite(bitangent)) && all(isfinite(geomNormal));
 
       if (validFrame && all(isfinite(localNormal))) {
@@ -937,7 +992,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         float3 n = normalize(geomNormal);
         float3 worldNormal = localNormal.x * t + localNormal.y * b +
                              localNormal.z * n;
-        if (dot(worldNormal, worldNormal) > 1e-6f &&
+        if (dot(worldNormal, worldNormal) > RAY_EPS &&
             all(isfinite(worldNormal))) {
           shadingNormal = normalize(worldNormal);
           if (dot(shadingNormal, n) < 0.0f)
@@ -976,7 +1031,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                lightNormal, area) && area > 0.0f) {
             float3 toLight = lightPoint - bestHit.point;
             float dist2 = dot(toLight, toLight);
-            if (dist2 > 1e-6f) {
+            if (dist2 > RAY_EPS) {
               float dist = sqrt(dist2);
               float3 wi = toLight / dist;
               float cosTheta = max(dot(offsetNormal, wi), 0.0f);
@@ -998,8 +1053,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                     Ray shadowRay;
                     shadowRay.origin = bestHit.point + 0.0005f * offsetNormal;
                     shadowRay.direction = wi;
-                    shadowRay.minDistance = 0.0001f;
-                    shadowRay.maxDistance = dist - 0.0001f;
+                    shadowRay.minDistance = RAY_EPS;
+                    shadowRay.maxDistance = dist - RAY_EPS;
                     if (shadowRay.maxDistance < shadowRay.minDistance)
                       shadowRay.maxDistance = shadowRay.minDistance;
                     intersection shadowHit;
@@ -1062,7 +1117,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
       }
     }
 
-    r.minDistance = 0.0001f;
+    r.minDistance = RAY_EPS;
     r.maxDistance = INFINITY;
     intersection shadingHit = bestHit;
     shadingHit.normal = shadingNormal;
@@ -1070,7 +1125,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
     seed = random(seed);
     float3 biasNormal =
         (dot(r.direction, offsetNormal) < 0.0f) ? -offsetNormal : offsetNormal;
-    r.origin = bestHit.point + 0.0001f * biasNormal;
+    r.origin = bestHit.point + RAY_EPS * biasNormal;
     absorption.xyz *= scatterWeight;
     absorption.w = 1.0f;
 
