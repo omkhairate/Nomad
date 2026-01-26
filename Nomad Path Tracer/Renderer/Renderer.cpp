@@ -737,6 +737,7 @@ struct UniformsData {
   float lightTotalWeight;
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
+  uint32_t restirEnabled = 1;
   uint32_t restirSpatialRadius = 2;
   uint32_t restirSpatialNeighborCount = 8;
   uint32_t restirCandidateCount = 1;
