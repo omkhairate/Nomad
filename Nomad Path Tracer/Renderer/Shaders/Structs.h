@@ -75,15 +75,6 @@ struct UniformsData
     float lightTotalWeight;
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
-    uint restirEnabled;
-    uint restirSpatialRadius;
-    uint restirSpatialNeighborCount;
-    uint restirCandidateCount;
-    uint restirMaxTemporalM;
-    uint restirEnableTemporal;
-    uint restirEnableSpatial;
-    float4 restirNormalDepthThresholds;
-    uint restirDebugMode;
     uint textureCount;
     uint environmentMapEnabled;
     float environmentMapIntensity;
@@ -107,23 +98,5 @@ struct PackedTexture
     uint height;
     uint flags;
 };
-
-struct RestirReservoir
-{
-    float3 sampleRadiance = float3(0.0f);
-    float3 wi = float3(0.0f);
-    float pdf = 0.0f;
-    float geometryFactor = 0.0f;
-    float wSum = 0.0f;
-    uint m = 0u;
-    uint packedLightId = 0u;
-    float3 lightPosition = float3(0.0f);
-    float3 lightNormal = float3(0.0f);
-    float lightArea = 0.0f;
-    float lightPdf = 0.0f;
-};
-
-
-
 
 #endif

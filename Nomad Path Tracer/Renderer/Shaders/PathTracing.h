@@ -54,18 +54,6 @@ struct LightSampleCandidate {
   float lightPdf = 0.0f;
 };
 
-struct RestirSampleData {
-  float3 radiance = float3(0.0f);
-  float3 wi = float3(0.0f);
-  float pdf = 0.0f;
-  float geometryFactor = 0.0f;
-  uint packedLightId = 0u;
-  float3 lightPosition = float3(0.0f);
-  float3 lightNormal = float3(0.0f);
-  float lightArea = 0.0f;
-  float lightPdf = 0.0f;
-};
-
 #include "Intersect.h"
 #include "Random.h"
 #include "Scatter.h"
@@ -203,73 +191,6 @@ inline float lightPdfFromCdf(uint offset, device const float *lightCdf,
   return weight / lightTotalWeight;
 }
 
-inline RestirReservoir initReservoir() {
-  RestirReservoir reservoir;
-  reservoir.sampleRadiance = float3(0.0f);
-  reservoir.wi = float3(0.0f);
-  reservoir.pdf = 0.0f;
-  reservoir.geometryFactor = 0.0f;
-  reservoir.wSum = 0.0f;
-  reservoir.m = 0u;
-  reservoir.packedLightId = 0xffffffffu;
-  reservoir.lightPosition = float3(0.0f);
-  reservoir.lightNormal = float3(0.0f);
-  reservoir.lightArea = 0.0f;
-  reservoir.lightPdf = 0.0f;
-  return reservoir;
-}
-
-inline float restirTargetContribution(float3 radiance, float geometryFactor) {
-  float3 contribution = radiance * max(geometryFactor, 0.0f);
-  return max(luminance(contribution), 0.0f);
-}
-
-inline float restirTargetContribution(thread const LightSampleCandidate &candidate) {
-  return restirTargetContribution(candidate.radiance, candidate.geometryFactor);
-}
-
-inline float restirTargetContribution(thread const RestirReservoir &reservoir) {
-  return restirTargetContribution(reservoir.sampleRadiance, reservoir.geometryFactor);
-}
-
-inline float restirTargetWeight(float3 radiance, float geometryFactor, float pdf) {
-  float target = restirTargetContribution(radiance, geometryFactor);
-  return target / max(pdf, RAY_EPS);
-}
-
-inline void mergeReservoir(thread RestirReservoir &current,
-                           thread const RestirSampleData &candidate,
-                           float weight, uint candidateM, float xi) {
-  // ReSTIR DI: M is the number of candidates that built the incoming reservoir.
-  // We scale the candidate's weight by M and add it to wSum, while M accumulates.
-  if (candidateM == 0u || weight <= 0.0f || !isfinite(weight)) {
-    return;
-  }
-  float scaledWeight = weight * float(candidateM);
-  if (scaledWeight <= 0.0f || !isfinite(scaledWeight)) {
-    return;
-  }
-  float currentWeight = max(current.wSum, 0.0f);
-  float totalWeight = currentWeight + scaledWeight;
-  if (totalWeight <= 0.0f || !isfinite(totalWeight)) {
-    return;
-  }
-  float candidateProb = scaledWeight / totalWeight;
-  if (xi < candidateProb) {
-    current.sampleRadiance = candidate.radiance;
-    current.wi = candidate.wi;
-    current.pdf = candidate.pdf;
-    current.geometryFactor = candidate.geometryFactor;
-    current.packedLightId = candidate.packedLightId;
-    current.lightPosition = candidate.lightPosition;
-    current.lightNormal = candidate.lightNormal;
-    current.lightArea = candidate.lightArea;
-    current.lightPdf = candidate.lightPdf;
-  }
-  current.wSum = totalWeight;
-  current.m += candidateM;
-}
-
 inline float3 evaluateDirectLightingBsdf(thread const MaterialPayload &material,
                                          float3 normal, float3 viewDir,
                                          float3 lightDir) {
@@ -314,61 +235,6 @@ inline float3 evaluateDirectLightingBsdf(thread const MaterialPayload &material,
       (D * G) * F / max(4.0f * nDotL * nDotV, RAY_EPS);
   float3 diffuse = diffuseColor / M_PI;
   return diffuse + specular;
-}
-
-inline MaterialPayload restirMaterialFromGBuffer(float3 albedo,
-                                                 float roughness) {
-  MaterialPayload material;
-  material.diffuseColor = max(albedo, float3(0.0f));
-  material.opacity = 1.0f;
-  material.specularColor = float3(0.04f);
-  material.shininess = 1.0f;
-  material.emissionColor = float3(0.0f);
-  material.emissionPower = 0.0f;
-  material.transmissionColor = float3(0.0f);
-  material.indexOfRefraction = 1.0f;
-  material.roughness = clamp(roughness, 0.0f, 1.0f);
-  material.pad0 = 0.0f;
-  material.diffuseTextureIndex = -1;
-  material.specularTextureIndex = -1;
-  material.normalTextureIndex = -1;
-  material.pad1 = 0;
-  return material;
-}
-
-inline void updateReservoir(thread RestirReservoir &reservoir,
-                            thread const LightSampleCandidate &candidate,
-                            float weight, float xi) {
-  reservoir.m += 1u;
-  if (weight <= 0.0f || !isfinite(weight)) {
-    return;
-  }
-  reservoir.wSum += weight;
-  float threshold = weight / reservoir.wSum;
-  if (xi < threshold) {
-    reservoir.sampleRadiance = candidate.radiance;
-    reservoir.wi = candidate.wi;
-    reservoir.pdf = candidate.pdf;
-    reservoir.geometryFactor = candidate.geometryFactor;
-    reservoir.packedLightId = candidate.lightId;
-    reservoir.lightPosition = candidate.lightPosition;
-    reservoir.lightNormal = candidate.lightNormal;
-    reservoir.lightArea = candidate.lightArea;
-    reservoir.lightPdf = candidate.lightPdf;
-  }
-}
-
-inline float3 finalizeReservoir(thread const RestirReservoir &reservoir) {
-  if (reservoir.m == 0u || reservoir.pdf <= 0.0f) {
-    return float3(0.0f);
-  }
-  float target = restirTargetContribution(reservoir);
-  float weightSelected = target / max(reservoir.pdf, RAY_EPS);
-  if (weightSelected <= 0.0f) {
-    return float3(0.0f);
-  }
-  float normalization = reservoir.wSum / (float(reservoir.m) * weightSelected);
-  return reservoir.sampleRadiance * normalization;
 }
 
 inline bool sampleLightPoint(int primitiveType, float4 p0, float4 p1, float4 p2,

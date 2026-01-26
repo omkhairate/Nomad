@@ -60,21 +60,6 @@ static std::vector<float> parseFloatList(const char *attr) {
     return values;
 }
 
-static simd::float4 parseRestirThresholds(const char *attr,
-                                          const simd::float4 &defaults) {
-    if (!attr) {
-        return defaults;
-    }
-    std::vector<float> values = parseFloatList(attr);
-    if (values.size() >= 4) {
-        return simd::make_float4(values[0], values[1], values[2], values[3]);
-    }
-    if (values.size() == 2) {
-        return simd::make_float4(values[0], defaults.y, values[1], defaults.w);
-    }
-    return defaults;
-}
-
 // Rotates a vector by Euler angles applied in X->Y->Z order.
 static simd::float3 rotateVectorEulerXYZ(const simd::float3& v,
                                          const simd::float3& radians) {
@@ -881,29 +866,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "buildCachedBlas", params.buildCachedBlas);
 
     scene->setResidencyParameters(params);
-
-    ReSTIRSettings restirSettings = scene->getReSTIRSettings();
-    restirSettings.enabled =
-        root->BoolAttribute("restirEnabled", restirSettings.enabled);
-    restirSettings.enableTemporal =
-        root->BoolAttribute("restirEnableTemporal", restirSettings.enableTemporal);
-    restirSettings.enableSpatial =
-        root->BoolAttribute("restirEnableSpatial", restirSettings.enableSpatial);
-    restirSettings.candidateCount = root->UnsignedAttribute(
-        "restirCandidateCount", restirSettings.candidateCount);
-    restirSettings.spatialRadius = root->UnsignedAttribute(
-        "restirSpatialRadius", restirSettings.spatialRadius);
-    restirSettings.maxTemporalM = root->UnsignedAttribute(
-        "restirMaxTemporalM", restirSettings.maxTemporalM);
-    if (const char *thresholdsAttr =
-            root->Attribute("restirNormalDepthThresholds")) {
-        restirSettings.normalDepthThresholds =
-            parseRestirThresholds(thresholdsAttr,
-                                  restirSettings.normalDepthThresholds);
-    }
-    restirSettings.debugMode =
-        root->UnsignedAttribute("restirDebugMode", restirSettings.debugMode);
-    scene->setReSTIRSettings(restirSettings);
 
     bool startCompacted = root->BoolAttribute("startCompacted", scene->getStartCompacted());
     scene->setStartCompacted(startCompacted);
