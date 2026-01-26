@@ -92,6 +92,7 @@ void Scene::clear() {
   totalGpuMemoryCapMB = 4096.0;
   maxTileSampleWorkPerCommand = kDefaultMaxTileSampleWorkPerCommand;
   maxTileSampleWorkPerCommandSet = false;
+  restirEnabled = false;
   observerCameraValid = false;
   observerCamera = ObserverCamera{};
   triangleVerticesCache.clear();
@@ -297,6 +298,10 @@ double Scene::getTotalGpuMemoryCapMB() const { return totalGpuMemoryCapMB; }
 void Scene::setTotalGpuMemoryCapMB(double capMB) {
   totalGpuMemoryCapMB = capMB;
 }
+
+bool Scene::getRestirEnabled() const { return restirEnabled; }
+
+void Scene::setRestirEnabled(bool enabled) { restirEnabled = enabled; }
 
 void Scene::setObserverCamera(const ObserverCamera &camera) {
   observerCamera = camera;

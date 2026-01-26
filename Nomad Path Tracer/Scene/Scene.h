@@ -219,6 +219,9 @@ public:
   double getTotalGpuMemoryCapMB() const;
   void setTotalGpuMemoryCapMB(double capMB);
 
+  bool getRestirEnabled() const;
+  void setRestirEnabled(bool enabled);
+
   void buildBVH();
   size_t getBVHNodeCount() const;
   const std::vector<BVHNode> &getBVHNodes() const;
@@ -284,6 +287,7 @@ private:
   double totalGpuMemoryCapMB;
   size_t maxTileSampleWorkPerCommand;
   bool maxTileSampleWorkPerCommandSet;
+  bool restirEnabled = false;
   bool observerCameraValid;
   ObserverCamera observerCamera;
   mutable std::vector<simd::float3> triangleVerticesCache;

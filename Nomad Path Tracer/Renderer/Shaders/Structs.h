@@ -80,6 +80,10 @@ struct UniformsData
     float environmentMapIntensity;
     float environmentPadding0;
     float environmentPadding1;
+    uint restirEnabled;
+    uint restirCandidateCount;
+    uint restirTemporalReuse;
+    uint restirPadding0;
     float cameraMotionMetric;
     simd::float4x4 currentViewProjection;
     simd::float4x4 prevViewProjection;

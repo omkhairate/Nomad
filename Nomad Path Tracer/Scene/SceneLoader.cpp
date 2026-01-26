@@ -882,6 +882,9 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "totalGpuMemoryCapMB", scene->getTotalGpuMemoryCapMB());
     scene->setTotalGpuMemoryCapMB(totalGpuCap);
 
+    bool restirEnabled = root->BoolAttribute("restirEnabled", scene->getRestirEnabled());
+    scene->setRestirEnabled(restirEnabled);
+
     const char *environmentAttr = root->Attribute("environmentTexture");
     if (environmentAttr && environmentAttr[0]) {
         std::filesystem::path envPath(environmentAttr);
