@@ -23,6 +23,8 @@ struct PathTraceSample {
 };
 
 constant uint kRestirCandidateCount = 4;
+constant float kVisibilityRayEpsilon = 1e-4f;
+constant float kVisibilityRayOffset = 5e-4f;
 
 struct RestirSampleData {
   float3 position;
@@ -245,14 +247,14 @@ inline bool isLightVisible(
     device const InstanceRecord *instanceRecords,
     device const uint *primitiveRemap, uint primitiveCount,
     uint totalPrimitiveCount, device atomic_uint *primitiveRayStats) {
-  if (dist <= 0.0001f || !isfinite(dist))
+  if (dist <= kVisibilityRayEpsilon || !isfinite(dist))
     return false;
 
   Ray shadowRay;
-  shadowRay.origin = origin + 0.0005f * offsetNormal;
+  shadowRay.origin = origin + kVisibilityRayOffset * offsetNormal;
   shadowRay.direction = wi;
-  shadowRay.minDistance = 0.0001f;
-  shadowRay.maxDistance = dist - 0.0001f;
+  shadowRay.minDistance = kVisibilityRayEpsilon;
+  shadowRay.maxDistance = dist - kVisibilityRayEpsilon;
   if (shadowRay.maxDistance < shadowRay.minDistance)
     shadowRay.maxDistance = shadowRay.minDistance;
 
@@ -286,7 +288,7 @@ inline bool isLightVisible(
   if (shadowHit.primitiveId == -1)
     return true;
   if (shadowHit.primitiveId == int(lightPrimIndex) &&
-      shadowHit.t >= dist - 0.001f)
+      shadowHit.t >= dist - kVisibilityRayEpsilon)
     return true;
   return false;
 }
@@ -861,6 +863,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 device const float *lightCdf,
                                 device const uint *primitiveRemap,
                                 device atomic_uint *primitiveRayStats,
+                                device atomic_uint *restirStats,
                                 thread uint32_t &seed, uint maxRayDepth,
                                 uint debugAS, uint blasNodeCount, uint lightCount,
                                 float lightTotalWeight, uint totalPrimitiveCount,
@@ -1150,19 +1153,38 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
           if (selectedOffset < lightCount) {
             uint lightPrimIndex = lightIndices[selectedOffset];
             if (int(lightPrimIndex) != bestHit.primitiveId) {
-              RestirEvaluation eval = evaluateLightCandidate(
-                  selectedOffset, lightPrimIndex,
-                  restirReservoir->sample.position,
-                  restirReservoir->sample.normal, restirReservoir->sample.area,
-                  offsetNormal, diffuseColor, absorption, bestHit, bounceCache,
-                  tlasNodes, tlasNodeCount, bvhNodes, primitives,
-                  primitiveIndices, activeMask, instanceRecords, primitiveRemap,
-                  primitiveCount, totalPrimitiveCount, primitiveRayStats,
-                  materials, lightCdf, lightTotalWeight, false, false);
-              if (eval.valid && eval.pdf > 0.0f) {
-                float weight = eval.target / eval.pdf;
-                updateRestirReservoir(combined, restirReservoir->sample, weight,
-                                      true, seed);
+              float3 toLight = restirReservoir->sample.position - bestHit.point;
+              float dist2 = dot(toLight, toLight);
+              if (isfinite(dist2) && dist2 > 1e-6f) {
+                float dist = sqrt(dist2);
+                float3 wi = toLight / dist;
+                bool visible = isLightVisible(
+                    bestHit.point, offsetNormal, wi, dist, lightPrimIndex,
+                    bounceCache, tlasNodes, tlasNodeCount, bvhNodes, primitives,
+                    primitiveIndices, activeMask, instanceRecords, primitiveRemap,
+                    primitiveCount, totalPrimitiveCount, primitiveRayStats);
+                if (!visible) {
+                  if (restirStats) {
+                    atomic_fetch_add_explicit(&restirStats[3], 1u,
+                                              memory_order_relaxed);
+                  }
+                } else {
+                  RestirEvaluation eval = evaluateLightCandidate(
+                      selectedOffset, lightPrimIndex,
+                      restirReservoir->sample.position,
+                      restirReservoir->sample.normal,
+                      restirReservoir->sample.area, offsetNormal, diffuseColor,
+                      absorption, bestHit, bounceCache, tlasNodes, tlasNodeCount,
+                      bvhNodes, primitives, primitiveIndices, activeMask,
+                      instanceRecords, primitiveRemap, primitiveCount,
+                      totalPrimitiveCount, primitiveRayStats, materials, lightCdf,
+                      lightTotalWeight, true, true);
+                  if (eval.valid && eval.pdf > 0.0f) {
+                    float weight = eval.target / eval.pdf;
+                    updateRestirReservoir(combined, restirReservoir->sample,
+                                          weight, true, seed);
+                  }
+                }
               }
             }
           }
