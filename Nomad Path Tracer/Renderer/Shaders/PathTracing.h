@@ -25,6 +25,7 @@ struct PathTraceSample {
 constant uint kRestirCandidateCount = 4;
 constant uint kRestirReseedCandidateBoost = 4;
 constant uint kRestirReseedFrameCount = 3;
+constant float kRestirInvalidHistoryReuseScale = 0.05f;
 constant float kVisibilityRayEpsilon = 1e-4f;
 constant float kVisibilityRayOffset = 5e-4f;
 
@@ -1158,11 +1159,18 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                       memory_order_relaxed);
           }
         }
-        allowTemporal = allowTemporal && historyValid;
+        float effectiveReuseChance = reuseChance;
+        if (!historyValid) {
+          // Allow a small amount of temporal reuse even when history validation
+          // fails so the pipeline doesn't devolve to zero reuse.
+          effectiveReuseChance *= kRestirInvalidHistoryReuseScale;
+        }
+        allowTemporal = allowTemporal && restirReservoir->valid != 0u &&
+                        effectiveReuseChance > 0.0f;
         if (restirReservoir->valid != 0u && allowTemporal) {
           float reuseRoll = randomFloat(seed);
           seed = random(seed);
-          if (reuseRoll > reuseChance) {
+          if (reuseRoll > effectiveReuseChance) {
             allowTemporal = false;
           }
         }
