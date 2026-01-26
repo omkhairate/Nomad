@@ -308,9 +308,6 @@ private:
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
-  MTL::ComputePipelineState *_pRestirTemporalPSO = nullptr;
-  MTL::ComputePipelineState *_pRestirSpatialPSO = nullptr;
-  MTL::ComputePipelineState *_pRestirShadePSO = nullptr;
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
@@ -328,8 +325,6 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
-  MTL::Buffer *_pRestirReservoirBuffer = nullptr;
-  MTL::Buffer *_pRestirReservoirHistoryBuffer = nullptr;
   struct FrameCommandBufferRecord {
     MTL::CommandBuffer *buffer = nullptr;
     std::chrono::steady_clock::time_point trackedSince{};
@@ -343,7 +338,6 @@ private:
   std::deque<double> _pathTraceGpuMsPerTileHistory;
   size_t _pathTraceTilesPerCommandBudget = 0;
   bool _pathTraceCommandTimeout = false;
-  bool _restirHistoryValid = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
@@ -385,7 +379,6 @@ private:
     uint64_t lastUsedFrame = 0;
   };
 
-  static constexpr size_t kRestirReservoirStride = 96;
 
   // Framebuffers
   ManagedTextureSlot _colorSlot;
@@ -687,8 +680,6 @@ private:
   size_t _primitiveHitBufferCapacity = 0;
   size_t _instanceBufferCapacity = 0;
   size_t _geometryHandleBufferCapacity = 0;
-  size_t _reservoirBufferCapacity = 0;
-  size_t _reservoirHistoryBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
   size_t _frustumVertexCapacity = 0;
 
@@ -750,9 +741,6 @@ private:
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
-  ReSTIRSettings _restirSettings{};
-  uint32_t _restirSpatialRadius = 2;
-  uint32_t _restirSpatialNeighborCount = 8;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
 

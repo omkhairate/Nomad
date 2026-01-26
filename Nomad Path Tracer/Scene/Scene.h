@@ -124,18 +124,6 @@ struct ResidencyParameters {
   void normalizeEnvironmentDepthSettings();
 };
 
-struct ReSTIRSettings {
-  bool enabled = true;
-  bool enableTemporal = true;
-  bool enableSpatial = true;
-  uint32_t candidateCount = 1;
-  uint32_t spatialRadius = 2;
-  uint32_t maxTemporalM = 32;
-  // (normalLow, normalHigh, depthLow, depthHigh)
-  simd::float4 normalDepthThresholds =
-      simd::make_float4(0.8f, 0.95f, 0.02f, 0.005f);
-  uint32_t debugMode = 0;
-};
 
 struct TLASNode {
   simd::float3 boundsMin = simd::make_float3(0.0f, 0.0f, 0.0f);
@@ -217,9 +205,6 @@ public:
   const ResidencyParameters &getResidencyParameters() const;
   void setResidencyParameters(const ResidencyParameters &params);
 
-  const ReSTIRSettings &getReSTIRSettings() const;
-  void setReSTIRSettings(const ReSTIRSettings &settings);
-
   size_t getMaxTileSampleWorkPerCommand() const;
   bool hasCustomMaxTileSampleWorkPerCommand() const;
   void setMaxTileSampleWorkPerCommand(size_t work);
@@ -293,7 +278,6 @@ private:
   EnvironmentSettings environment;
   ResidencyStrategy residencyStrategy;
   ResidencyParameters residencyParams;
-  ReSTIRSettings restirSettings;
   bool startCompacted;
   double textureResidencyMemoryCapMB;
   double geometryResidencyMemoryCapMB;

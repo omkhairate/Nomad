@@ -737,16 +737,6 @@ struct UniformsData {
   float lightTotalWeight;
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
-  uint32_t restirEnabled = 1;
-  uint32_t restirSpatialRadius = 2;
-  uint32_t restirSpatialNeighborCount = 8;
-  uint32_t restirCandidateCount = 1;
-  uint32_t restirMaxTemporalM = 32;
-  uint32_t restirEnableTemporal = 1;
-  uint32_t restirEnableSpatial = 1;
-  simd::float4 restirNormalDepthThresholds =
-      simd::make_float4(0.8f, 0.95f, 0.02f, 0.005f);
-  uint32_t restirDebugMode = 0;
   uint32_t textureCount = 0;
   uint32_t environmentMapEnabled = 0;
   float environmentMapIntensity = 1.0f;
@@ -1575,10 +1565,6 @@ Renderer::~Renderer() {
     releaseTrackedResource(_pPrimitiveHitBufferGPU);
   if (_pPrimitiveHitReadback)
     releaseTrackedResource(_pPrimitiveHitReadback);
-  if (_pRestirReservoirBuffer)
-    releaseTrackedResource(_pRestirReservoirBuffer);
-  if (_pRestirReservoirHistoryBuffer)
-    releaseTrackedResource(_pRestirReservoirHistoryBuffer);
   if (_pLightIndexBuffer)
     releaseTrackedResource(_pLightIndexBuffer);
   if (_pLightCdfBuffer)
@@ -1634,12 +1620,6 @@ Renderer::~Renderer() {
     _pPathTracePSO->release();
   if (_pAdaptiveSamplingPSO)
     _pAdaptiveSamplingPSO->release();
-  if (_pRestirTemporalPSO)
-    _pRestirTemporalPSO->release();
-  if (_pRestirSpatialPSO)
-    _pRestirSpatialPSO->release();
-  if (_pRestirShadePSO)
-    _pRestirShadePSO->release();
   if (_pOverlayPSO)
     _pOverlayPSO->release();
 
@@ -2526,19 +2506,6 @@ void Renderer::buildShaders() {
     _pAdaptiveSamplingPSO->release();
     _pAdaptiveSamplingPSO = nullptr;
   }
-  if (_pRestirTemporalPSO) {
-    _pRestirTemporalPSO->release();
-    _pRestirTemporalPSO = nullptr;
-  }
-  if (_pRestirSpatialPSO) {
-    _pRestirSpatialPSO->release();
-    _pRestirSpatialPSO = nullptr;
-  }
-  if (_pRestirShadePSO) {
-    _pRestirShadePSO->release();
-    _pRestirShadePSO = nullptr;
-  }
-
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
 
@@ -2646,42 +2613,6 @@ void Renderer::buildShaders() {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
     pAdaptiveFn->release();
-  }
-
-  pError = nullptr;
-  MTL::Function *pRestirTemporalFn = pLibrary->newFunction(
-      NS::String::string("restirTemporalMain", UTF8StringEncoding));
-  if (pRestirTemporalFn) {
-    _pRestirTemporalPSO =
-        _pDevice->newComputePipelineState(pRestirTemporalFn, &pError);
-    if (!_pRestirTemporalPSO && pError) {
-      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
-    }
-    pRestirTemporalFn->release();
-  }
-
-  pError = nullptr;
-  MTL::Function *pRestirSpatialFn = pLibrary->newFunction(
-      NS::String::string("restirSpatialMain", UTF8StringEncoding));
-  if (pRestirSpatialFn) {
-    _pRestirSpatialPSO =
-        _pDevice->newComputePipelineState(pRestirSpatialFn, &pError);
-    if (!_pRestirSpatialPSO && pError) {
-      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
-    }
-    pRestirSpatialFn->release();
-  }
-
-  pError = nullptr;
-  MTL::Function *pRestirShadeFn = pLibrary->newFunction(
-      NS::String::string("restirShadeMain", UTF8StringEncoding));
-  if (pRestirShadeFn) {
-    _pRestirShadePSO =
-        _pDevice->newComputePipelineState(pRestirShadeFn, &pError);
-    if (!_pRestirShadePSO && pError) {
-      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
-    }
-    pRestirShadeFn->release();
   }
 
   pVertexFn->release();
@@ -2837,10 +2768,6 @@ void Renderer::updateVisibleScene() {
          _totalGpuMemoryCapMB);
   _residentCompacted = _pScene->getStartCompacted();
   _compactionCooldown = 0;
-
-  _restirSettings = _pScene->getReSTIRSettings();
-  _restirSpatialRadius = _restirSettings.spatialRadius;
-  _restirHistoryValid = false;
 
   printf("LOD activation threshold: %.1f, deactivation threshold: %.1f (cooldown "
          "%u frames, toggle budget %zu)\n",
@@ -3159,7 +3086,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     if (!_pSphereBuffer || !_pSphereMaterialBuffer || !_pUniformsBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer || !_pRestirReservoirBuffer) {
+        !_pInstanceBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -3170,7 +3097,7 @@ void Renderer::prewarmAlwaysResidentResources() {
         !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer || !_pRestirReservoirBuffer) {
+        !_pInstanceBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -3200,7 +3127,6 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pInstanceBuffer, 0, 10);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(_pRestirReservoirBuffer, 0, 14);
   } else {
     compute->setBuffer(_pBVHBuffer, 0, 0);
     compute->setBuffer(_pSphereBuffer, 0, 1);
@@ -3216,7 +3142,6 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(_pRestirReservoirBuffer, 0, 14);
   }
 
   compute->setTexture(colorTexture, 0);
@@ -6919,19 +6844,6 @@ void Renderer::buildTextures() {
   configureTextureSlot(_positionHistorySlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
 
-  size_t reservoirBytes = static_cast<size_t>(width) *
-                          static_cast<size_t>(height) * kRestirReservoirStride;
-  ensureBufferCapacity(_pRestirReservoirBuffer, reservoirBytes,
-                       _reservoirBufferCapacity, true,
-                       MTL::ResourceStorageModePrivate,
-                       GpuMemoryTracker::Category::RendererBuffers,
-                       "RestirReservoirBuffer", "buildTextures");
-  ensureBufferCapacity(_pRestirReservoirHistoryBuffer, reservoirBytes,
-                       _reservoirHistoryBufferCapacity, true,
-                       MTL::ResourceStorageModePrivate,
-                       GpuMemoryTracker::Category::RendererBuffers,
-                       "RestirReservoirHistoryBuffer", "buildTextures");
-  _restirHistoryValid = false;
 }
 
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
@@ -7052,18 +6964,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
 
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
-  bool restirEnabled = _restirSettings.enabled;
-  u.restirEnabled = restirEnabled ? 1u : 0u;
-  u.restirSpatialRadius = _restirSpatialRadius;
-  u.restirSpatialNeighborCount = _restirSpatialNeighborCount;
-  u.restirCandidateCount = std::max<uint32_t>(_restirSettings.candidateCount, 1);
-  u.restirMaxTemporalM = std::max<uint32_t>(_restirSettings.maxTemporalM, 1);
-  u.restirEnableTemporal =
-      (restirEnabled && _restirSettings.enableTemporal) ? 1u : 0u;
-  u.restirEnableSpatial =
-      (restirEnabled && _restirSettings.enableSpatial) ? 1u : 0u;
-  u.restirNormalDepthThresholds = _restirSettings.normalDepthThresholds;
-  u.restirDebugMode = _restirSettings.debugMode;
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
@@ -7140,8 +7040,6 @@ void Renderer::updateUniforms(bool cameraChanged) {
 void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
   bool cameraChanged = updateCameraStates();
-  if (cameraChanged)
-    _restirHistoryValid = false;
   Camera::State viewCamera =
       _observerActive ? _observerCameraState : _primaryCameraState;
 
@@ -7240,32 +7138,17 @@ void Renderer::draw(MTK::View *pView) {
 
   bool allowResidency = !belowBudget && !overCap && !totalOverCap;
 
-  if (!_restirSettings.enabled || !_restirSettings.enableTemporal) {
-    _restirHistoryValid = false;
-  }
-
   MTL::BlitCommandEncoder *restoreBlit = nullptr;
   MTL::Texture *colorTexture = _colorSlot.texture;
   MTL::Texture *albedoTexture = _albedoSlot.texture;
   MTL::Texture *normalTexture = _normalSlot.texture;
   MTL::Texture *positionTexture = _positionSlot.texture;
-  MTL::Texture *albedoHistoryTexture = _albedoHistorySlot.texture;
-  MTL::Texture *normalHistoryTexture = _normalHistorySlot.texture;
-  MTL::Texture *positionHistoryTexture = _positionHistorySlot.texture;
   if (allowResidency) {
     colorTexture = requestResidentTexture(_colorSlot, prepCmd, restoreBlit);
     albedoTexture = requestResidentTexture(_albedoSlot, prepCmd, restoreBlit);
     normalTexture = requestResidentTexture(_normalSlot, prepCmd, restoreBlit);
     positionTexture =
         requestResidentTexture(_positionSlot, prepCmd, restoreBlit);
-    if (_restirHistoryValid) {
-      albedoHistoryTexture =
-          requestResidentTexture(_albedoHistorySlot, prepCmd, restoreBlit);
-      normalHistoryTexture =
-          requestResidentTexture(_normalHistorySlot, prepCmd, restoreBlit);
-      positionHistoryTexture =
-          requestResidentTexture(_positionHistorySlot, prepCmd, restoreBlit);
-    }
   }
 
   auto ensureSlotReady = [&](ManagedTextureSlot &slot, MTL::Texture *&handle) {
@@ -7292,11 +7175,6 @@ void Renderer::draw(MTK::View *pView) {
   markSlotUsed(_albedoSlot, albedoTexture);
   markSlotUsed(_normalSlot, normalTexture);
   markSlotUsed(_positionSlot, positionTexture);
-  if (_restirHistoryValid) {
-    markSlotUsed(_albedoHistorySlot, albedoHistoryTexture);
-    markSlotUsed(_normalHistorySlot, normalHistoryTexture);
-    markSlotUsed(_positionHistorySlot, positionHistoryTexture);
-  }
 
   if (restoreBlit)
     restoreBlit->endEncoding();
@@ -7515,7 +7393,6 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(_pRestirReservoirBuffer, 0, 14);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -7531,7 +7408,6 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(_pRestirReservoirBuffer, 0, 14);
       }
 
       pCompute->setTexture(colorTexture, 0);
@@ -7580,171 +7456,6 @@ void Renderer::draw(MTK::View *pView) {
           });
       trackFrameCommandBuffer(computeCmd);
       computeCmd->commit();
-    }
-  }
-
-  if (_restirHistoryValid &&
-      (!_pRestirReservoirHistoryBuffer || !positionHistoryTexture ||
-       !normalHistoryTexture || !albedoHistoryTexture)) {
-    _restirHistoryValid = false;
-  }
-
-  if (_pRestirTemporalPSO && _restirSettings.enabled &&
-      _restirSettings.enableTemporal &&
-      _restirHistoryValid && _pRestirReservoirBuffer &&
-      _pRestirReservoirHistoryBuffer && _pBVHBuffer && _pSphereBuffer &&
-      _pSphereMaterialBuffer && _pPrimitiveIndexBuffer && _pTLASBuffer &&
-      _pActiveBuffer && _pPrimitiveRemapBuffer && _pInstanceBuffer &&
-      positionTexture && normalTexture && albedoTexture && positionHistoryTexture &&
-      normalHistoryTexture && albedoHistoryTexture) {
-    MTL::CommandBuffer *temporalCmd = _pCommandQueue->commandBuffer();
-    if (temporalCmd) {
-      MTL::ComputeCommandEncoder *temporalCompute =
-          temporalCmd->computeCommandEncoder();
-      if (temporalCompute) {
-        temporalCompute->setComputePipelineState(_pRestirTemporalPSO);
-        temporalCompute->setBuffer(_pRestirReservoirHistoryBuffer, 0, 0);
-        temporalCompute->setBuffer(_pRestirReservoirBuffer, 0, 1);
-        temporalCompute->setBuffer(_pUniformsBuffer, 0, 2);
-        temporalCompute->setBuffer(_pBVHBuffer, 0, 3);
-        temporalCompute->setBuffer(_pSphereBuffer, 0, 4);
-        temporalCompute->setBuffer(_pSphereMaterialBuffer, 0, 5);
-        temporalCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 6);
-        temporalCompute->setBuffer(_pTLASBuffer, 0, 7);
-        temporalCompute->setBuffer(_pActiveBuffer, 0, 8);
-        temporalCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 9);
-        temporalCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 10);
-        temporalCompute->setBuffer(_pInstanceBuffer, 0, 11);
-        temporalCompute->setTexture(positionTexture, 0);
-        temporalCompute->setTexture(normalTexture, 1);
-        temporalCompute->setTexture(albedoTexture, 2);
-        temporalCompute->setTexture(positionHistoryTexture, 3);
-        temporalCompute->setTexture(normalHistoryTexture, 4);
-        temporalCompute->setTexture(albedoHistoryTexture, 5);
-
-        NS::UInteger tgWidth =
-            std::max<NS::UInteger>(1,
-                                   _pRestirTemporalPSO->threadExecutionWidth());
-        NS::UInteger maxThreads = std::max<NS::UInteger>(
-            tgWidth, _pRestirTemporalPSO->maxTotalThreadsPerThreadgroup());
-        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
-        MTL::Size threadsPerThreadgroup =
-            MTL::Size::Make(tgWidth, tgHeight, 1);
-
-        NS::UInteger width = positionTexture->width();
-        NS::UInteger height = positionTexture->height();
-        MTL::Size threadgroups = MTL::Size::Make(
-            (width + threadsPerThreadgroup.width - 1) /
-                threadsPerThreadgroup.width,
-            (height + threadsPerThreadgroup.height - 1) /
-                threadsPerThreadgroup.height,
-            1);
-        temporalCompute->dispatchThreadgroups(threadgroups,
-                                              threadsPerThreadgroup);
-        temporalCompute->endEncoding();
-        trackFrameCommandBuffer(temporalCmd);
-        temporalCmd->commit();
-      } else {
-        trackFrameCommandBuffer(temporalCmd);
-        temporalCmd->commit();
-      }
-    }
-  }
-
-  if (_pRestirSpatialPSO && _restirSettings.enabled &&
-      _restirSettings.enableSpatial &&
-      _pRestirReservoirBuffer && _pBVHBuffer && _pSphereBuffer &&
-      _pSphereMaterialBuffer && _pPrimitiveIndexBuffer && _pTLASBuffer &&
-      _pActiveBuffer && _pPrimitiveRemapBuffer && _pInstanceBuffer &&
-      positionTexture && normalTexture && albedoTexture) {
-    MTL::CommandBuffer *spatialCmd = _pCommandQueue->commandBuffer();
-    if (spatialCmd) {
-      MTL::ComputeCommandEncoder *spatialCompute =
-          spatialCmd->computeCommandEncoder();
-      if (spatialCompute) {
-        spatialCompute->setComputePipelineState(_pRestirSpatialPSO);
-        spatialCompute->setBuffer(_pRestirReservoirBuffer, 0, 0);
-        spatialCompute->setBuffer(_pUniformsBuffer, 0, 1);
-        spatialCompute->setBuffer(_pBVHBuffer, 0, 2);
-        spatialCompute->setBuffer(_pSphereBuffer, 0, 3);
-        spatialCompute->setBuffer(_pSphereMaterialBuffer, 0, 4);
-        spatialCompute->setBuffer(_pPrimitiveIndexBuffer, 0, 5);
-        spatialCompute->setBuffer(_pTLASBuffer, 0, 6);
-        spatialCompute->setBuffer(_pActiveBuffer, 0, 7);
-        spatialCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
-        spatialCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
-        spatialCompute->setBuffer(_pInstanceBuffer, 0, 10);
-        spatialCompute->setTexture(positionTexture, 0);
-        spatialCompute->setTexture(normalTexture, 1);
-        spatialCompute->setTexture(albedoTexture, 2);
-
-        NS::UInteger width = positionTexture->width();
-        NS::UInteger height = positionTexture->height();
-        NS::UInteger tgWidth =
-            std::max<NS::UInteger>(1,
-                                   _pRestirSpatialPSO->threadExecutionWidth());
-        NS::UInteger maxThreads = std::max<NS::UInteger>(
-            tgWidth, _pRestirSpatialPSO->maxTotalThreadsPerThreadgroup());
-        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
-        MTL::Size threadsPerThreadgroup =
-            MTL::Size::Make(tgWidth, tgHeight, 1);
-        MTL::Size threadgroups = MTL::Size::Make(
-            (width + threadsPerThreadgroup.width - 1) /
-                threadsPerThreadgroup.width,
-            (height + threadsPerThreadgroup.height - 1) /
-                threadsPerThreadgroup.height,
-            1);
-        spatialCompute->dispatchThreadgroups(threadgroups,
-                                             threadsPerThreadgroup);
-        spatialCompute->endEncoding();
-        trackFrameCommandBuffer(spatialCmd);
-        spatialCmd->commit();
-      } else {
-        trackFrameCommandBuffer(spatialCmd);
-        spatialCmd->commit();
-      }
-    }
-  }
-
-  const bool restirShadeValid =
-      _pRestirReservoirBuffer && _restirSettings.enabled &&
-      (_restirSettings.enableTemporal || _restirSettings.enableSpatial) &&
-      _restirSettings.debugMode != 0;
-  if (_pRestirShadePSO && colorTexture && restirShadeValid) {
-    MTL::CommandBuffer *shadeCmd = _pCommandQueue->commandBuffer();
-    if (shadeCmd) {
-      MTL::ComputeCommandEncoder *shadeCompute =
-          shadeCmd->computeCommandEncoder();
-      if (shadeCompute) {
-        shadeCompute->setComputePipelineState(_pRestirShadePSO);
-        shadeCompute->setBuffer(_pRestirReservoirBuffer, 0, 0);
-        shadeCompute->setBuffer(_pUniformsBuffer, 0, 1);
-        shadeCompute->setTexture(colorTexture, 0);
-
-        NS::UInteger width = colorTexture->width();
-        NS::UInteger height = colorTexture->height();
-        NS::UInteger tgWidth =
-            std::max<NS::UInteger>(1,
-                                   _pRestirShadePSO->threadExecutionWidth());
-        NS::UInteger maxThreads = std::max<NS::UInteger>(
-            tgWidth, _pRestirShadePSO->maxTotalThreadsPerThreadgroup());
-        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
-        MTL::Size threadsPerThreadgroup =
-            MTL::Size::Make(tgWidth, tgHeight, 1);
-        MTL::Size threadgroups = MTL::Size::Make(
-            (width + threadsPerThreadgroup.width - 1) /
-                threadsPerThreadgroup.width,
-            (height + threadsPerThreadgroup.height - 1) /
-                threadsPerThreadgroup.height,
-            1);
-        shadeCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
-        shadeCompute->endEncoding();
-        trackFrameCommandBuffer(shadeCmd);
-        shadeCmd->commit();
-      } else {
-        trackFrameCommandBuffer(shadeCmd);
-        shadeCmd->commit();
-      }
     }
   }
 
@@ -7876,23 +7587,6 @@ void Renderer::draw(MTK::View *pView) {
   ++_renderedFrameCount;
   pPool->release();
 
-  if (_restirSettings.enableTemporal) {
-    if (_positionSlot.texture && _positionHistorySlot.texture) {
-      std::swap(_positionSlot, _positionHistorySlot);
-      std::swap(_normalSlot, _normalHistorySlot);
-      std::swap(_albedoSlot, _albedoHistorySlot);
-    }
-    if (_pRestirReservoirBuffer && _pRestirReservoirHistoryBuffer) {
-      std::swap(_pRestirReservoirBuffer, _pRestirReservoirHistoryBuffer);
-    }
-    if (!_restirHistoryValid && _pRestirReservoirBuffer &&
-        _pRestirReservoirHistoryBuffer && _positionSlot.texture &&
-        _positionHistorySlot.texture) {
-      _restirHistoryValid = true;
-    }
-  } else {
-    _restirHistoryValid = false;
-  }
 }
 
 void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
