@@ -7614,6 +7614,8 @@ void Renderer::draw(MTK::View *pView) {
         MTL::Size threadsPerThreadgroup =
             MTL::Size::Make(tgWidth, tgHeight, 1);
 
+        NS::UInteger width = positionTexture->width();
+        NS::UInteger height = positionTexture->height();
         MTL::Size threadgroups = MTL::Size::Make(
             (width + threadsPerThreadgroup.width - 1) /
                 threadsPerThreadgroup.width,
