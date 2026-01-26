@@ -308,6 +308,7 @@ private:
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
+  MTL::ComputePipelineState *_pRestirTemporalPSO = nullptr;
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
@@ -326,6 +327,7 @@ private:
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
   MTL::Buffer *_pReservoirBuffer = nullptr;
+  MTL::Buffer *_pReservoirHistoryBuffer = nullptr;
   struct FrameCommandBufferRecord {
     MTL::CommandBuffer *buffer = nullptr;
     std::chrono::steady_clock::time_point trackedSince{};
@@ -339,6 +341,7 @@ private:
   std::deque<double> _pathTraceGpuMsPerTileHistory;
   size_t _pathTraceTilesPerCommandBudget = 0;
   bool _pathTraceCommandTimeout = false;
+  bool _restirHistoryValid = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
@@ -387,6 +390,9 @@ private:
   ManagedTextureSlot _albedoSlot;
   ManagedTextureSlot _normalSlot;
   ManagedTextureSlot _positionSlot;
+  ManagedTextureSlot _albedoHistorySlot;
+  ManagedTextureSlot _normalHistorySlot;
+  ManagedTextureSlot _positionHistorySlot;
 
   struct PendingBlasBuild {
     Renderer *renderer = nullptr;
@@ -680,6 +686,7 @@ private:
   size_t _instanceBufferCapacity = 0;
   size_t _geometryHandleBufferCapacity = 0;
   size_t _reservoirBufferCapacity = 0;
+  size_t _reservoirHistoryBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
   size_t _frustumVertexCapacity = 0;
 
