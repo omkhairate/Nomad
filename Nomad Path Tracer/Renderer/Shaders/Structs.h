@@ -75,6 +75,8 @@ struct UniformsData
     float lightTotalWeight;
     uint minSamplesPerPixel;
     uint maxSamplesPerPixel;
+    uint restirSpatialRadius;
+    uint restirSpatialNeighborCount;
     uint textureCount;
     uint environmentMapEnabled;
     float environmentMapIntensity;
