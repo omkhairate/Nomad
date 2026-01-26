@@ -19,6 +19,7 @@ struct PathTraceSample {
   float3 albedo;
   float3 normal;
   float3 position;
+  float roughness;
 };
 
 constant uint kRestirCandidateCount = 4;
@@ -869,6 +870,13 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 sampler environmentSampler,
                                 uint environmentEnabled,
                                 float environmentIntensity,
+                                texture2d<float, access::read_write> positionAccum,
+                                texture2d<float, access::read_write> normalAccum,
+                                float2 screenSize,
+                                float4x4 prevViewProjection,
+                                float restirTemporalPositionEpsilon,
+                                float restirTemporalNormalThreshold,
+                                float restirTemporalRoughnessBucketSize,
                                 thread RestirReservoir *restirReservoir,
                                 bool restirEnabled,
                                 float temporalReuseChance) {
@@ -877,6 +885,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
   sampleResult.albedo = float3(0.0f);
   sampleResult.normal = float3(0.0f);
   sampleResult.position = float3(0.0f);
+  sampleResult.roughness = 0.0f;
   bool recordedFirstHit = false;
 
   float footprint = length(cross(rayDx, rayDy));
@@ -1066,6 +1075,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
       sampleResult.albedo = material.diffuseColor;
       sampleResult.normal = offsetNormal;
       sampleResult.position = bestHit.point;
+      sampleResult.roughness = clamp(material.roughness, 0.0f, 1.0f);
       recordedFirstHit = true;
     }
 
@@ -1083,6 +1093,51 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
 
         float reuseChance = clamp(temporalReuseChance, 0.0f, 1.0f);
         bool allowTemporal = reuseChance > 0.0f;
+        bool historyValid = false;
+        if (restirReservoir->valid != 0u && allowTemporal) {
+          float4 prevClip = prevViewProjection * float4(bestHit.point, 1.0f);
+          if (isfinite(prevClip.x) && isfinite(prevClip.y) &&
+              isfinite(prevClip.z) && isfinite(prevClip.w) &&
+              prevClip.w > 1e-5f) {
+            float3 prevNdc = prevClip.xyz / prevClip.w;
+            if (all(isfinite(prevNdc)) && abs(prevNdc.x) <= 1.0f &&
+                abs(prevNdc.y) <= 1.0f) {
+              float2 prevUv = prevNdc.xy * 0.5f + float2(0.5f);
+              float2 clampedUv =
+                  clamp(prevUv, float2(0.0f), float2(0.999999f));
+              uint2 prevPixel =
+                  uint2(clampedUv * max(screenSize, float2(1.0f)));
+              float3 prevPosition =
+                  float3(positionAccum.read(prevPixel).xyz);
+              float4 prevNormalData = float4(normalAccum.read(prevPixel));
+              float3 prevNormal = prevNormalData.xyz;
+              float prevRoughness = prevNormalData.w;
+              bool hasPrevData = all(isfinite(prevPosition)) &&
+                                 all(isfinite(prevNormal)) &&
+                                 isfinite(prevRoughness);
+              float prevNormalLen = length(prevNormal);
+              if (hasPrevData && prevNormalLen > 1e-4f) {
+                float3 prevNormalUnit = prevNormal / prevNormalLen;
+                float3 currentNormal = normalize(offsetNormal);
+                float positionDelta =
+                    length(bestHit.point - prevPosition);
+                float normalSimilarity =
+                    dot(currentNormal, prevNormalUnit);
+                float bucketSize =
+                    max(restirTemporalRoughnessBucketSize, 1e-4f);
+                uint prevBucket = uint(floor(
+                    clamp(prevRoughness, 0.0f, 1.0f) / bucketSize));
+                uint currentBucket = uint(floor(
+                    clamp(material.roughness, 0.0f, 1.0f) / bucketSize));
+                historyValid =
+                    positionDelta <= restirTemporalPositionEpsilon &&
+                    normalSimilarity >= restirTemporalNormalThreshold &&
+                    prevBucket == currentBucket;
+              }
+            }
+          }
+        }
+        allowTemporal = allowTemporal && historyValid;
         if (restirReservoir->valid != 0u && allowTemporal) {
           float reuseRoll = randomFloat(seed);
           seed = random(seed);

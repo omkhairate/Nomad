@@ -298,11 +298,17 @@ kernel void pathTraceKernel(
 
   float previousSampleCount = float(sampleCount.read(pixel).x);
   float4 previousColor = float4(lastFrame.read(pixel));
+  float3 previousAlbedo = float3(float4(albedoAccum.read(pixel)).xyz);
+  float4 previousNormalData = float4(normalAccum.read(pixel));
+  float3 previousNormal = previousNormalData.xyz;
+  float previousRoughness = previousNormalData.w;
+  float3 previousPosition = float3(float4(positionAccum.read(pixel)).xyz);
 
   float3 accumulatedColor = float3(0.0);
   float3 accumulatedAlbedo = float3(0.0);
   float3 accumulatedNormal = float3(0.0);
   float3 accumulatedPosition = float3(0.0);
+  float accumulatedRoughness = 0.0f;
 
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
@@ -375,6 +381,13 @@ kernel void pathTraceKernel(
                                       environmentMap, environmentSampler,
                                       u.environmentMapEnabled,
                                       u.environmentMapIntensity,
+                                      positionAccum,
+                                      normalAccum,
+                                      screenSize,
+                                      u.prevViewProjection,
+                                      u.restirTemporalPositionEpsilon,
+                                      u.restirTemporalNormalThreshold,
+                                      u.restirTemporalRoughnessBucketSize,
                                       restirEnabled && sampleIdx == 0
                                           ? &restir
                                           : nullptr,
@@ -384,6 +397,7 @@ kernel void pathTraceKernel(
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;
     accumulatedPosition += sample.position;
+    accumulatedRoughness += sample.roughness;
   }
 
   if (restirEnabled) {
@@ -422,16 +436,12 @@ kernel void pathTraceKernel(
   float3 averaged = (totalSamples > 0.0f) ? combinedSum / totalSamples : float3(0.0f);
   averaged = clamp(averaged, 0.0f, 1.0f);
 
-  float3 previousAlbedo =
-      float3(float4(albedoAccum.read(pixel)).xyz);
-  float3 previousNormal =
-      float3(float4(normalAccum.read(pixel)).xyz);
-  float3 previousPosition =
-      float3(float4(positionAccum.read(pixel)).xyz);
   float3 albedoSum = previousAlbedo * previousSampleCount + accumulatedAlbedo;
   float3 normalSum = previousNormal * previousSampleCount + accumulatedNormal;
   float3 positionSum =
       previousPosition * previousSampleCount + accumulatedPosition;
+  float roughnessSum =
+      previousRoughness * previousSampleCount + accumulatedRoughness;
   float3 averagedAlbedo =
       (totalSamples > 0.0f) ? albedoSum / totalSamples : float3(0.0f);
   averagedAlbedo = clamp(averagedAlbedo, 0.0f, 1.0f);
@@ -440,11 +450,14 @@ kernel void pathTraceKernel(
   averagedNormal = clamp(averagedNormal, -1.0f, 1.0f);
   float3 averagedPosition =
       (totalSamples > 0.0f) ? positionSum / totalSamples : float3(0.0f);
+  float averagedRoughness =
+      (totalSamples > 0.0f) ? roughnessSum / totalSamples : 0.0f;
+  averagedRoughness = clamp(averagedRoughness, 0.0f, 1.0f);
 
   float4 result = float4(averaged, 1.0f);
   currentFrame.write(result, pixel);
   albedoAccum.write(float4(averagedAlbedo, 1.0f), pixel);
-  normalAccum.write(float4(averagedNormal, 1.0f), pixel);
+  normalAccum.write(float4(averagedNormal, averagedRoughness), pixel);
   positionAccum.write(float4(averagedPosition, 1.0f), pixel);
   sampleCount.write(float4(totalSamples, 0.0f, 0.0f, 0.0f), pixel);
 }
