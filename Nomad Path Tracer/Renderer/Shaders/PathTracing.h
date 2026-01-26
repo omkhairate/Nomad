@@ -42,6 +42,13 @@ struct TlasLeafCache {
   float3 boundsMax = float3(0.0f);
 };
 
+struct LightSampleCandidate {
+  float3 radiance = float3(0.0f);
+  float3 wi = float3(0.0f);
+  float pdf = 0.0f;
+  uint lightId = 0u;
+};
+
 #include "Intersect.h"
 #include "Random.h"
 #include "Scatter.h"
@@ -177,6 +184,137 @@ inline float lightPdfFromCdf(uint offset, device const float *lightCdf,
   if (weight <= 0.0f)
     return 0.0f;
   return weight / lightTotalWeight;
+}
+
+inline RestirReservoir initReservoir() {
+  RestirReservoir reservoir;
+  reservoir.sampleRadiance = float3(0.0f);
+  reservoir.wi = float3(0.0f);
+  reservoir.pdf = 0.0f;
+  reservoir.wSum = 0.0f;
+  reservoir.m = 0u;
+  reservoir.packedLightId = 0xffffffffu;
+  return reservoir;
+}
+
+inline void updateReservoir(thread RestirReservoir &reservoir,
+                            thread const LightSampleCandidate &candidate,
+                            float weight, float xi) {
+  reservoir.m += 1u;
+  if (weight <= 0.0f || !isfinite(weight)) {
+    return;
+  }
+  reservoir.wSum += weight;
+  float threshold = weight / reservoir.wSum;
+  if (xi < threshold) {
+    reservoir.sampleRadiance = candidate.radiance;
+    reservoir.wi = candidate.wi;
+    reservoir.pdf = candidate.pdf;
+    reservoir.packedLightId = candidate.lightId;
+  }
+}
+
+inline float3 finalizeReservoir(thread const RestirReservoir &reservoir) {
+  if (reservoir.m == 0u || reservoir.pdf <= 0.0f) {
+    return float3(0.0f);
+  }
+  float weightSelected =
+      luminance(reservoir.sampleRadiance) / max(reservoir.pdf, RAY_EPS);
+  if (weightSelected <= 0.0f) {
+    return float3(0.0f);
+  }
+  float normalization = reservoir.wSum / (float(reservoir.m) * weightSelected);
+  return reservoir.sampleRadiance * normalization;
+}
+
+inline bool sampleDirectLightCandidate(
+    float3 hitPoint, float3 offsetNormal, float3 diffuseColor,
+    int hitPrimitiveId, device const float4 *tlasNodes, uint tlasNodeCount,
+    device const float4 *bvhNodes, device const float4 *primitives,
+    device const float4 *materials, uint primitiveCount,
+    device const int *primitiveIndices, device const uchar *activeMask,
+    device const InstanceRecord *instanceRecords,
+    device const uint *lightIndices, device const float *lightCdf,
+    device const uint *primitiveRemap, device atomic_uint *primitiveRayStats,
+    thread TlasLeafCache &bounceCache, thread uint32_t &seed, uint lightCount,
+    float lightTotalWeight, uint totalPrimitiveCount,
+    thread LightSampleCandidate &candidate) {
+  candidate = LightSampleCandidate();
+  if (lightCount == 0 || lightTotalWeight <= 0.0f)
+    return false;
+
+  float lightXi = randomFloat(seed);
+  seed = random(seed);
+  uint selectedOffset =
+      selectLightOffset(lightXi, lightCdf, lightCount, lightTotalWeight);
+  if (selectedOffset >= lightCount)
+    return false;
+
+  uint lightPrimIndex = lightIndices[selectedOffset];
+  if (int(lightPrimIndex) == hitPrimitiveId)
+    return false;
+
+  int base = int(lightPrimIndex) * int(kPrimitiveFloat4Count);
+  int primEntries = int(primitiveCount) * int(kPrimitiveFloat4Count);
+  if (base < 0 || base + 2 >= primEntries)
+    return false;
+
+  float4 lp0 = primitives[base + 0];
+  float4 lp1 = primitives[base + 1];
+  float4 lp2 = primitives[base + 2];
+  float3 lightPoint;
+  float3 lightNormal;
+  float area = 0.0f;
+  if (!sampleLightPoint(int(lp0.w), lp0, lp1, lp2, seed, lightPoint,
+                        lightNormal, area) ||
+      area <= 0.0f) {
+    return false;
+  }
+
+  float3 toLight = lightPoint - hitPoint;
+  float dist2 = dot(toLight, toLight);
+  if (dist2 <= RAY_EPS)
+    return false;
+
+  float dist = sqrt(dist2);
+  float3 wi = toLight / dist;
+  float cosTheta = max(dot(offsetNormal, wi), 0.0f);
+  float cosLight = max(dot(lightNormal, -wi), 0.0f);
+  if (cosTheta <= 0.0f || cosLight <= 0.0f)
+    return false;
+
+  float lightPdf = lightPdfFromCdf(selectedOffset, lightCdf, lightTotalWeight);
+  if (lightPdf <= 0.0f)
+    return false;
+
+  float pdfArea = 1.0f / area;
+  float pdfSolid = pdfArea * dist2 / cosLight;
+  float totalPdf = lightPdf * pdfSolid;
+  if (totalPdf <= 0.0f)
+    return false;
+
+  bool visible = isLightVisible(
+      hitPoint, offsetNormal, wi, dist, lightPrimIndex, bounceCache, tlasNodes,
+      tlasNodeCount, bvhNodes, primitives, primitiveIndices, activeMask,
+      instanceRecords, primitiveRemap, primitiveCount, totalPrimitiveCount,
+      primitiveRayStats);
+  if (!visible)
+    return false;
+
+  int lightMatIndex = int(lightPrimIndex) * int(kMaterialFloat4Count);
+  int totalEntries = int(primitiveCount) * int(kMaterialFloat4Count);
+  if (lightMatIndex < 0 || lightMatIndex + int(kMaterialFloat4Count) > totalEntries)
+    return false;
+
+  MaterialPayload lightMaterial = decodeMaterial(lightMatIndex, materials, 1.0f);
+  float3 lightRadiance =
+      lightMaterial.emissionColor * lightMaterial.emissionPower;
+  float3 throughput = diffuseColor / M_PI;
+  candidate.radiance = throughput * lightRadiance * cosTheta;
+  candidate.wi = wi;
+  candidate.pdf = totalPdf;
+  candidate.lightId = lightPrimIndex;
+  return true;
 }
 
 inline bool intersectAABB(thread const Ray &r, float3 bmin, float3 bmax,

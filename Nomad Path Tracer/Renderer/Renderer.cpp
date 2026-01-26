@@ -1560,6 +1560,8 @@ Renderer::~Renderer() {
     releaseTrackedResource(_pPrimitiveHitBufferGPU);
   if (_pPrimitiveHitReadback)
     releaseTrackedResource(_pPrimitiveHitReadback);
+  if (_pReservoirBuffer)
+    releaseTrackedResource(_pReservoirBuffer);
   if (_pLightIndexBuffer)
     releaseTrackedResource(_pLightIndexBuffer);
   if (_pLightCdfBuffer)
@@ -3079,7 +3081,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     if (!_pSphereBuffer || !_pSphereMaterialBuffer || !_pUniformsBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer) {
+        !_pInstanceBuffer || !_pReservoirBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -3090,7 +3092,7 @@ void Renderer::prewarmAlwaysResidentResources() {
         !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer) {
+        !_pInstanceBuffer || !_pReservoirBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -3120,6 +3122,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pInstanceBuffer, 0, 10);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
+    compute->setBuffer(_pReservoirBuffer, 0, 14);
   } else {
     compute->setBuffer(_pBVHBuffer, 0, 0);
     compute->setBuffer(_pSphereBuffer, 0, 1);
@@ -3135,6 +3138,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
+    compute->setBuffer(_pReservoirBuffer, 0, 14);
   }
 
   compute->setTexture(colorTexture, 0);
@@ -6819,6 +6823,14 @@ void Renderer::buildTextures() {
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_positionSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+
+  size_t reservoirBytes = static_cast<size_t>(width) *
+                          static_cast<size_t>(height) * kRestirReservoirStride;
+  ensureBufferCapacity(_pReservoirBuffer, reservoirBytes,
+                       _reservoirBufferCapacity, true,
+                       MTL::ResourceStorageModePrivate,
+                       GpuMemoryTracker::Category::RendererBuffers,
+                       "RestirReservoirBuffer", "buildTextures");
 }
 
 void Renderer::updateAdaptiveSamplingMaps(MTL::CommandBuffer *pCmd) {
@@ -7363,6 +7375,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+        pCompute->setBuffer(_pReservoirBuffer, 0, 14);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -7378,6 +7391,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+        pCompute->setBuffer(_pReservoirBuffer, 0, 14);
       }
 
       pCompute->setTexture(colorTexture, 0);

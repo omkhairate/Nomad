@@ -325,6 +325,7 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
+  MTL::Buffer *_pReservoirBuffer = nullptr;
   struct FrameCommandBufferRecord {
     MTL::CommandBuffer *buffer = nullptr;
     std::chrono::steady_clock::time_point trackedSince{};
@@ -378,6 +379,8 @@ private:
     std::vector<uint8_t> historyData;
     uint64_t lastUsedFrame = 0;
   };
+
+  static constexpr size_t kRestirReservoirStride = 48;
 
   // Framebuffers
   ManagedTextureSlot _colorSlot;
@@ -676,6 +679,7 @@ private:
   size_t _primitiveHitBufferCapacity = 0;
   size_t _instanceBufferCapacity = 0;
   size_t _geometryHandleBufferCapacity = 0;
+  size_t _reservoirBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
   size_t _frustumVertexCapacity = 0;
 
