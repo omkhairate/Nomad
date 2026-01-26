@@ -573,6 +573,28 @@ double Renderer::residentTextureMemoryMB() const {
   return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
 }
 
+double Renderer::restirTextureMemoryMB() const {
+  size_t totalBytes = 0;
+  auto addSlot = [&](const ManagedTextureSlot &slot) {
+    if (!slot.texture)
+      return;
+    totalBytes += textureByteSize(slot);
+  };
+
+  for (const auto &slot : _restirData0Slots)
+    addSlot(slot);
+  for (const auto &slot : _restirData1Slots)
+    addSlot(slot);
+  for (const auto &slot : _restirData2Slots)
+    addSlot(slot);
+  for (const auto &slot : _restirSurfacePosSlots)
+    addSlot(slot);
+  for (const auto &slot : _restirSurfaceNormalSlots)
+    addSlot(slot);
+
+  return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+}
+
 double Renderer::residentGeometryMemoryMB() const {
   size_t totalBytes = residentGeometryMemoryBytes();
   return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
@@ -1583,6 +1605,8 @@ Renderer::~Renderer() {
     releaseTrackedResource(_pLightIndexBuffer);
   if (_pLightCdfBuffer)
     releaseTrackedResource(_pLightCdfBuffer);
+  if (_pLightPdfLookupBuffer)
+    releaseTrackedResource(_pLightPdfLookupBuffer);
   if (_pInstanceBuffer)
     releaseTrackedResource(_pInstanceBuffer);
   if (_pGeometryHandleBuffer)
@@ -3135,6 +3159,7 @@ void Renderer::prewarmAlwaysResidentResources() {
   if (useAccelerationStructureLayout) {
     if (!_pSphereBuffer || !_pSphereMaterialBuffer || !_pUniformsBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
+        !_pLightPdfLookupBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
         !_pInstanceBuffer) {
       trackFrameCommandBuffer(cmd);
@@ -3146,6 +3171,7 @@ void Renderer::prewarmAlwaysResidentResources() {
         !_pUniformsBuffer || !_pTriangleVertexBuffer ||
         !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
+        !_pLightPdfLookupBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
         !_pInstanceBuffer) {
       trackFrameCommandBuffer(cmd);
@@ -3175,6 +3201,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
     compute->setBuffer(_pInstanceBuffer, 0, 10);
+    compute->setBuffer(_pLightPdfLookupBuffer, 0, 14);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
   } else {
@@ -3192,6 +3219,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
+    compute->setBuffer(_pLightPdfLookupBuffer, 0, 14);
   }
 
   compute->setTexture(colorTexture, 0);
@@ -4937,6 +4965,20 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   _activeTriangleCount = activeTriangleCount;
   _lightCount = _cachedLightIndices.size();
   _lightTotalWeight = totalLightWeight;
+  _cachedLightPdfLookup.assign(totalPrimitiveCount, 0.0f);
+  if (_lightTotalWeight > 0.0f && !_cachedLightCdf.empty()) {
+    float prevCdf = 0.0f;
+    for (size_t i = 0; i < _cachedLightCdf.size(); ++i) {
+      float currentCdf = _cachedLightCdf[i];
+      float weight = currentCdf - prevCdf;
+      prevCdf = currentCdf;
+      if (weight <= 0.0f)
+        continue;
+      size_t primIndex = _cachedLightIndices[i];
+      if (primIndex < _cachedLightPdfLookup.size())
+        _cachedLightPdfLookup[primIndex] = weight / _lightTotalWeight;
+    }
+  }
 
   float activeRatio = (totalPrimitiveCount > 0)
                           ? static_cast<float>(_activePrimitiveCount) /
@@ -5926,6 +5968,29 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       std::memcpy(dst, _cachedLightCdf.data(),
                   _cachedLightCdf.size() * sizeof(float));
     markBufferModified(_pLightCdfBuffer, NS::Range::Make(0, lightCdfBytes));
+  }
+
+  size_t lightPdfLookupBytes =
+      std::max<size_t>(totalPrimitiveCount, size_t(1)) * sizeof(float);
+  ensureBufferCapacity(_pLightPdfLookupBuffer, lightPdfLookupBytes,
+                       _lightPdfLookupBufferCapacity, allowShrink,
+                       MTL::ResourceStorageModeManaged,
+                       GpuMemoryTracker::Category::Geometry, "LightPdfLookup",
+                       shrinkContext);
+  if (_pLightPdfLookupBuffer) {
+    float *dst = static_cast<float *>(_pLightPdfLookupBuffer->contents());
+    if (_cachedLightPdfLookup.empty()) {
+      dst[0] = 0.0f;
+    } else {
+      std::memcpy(dst, _cachedLightPdfLookup.data(),
+                  _cachedLightPdfLookup.size() * sizeof(float));
+      if (_cachedLightPdfLookup.size() <
+          (lightPdfLookupBytes / sizeof(float))) {
+        dst[_cachedLightPdfLookup.size()] = 0.0f;
+      }
+    }
+    markBufferModified(_pLightPdfLookupBuffer,
+                       NS::Range::Make(0, lightPdfLookupBytes));
   }
 
   recalculateNodeCounters(objectShouldBeResident);
@@ -7576,6 +7641,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 8);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 9);
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
+        pCompute->setBuffer(_pLightPdfLookupBuffer, 0, 14);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
       } else {
@@ -7593,6 +7659,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+        pCompute->setBuffer(_pLightPdfLookupBuffer, 0, 14);
       }
 
       pCompute->setTexture(colorTexture, 0);
@@ -12801,6 +12868,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       GpuMemoryTracker::Category::Geometry)]);
   double textureMB = bytesToMB(memSnapshot.bytes[static_cast<size_t>(
       GpuMemoryTracker::Category::Textures)]);
+  double restirMB = restirTextureMemoryMB();
   double rendererMB = bytesToMB(memSnapshot.bytes[static_cast<size_t>(
       GpuMemoryTracker::Category::RendererBuffers)]);
   double heapsMB = bytesToMB(memSnapshot.bytes[static_cast<size_t>(
@@ -12813,8 +12881,8 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
          _lastCPUTime * 1000.0, _lastGPUTime * 1000.0, _lastRaysPerSecond,
          geometryResidentMB);
   printf(
-      "GPU mem (MB) total=%.3f scratch=%.3f geometry=%.3f textures=%.3f renderer=%.3f heaps=%.3f staging=%.3f other=%.3f\n",
-      totalMemoryMB, scratchMB, geometryMB, textureMB, rendererMB,
+      "GPU mem (MB) total=%.3f scratch=%.3f geometry=%.3f textures=%.3f restir=%.3f renderer=%.3f heaps=%.3f staging=%.3f other=%.3f\n",
+      totalMemoryMB, scratchMB, geometryMB, textureMB, restirMB, rendererMB,
       heapsMB, stagingMB, otherMB);
   if (isAlwaysResidentStrategy() && offloaded > 0) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",

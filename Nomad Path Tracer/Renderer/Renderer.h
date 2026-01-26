@@ -134,6 +134,7 @@ public:
   double scratchMemoryMB() const;
   double residentGeometryMemoryMB() const;
   double residentTextureMemoryMB() const;
+  double restirTextureMemoryMB() const;
 
   double lastCPUTime() const;
   double lastGPUTime() const;
@@ -340,6 +341,7 @@ private:
   bool _pathTraceCommandTimeout = false;
   MTL::Buffer *_pLightIndexBuffer = nullptr;
   MTL::Buffer *_pLightCdfBuffer = nullptr;
+  MTL::Buffer *_pLightPdfLookupBuffer = nullptr;
   MTL::Buffer *_pInstanceBuffer = nullptr;
   MTL::Buffer *_pTlasInstanceDescriptorBuffer = nullptr;
   MTL::Buffer *_pGeometryHandleBuffer = nullptr;
@@ -653,6 +655,7 @@ private:
   float _environmentBrightness = 1.0f;
   std::vector<uint32_t> _cachedLightIndices;
   std::vector<float> _cachedLightCdf;
+  std::vector<float> _cachedLightPdfLookup;
 
   struct MeshGroupInfo {
     int meshGroupId = -1;
@@ -681,6 +684,7 @@ private:
   size_t _activeBufferCapacity = 0;
   size_t _lightIndexBufferCapacity = 0;
   size_t _lightCdfBufferCapacity = 0;
+  size_t _lightPdfLookupBufferCapacity = 0;
   size_t _primitiveRemapBufferCapacity = 0;
   size_t _primitiveHitBufferCapacity = 0;
   size_t _instanceBufferCapacity = 0;
