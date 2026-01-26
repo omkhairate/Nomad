@@ -85,6 +85,11 @@ struct UniformsData
     float environmentPadding0;
     float environmentPadding1;
     float cameraMotionMetric;
+    simd::float4x4 prevViewProjection;
+    float restirTemporalPositionEpsilon;
+    float restirTemporalNormalThreshold;
+    float restirTemporalRoughnessBucketSize;
+    float restirTemporalPadding0;
 };
 
 struct TileRegion

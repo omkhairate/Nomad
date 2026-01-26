@@ -754,6 +754,11 @@ struct UniformsData {
   float environmentPadding0 = 0.0f;
   float environmentPadding1 = 0.0f;
   float cameraMotionMetric = 0.0f;
+  simd::float4x4 prevViewProjection{};
+  float restirTemporalPositionEpsilon = 0.0f;
+  float restirTemporalNormalThreshold = 0.0f;
+  float restirTemporalRoughnessBucketSize = 0.0f;
+  float restirTemporalPadding0 = 0.0f;
 };
 
 struct TileDispatchRegion {
@@ -771,6 +776,11 @@ constexpr double kPathTraceTargetGpuMsPerCommand = 6.0;
 constexpr size_t kPathTraceCommandHistorySamples = 30;
 constexpr std::chrono::milliseconds kFrameCommandBufferWaitTimeout(4);
 constexpr uint32_t kMaxMaterialTextureSlots = 64;
+constexpr float kRestirTemporalPositionEpsilon = 0.25f;
+constexpr float kRestirTemporalNormalThreshold = 0.85f;
+constexpr float kRestirTemporalRoughnessBucketSize = 0.2f;
+constexpr float kReprojectionNearPlane = 0.1f;
+constexpr float kReprojectionFarPlane = 1000.0f;
 
 inline uint32_t bitm_random() {
   static uint32_t current_seed = 92407235;
@@ -7561,6 +7571,26 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.environmentMapIntensity = _environmentBrightness;
   u.environmentPadding0 = 0.0f;
   u.environmentPadding1 = 0.0f;
+  float aspect = Camera::screenSize.y > 0.0f
+                     ? Camera::screenSize.x / Camera::screenSize.y
+                     : 1.0f;
+  if (_lastUniformCameraStateValid) {
+    u.prevViewProjection =
+        simd_mul(makePerspectiveMatrix(_lastUniformCameraState.verticalFov,
+                                       aspect, kReprojectionNearPlane,
+                                       kReprojectionFarPlane),
+                 makeViewMatrix(_lastUniformCameraState));
+  } else {
+    u.prevViewProjection =
+        simd_mul(makePerspectiveMatrix(activeView.verticalFov, aspect,
+                                       kReprojectionNearPlane,
+                                       kReprojectionFarPlane),
+                 makeViewMatrix(activeView));
+  }
+  u.restirTemporalPositionEpsilon = kRestirTemporalPositionEpsilon;
+  u.restirTemporalNormalThreshold = kRestirTemporalNormalThreshold;
+  u.restirTemporalRoughnessBucketSize = kRestirTemporalRoughnessBucketSize;
+  u.restirTemporalPadding0 = 0.0f;
   if (_lastUniformCameraStateValid) {
     u.cameraMotionMetric =
         computeCameraMotionMetric(activeView, _lastUniformCameraState);
