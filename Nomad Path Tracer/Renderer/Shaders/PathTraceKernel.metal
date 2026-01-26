@@ -178,9 +178,9 @@ kernel void restirSpatialKernel(
     float neighborDepthDelta = abs(dot(delta, neighborNormal));
     bool depthSimilar = depthDelta <= kSpatialDepthThreshold &&
                         neighborDepthDelta <= kSpatialDepthThreshold;
-    float dist2 = dot(delta, delta);
+    float dist2_neighbor = dot(delta, delta);
     bool positionSimilar =
-        dist2 <= kSpatialPositionThreshold * kSpatialPositionThreshold;
+        dist2_neighbor <= kSpatialPositionThreshold * kSpatialPositionThreshold;
     if (!depthSimilar && !positionSimilar)
       continue;
 
@@ -205,10 +205,10 @@ kernel void restirSpatialKernel(
       continue;
     uint lightPrimIndex = lightIndices[lightOffset];
     float3 toLight = candidateSample.position - bestHit.point;
-    float dist2 = dot(toLight, toLight);
-    if (dist2 <= 1e-6f)
+    float dist2_light = dot(toLight, toLight);
+    if (dist2_light <= 1e-6f)
       continue;
-    float dist = sqrt(dist2);
+    float dist = sqrt(dist2_light);
     float3 wi = toLight / dist;
     bool visible = isLightVisible(
         bestHit.point, shadingNormal, wi, dist, lightPrimIndex, bounceCache,
