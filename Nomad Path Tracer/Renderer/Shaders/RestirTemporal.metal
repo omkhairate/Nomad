@@ -149,12 +149,14 @@ inline bool reevaluateReservoirSample(
 inline void mergeReservoir(thread RestirReservoir &current,
                            thread const RestirSampleData &candidate,
                            float weight,
-                           uint candidateCount,
+                           uint candidateM,
                            float xi) {
-    if (candidateCount == 0u || weight <= 0.0f || !isfinite(weight)) {
+    // ReSTIR DI: M is the number of candidates that built the incoming reservoir.
+    // We scale the candidate's weight by M and add it to wSum, while M accumulates.
+    if (candidateM == 0u || weight <= 0.0f || !isfinite(weight)) {
         return;
     }
-    float scaledWeight = weight * float(candidateCount);
+    float scaledWeight = weight * float(candidateM);
     if (scaledWeight <= 0.0f || !isfinite(scaledWeight)) {
         return;
     }
@@ -176,7 +178,7 @@ inline void mergeReservoir(thread RestirReservoir &current,
         current.lightPdf = candidate.lightPdf;
     }
     current.wSum = totalWeight;
-    current.m += candidateCount;
+    current.m += candidateM;
 }
 
 kernel void restirTemporalMain(
@@ -305,6 +307,7 @@ kernel void restirTemporalMain(
                 uniforms, materials, tlasNodes, bvhNodes, primitives,
                 primitiveIndices, activeMask, instanceRecords, primitiveRemap,
                 primitiveRayStats, candidate, candidateWeight)) {
+            // Use history.m as the canonical M for the temporal reservoir.
             mergeReservoir(current, candidate, candidateWeight, history.m, xi);
         }
         if (uniforms.restirMaxTemporalM > 0u) {
