@@ -207,16 +207,22 @@ inline RestirReservoir initReservoir() {
   return reservoir;
 }
 
-inline float3 restirTargetContribution(float3 radiance, float geometryFactor) {
-  return radiance * max(geometryFactor, 0.0f);
+inline float restirTargetContribution(float3 radiance, float geometryFactor) {
+  float3 contribution = radiance * max(geometryFactor, 0.0f);
+  return max(luminance(contribution), 0.0f);
 }
 
-inline float3 restirTargetContribution(thread const LightSampleCandidate &candidate) {
+inline float restirTargetContribution(thread const LightSampleCandidate &candidate) {
   return restirTargetContribution(candidate.radiance, candidate.geometryFactor);
 }
 
-inline float3 restirTargetContribution(thread const RestirReservoir &reservoir) {
+inline float restirTargetContribution(thread const RestirReservoir &reservoir) {
   return restirTargetContribution(reservoir.sampleRadiance, reservoir.geometryFactor);
+}
+
+inline float restirTargetWeight(float3 radiance, float geometryFactor, float pdf) {
+  float target = restirTargetContribution(radiance, geometryFactor);
+  return target / max(pdf, RAY_EPS);
 }
 
 inline float3 directLightingBsdfFromAlbedo(float3 albedo) {
@@ -254,8 +260,8 @@ inline float3 finalizeReservoir(thread const RestirReservoir &reservoir) {
   if (reservoir.m == 0u || reservoir.pdf <= 0.0f) {
     return float3(0.0f);
   }
-  float3 target = restirTargetContribution(reservoir);
-  float weightSelected = luminance(target) / max(reservoir.pdf, RAY_EPS);
+  float target = restirTargetContribution(reservoir);
+  float weightSelected = target / max(reservoir.pdf, RAY_EPS);
   if (weightSelected <= 0.0f) {
     return float3(0.0f);
   }
