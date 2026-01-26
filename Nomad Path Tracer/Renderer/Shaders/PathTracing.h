@@ -54,6 +54,11 @@ struct LightSampleCandidate {
   float lightPdf = 0.0f;
 };
 
+#include "Intersect.h"
+#include "Random.h"
+#include "Scatter.h"
+#include "Structs.h"
+
 struct RestirReservoir {
   LightSampleCandidate sample;
   float3 selectedContribution = float3(0.0f);
@@ -100,11 +105,6 @@ inline void restirUpdateReservoir(thread RestirReservoir &reservoir,
     reservoir.valid = true;
   }
 }
-
-#include "Intersect.h"
-#include "Random.h"
-#include "Scatter.h"
-#include "Structs.h"
 
 template <typename T> inline void swap(thread T &a, thread T &b) {
   T tmp = a;
