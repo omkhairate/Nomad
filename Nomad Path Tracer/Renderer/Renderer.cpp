@@ -747,22 +747,6 @@ struct UniformsData {
   simd::float4x4 prevViewProjection{};
 };
 
-constexpr uint32_t kChunkResidentFlag = 1u;
-
-struct BVHNodeGPU {
-  simd::packed_float3 boundsMin;
-  int32_t leftFirst;
-  simd::packed_float3 boundsMax;
-  int32_t count;
-};
-
-struct ChunkEntry {
-  uint32_t chunkId;
-  uint32_t primitiveOffset;
-  uint32_t primitiveCount;
-  uint32_t flags;
-};
-
 struct TileDispatchRegion {
   uint32_t originX;
   uint32_t originY;
@@ -1568,8 +1552,6 @@ Renderer::~Renderer() {
     releaseTrackedResource(_pUniformsBuffer);
   if (_pBVHBuffer)
     releaseTrackedResource(_pBVHBuffer);
-  if (_pChunkTableBuffer)
-    releaseTrackedResource(_pChunkTableBuffer);
   if (_pPrimitiveIndexBuffer)
     releaseTrackedResource(_pPrimitiveIndexBuffer);
   if (_pTLASBuffer)
@@ -3110,12 +3092,12 @@ void Renderer::prewarmAlwaysResidentResources() {
       return;
     }
   } else {
-    if (!_pBVHBuffer || !_pChunkTableBuffer || !_pSphereBuffer ||
-        !_pSphereMaterialBuffer || !_pUniformsBuffer ||
-        !_pTriangleVertexBuffer || !_pTriangleIndexBuffer ||
-        !_pPrimitiveIndexBuffer || !_pTLASBuffer || !_pActiveBuffer ||
-        !_pLightIndexBuffer || !_pLightCdfBuffer || !_pPrimitiveRemapBuffer ||
-        !_pPrimitiveHitBufferGPU || !_pInstanceBuffer) {
+    if (!_pBVHBuffer || !_pSphereBuffer || !_pSphereMaterialBuffer ||
+        !_pUniformsBuffer || !_pTriangleVertexBuffer ||
+        !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
+        !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
+        !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
+        !_pInstanceBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -3160,7 +3142,6 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(_pChunkTableBuffer, 0, 14);
   }
 
   compute->setTexture(colorTexture, 0);
@@ -5661,90 +5642,25 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
                          NS::Range::Make(0, primitiveIndexBytes));
     }
 
-    size_t blasNodeCount = bvhSource->size() / 2;
-    std::vector<BVHNodeGPU> bvhUpload;
-    std::vector<ChunkEntry> chunkUpload;
-    bvhUpload.reserve(blasNodeCount);
-    chunkUpload.reserve(blasNodeCount);
-
-    auto decodeInt = [](float packed) -> int {
-      int value = 0;
-      std::memcpy(&value, &packed, sizeof(int));
-      return value;
-    };
-
-    for (size_t i = 0; i < blasNodeCount; ++i) {
-      const simd::float4 &minPacked = (*bvhSource)[2 * i + 0];
-      const simd::float4 &maxPacked = (*bvhSource)[2 * i + 1];
-      int leftFirst = decodeInt(minPacked.w);
-      int count = decodeInt(maxPacked.w);
-
-      BVHNodeGPU node{};
-      node.boundsMin =
-          simd::packed_float3{minPacked.x, minPacked.y, minPacked.z};
-      node.boundsMax =
-          simd::packed_float3{maxPacked.x, maxPacked.y, maxPacked.z};
-      if (count > 0) {
-        uint32_t chunkIndex = static_cast<uint32_t>(chunkUpload.size());
-        node.leftFirst = static_cast<int32_t>(chunkIndex);
-        node.count = count;
-        ChunkEntry entry{};
-        entry.chunkId = chunkIndex;
-        entry.primitiveOffset = static_cast<uint32_t>(leftFirst);
-        entry.primitiveCount = static_cast<uint32_t>(count);
-        entry.flags = kChunkResidentFlag;
-        chunkUpload.push_back(entry);
-      } else {
-        node.leftFirst = leftFirst;
-        node.count = count;
-      }
-      bvhUpload.push_back(node);
-    }
-
-    if (bvhUpload.empty()) {
-      BVHNodeGPU node{};
-      node.boundsMin = simd::packed_float3{0.0f, 0.0f, 0.0f};
-      node.boundsMax = simd::packed_float3{0.0f, 0.0f, 0.0f};
-      node.leftFirst = 0;
-      node.count = 0;
-      bvhUpload.push_back(node);
-    }
-    if (chunkUpload.empty()) {
-      ChunkEntry entry{};
-      entry.chunkId = 0;
-      entry.primitiveOffset = 0;
-      entry.primitiveCount = 0;
-      entry.flags = 0;
-      chunkUpload.push_back(entry);
-    }
-
+    size_t blasFloat4Count = bvhSource->size();
     size_t bvhBytes =
-        std::max<size_t>(bvhUpload.size(), size_t(1)) * sizeof(BVHNodeGPU);
+        std::max<size_t>(blasFloat4Count, size_t(1)) * sizeof(simd::float4);
     ensureBufferCapacity(_pBVHBuffer, bvhBytes, _bvhBufferCapacity, allowShrink,
                          MTL::ResourceStorageModeManaged,
                          GpuMemoryTracker::Category::Geometry, "BLASNodes",
                          shrinkContext);
     if (_pBVHBuffer) {
-      BVHNodeGPU *dst =
-          static_cast<BVHNodeGPU *>(_pBVHBuffer->contents());
-      std::memcpy(dst, bvhUpload.data(), bvhUpload.size() * sizeof(BVHNodeGPU));
+      simd::float4 *dst =
+          static_cast<simd::float4 *>(_pBVHBuffer->contents());
+      if (blasFloat4Count > 0)
+        std::memcpy(dst, bvhSource->data(),
+                    blasFloat4Count * sizeof(simd::float4));
+      else {
+        dst[0] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+        if (bvhBytes >= 2 * sizeof(simd::float4))
+          dst[1] = simd::float4{0.0f, 0.0f, 0.0f, 0.0f};
+      }
       markBufferModified(_pBVHBuffer, NS::Range::Make(0, bvhBytes));
-    }
-
-    size_t chunkBytes = std::max<size_t>(chunkUpload.size(), size_t(1)) *
-                        sizeof(ChunkEntry);
-    ensureBufferCapacity(_pChunkTableBuffer, chunkBytes,
-                         _chunkTableBufferCapacity, allowShrink,
-                         MTL::ResourceStorageModeManaged,
-                         GpuMemoryTracker::Category::Geometry, "ChunkTable",
-                         shrinkContext);
-    if (_pChunkTableBuffer) {
-      ChunkEntry *dst =
-          static_cast<ChunkEntry *>(_pChunkTableBuffer->contents());
-      std::memcpy(dst, chunkUpload.data(),
-                  chunkUpload.size() * sizeof(ChunkEntry));
-      markBufferModified(_pChunkTableBuffer,
-                         NS::Range::Make(0, chunkBytes));
     }
 
     size_t tlasFloat4Count = tlasSource->size();
@@ -7477,10 +7393,10 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-    } else {
-      pCompute->setBuffer(_pBVHBuffer, 0, 0);
-      pCompute->setBuffer(_pSphereBuffer, 0, 1);
-      pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
+      } else {
+        pCompute->setBuffer(_pBVHBuffer, 0, 0);
+        pCompute->setBuffer(_pSphereBuffer, 0, 1);
+        pCompute->setBuffer(_pSphereMaterialBuffer, 0, 2);
         pCompute->setBuffer(_pUniformsBuffer, 0, 3);
         pCompute->setBuffer(_pTriangleVertexBuffer, 0, 4);
         pCompute->setBuffer(_pTriangleIndexBuffer, 0, 5);
@@ -7488,12 +7404,11 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pTLASBuffer, 0, 7);
         pCompute->setBuffer(_pActiveBuffer, 0, 8);
         pCompute->setBuffer(_pLightIndexBuffer, 0, 9);
-      pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
-      pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
-      pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
-      pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-      pCompute->setBuffer(_pChunkTableBuffer, 0, 14);
-    }
+        pCompute->setBuffer(_pLightCdfBuffer, 0, 10);
+        pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
+        pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
+        pCompute->setBuffer(_pInstanceBuffer, 0, 13);
+      }
 
       pCompute->setTexture(colorTexture, 0);
       pCompute->setTexture(albedoTexture, 1);

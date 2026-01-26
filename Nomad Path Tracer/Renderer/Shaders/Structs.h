@@ -35,22 +35,6 @@ struct InstanceRecord
     uint primitiveIndexBase;
 };
 
-struct BVHNodeGPU
-{
-    packed_float3 boundsMin;
-    int leftFirst;
-    packed_float3 boundsMax;
-    int count;
-};
-
-struct ChunkEntry
-{
-    uint chunkId;
-    uint primitiveOffset;
-    uint primitiveCount;
-    uint flags;
-};
-
 struct GeometryHandle
 {
     uint64_t vertexBufferAddress = 0;

@@ -11,7 +11,6 @@ using namespace metal;
 constant uint kMaterialFloat4Count = 5;
 constant uint kPrimitiveFloat4Count = 7;
 constant uint kMaxMaterialTextures = 64;
-constant uint kChunkResidentFlag = 1u;
 
 constant sampler kMaterialTextureSampler(address::repeat, filter::linear);
 
@@ -245,8 +244,7 @@ inline bool isLightVisible(
     float3 origin, float3 offsetNormal, float3 wi, float dist,
     uint lightPrimIndex, thread TlasLeafCache &bounceCache,
     device const float4 *tlasNodes, uint tlasNodeCount,
-    device const BVHNodeGPU *bvhNodes, device const ChunkEntry *chunkTable,
-    device const float4 *primitives,
+    device const float4 *bvhNodes, device const float4 *primitives,
     device const int *primitiveIndices, device const uchar *activeMask,
     device const InstanceRecord *instanceRecords,
     device const uint *primitiveRemap, uint primitiveCount,
@@ -256,8 +254,7 @@ inline bool sampleDirectLightCandidate(
     float3 hitPoint, float3 offsetNormal, float3 viewDir,
     thread const MaterialPayload &material,
     int hitPrimitiveId, device const float4 *tlasNodes, uint tlasNodeCount,
-    device const BVHNodeGPU *bvhNodes, device const ChunkEntry *chunkTable,
-    device const float4 *primitives,
+    device const float4 *bvhNodes, device const float4 *primitives,
     device const float4 *materials, uint primitiveCount,
     device const int *primitiveIndices, device const uchar *activeMask,
     device const InstanceRecord *instanceRecords,
@@ -322,9 +319,9 @@ inline bool sampleDirectLightCandidate(
 
   bool visible = isLightVisible(
       hitPoint, offsetNormal, wi, dist, lightPrimIndex, bounceCache, tlasNodes,
-      tlasNodeCount, bvhNodes, chunkTable, primitives, primitiveIndices,
-      activeMask, instanceRecords, primitiveRemap, primitiveCount,
-      totalPrimitiveCount, primitiveRayStats);
+      tlasNodeCount, bvhNodes, primitives, primitiveIndices, activeMask,
+      instanceRecords, primitiveRemap, primitiveCount, totalPrimitiveCount,
+      primitiveRayStats);
   if (!visible)
     return false;
 
@@ -354,8 +351,7 @@ inline bool sampleDirectLightCandidate(
 inline bool intersectAABB(thread const Ray &r, float3 bmin, float3 bmax,
                           float tMin, float tMax);
 inline intersection firstHitBVH(thread const Ray &r,
-                                device const BVHNodeGPU *bvhNodes,
-                                device const ChunkEntry *chunkTable,
+                                device const float4 *bvhNodes,
                                 device const float4 *primitives,
                                 device const int *primitiveIndices,
                                 device const uchar *activeMask,
@@ -366,8 +362,7 @@ inline intersection firstHitBVH(thread const Ray &r,
                                 int startNode);
 inline intersection firstHitTLAS(
     thread const Ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
-    device const BVHNodeGPU *bvhNodes, device const ChunkEntry *chunkTable,
-    device const float4 *primitives,
+    device const float4 *bvhNodes, device const float4 *primitives,
     device const int *primitiveIndices, device const uchar *activeMask,
     device const InstanceRecord *instanceRecords,
     device const uint *primitiveRemap, uint residentPrimitiveCount,
@@ -378,8 +373,7 @@ inline bool isLightVisible(
     float3 origin, float3 offsetNormal, float3 wi, float dist,
     uint lightPrimIndex, thread TlasLeafCache &bounceCache,
     device const float4 *tlasNodes, uint tlasNodeCount,
-    device const BVHNodeGPU *bvhNodes, device const ChunkEntry *chunkTable,
-    device const float4 *primitives,
+    device const float4 *bvhNodes, device const float4 *primitives,
     device const int *primitiveIndices, device const uchar *activeMask,
     device const InstanceRecord *instanceRecords,
     device const uint *primitiveRemap, uint primitiveCount,
@@ -403,9 +397,9 @@ inline bool isLightVisible(
                       shadowRay.minDistance, shadowRay.maxDistance);
     if (intersectsCached && bounceCache.blasRootIndex >= 0) {
       intersection cachedHit =
-          firstHitBVH(shadowRay, bvhNodes, chunkTable, primitives,
-                      primitiveIndices, activeMask, primitiveRemap,
-                      primitiveCount, totalPrimitiveCount, primitiveRayStats,
+          firstHitBVH(shadowRay, bvhNodes, primitives, primitiveIndices,
+                      activeMask, primitiveRemap, primitiveCount,
+                      totalPrimitiveCount, primitiveRayStats,
                       bounceCache.blasRootIndex);
       if (cachedHit.primitiveId != -1 &&
           cachedHit.primitiveId != int(lightPrimIndex) &&
@@ -417,7 +411,7 @@ inline bool isLightVisible(
   }
   if (!usedCache) {
     shadowHit = firstHitTLAS(
-        shadowRay, tlasNodes, tlasNodeCount, bvhNodes, chunkTable, primitives,
+        shadowRay, tlasNodes, tlasNodeCount, bvhNodes, primitives,
         primitiveIndices, activeMask, instanceRecords, primitiveRemap,
         primitiveCount, totalPrimitiveCount, primitiveRayStats, nullptr);
   }
@@ -432,8 +426,7 @@ inline bool isLightVisible(
 
 inline bool isVisibleToLight(
     float3 hitPoint, float3 hitNormal, float3 lightPos,
-    device const BVHNodeGPU *bvhNodes, device const ChunkEntry *chunkTable,
-    device const float4 *primitives,
+    device const float4 *bvhNodes, device const float4 *primitives,
     device const int *primitiveIndices, device const uchar *activeMask,
     device const uint *primitiveRemap, uint residentPrimitiveCount,
     uint totalPrimitiveCount, device atomic_uint *primitiveRayStats,
@@ -448,10 +441,10 @@ inline bool isVisibleToLight(
   shadowRay.direction = dir / dist;
   shadowRay.minDistance = RAY_EPS;
   shadowRay.maxDistance = dist - RAY_EPS;
-  intersection shadowHit = firstHitBVH(
-      shadowRay, bvhNodes, chunkTable, primitives, primitiveIndices, activeMask,
-      primitiveRemap, residentPrimitiveCount, totalPrimitiveCount,
-      primitiveRayStats, startNode);
+  intersection shadowHit =
+      firstHitBVH(shadowRay, bvhNodes, primitives, primitiveIndices, activeMask,
+                  primitiveRemap, residentPrimitiveCount, totalPrimitiveCount,
+                  primitiveRayStats, startNode);
   return shadowHit.primitiveId == -1;
 }
 
@@ -544,8 +537,7 @@ inline bool intersectAABB(thread const Ray &r, float3 bmin, float3 bmax,
 
 // BVH traversal version of firstHit
 inline intersection firstHitBVH(thread const Ray &r,
-                                device const BVHNodeGPU *bvhNodes,
-                                device const ChunkEntry *chunkTable,
+                                device const float4 *bvhNodes,
                                 device const float4 *primitives,
                                 device const int *primitiveIndices,
                                 device const uchar *activeMask,
@@ -570,27 +562,20 @@ inline intersection firstHitBVH(thread const Ray &r,
   while (stackPtr > 0) {
     int nodeIdx = stack[--stackPtr];
 
-    BVHNodeGPU node = bvhNodes[nodeIdx];
-    float3 bmin = float3(node.boundsMin);
-    float3 bmax = float3(node.boundsMax);
-    int leftFirst = node.leftFirst;
-    int second = node.count;
+    float3 bmin = bvhNodes[2 * nodeIdx + 0].xyz;
+    float3 bmax = bvhNodes[2 * nodeIdx + 1].xyz;
+    int leftFirst = as_type<int>(bvhNodes[2 * nodeIdx + 0].w);
+    int second = as_type<int>(bvhNodes[2 * nodeIdx + 1].w);
 
     if (!intersectAABB(r, bmin, bmax, RAY_EPS, in.t))
       continue;
 
     if (second > 0) {
-      if (!chunkTable || leftFirst < 0)
+      int count = second;
+      if (count <= 0 || leftFirst < 0)
         continue;
-      ChunkEntry entry = chunkTable[leftFirst];
-      if ((entry.flags & kChunkResidentFlag) == 0u)
-        continue;
-      uint primitiveOffset = entry.primitiveOffset;
-      uint primitiveCount = entry.primitiveCount;
-      if (primitiveCount == 0u)
-        continue;
-      for (uint i = 0; i < primitiveCount; ++i) {
-        int primIdx = primitiveIndices[primitiveOffset + i];
+      for (int i = 0; i < count; ++i) {
+        int primIdx = primitiveIndices[leftFirst + i];
         if (primIdx < 0)
           continue;
 
@@ -844,8 +829,7 @@ inline intersection firstHitBVH(thread const Ray &r,
 
 inline intersection firstHitTLAS(
     thread const Ray &r, device const float4 *tlasNodes, uint tlasNodeCount,
-    device const BVHNodeGPU *bvhNodes, device const ChunkEntry *chunkTable,
-    device const float4 *primitives,
+    device const float4 *bvhNodes, device const float4 *primitives,
     device const int *primitiveIndices, device const uchar *activeMask,
     device const InstanceRecord *instanceRecords,
     device const uint *primitiveRemap, uint residentPrimitiveCount,
@@ -890,7 +874,7 @@ inline intersection firstHitTLAS(
         int blasRoot = record.blasRootIndex;
         if (blasRoot >= 0) {
           intersection hit = firstHitBVH(
-              r, bvhNodes, chunkTable, primitives, primitiveIndices, activeMask,
+              r, bvhNodes, primitives, primitiveIndices, activeMask,
               primitiveRemap, residentPrimitiveCount, totalPrimitiveCount,
               primitiveRayStats, blasRoot);
           if (hit.primitiveId != -1 && hit.t < bestHit.t) {
@@ -953,9 +937,7 @@ inline intersection firstHitTLAS(
 template <typename TextureArray>
 inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 device const float4 *tlasNodes,
-                                uint tlasNodeCount,
-                                device const BVHNodeGPU *bvhNodes,
-                                device const ChunkEntry *chunkTable,
+                                uint tlasNodeCount, device const float4 *bvhNodes,
                                 device const float4 *primitives,
                                 device const float4 *materials,
                                 uint primitiveCount,
@@ -998,9 +980,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
     return sampleResult;
   } else if (debugAS == 2) {
     intersection bestHit = firstHitTLAS(
-        r, tlasNodes, tlasNodeCount, bvhNodes, chunkTable, primitives,
-        primitiveIndices, activeMask, instanceRecords, nullptr, 0u, 0u,
-        nullptr, nullptr);
+        r, tlasNodes, tlasNodeCount, bvhNodes, primitives, primitiveIndices,
+        activeMask, instanceRecords, nullptr, 0u, 0u, nullptr, nullptr);
     if (bestHit.primitiveId != -1) {
       float t = (blasNodeCount > 1)
                     ? float(bestHit.nodeIndex) / float(blasNodeCount - 1)
@@ -1027,9 +1008,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
     TlasLeafCache bounceCache;
     bounceCache.valid = false;
     intersection bestHit = firstHitTLAS(
-        r, tlasNodes, tlasNodeCount, bvhNodes, chunkTable, primitives,
-        primitiveIndices, activeMask, instanceRecords, primitiveRemap,
-        primitiveCount,
+        r, tlasNodes, tlasNodeCount, bvhNodes, primitives, primitiveIndices,
+        activeMask, instanceRecords, primitiveRemap, primitiveCount,
         totalPrimitiveCount, primitiveRayStats, &bounceCache);
 
     if (bestHit.primitiveId == -1) {
@@ -1087,9 +1067,9 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
               ? bounceCache.blasRootIndex
               : 0;
       bool visible = isVisibleToLight(
-          bestHit.point, hitNormal, debugLightPos, bvhNodes, chunkTable,
-          primitives, primitiveIndices, activeMask, primitiveRemap,
-          primitiveCount, totalPrimitiveCount, primitiveRayStats, rootIndex);
+          bestHit.point, hitNormal, debugLightPos, bvhNodes, primitives,
+          primitiveIndices, activeMask, primitiveRemap, primitiveCount,
+          totalPrimitiveCount, primitiveRayStats, rootIndex);
       sampleResult.radiance =
           visible ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
       return sampleResult;
@@ -1255,10 +1235,9 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                           shadowRay.maxDistance);
                       if (intersectsCached && bounceCache.blasRootIndex >= 0) {
                         intersection cachedHit = firstHitBVH(
-                            shadowRay, bvhNodes, chunkTable, primitives,
-                            primitiveIndices, activeMask, primitiveRemap,
-                            primitiveCount, totalPrimitiveCount,
-                            primitiveRayStats,
+                            shadowRay, bvhNodes, primitives, primitiveIndices,
+                            activeMask, primitiveRemap, primitiveCount,
+                            totalPrimitiveCount, primitiveRayStats,
                             bounceCache.blasRootIndex);
                         if (cachedHit.primitiveId != -1 &&
                             cachedHit.primitiveId != int(lightPrimIndex) &&
@@ -1271,7 +1250,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                     if (!usedCache) {
                       shadowHit = firstHitTLAS(
                           shadowRay, tlasNodes, tlasNodeCount, bvhNodes,
-                          chunkTable, primitives, primitiveIndices, activeMask,
+                          primitives, primitiveIndices, activeMask,
                           instanceRecords, primitiveRemap, primitiveCount,
                           totalPrimitiveCount, primitiveRayStats, nullptr);
                     }
