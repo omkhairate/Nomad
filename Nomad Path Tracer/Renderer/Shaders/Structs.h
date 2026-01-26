@@ -83,7 +83,7 @@ struct UniformsData
     float environmentPadding0;
     float environmentPadding1;
     float cameraMotionMetric;
-    simd::float4x4 viewProjection;
+    simd::float4x4 currentViewProjection;
     simd::float4x4 prevViewProjection;
 };
 

@@ -745,7 +745,7 @@ struct UniformsData {
   float environmentPadding0 = 0.0f;
   float environmentPadding1 = 0.0f;
   float cameraMotionMetric = 0.0f;
-  simd::float4x4 viewProjection{};
+  simd::float4x4 currentViewProjection{};
   simd::float4x4 prevViewProjection{};
 };
 
@@ -1567,10 +1567,10 @@ Renderer::~Renderer() {
     releaseTrackedResource(_pPrimitiveHitBufferGPU);
   if (_pPrimitiveHitReadback)
     releaseTrackedResource(_pPrimitiveHitReadback);
-  if (_pReservoirBuffer)
-    releaseTrackedResource(_pReservoirBuffer);
-  if (_pReservoirHistoryBuffer)
-    releaseTrackedResource(_pReservoirHistoryBuffer);
+  if (_pRestirReservoirBuffer)
+    releaseTrackedResource(_pRestirReservoirBuffer);
+  if (_pRestirReservoirHistoryBuffer)
+    releaseTrackedResource(_pRestirReservoirHistoryBuffer);
   if (_pLightIndexBuffer)
     releaseTrackedResource(_pLightIndexBuffer);
   if (_pLightCdfBuffer)
@@ -1630,6 +1630,8 @@ Renderer::~Renderer() {
     _pRestirTemporalPSO->release();
   if (_pRestirSpatialPSO)
     _pRestirSpatialPSO->release();
+  if (_pRestirShadePSO)
+    _pRestirShadePSO->release();
   if (_pOverlayPSO)
     _pOverlayPSO->release();
 
@@ -2524,6 +2526,10 @@ void Renderer::buildShaders() {
     _pRestirSpatialPSO->release();
     _pRestirSpatialPSO = nullptr;
   }
+  if (_pRestirShadePSO) {
+    _pRestirShadePSO->release();
+    _pRestirShadePSO = nullptr;
+  }
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
@@ -2656,6 +2662,18 @@ void Renderer::buildShaders() {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
     pRestirSpatialFn->release();
+  }
+
+  pError = nullptr;
+  MTL::Function *pRestirShadeFn = pLibrary->newFunction(
+      NS::String::string("restirShadeMain", UTF8StringEncoding));
+  if (pRestirShadeFn) {
+    _pRestirShadePSO =
+        _pDevice->newComputePipelineState(pRestirShadeFn, &pError);
+    if (!_pRestirShadePSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    }
+    pRestirShadeFn->release();
   }
 
   pVertexFn->release();
@@ -3129,7 +3147,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     if (!_pSphereBuffer || !_pSphereMaterialBuffer || !_pUniformsBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer || !_pReservoirBuffer) {
+        !_pInstanceBuffer || !_pRestirReservoirBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -3140,7 +3158,7 @@ void Renderer::prewarmAlwaysResidentResources() {
         !_pTriangleIndexBuffer || !_pPrimitiveIndexBuffer || !_pTLASBuffer ||
         !_pActiveBuffer || !_pLightIndexBuffer || !_pLightCdfBuffer ||
         !_pPrimitiveRemapBuffer || !_pPrimitiveHitBufferGPU ||
-        !_pInstanceBuffer || !_pReservoirBuffer) {
+        !_pInstanceBuffer || !_pRestirReservoirBuffer) {
       trackFrameCommandBuffer(cmd);
       cmd->commit();
       return;
@@ -3170,7 +3188,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pInstanceBuffer, 0, 10);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(_pReservoirBuffer, 0, 14);
+    compute->setBuffer(_pRestirReservoirBuffer, 0, 14);
   } else {
     compute->setBuffer(_pBVHBuffer, 0, 0);
     compute->setBuffer(_pSphereBuffer, 0, 1);
@@ -3186,7 +3204,7 @@ void Renderer::prewarmAlwaysResidentResources() {
     compute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
     compute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
     compute->setBuffer(_pInstanceBuffer, 0, 13);
-    compute->setBuffer(_pReservoirBuffer, 0, 14);
+    compute->setBuffer(_pRestirReservoirBuffer, 0, 14);
   }
 
   compute->setTexture(colorTexture, 0);
@@ -6891,12 +6909,12 @@ void Renderer::buildTextures() {
 
   size_t reservoirBytes = static_cast<size_t>(width) *
                           static_cast<size_t>(height) * kRestirReservoirStride;
-  ensureBufferCapacity(_pReservoirBuffer, reservoirBytes,
+  ensureBufferCapacity(_pRestirReservoirBuffer, reservoirBytes,
                        _reservoirBufferCapacity, true,
                        MTL::ResourceStorageModePrivate,
                        GpuMemoryTracker::Category::RendererBuffers,
                        "RestirReservoirBuffer", "buildTextures");
-  ensureBufferCapacity(_pReservoirHistoryBuffer, reservoirBytes,
+  ensureBufferCapacity(_pRestirReservoirHistoryBuffer, reservoirBytes,
                        _reservoirHistoryBufferCapacity, true,
                        MTL::ResourceStorageModePrivate,
                        GpuMemoryTracker::Category::RendererBuffers,
@@ -7037,7 +7055,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
   float aspect = Camera::screenSize.y > 0.0f
                      ? Camera::screenSize.x / Camera::screenSize.y
                      : 1.0f;
-  u.viewProjection =
+  u.currentViewProjection =
       simd_mul(makePerspectiveMatrix(activeView.verticalFov, aspect,
                                      kReprojectionNearPlane,
                                      kReprojectionFarPlane),
@@ -7471,7 +7489,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pInstanceBuffer, 0, 10);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(_pReservoirBuffer, 0, 14);
+        pCompute->setBuffer(_pRestirReservoirBuffer, 0, 14);
       } else {
         pCompute->setBuffer(_pBVHBuffer, 0, 0);
         pCompute->setBuffer(_pSphereBuffer, 0, 1);
@@ -7487,7 +7505,7 @@ void Renderer::draw(MTK::View *pView) {
         pCompute->setBuffer(_pPrimitiveRemapBuffer, 0, 11);
         pCompute->setBuffer(_pPrimitiveHitBufferGPU, 0, 12);
         pCompute->setBuffer(_pInstanceBuffer, 0, 13);
-        pCompute->setBuffer(_pReservoirBuffer, 0, 14);
+        pCompute->setBuffer(_pRestirReservoirBuffer, 0, 14);
       }
 
       pCompute->setTexture(colorTexture, 0);
@@ -7539,8 +7557,14 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
-  if (_pRestirTemporalPSO && _restirHistoryValid && _pReservoirBuffer &&
-      _pReservoirHistoryBuffer && positionTexture && normalTexture &&
+  if (_restirHistoryValid &&
+      (!_pRestirReservoirHistoryBuffer || !positionHistoryTexture ||
+       !normalHistoryTexture || !albedoHistoryTexture)) {
+    _restirHistoryValid = false;
+  }
+
+  if (_pRestirTemporalPSO && _restirHistoryValid && _pRestirReservoirBuffer &&
+      _pRestirReservoirHistoryBuffer && positionTexture && normalTexture &&
       albedoTexture && positionHistoryTexture && normalHistoryTexture &&
       albedoHistoryTexture) {
     MTL::CommandBuffer *temporalCmd = _pCommandQueue->commandBuffer();
@@ -7549,8 +7573,8 @@ void Renderer::draw(MTK::View *pView) {
           temporalCmd->computeCommandEncoder();
       if (temporalCompute) {
         temporalCompute->setComputePipelineState(_pRestirTemporalPSO);
-        temporalCompute->setBuffer(_pReservoirHistoryBuffer, 0, 0);
-        temporalCompute->setBuffer(_pReservoirBuffer, 0, 1);
+        temporalCompute->setBuffer(_pRestirReservoirHistoryBuffer, 0, 0);
+        temporalCompute->setBuffer(_pRestirReservoirBuffer, 0, 1);
         temporalCompute->setBuffer(_pUniformsBuffer, 0, 2);
         temporalCompute->setTexture(positionTexture, 0);
         temporalCompute->setTexture(normalTexture, 1);
@@ -7586,7 +7610,7 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
-  if (_pRestirSpatialPSO && _pReservoirBuffer && positionTexture &&
+  if (_pRestirSpatialPSO && _pRestirReservoirBuffer && positionTexture &&
       normalTexture && albedoTexture) {
     MTL::CommandBuffer *spatialCmd = _pCommandQueue->commandBuffer();
     if (spatialCmd) {
@@ -7594,7 +7618,7 @@ void Renderer::draw(MTK::View *pView) {
           spatialCmd->computeCommandEncoder();
       if (spatialCompute) {
         spatialCompute->setComputePipelineState(_pRestirSpatialPSO);
-        spatialCompute->setBuffer(_pReservoirBuffer, 0, 0);
+        spatialCompute->setBuffer(_pRestirReservoirBuffer, 0, 0);
         spatialCompute->setBuffer(_pUniformsBuffer, 0, 1);
         spatialCompute->setTexture(positionTexture, 0);
         spatialCompute->setTexture(normalTexture, 1);
@@ -7624,6 +7648,43 @@ void Renderer::draw(MTK::View *pView) {
       } else {
         trackFrameCommandBuffer(spatialCmd);
         spatialCmd->commit();
+      }
+    }
+  }
+
+  if (_pRestirShadePSO && _pRestirReservoirBuffer && colorTexture) {
+    MTL::CommandBuffer *shadeCmd = _pCommandQueue->commandBuffer();
+    if (shadeCmd) {
+      MTL::ComputeCommandEncoder *shadeCompute =
+          shadeCmd->computeCommandEncoder();
+      if (shadeCompute) {
+        shadeCompute->setComputePipelineState(_pRestirShadePSO);
+        shadeCompute->setBuffer(_pRestirReservoirBuffer, 0, 0);
+        shadeCompute->setTexture(colorTexture, 0);
+
+        NS::UInteger width = colorTexture->width();
+        NS::UInteger height = colorTexture->height();
+        NS::UInteger tgWidth =
+            std::max<NS::UInteger>(1,
+                                   _pRestirShadePSO->threadExecutionWidth());
+        NS::UInteger maxThreads = std::max<NS::UInteger>(
+            tgWidth, _pRestirShadePSO->maxTotalThreadsPerThreadgroup());
+        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
+        MTL::Size threadsPerThreadgroup =
+            MTL::Size::Make(tgWidth, tgHeight, 1);
+        MTL::Size threadgroups = MTL::Size::Make(
+            (width + threadsPerThreadgroup.width - 1) /
+                threadsPerThreadgroup.width,
+            (height + threadsPerThreadgroup.height - 1) /
+                threadsPerThreadgroup.height,
+            1);
+        shadeCompute->dispatchThreadgroups(threadgroups, threadsPerThreadgroup);
+        shadeCompute->endEncoding();
+        trackFrameCommandBuffer(shadeCmd);
+        shadeCmd->commit();
+      } else {
+        trackFrameCommandBuffer(shadeCmd);
+        shadeCmd->commit();
       }
     }
   }
@@ -7761,10 +7822,10 @@ void Renderer::draw(MTK::View *pView) {
     std::swap(_normalSlot, _normalHistorySlot);
     std::swap(_albedoSlot, _albedoHistorySlot);
   }
-  if (_pReservoirBuffer && _pReservoirHistoryBuffer) {
-    std::swap(_pReservoirBuffer, _pReservoirHistoryBuffer);
+  if (_pRestirReservoirBuffer && _pRestirReservoirHistoryBuffer) {
+    std::swap(_pRestirReservoirBuffer, _pRestirReservoirHistoryBuffer);
   }
-  if (!_restirHistoryValid && _pReservoirBuffer && _pReservoirHistoryBuffer &&
+  if (!_restirHistoryValid && _pRestirReservoirBuffer && _pRestirReservoirHistoryBuffer &&
       _positionSlot.texture && _positionHistorySlot.texture) {
     _restirHistoryValid = true;
   }

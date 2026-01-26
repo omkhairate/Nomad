@@ -81,7 +81,8 @@ kernel void restirTemporalMain(
         return;
     }
 
-    float4 currentClip = uniforms.viewProjection * float4(currentPosition, 1.0f);
+    float4 currentClip =
+        uniforms.currentViewProjection * float4(currentPosition, 1.0f);
     if (currentClip.w <= 0.0f) {
         currentReservoir[index] = current;
         return;
@@ -121,7 +122,8 @@ kernel void restirTemporalMain(
     float normalThreshold = mix(0.8f, 0.95f, motion);
     float albedoThreshold = mix(0.25f, 0.1f, motion);
 
-    float4 historyClip = uniforms.viewProjection * float4(historyPositionValue, 1.0f);
+    float4 historyClip =
+        uniforms.currentViewProjection * float4(historyPositionValue, 1.0f);
     if (historyClip.w <= 0.0f) {
         currentReservoir[index] = current;
         return;
