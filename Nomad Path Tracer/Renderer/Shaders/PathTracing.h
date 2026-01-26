@@ -54,6 +54,18 @@ struct LightSampleCandidate {
   float lightPdf = 0.0f;
 };
 
+struct RestirSampleData {
+  float3 radiance = float3(0.0f);
+  float3 wi = float3(0.0f);
+  float pdf = 0.0f;
+  float geometryFactor = 0.0f;
+  uint packedLightId = 0u;
+  float3 lightPosition = float3(0.0f);
+  float3 lightNormal = float3(0.0f);
+  float lightArea = 0.0f;
+  float lightPdf = 0.0f;
+};
+
 #include "Intersect.h"
 #include "Random.h"
 #include "Scatter.h"
@@ -223,6 +235,39 @@ inline float restirTargetContribution(thread const RestirReservoir &reservoir) {
 inline float restirTargetWeight(float3 radiance, float geometryFactor, float pdf) {
   float target = restirTargetContribution(radiance, geometryFactor);
   return target / max(pdf, RAY_EPS);
+}
+
+inline void mergeReservoir(thread RestirReservoir &current,
+                           thread const RestirSampleData &candidate,
+                           float weight, uint candidateM, float xi) {
+  // ReSTIR DI: M is the number of candidates that built the incoming reservoir.
+  // We scale the candidate's weight by M and add it to wSum, while M accumulates.
+  if (candidateM == 0u || weight <= 0.0f || !isfinite(weight)) {
+    return;
+  }
+  float scaledWeight = weight * float(candidateM);
+  if (scaledWeight <= 0.0f || !isfinite(scaledWeight)) {
+    return;
+  }
+  float currentWeight = max(current.wSum, 0.0f);
+  float totalWeight = currentWeight + scaledWeight;
+  if (totalWeight <= 0.0f || !isfinite(totalWeight)) {
+    return;
+  }
+  float candidateProb = scaledWeight / totalWeight;
+  if (xi < candidateProb) {
+    current.sampleRadiance = candidate.radiance;
+    current.wi = candidate.wi;
+    current.pdf = candidate.pdf;
+    current.geometryFactor = candidate.geometryFactor;
+    current.packedLightId = candidate.packedLightId;
+    current.lightPosition = candidate.lightPosition;
+    current.lightNormal = candidate.lightNormal;
+    current.lightArea = candidate.lightArea;
+    current.lightPdf = candidate.lightPdf;
+  }
+  current.wSum = totalWeight;
+  current.m += candidateM;
 }
 
 inline float3 evaluateDirectLightingBsdf(thread const MaterialPayload &material,
