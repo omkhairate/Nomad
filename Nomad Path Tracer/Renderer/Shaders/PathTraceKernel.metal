@@ -65,7 +65,8 @@ kernel void pathTraceKernel(
   float accumulatedRoughness = 0.0f;
   RestirReservoir reservoir = initReservoir();
   uint restirCandidateCount = max(u.restirCandidateCount, 1u);
-  bool useRestir = (u.restirEnabled != 0u);
+  bool useRestir = (u.restirEnabled != 0u) && (reservoirBuffer != nullptr) &&
+                   (u.lightCount > 0u) && (u.lightTotalWeight > 0.0f);
 
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
