@@ -388,6 +388,9 @@ private:
   ManagedTextureSlot _albedoHistorySlot;
   ManagedTextureSlot _normalHistorySlot;
   ManagedTextureSlot _positionHistorySlot;
+  std::array<ManagedTextureSlot, 2> _restirData0Slots;
+  std::array<ManagedTextureSlot, 2> _restirData1Slots;
+  std::array<ManagedTextureSlot, 2> _restirData2Slots;
 
   struct PendingBlasBuild {
     Renderer *renderer = nullptr;

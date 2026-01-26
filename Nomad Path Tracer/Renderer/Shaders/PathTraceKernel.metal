@@ -23,6 +23,12 @@ kernel void pathTraceKernel(
     texture2d<float, access::write> albedoAccum [[texture(1)]],
     texture2d<float, access::write> normalAccum [[texture(2)]],
     texture2d<float, access::write> positionAccum [[texture(3)]],
+    texture2d<float, access::write> restirData0Out [[texture(4)]],
+    texture2d<float, access::write> restirData1Out [[texture(5)]],
+    texture2d<float, access::write> restirData2Out [[texture(6)]],
+    texture2d<float, access::read> restirData0Prev [[texture(7)]],
+    texture2d<float, access::read> restirData1Prev [[texture(8)]],
+    texture2d<float, access::read> restirData2Prev [[texture(9)]],
     array<texture2d<float, access::sample>, kMaxMaterialTextures>
         materialTextures [[texture(13)]],
     texture2d<float, access::sample> environmentMap
@@ -102,6 +108,7 @@ kernel void pathTraceKernel(
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
 
+    bool restirWriteEnabled = (sampleIdx == 0);
     PathTraceSample sample = rayColor(
         r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes, primitives,
         materials, u.primitiveCount, primitiveIndices, activeMask,
@@ -110,7 +117,11 @@ kernel void pathTraceKernel(
         u.lightCount, u.lightTotalWeight,
         static_cast<uint>(u.totalPrimitiveCount), materialTextures,
         u.textureCount, environmentMap, environmentSampler,
-        u.environmentMapEnabled, u.environmentMapIntensity);
+        u.environmentMapEnabled, u.environmentMapIntensity, pixel,
+        restirData0Out, restirData1Out, restirData2Out, restirData0Prev,
+        restirData1Prev, restirData2Prev, u.restirEnabled,
+        u.restirCandidateCount, u.restirTemporalReuse, u.prevViewProjection,
+        u.cameraMotionMetric, restirWriteEnabled);
     accumulatedColor += sample.radiance;
     accumulatedAlbedo += sample.albedo;
     accumulatedNormal += sample.normal;
