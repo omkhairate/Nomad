@@ -310,6 +310,7 @@ private:
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
   MTL::ComputePipelineState *_pRestirTemporalPSO = nullptr;
   MTL::ComputePipelineState *_pRestirSpatialPSO = nullptr;
+  MTL::ComputePipelineState *_pRestirShadePSO = nullptr;
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
@@ -327,8 +328,8 @@ private:
   MTL::Buffer *_pPrimitiveRemapBuffer = nullptr;
   MTL::Buffer *_pPrimitiveHitBufferGPU = nullptr;
   MTL::Buffer *_pPrimitiveHitReadback = nullptr;
-  MTL::Buffer *_pReservoirBuffer = nullptr;
-  MTL::Buffer *_pReservoirHistoryBuffer = nullptr;
+  MTL::Buffer *_pRestirReservoirBuffer = nullptr;
+  MTL::Buffer *_pRestirReservoirHistoryBuffer = nullptr;
   struct FrameCommandBufferRecord {
     MTL::CommandBuffer *buffer = nullptr;
     std::chrono::steady_clock::time_point trackedSince{};
