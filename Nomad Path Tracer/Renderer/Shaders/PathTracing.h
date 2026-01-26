@@ -245,6 +245,21 @@ inline float lightPdfFromCdf(uint offset, device const float *lightCdf,
   return weight / lightTotalWeight;
 }
 
+inline float lightPdfFromPrimIndex(uint lightPrimIndex,
+                                   device const uint *lightIndices,
+                                   uint lightCount,
+                                   device const float *lightCdf,
+                                   float lightTotalWeight) {
+  if (lightCount == 0 || lightTotalWeight <= 0.0f)
+    return 0.0f;
+  for (uint i = 0; i < lightCount; ++i) {
+    if (lightIndices[i] == lightPrimIndex) {
+      return lightPdfFromCdf(i, lightCdf, lightTotalWeight);
+    }
+  }
+  return 0.0f;
+}
+
 inline float3 evaluateDirectLightingBsdf(thread const MaterialPayload &material,
                                          float3 normal, float3 viewDir,
                                          float3 lightDir) {
@@ -406,7 +421,8 @@ inline bool buildRestirCandidateFromStored(
     float3 hitPoint, float3 offsetNormal, float3 viewDir,
     thread const MaterialPayload &material, float3 absorption,
     int hitPrimitiveId, uint lightPrimIndex, float3 lightPoint,
-    float3 lightNormal, float lightArea, float lightPdf,
+    float3 lightNormal, float lightArea, device const uint *lightIndices,
+    device const float *lightCdf, uint lightCount, float lightTotalWeight,
     device const float4 *tlasNodes, uint tlasNodeCount,
     device const float4 *bvhNodes, device const float4 *primitives,
     device const float4 *materials, uint primitiveCount,
@@ -416,11 +432,17 @@ inline bool buildRestirCandidateFromStored(
     thread TlasLeafCache &bounceCache, uint totalPrimitiveCount,
     thread LightSampleCandidate &candidate) {
   candidate = LightSampleCandidate();
-  if (lightArea <= 0.0f || lightPdf <= 0.0f)
+  if (lightArea <= 0.0f)
     return false;
   if (int(lightPrimIndex) == hitPrimitiveId)
     return false;
   if (lightPrimIndex >= primitiveCount)
+    return false;
+
+  float lightPdf = lightPdfFromPrimIndex(lightPrimIndex, lightIndices,
+                                         lightCount, lightCdf,
+                                         lightTotalWeight);
+  if (lightPdf <= 0.0f)
     return false;
 
   float3 toLight = lightPoint - hitPoint;
@@ -1443,7 +1465,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                     if (buildRestirCandidateFromStored(
                             bestHit.point, offsetNormal, viewDir, material,
                             absorption.xyz, bestHit.primitiveId, prevLightId,
-                            prev0.xyz, prev1.xyz, prev1.w, prev2.x, tlasNodes,
+                            prev0.xyz, prev1.xyz, prev1.w, lightIndices,
+                            lightCdf, lightCount, lightTotalWeight, tlasNodes,
                             tlasNodeCount, bvhNodes, primitives, materials,
                             primitiveCount, primitiveIndices, activeMask,
                             instanceRecords, primitiveRemap, primitiveRayStats,
