@@ -7051,12 +7051,16 @@ void Renderer::updateUniforms(bool cameraChanged) {
 
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
+  bool restirEnabled = _restirSettings.enabled;
+  u.restirEnabled = restirEnabled ? 1u : 0u;
   u.restirSpatialRadius = _restirSpatialRadius;
   u.restirSpatialNeighborCount = _restirSpatialNeighborCount;
   u.restirCandidateCount = std::max<uint32_t>(_restirSettings.candidateCount, 1);
   u.restirMaxTemporalM = std::max<uint32_t>(_restirSettings.maxTemporalM, 1);
-  u.restirEnableTemporal = _restirSettings.enableTemporal ? 1u : 0u;
-  u.restirEnableSpatial = _restirSettings.enableSpatial ? 1u : 0u;
+  u.restirEnableTemporal =
+      (restirEnabled && _restirSettings.enableTemporal) ? 1u : 0u;
+  u.restirEnableSpatial =
+      (restirEnabled && _restirSettings.enableSpatial) ? 1u : 0u;
   u.restirNormalDepthThresholds = _restirSettings.normalDepthThresholds;
   u.restirDebugMode = _restirSettings.debugMode;
   size_t boundTextureCount = std::min(
@@ -7235,7 +7239,7 @@ void Renderer::draw(MTK::View *pView) {
 
   bool allowResidency = !belowBudget && !overCap && !totalOverCap;
 
-  if (!_restirSettings.enableTemporal) {
+  if (!_restirSettings.enabled || !_restirSettings.enableTemporal) {
     _restirHistoryValid = false;
   }
 
@@ -7584,7 +7588,8 @@ void Renderer::draw(MTK::View *pView) {
     _restirHistoryValid = false;
   }
 
-  if (_pRestirTemporalPSO && _restirSettings.enableTemporal &&
+  if (_pRestirTemporalPSO && _restirSettings.enabled &&
+      _restirSettings.enableTemporal &&
       _restirHistoryValid && _pRestirReservoirBuffer &&
       _pRestirReservoirHistoryBuffer && positionTexture && normalTexture &&
       albedoTexture && positionHistoryTexture && normalHistoryTexture &&
@@ -7634,7 +7639,8 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
-  if (_pRestirSpatialPSO && _restirSettings.enableSpatial &&
+  if (_pRestirSpatialPSO && _restirSettings.enabled &&
+      _restirSettings.enableSpatial &&
       _pRestirReservoirBuffer && positionTexture &&
       normalTexture && albedoTexture) {
     MTL::CommandBuffer *spatialCmd = _pCommandQueue->commandBuffer();
@@ -7678,7 +7684,7 @@ void Renderer::draw(MTK::View *pView) {
   }
 
   const bool restirShadeValid =
-      _pRestirReservoirBuffer &&
+      _pRestirReservoirBuffer && _restirSettings.enabled &&
       (_restirSettings.enableTemporal || _restirSettings.enableSpatial);
   if (_pRestirShadePSO && colorTexture && restirShadeValid) {
     MTL::CommandBuffer *shadeCmd = _pCommandQueue->commandBuffer();

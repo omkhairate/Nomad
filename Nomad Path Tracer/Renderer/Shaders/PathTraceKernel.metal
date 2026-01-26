@@ -58,12 +58,14 @@ kernel void pathTraceKernel(
 
   uint samplesThisFrame = max(u.maxSamplesPerPixel, 1u);
 
+  float3 accumulatedColor = float3(0.0);
   float3 accumulatedAlbedo = float3(0.0);
   float3 accumulatedNormal = float3(0.0);
   float3 accumulatedPosition = float3(0.0);
   float accumulatedRoughness = 0.0f;
   RestirReservoir reservoir = initReservoir();
   uint restirCandidateCount = max(u.restirCandidateCount, 1u);
+  bool useRestir = (u.restirEnabled != 0u);
 
   float3 rayDx = u.rayDx;
   float3 rayDy = u.rayDy;
@@ -103,6 +105,24 @@ kernel void pathTraceKernel(
     r.direction = rayDirection;
     r.minDistance = 0.0001f;
     r.maxDistance = INFINITY;
+
+    if (!useRestir) {
+      PathTraceSample sample = rayColor(
+          r, rayDx, rayDy, tlasNodes, u.tlasNodeCount, bvhNodes, primitives,
+          materials, u.primitiveCount, primitiveIndices, activeMask,
+          instanceRecords, lightIndices, lightCdf, primitiveRemap,
+          primitiveRayStats, seed, u.maxRayDepth, u.debugAS, u.blasNodeCount,
+          u.lightCount, u.lightTotalWeight,
+          static_cast<uint>(u.totalPrimitiveCount), materialTextures,
+          u.textureCount, environmentMap, environmentSampler,
+          u.environmentMapEnabled, u.environmentMapIntensity);
+      accumulatedColor += sample.radiance;
+      accumulatedAlbedo += sample.albedo;
+      accumulatedNormal += sample.normal;
+      accumulatedPosition += sample.position;
+      accumulatedRoughness += sample.roughness;
+      continue;
+    }
 
     TlasLeafCache bounceCache;
     bounceCache.valid = false;
@@ -239,6 +259,9 @@ kernel void pathTraceKernel(
   }
 
   float totalSamples = float(samplesThisFrame);
+  float3 averaged =
+      (totalSamples > 0.0f) ? accumulatedColor / totalSamples : float3(0.0f);
+  averaged = clamp(averaged, 0.0f, 1.0f);
   float3 reservoirEstimate = finalizeReservoir(reservoir);
   reservoirEstimate = clamp(reservoirEstimate, 0.0f, 1.0f);
 
@@ -254,13 +277,14 @@ kernel void pathTraceKernel(
       (totalSamples > 0.0f) ? accumulatedRoughness / totalSamples : 0.0f;
   averagedRoughness = clamp(averagedRoughness, 0.0f, 1.0f);
 
-  float4 result = float4(reservoirEstimate, 1.0f);
+  float3 outputColor = useRestir ? reservoirEstimate : averaged;
+  float4 result = float4(outputColor, 1.0f);
   currentFrame.write(result, pixel);
   albedoAccum.write(float4(averagedAlbedo, 1.0f), pixel);
   normalAccum.write(float4(averagedNormal, averagedRoughness), pixel);
   positionAccum.write(float4(averagedPosition, 1.0f), pixel);
 
-  if (reservoirBuffer) {
+  if (useRestir && reservoirBuffer) {
     uint pixelIndex = pixel.y * width + pixel.x;
     reservoirBuffer[pixelIndex] = reservoir;
   }
