@@ -77,6 +77,12 @@ struct UniformsData
     uint maxSamplesPerPixel;
     uint restirSpatialRadius;
     uint restirSpatialNeighborCount;
+    uint restirCandidateCount;
+    uint restirMaxTemporalM;
+    uint restirEnableTemporal;
+    uint restirEnableSpatial;
+    float4 restirNormalDepthThresholds;
+    uint restirDebugMode;
     uint textureCount;
     uint environmentMapEnabled;
     float environmentMapIntensity;

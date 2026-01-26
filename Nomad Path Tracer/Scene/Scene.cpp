@@ -86,6 +86,7 @@ void Scene::clear() {
   maxRayDepth = 32;
   residencyStrategy = ResidencyStrategy::DistanceLOD;
   residencyParams = ResidencyParameters{};
+  restirSettings = ReSTIRSettings{};
   startCompacted = false;
   textureResidencyMemoryCapMB = 2048.0;
   geometryResidencyMemoryCapMB = 2048.0;
@@ -257,6 +258,14 @@ const ResidencyParameters &Scene::getResidencyParameters() const {
 void Scene::setResidencyParameters(const ResidencyParameters &params) {
   residencyParams = params;
   residencyParams.normalizeEnvironmentDepthSettings();
+}
+
+const ReSTIRSettings &Scene::getReSTIRSettings() const {
+  return restirSettings;
+}
+
+void Scene::setReSTIRSettings(const ReSTIRSettings &settings) {
+  restirSettings = settings;
 }
 
 size_t Scene::getMaxTileSampleWorkPerCommand() const {
