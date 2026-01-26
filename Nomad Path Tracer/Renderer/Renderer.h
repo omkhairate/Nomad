@@ -462,6 +462,7 @@ private:
     double restirReuseRate = 0.0;
     bool restirHistoryReset = false;
     double restirCandidateAcceptance = 0.0;
+    size_t restirVisibilityRejects = 0;
     double cameraMotionMetric = 0.0;
     std::string primitiveProbabilities;
     std::string objectProbabilities;
@@ -527,6 +528,7 @@ private:
   std::vector<SceneObject> _allSceneObjects;
   double _frameRestirReuseRate = 0.0;
   double _frameRestirCandidateAcceptance = 0.0;
+  size_t _frameRestirVisibilityRejects = 0;
   double _frameCameraMotionMetric = 0.0;
   Camera::State _lastUniformCameraState{};
   bool _lastUniformCameraStateValid = false;

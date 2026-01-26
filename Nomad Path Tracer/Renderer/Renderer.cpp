@@ -1821,7 +1821,7 @@ void Renderer::writeBenchmarkHeader() {
          "probability_initial_desired_primitives,"
          "probability_final_desired_primitives,probability_trimmed_primitives,"
          "probability_budget_hit,restir_reuse_rate,restir_history_reset,"
-         "restir_candidate_acceptance,"
+         "restir_candidate_acceptance,restir_visibility_rejects,"
          "camera_motion_metric,"
          "primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
@@ -1917,6 +1917,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.restirReuseRate, 3) << ','
       << boolToInt(sample.restirHistoryReset) << ','
       << formatFixed(sample.restirCandidateAcceptance, 3) << ','
+      << sample.restirVisibilityRejects << ','
       << formatFixed(sample.cameraMotionMetric, 3) << ',';
   appendCsvEscaped(row, sample.primitiveProbabilities);
   row << ',';
@@ -13289,6 +13290,7 @@ void Renderer::beginFrameMetrics() {
     sample.restirReuseRate = _frameRestirReuseRate;
     sample.restirHistoryReset = _frameRestirHistoryReset;
     sample.restirCandidateAcceptance = _frameRestirCandidateAcceptance;
+    sample.restirVisibilityRejects = _frameRestirVisibilityRejects;
     sample.cameraMotionMetric = _frameCameraMotionMetric;
     sample.environmentTargetActiveFraction =
         _residencyConfig.environmentTargetActiveFraction;
@@ -13447,6 +13449,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       uint32_t total = stats[0];
       uint32_t reused = stats[1];
       uint32_t accepted = stats[2];
+      uint32_t visibilityRejects = stats[3];
       if (total > 0) {
         _frameRestirReuseRate =
             static_cast<double>(reused) / static_cast<double>(total);
@@ -13456,6 +13459,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
         _frameRestirReuseRate = 0.0;
         _frameRestirCandidateAcceptance = 0.0;
       }
+      _frameRestirVisibilityRejects = visibilityRejects;
     }
   }
   bool canRecalculateNodes =
@@ -13511,9 +13515,10 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   if (_residencyConfig.restirSamplingEnabled) {
     printf(
         "ReSTIR sampling: reuse_rate=%.3f candidate_acceptance=%.3f "
-        "camera_motion=%.3f history_evictions=%zu\n",
+        "visibility_rejects=%zu camera_motion=%.3f history_evictions=%zu\n",
         _frameRestirReuseRate, _frameRestirCandidateAcceptance,
-        _frameCameraMotionMetric, _frameRestirHistoryEvictions);
+        _frameRestirVisibilityRejects, _frameCameraMotionMetric,
+        _frameRestirHistoryEvictions);
   }
   if (isAlwaysResidentStrategy() && offloaded > 0) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",
@@ -13528,6 +13533,7 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
     sample.restirReuseRate = _frameRestirReuseRate;
     sample.restirHistoryReset = _frameRestirHistoryReset;
     sample.restirCandidateAcceptance = _frameRestirCandidateAcceptance;
+    sample.restirVisibilityRejects = _frameRestirVisibilityRejects;
     sample.cameraMotionMetric = _frameCameraMotionMetric;
     sample.cpuTimeSeconds = _lastCPUTime;
     sample.gpuTimeSeconds = _lastGPUTime;
