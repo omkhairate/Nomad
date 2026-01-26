@@ -6584,6 +6584,37 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
     return nullptr;
   }
 
+  auto clearSlotTexture = [&](ManagedTextureSlot &slotToClear) {
+    if (!cmd || !slotToClear.texture)
+      return;
+    size_t pixelBytes = bytesPerPixel(slotToClear.pixelFormat);
+    if (pixelBytes == 0)
+      return;
+    size_t rowBytes = slotToClear.width * pixelBytes;
+    size_t alignedRowBytes = alignTo(rowBytes, 256);
+    size_t totalBytes = alignedRowBytes * slotToClear.height;
+    if (totalBytes == 0)
+      return;
+    ensureBufferCapacity(_pTextureClearBuffer, totalBytes,
+                         _textureClearBufferCapacity, false,
+                         MTL::ResourceStorageModeShared,
+                         GpuMemoryTracker::Category::RendererBuffers);
+    if (!_pTextureClearBuffer)
+      return;
+    if (void *ptr = _pTextureClearBuffer->contents())
+      std::memset(ptr, 0, totalBytes);
+    if (!blit)
+      blit = cmd->blitCommandEncoder();
+    if (!blit)
+      return;
+    MTL::Size size =
+        MTL::Size::Make(slotToClear.width, slotToClear.height, 1);
+    MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+    blit->copyFromBuffer(_pTextureClearBuffer, 0, alignedRowBytes, totalBytes,
+                         size, slotToClear.texture, 0, 0, origin);
+    slotToClear.stagingValid = false;
+  };
+
   if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1] ||
       &slot == &_sampleCountSlot) {
     _needsAccumulationReset = true;
@@ -6622,6 +6653,8 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
       _needsAccumulationReset = true;
       _accumulationTargetsNeedClear = true;
     }
+    if (&slot == &_accumulationSlots[0] || &slot == &_accumulationSlots[1])
+      clearSlotTexture(slot);
   }
 
   slot.lastUsedFrame = _renderedFrameCount;
@@ -7361,9 +7394,8 @@ void Renderer::updateUniforms(bool cameraChanged) {
       _accumulationTargetsNeedClear = true;
       u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
     }
+    // frameCount tracks how many frames are already accumulated in lastFrame.
     u.frameCount = 0;
-  } else {
-    u.frameCount++;
   }
 
   uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
@@ -8063,6 +8095,14 @@ void Renderer::draw(MTK::View *pView) {
     presentCmd->presentDrawable(drawable);
   trackFrameCommandBuffer(presentCmd);
   presentCmd->commit();
+  {
+    UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
+    // Increment after submission so the shader sees the count of frames already
+    // accumulated in lastFrame during the draw.
+    u.frameCount++;
+    markBufferModified(_pUniformsBuffer,
+                       NS::Range::Make(0, sizeof(UniformsData)));
+  }
 
   if (_historyStreamingActive) {
     std::printf("[TextureResidency] History streaming active: restored %zu slot%s%s.\n",
@@ -12012,6 +12052,12 @@ void Renderer::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 
   buildTextures();
   recalculateViewport();
+  if (_pUniformsBuffer) {
+    UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
+    u.frameCount = 0;
+    markBufferModified(_pUniformsBuffer,
+                       NS::Range::Make(0, sizeof(UniformsData)));
+  }
 }
 
 bool Renderer::hasKeyframes() const { return !_pScene->cameraPath.empty(); }
