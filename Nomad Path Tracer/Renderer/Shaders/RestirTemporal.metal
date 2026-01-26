@@ -120,8 +120,7 @@ inline bool reevaluateReservoirSample(
     float3 throughput = directLightingBsdfFromAlbedo(currentAlbedo);
     float3 radiance = throughput * lightRadiance * cosTheta;
     float geometryFactor = cosLight / max(dist2, RAY_EPS);
-    float target = luminance(restirTargetContribution(radiance, geometryFactor));
-    float weight = target / max(totalPdf, RAY_EPS);
+    float weight = restirTargetWeight(radiance, geometryFactor, totalPdf);
     if (weight <= 0.0f || !isfinite(weight)) {
         return false;
     }
