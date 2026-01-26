@@ -227,19 +227,19 @@ kernel void pathTraceKernel(
           }
         }
 
-        accumulatedAlbedo += material.diffuseColor;
+        accumulatedAlbedo += material.diffuseColor * material.opacity;
         accumulatedNormal += shadingNormal;
         accumulatedPosition += bestHit.point;
         accumulatedRoughness += clamp(material.roughness, 0.0f, 1.0f);
 
-        float3 diffuseColor = material.diffuseColor * material.opacity;
-        if (luminance(diffuseColor) > 0.0f && u.lightCount > 0 &&
+        float3 directLightingBsdf = directLightingBsdfFromMaterial(material);
+        if (luminance(directLightingBsdf) > 0.0f && u.lightCount > 0 &&
             u.lightTotalWeight > 0.0f) {
           for (uint candidateIdx = 0u; candidateIdx < restirCandidateCount;
                ++candidateIdx) {
             LightSampleCandidate candidate;
             if (sampleDirectLightCandidate(
-                    bestHit.point, shadingNormal, diffuseColor,
+                    bestHit.point, shadingNormal, directLightingBsdf,
                     bestHit.primitiveId, tlasNodes, u.tlasNodeCount, bvhNodes,
                     primitives, materials, u.primitiveCount, primitiveIndices,
                     activeMask, instanceRecords, lightIndices, lightCdf,
