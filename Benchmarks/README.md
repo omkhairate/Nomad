@@ -24,8 +24,7 @@ Residency memory reporting now splits the working set into the actual budget com
 
 - `resident_geometry_memory_mb` – geometry residency tracked by the active strategy (distance, energy, etc.).
 - `resident_texture_memory_mb` – texture and accumulation targets managed by the texture residency pool.
-- `restir_memory_mb` – ReSTIR buffers that scale with resolution when sampling is enabled.
-- `residency_memory_mb` – sum of the above resident components, which is the budget that the residency strategies and caps are meant to manage. Geometry strategy tweaks primarily affect the geometry slice, while texture eviction and ReSTIR toggles influence the other two components.
+- `residency_memory_mb` – sum of the above resident components, which is the budget that the residency strategies and caps are meant to manage. Geometry strategy tweaks primarily affect the geometry slice, while texture eviction influences the other two components.
 
 Total-cap enforcement now adds memory-budget context to the benchmark exports:
 

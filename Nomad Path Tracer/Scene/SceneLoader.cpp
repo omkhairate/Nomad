@@ -688,15 +688,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                    value == "probabilistic_residency" ||
                    value == "probability_residency") {
             scene->setResidencyStrategy(ResidencyStrategy::Probabilistic);
-        } else if (value == "restir" || value == "restir_ris" ||
-                   value == "ris") {
-            printf("Residency strategy '%s' is deprecated; using distance LOD and enabling "
-                   "ReSTIR sampling.\n",
-                   residencyAttr);
-            scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
-            ResidencyParameters params = scene->getResidencyParameters();
-            params.restirSamplingEnabled = true;
-            scene->setResidencyParameters(params);
         } else if (value == "alwaysresident" || value == "always_resident" ||
                    value == "always" || value == "none" || value == "off") {
             scene->setResidencyStrategy(ResidencyStrategy::AlwaysResident);
@@ -800,14 +791,6 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.probabilityVisibleDemotionDwellFrames = root->UnsignedAttribute(
         "probabilityVisibleDemotionDwellFrames",
         params.probabilityVisibleDemotionDwellFrames);
-    params.restirBaselineMode = root->BoolAttribute(
-        "restirBaselineMode", params.restirBaselineMode);
-    params.restirBaselineMode = root->BoolAttribute(
-        "restirBaseline", params.restirBaselineMode);
-    params.restirSamplingEnabled = root->BoolAttribute(
-        "restirSampling", params.restirSamplingEnabled);
-    params.restirSamplingEnabled = root->BoolAttribute(
-        "restirSamplingEnabled", params.restirSamplingEnabled);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(
         "probabilityIdleCooldownFrames", params.probabilityIdleCooldownFrames);
     params.probabilityIdleCooldownFrames = root->UnsignedAttribute(

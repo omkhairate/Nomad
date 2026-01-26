@@ -8,7 +8,6 @@ add_executable(ResidencyTests
   ResidencyTestsMain.cpp
   ResidencyBudgetTests.cpp
   ProbabilisticResidencyTests.cpp
-  ReSTIRResidencyTests.cpp
 )
 
 target_include_directories(ResidencyTests PRIVATE
