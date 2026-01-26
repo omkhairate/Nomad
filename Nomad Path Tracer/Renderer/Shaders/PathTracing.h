@@ -225,13 +225,70 @@ inline float restirTargetWeight(float3 radiance, float geometryFactor, float pdf
   return target / max(pdf, RAY_EPS);
 }
 
-inline float3 directLightingBsdfFromAlbedo(float3 albedo) {
-  float3 clamped = max(albedo, float3(0.0f));
-  return clamped / M_PI;
+inline float3 evaluateDirectLightingBsdf(thread const MaterialPayload &material,
+                                         float3 normal, float3 viewDir,
+                                         float3 lightDir) {
+  float3 n = normalize(normal);
+  float3 v = normalize(viewDir);
+  float3 l = normalize(lightDir);
+  if (!all(isfinite(n)) || !all(isfinite(v)) || !all(isfinite(l))) {
+    return float3(0.0f);
+  }
+  float nDotL = max(dot(n, l), 0.0f);
+  float nDotV = max(dot(n, v), 0.0f);
+  if (nDotL <= 0.0f || nDotV <= 0.0f) {
+    return float3(0.0f);
+  }
+
+  float3 diffuseColor =
+      max(material.diffuseColor, float3(0.0f)) * material.opacity;
+  float3 specularColor =
+      clamp(material.specularColor * material.opacity, 0.0f, 1.0f);
+
+  float roughness = clamp(material.roughness, 0.0f, 1.0f);
+  float alpha = max(roughness * roughness, 0.001f);
+  float alpha2 = alpha * alpha;
+
+  float3 h = normalize(v + l);
+  float nDotH = max(dot(n, h), 0.0f);
+  float vDotH = max(dot(v, h), 0.0f);
+
+  float denom = nDotH * nDotH * (alpha2 - 1.0f) + 1.0f;
+  float D = alpha2 / max(M_PI * denom * denom, RAY_EPS);
+
+  float k = (alpha + 1.0f);
+  k = (k * k) / 8.0f;
+  float Gv = nDotV / (nDotV * (1.0f - k) + k);
+  float Gl = nDotL / (nDotL * (1.0f - k) + k);
+  float G = Gv * Gl;
+
+  float Fc = pow(max(1.0f - vDotH, 0.0f), 5.0f);
+  float3 F = specularColor + (float3(1.0f) - specularColor) * Fc;
+
+  float3 specular =
+      (D * G) * F / max(4.0f * nDotL * nDotV, RAY_EPS);
+  float3 diffuse = diffuseColor / M_PI;
+  return diffuse + specular;
 }
 
-inline float3 directLightingBsdfFromMaterial(thread const MaterialPayload &material) {
-  return directLightingBsdfFromAlbedo(material.diffuseColor * material.opacity);
+inline MaterialPayload restirMaterialFromGBuffer(float3 albedo,
+                                                 float roughness) {
+  MaterialPayload material;
+  material.diffuseColor = max(albedo, float3(0.0f));
+  material.opacity = 1.0f;
+  material.specularColor = float3(0.04f);
+  material.shininess = 1.0f;
+  material.emissionColor = float3(0.0f);
+  material.emissionPower = 0.0f;
+  material.transmissionColor = float3(0.0f);
+  material.indexOfRefraction = 1.0f;
+  material.roughness = clamp(roughness, 0.0f, 1.0f);
+  material.pad0 = 0.0f;
+  material.diffuseTextureIndex = -1;
+  material.specularTextureIndex = -1;
+  material.normalTextureIndex = -1;
+  material.pad1 = 0;
+  return material;
 }
 
 inline void updateReservoir(thread RestirReservoir &reservoir,
@@ -283,7 +340,8 @@ inline bool isLightVisible(
     uint totalPrimitiveCount, device atomic_uint *primitiveRayStats);
 
 inline bool sampleDirectLightCandidate(
-    float3 hitPoint, float3 offsetNormal, float3 directLightingBsdf,
+    float3 hitPoint, float3 offsetNormal, float3 viewDir,
+    thread const MaterialPayload &material,
     int hitPrimitiveId, device const float4 *tlasNodes, uint tlasNodeCount,
     device const float4 *bvhNodes, device const float4 *primitives,
     device const float4 *materials, uint primitiveCount,
@@ -364,7 +422,8 @@ inline bool sampleDirectLightCandidate(
   MaterialPayload lightMaterial = decodeMaterial(lightMatIndex, materials, 1.0f);
   float3 lightRadiance =
       lightMaterial.emissionColor * lightMaterial.emissionPower;
-  float3 throughput = directLightingBsdf;
+  float3 throughput =
+      evaluateDirectLightingBsdf(material, offsetNormal, viewDir, wi);
   float geometryFactor = cosLight / max(dist2, RAY_EPS);
   candidate.radiance = throughput * lightRadiance * cosTheta;
   candidate.geometryFactor = geometryFactor;
@@ -1300,8 +1359,10 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                             decodeMaterial(lightMatIndex, materials, 1.0f);
                         float3 lightRadiance = lightMaterial.emissionColor *
                                               lightMaterial.emissionPower;
-    float3 throughput =
-        absorption.xyz * directLightingBsdfFromAlbedo(diffuseColor);
+                        float3 viewDir = normalize(-r.direction);
+                        float3 bsdf = evaluateDirectLightingBsdf(
+                            material, offsetNormal, viewDir, wi);
+                        float3 throughput = absorption.xyz * bsdf;
                         float3 contribution =
                             throughput * lightRadiance * (cosTheta / totalPdf);
                         light.xyz += contribution;

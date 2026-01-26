@@ -45,6 +45,7 @@ inline bool reevaluateReservoirSample(
     float3 currentPosition,
     float3 currentNormal,
     float3 currentAlbedo,
+    float currentRoughness,
     constant UniformsData &uniforms,
     device const float4 *materials,
     device const float4 *tlasNodes,
@@ -117,7 +118,14 @@ inline bool reevaluateReservoirSample(
     MaterialPayload lightMaterial = decodeMaterial(lightMatIndex, materials, 1.0f);
     float3 lightRadiance =
         lightMaterial.emissionColor * lightMaterial.emissionPower;
-    float3 throughput = directLightingBsdfFromAlbedo(currentAlbedo);
+    MaterialPayload surfaceMaterial =
+        restirMaterialFromGBuffer(currentAlbedo, currentRoughness);
+    float3 viewDir = uniforms.cameraPosition - currentPosition;
+    if (dot(viewDir, viewDir) <= RAY_EPS) {
+        viewDir = normalUnit;
+    }
+    float3 throughput =
+        evaluateDirectLightingBsdf(surfaceMaterial, normalUnit, viewDir, wi);
     float3 radiance = throughput * lightRadiance * cosTheta;
     float geometryFactor = cosLight / max(dist2, RAY_EPS);
     float weight = restirTargetWeight(radiance, geometryFactor, totalPdf);
@@ -205,7 +213,9 @@ kernel void restirTemporalMain(
     RestirReservoir current = currentReservoir[index];
 
     float3 currentPosition = positionAccum.read(gid).xyz;
-    float3 currentNormal = normalAccum.read(gid).xyz;
+    float4 currentNormalSample = normalAccum.read(gid);
+    float3 currentNormal = currentNormalSample.xyz;
+    float currentRoughness = clamp(currentNormalSample.w, 0.0f, 1.0f);
     float3 currentAlbedo = albedoAccum.read(gid).xyz;
 
     if (!isFinite3(currentPosition) || !isFinite3(currentNormal) ||
@@ -291,6 +301,7 @@ kernel void restirTemporalMain(
         float candidateWeight = 0.0f;
         if (reevaluateReservoirSample(
                 history, currentPosition, currentNormal, currentAlbedo,
+                currentRoughness,
                 uniforms, materials, tlasNodes, bvhNodes, primitives,
                 primitiveIndices, activeMask, instanceRecords, primitiveRemap,
                 primitiveRayStats, candidate, candidateWeight)) {
