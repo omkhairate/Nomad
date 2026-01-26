@@ -750,11 +750,11 @@ struct UniformsData {
 constexpr uint32_t kChunkResidentFlag = 1u;
 
 struct BVHNodeGPU {
-  simd::float4 boundsMin;
-  simd::float4 boundsMax;
+  simd::packed_float3 boundsMin;
+  int32_t leftFirst;
+  simd::packed_float3 boundsMax;
+  int32_t count;
 };
-
-static_assert(sizeof(BVHNodeGPU) == 32, "BVHNodeGPU must stay 32 bytes.");
 
 struct ChunkEntry {
   uint32_t chunkId;
@@ -5672,11 +5672,6 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       std::memcpy(&value, &packed, sizeof(int));
       return value;
     };
-    auto encodeInt = [](int value) -> float {
-      float packed = 0.0f;
-      std::memcpy(&packed, &value, sizeof(int));
-      return packed;
-    };
 
     for (size_t i = 0; i < blasNodeCount; ++i) {
       const simd::float4 &minPacked = (*bvhSource)[2 * i + 0];
@@ -5685,27 +5680,33 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       int count = decodeInt(maxPacked.w);
 
       BVHNodeGPU node{};
-      node.boundsMin = simd::float4{minPacked.x, minPacked.y, minPacked.z, 0.0f};
-      node.boundsMax = simd::float4{maxPacked.x, maxPacked.y, maxPacked.z, 0.0f};
+      node.boundsMin =
+          simd::packed_float3{minPacked.x, minPacked.y, minPacked.z};
+      node.boundsMax =
+          simd::packed_float3{maxPacked.x, maxPacked.y, maxPacked.z};
       if (count > 0) {
         uint32_t chunkIndex = static_cast<uint32_t>(chunkUpload.size());
-        leftFirst = static_cast<int32_t>(chunkIndex);
+        node.leftFirst = static_cast<int32_t>(chunkIndex);
+        node.count = count;
         ChunkEntry entry{};
         entry.chunkId = chunkIndex;
         entry.primitiveOffset = static_cast<uint32_t>(leftFirst);
         entry.primitiveCount = static_cast<uint32_t>(count);
         entry.flags = kChunkResidentFlag;
         chunkUpload.push_back(entry);
+      } else {
+        node.leftFirst = leftFirst;
+        node.count = count;
       }
-      node.boundsMin.w = encodeInt(leftFirst);
-      node.boundsMax.w = encodeInt(count);
       bvhUpload.push_back(node);
     }
 
     if (bvhUpload.empty()) {
       BVHNodeGPU node{};
-      node.boundsMin = simd::float4{0.0f, 0.0f, 0.0f, encodeInt(0)};
-      node.boundsMax = simd::float4{0.0f, 0.0f, 0.0f, encodeInt(0)};
+      node.boundsMin = simd::packed_float3{0.0f, 0.0f, 0.0f};
+      node.boundsMax = simd::packed_float3{0.0f, 0.0f, 0.0f};
+      node.leftFirst = 0;
+      node.count = 0;
       bvhUpload.push_back(node);
     }
     if (chunkUpload.empty()) {

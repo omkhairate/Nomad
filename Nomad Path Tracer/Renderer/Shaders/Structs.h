@@ -37,8 +37,10 @@ struct InstanceRecord
 
 struct BVHNodeGPU
 {
-    float4 boundsMin;
-    float4 boundsMax;
+    packed_float3 boundsMin;
+    int leftFirst;
+    packed_float3 boundsMax;
+    int count;
 };
 
 struct ChunkEntry

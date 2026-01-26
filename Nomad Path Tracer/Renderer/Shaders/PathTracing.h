@@ -573,8 +573,8 @@ inline intersection firstHitBVH(thread const Ray &r,
     BVHNodeGPU node = bvhNodes[nodeIdx];
     float3 bmin = float3(node.boundsMin);
     float3 bmax = float3(node.boundsMax);
-    int leftFirst = as_type<int>(node.boundsMin.w);
-    int second = as_type<int>(node.boundsMax.w);
+    int leftFirst = node.leftFirst;
+    int second = node.count;
 
     if (!intersectAABB(r, bmin, bmax, RAY_EPS, in.t))
       continue;
