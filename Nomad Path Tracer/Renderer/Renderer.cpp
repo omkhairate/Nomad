@@ -737,6 +737,8 @@ struct UniformsData {
   float lightTotalWeight;
   uint32_t minSamplesPerPixel = 1;
   uint32_t maxSamplesPerPixel = 1;
+  uint32_t restirSpatialRadius = 2;
+  uint32_t restirSpatialNeighborCount = 8;
   uint32_t textureCount = 0;
   uint32_t environmentMapEnabled = 0;
   float environmentMapIntensity = 1.0f;
@@ -1626,6 +1628,8 @@ Renderer::~Renderer() {
     _pAdaptiveSamplingPSO->release();
   if (_pRestirTemporalPSO)
     _pRestirTemporalPSO->release();
+  if (_pRestirSpatialPSO)
+    _pRestirSpatialPSO->release();
   if (_pOverlayPSO)
     _pOverlayPSO->release();
 
@@ -2516,6 +2520,10 @@ void Renderer::buildShaders() {
     _pRestirTemporalPSO->release();
     _pRestirTemporalPSO = nullptr;
   }
+  if (_pRestirSpatialPSO) {
+    _pRestirSpatialPSO->release();
+    _pRestirSpatialPSO = nullptr;
+  }
 
   NS::Error *pError = nullptr;
   MTL::Library *pLibrary = _pDevice->newDefaultLibrary();
@@ -2636,6 +2644,18 @@ void Renderer::buildShaders() {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
     pRestirTemporalFn->release();
+  }
+
+  pError = nullptr;
+  MTL::Function *pRestirSpatialFn = pLibrary->newFunction(
+      NS::String::string("restirSpatialMain", UTF8StringEncoding));
+  if (pRestirSpatialFn) {
+    _pRestirSpatialPSO =
+        _pDevice->newComputePipelineState(pRestirSpatialFn, &pError);
+    if (!_pRestirSpatialPSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    }
+    pRestirSpatialFn->release();
   }
 
   pVertexFn->release();
@@ -7002,6 +7022,8 @@ void Renderer::updateUniforms(bool cameraChanged) {
 
   u.minSamplesPerPixel = minSamples;
   u.maxSamplesPerPixel = maxSamples;
+  u.restirSpatialRadius = _restirSpatialRadius;
+  u.restirSpatialNeighborCount = _restirSpatialNeighborCount;
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
   u.textureCount = static_cast<uint32_t>(boundTextureCount);
@@ -7560,6 +7582,48 @@ void Renderer::draw(MTK::View *pView) {
       } else {
         trackFrameCommandBuffer(temporalCmd);
         temporalCmd->commit();
+      }
+    }
+  }
+
+  if (_pRestirSpatialPSO && _pReservoirBuffer && positionTexture &&
+      normalTexture && albedoTexture) {
+    MTL::CommandBuffer *spatialCmd = _pCommandQueue->commandBuffer();
+    if (spatialCmd) {
+      MTL::ComputeCommandEncoder *spatialCompute =
+          spatialCmd->computeCommandEncoder();
+      if (spatialCompute) {
+        spatialCompute->setComputePipelineState(_pRestirSpatialPSO);
+        spatialCompute->setBuffer(_pReservoirBuffer, 0, 0);
+        spatialCompute->setBuffer(_pUniformsBuffer, 0, 1);
+        spatialCompute->setTexture(positionTexture, 0);
+        spatialCompute->setTexture(normalTexture, 1);
+        spatialCompute->setTexture(albedoTexture, 2);
+
+        NS::UInteger width = positionTexture->width();
+        NS::UInteger height = positionTexture->height();
+        NS::UInteger tgWidth =
+            std::max<NS::UInteger>(1,
+                                   _pRestirSpatialPSO->threadExecutionWidth());
+        NS::UInteger maxThreads = std::max<NS::UInteger>(
+            tgWidth, _pRestirSpatialPSO->maxTotalThreadsPerThreadgroup());
+        NS::UInteger tgHeight = std::max<NS::UInteger>(1, maxThreads / tgWidth);
+        MTL::Size threadsPerThreadgroup =
+            MTL::Size::Make(tgWidth, tgHeight, 1);
+        MTL::Size threadgroups = MTL::Size::Make(
+            (width + threadsPerThreadgroup.width - 1) /
+                threadsPerThreadgroup.width,
+            (height + threadsPerThreadgroup.height - 1) /
+                threadsPerThreadgroup.height,
+            1);
+        spatialCompute->dispatchThreadgroups(threadgroups,
+                                             threadsPerThreadgroup);
+        spatialCompute->endEncoding();
+        trackFrameCommandBuffer(spatialCmd);
+        spatialCmd->commit();
+      } else {
+        trackFrameCommandBuffer(spatialCmd);
+        spatialCmd->commit();
       }
     }
   }

@@ -309,6 +309,7 @@ private:
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
   MTL::ComputePipelineState *_pRestirTemporalPSO = nullptr;
+  MTL::ComputePipelineState *_pRestirSpatialPSO = nullptr;
 
   // Core scene and geometry data
   Scene *_pScene = nullptr;
@@ -748,6 +749,8 @@ private:
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
+  uint32_t _restirSpatialRadius = 2;
+  uint32_t _restirSpatialNeighborCount = 8;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
 
