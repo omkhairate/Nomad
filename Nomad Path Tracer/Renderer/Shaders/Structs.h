@@ -1,6 +1,7 @@
 #ifndef STRUCTS_H
 #define STRUCTS_H
 
+#include <metal_atomic>
 #include <metal_stdlib>
 
 using namespace metal;
@@ -101,6 +102,12 @@ struct PackedTexture
     uint width;
     uint height;
     uint flags;
+};
+
+struct RestirStats
+{
+    atomic_uint reuseCandidates;
+    atomic_uint reuseAccepted;
 };
 
 #endif
