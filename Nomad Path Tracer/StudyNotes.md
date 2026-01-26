@@ -9,13 +9,13 @@ The study now treats `totalGpuMemoryCapMB` as the **single authoritative budget*
 To avoid getting stuck in a perpetual eviction loop, the renderer tracks a minimum resident footprint estimate:
 
 ```
-history + mandatory buffers + essential geometry
+mandatory buffers + essential geometry
 ```
 
 When the configured total cap stays below this footprint for several frames, the renderer:
 
 1. Logs a warning that the total cap is below the minimum footprint.
-2. Forces an accumulation reset and disables history preservation.
+2. Forces an accumulation reset.
 3. Temporarily relaxes the effective total cap to the minimum footprint value.
 
 The benchmark CSV exposes the minimum footprint, relaxed cap, and eviction-stall status to make the fallback visible when comparing study runs.
