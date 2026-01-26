@@ -98,6 +98,16 @@ struct PackedTexture
     uint flags;
 };
 
+struct RestirReservoir
+{
+    float3 sampleRadiance = float3(0.0f);
+    float3 wi = float3(0.0f);
+    float pdf = 0.0f;
+    float wSum = 0.0f;
+    uint m = 0u;
+    uint packedLightId = 0u;
+};
+
 
 
 
