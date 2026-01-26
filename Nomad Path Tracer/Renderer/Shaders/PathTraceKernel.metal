@@ -102,10 +102,12 @@ kernel void restirSpatialKernel(
   }
 
   float3 shadingPosition = positionAccum.read(gid).xyz;
-  float3 shadingNormal = normalAccum.read(gid).xyz;
+  float4 shadingNormalData = normalAccum.read(gid);
+  float3 shadingNormal = shadingNormalData.xyz;
+  float shadingRoughness = shadingNormalData.w;
   float3 diffuseColor = albedoAccum.read(gid).xyz;
   if (!all(isfinite(shadingPosition)) || !all(isfinite(shadingNormal)) ||
-      !all(isfinite(diffuseColor))) {
+      !all(isfinite(diffuseColor)) || !isfinite(shadingRoughness)) {
     writeRestirReservoir(restirOutSample, restirOutNormal, restirOutState, gid,
                          combined);
     return;
@@ -140,6 +142,10 @@ kernel void restirSpatialKernel(
   constexpr float kSpatialNormalThreshold = 0.85f;
   constexpr float kSpatialDepthThreshold = 0.25f;
   constexpr float kSpatialPositionThreshold = 0.5f;
+  float roughnessBucketSize =
+      max(u.restirTemporalRoughnessBucketSize, 1e-4f);
+  uint shadingBucket = uint(floor(
+      clamp(shadingRoughness, 0.0f, 1.0f) / roughnessBucketSize));
 
   for (int tap = 0; tap < kSpatialTapCount; ++tap) {
     int2 offset = offsets[tap];
@@ -149,8 +155,11 @@ kernel void restirSpatialKernel(
     uint2 pixel = uint2(sampleCoord);
 
     float3 neighborPosition = positionAccum.read(pixel).xyz;
-    float3 neighborNormal = normalAccum.read(pixel).xyz;
-    if (!all(isfinite(neighborPosition)) || !all(isfinite(neighborNormal)))
+    float4 neighborNormalData = normalAccum.read(pixel);
+    float3 neighborNormal = neighborNormalData.xyz;
+    float neighborRoughness = neighborNormalData.w;
+    if (!all(isfinite(neighborPosition)) || !all(isfinite(neighborNormal)) ||
+        !isfinite(neighborRoughness))
       continue;
     float neighborNormalLen = length(neighborNormal);
     if (neighborNormalLen <= 1e-4f)
@@ -160,14 +169,19 @@ kernel void restirSpatialKernel(
     float normalSimilarity = dot(shadingNormal, neighborNormal);
     if (normalSimilarity < kSpatialNormalThreshold)
       continue;
+    uint neighborBucket = uint(floor(
+        clamp(neighborRoughness, 0.0f, 1.0f) / roughnessBucketSize));
+    if (neighborBucket != shadingBucket)
+      continue;
     float3 delta = neighborPosition - shadingPosition;
     float depthDelta = abs(dot(delta, shadingNormal));
-    if (depthDelta > kSpatialDepthThreshold)
-      continue;
     float neighborDepthDelta = abs(dot(delta, neighborNormal));
-    if (neighborDepthDelta > kSpatialDepthThreshold)
-      continue;
-    if (length(delta) > kSpatialPositionThreshold)
+    bool depthSimilar = depthDelta <= kSpatialDepthThreshold &&
+                        neighborDepthDelta <= kSpatialDepthThreshold;
+    float dist2 = dot(delta, delta);
+    bool positionSimilar =
+        dist2 <= kSpatialPositionThreshold * kSpatialPositionThreshold;
+    if (!depthSimilar && !positionSimilar)
       continue;
 
     RestirReservoir candidate{};
