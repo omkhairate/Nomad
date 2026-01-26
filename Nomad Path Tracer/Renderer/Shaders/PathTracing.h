@@ -46,6 +46,7 @@ struct LightSampleCandidate {
   float3 radiance = float3(0.0f);
   float3 wi = float3(0.0f);
   float pdf = 0.0f;
+  float geometryFactor = 0.0f;
   uint lightId = 0u;
   float3 lightPosition = float3(0.0f);
   float3 lightNormal = float3(0.0f);
@@ -195,6 +196,7 @@ inline RestirReservoir initReservoir() {
   reservoir.sampleRadiance = float3(0.0f);
   reservoir.wi = float3(0.0f);
   reservoir.pdf = 0.0f;
+  reservoir.geometryFactor = 0.0f;
   reservoir.wSum = 0.0f;
   reservoir.m = 0u;
   reservoir.packedLightId = 0xffffffffu;
@@ -203,6 +205,18 @@ inline RestirReservoir initReservoir() {
   reservoir.lightArea = 0.0f;
   reservoir.lightPdf = 0.0f;
   return reservoir;
+}
+
+inline float3 restirTargetContribution(float3 radiance, float geometryFactor) {
+  return radiance * max(geometryFactor, 0.0f);
+}
+
+inline float3 restirTargetContribution(thread const LightSampleCandidate &candidate) {
+  return restirTargetContribution(candidate.radiance, candidate.geometryFactor);
+}
+
+inline float3 restirTargetContribution(thread const RestirReservoir &reservoir) {
+  return restirTargetContribution(reservoir.sampleRadiance, reservoir.geometryFactor);
 }
 
 inline void updateReservoir(thread RestirReservoir &reservoir,
@@ -218,6 +232,7 @@ inline void updateReservoir(thread RestirReservoir &reservoir,
     reservoir.sampleRadiance = candidate.radiance;
     reservoir.wi = candidate.wi;
     reservoir.pdf = candidate.pdf;
+    reservoir.geometryFactor = candidate.geometryFactor;
     reservoir.packedLightId = candidate.lightId;
     reservoir.lightPosition = candidate.lightPosition;
     reservoir.lightNormal = candidate.lightNormal;
@@ -230,8 +245,8 @@ inline float3 finalizeReservoir(thread const RestirReservoir &reservoir) {
   if (reservoir.m == 0u || reservoir.pdf <= 0.0f) {
     return float3(0.0f);
   }
-  float weightSelected =
-      luminance(reservoir.sampleRadiance) / max(reservoir.pdf, RAY_EPS);
+  float3 target = restirTargetContribution(reservoir);
+  float weightSelected = luminance(target) / max(reservoir.pdf, RAY_EPS);
   if (weightSelected <= 0.0f) {
     return float3(0.0f);
   }
@@ -335,7 +350,9 @@ inline bool sampleDirectLightCandidate(
   float3 lightRadiance =
       lightMaterial.emissionColor * lightMaterial.emissionPower;
   float3 throughput = diffuseColor / M_PI;
+  float geometryFactor = cosLight / max(dist2, RAY_EPS);
   candidate.radiance = throughput * lightRadiance * cosTheta;
+  candidate.geometryFactor = geometryFactor;
   candidate.wi = wi;
   candidate.pdf = totalPdf;
   candidate.lightId = lightPrimIndex;
