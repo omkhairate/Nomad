@@ -90,8 +90,9 @@ inline float3 restirContribution(thread const LightSampleCandidate &candidate) {
   return candidate.radiance * candidate.geometryFactor / candidate.pdf;
 }
 
-inline float restirWeightFromContribution(float3 contribution) {
-  return max(luminance(contribution), 0.0f);
+inline float
+restirTargetFromCandidate(thread const LightSampleCandidate &candidate) {
+  return max(luminance(candidate.radiance * candidate.geometryFactor), 0.0f);
 }
 
 inline void restirUpdateReservoir(thread RestirReservoir &reservoir,
@@ -1390,7 +1391,9 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             continue;
           }
           float3 contribution = restirContribution(candidate);
-          float weight = restirWeightFromContribution(contribution);
+          float target = restirTargetFromCandidate(candidate);
+          float weight =
+              (candidate.pdf > 0.0f) ? (target / candidate.pdf) : 0.0f;
           restirUpdateReservoir(reservoir, candidate, contribution, weight, 1.0f,
                                 seed);
         }
@@ -1493,9 +1496,17 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                         memory_order_relaxed);
             }
             float3 contribution = restirContribution(spatialCandidate);
-            float weight = restirWeightFromContribution(contribution);
-            float spatialWeight =
-                prevWeightSum * (weight / prevSelectedWeight) * misWeight;
+            float target = restirTargetFromCandidate(spatialCandidate);
+            float prevLightPdf = prev2.x;
+            float prevTarget =
+                prevSelectedWeight * max(prevLightPdf, RAY_EPS);
+            float normalization =
+                (prevSampleCount > 0.0f) ? (prevWeightSum / prevSampleCount)
+                                         : 0.0f;
+            float spatialWeight = (prevTarget > 0.0f)
+                                      ? (normalization * (target / prevTarget))
+                                      : 0.0f;
+            spatialWeight *= misWeight;
             restirUpdateReservoir(reservoir, spatialCandidate, contribution,
                                   spatialWeight, prevSampleCount, seed);
           }
@@ -1573,11 +1584,22 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                       }
                       float3 contribution =
                           restirContribution(temporalCandidate);
-                      float weight =
-                          restirWeightFromContribution(contribution);
+                      float target =
+                          restirTargetFromCandidate(temporalCandidate);
+                      float prevLightPdf = prev2.x;
+                      float prevTarget =
+                          prevSelectedWeight * max(prevLightPdf, RAY_EPS);
+                      float normalization =
+                          (prevSampleCount > 0.0f)
+                              ? (prevWeightSum / prevSampleCount)
+                              : 0.0f;
+                      float temporalJacobian = 1.0f;
                       float temporalWeight =
-                          prevWeightSum * (weight / prevSelectedWeight) *
-                          misWeight;
+                          (prevTarget > 0.0f)
+                              ? (normalization * (target / prevTarget) *
+                                 temporalJacobian)
+                              : 0.0f;
+                      temporalWeight *= misWeight;
                       restirUpdateReservoir(reservoir, temporalCandidate,
                                             contribution, temporalWeight,
                                             prevSampleCount, seed);
