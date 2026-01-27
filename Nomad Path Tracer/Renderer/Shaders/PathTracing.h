@@ -1395,7 +1395,113 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                                 seed);
         }
 
-        if (restirTemporalReuse > 0 && cameraMotionMetric < 10.0f) {
+        bool temporalReuseEnabled =
+            restirTemporalReuse > 0 && cameraMotionMetric < 10.0f;
+        uint spatialNeighborCount = 0;
+        if (restirTemporalReuse > 0) {
+          uint spatialWidth = restirData0Prev.get_width();
+          uint spatialHeight = restirData0Prev.get_height();
+          if (spatialWidth > 0 && spatialHeight > 0) {
+            int2 basePixel = int2(pixel);
+            int2 offsets[4] = {int2(1, 0), int2(-1, 0), int2(0, 1),
+                               int2(0, -1)};
+            for (uint i = 0; i < 4; ++i) {
+              int2 neighbor = basePixel + offsets[i];
+              if (neighbor.x >= 0 && neighbor.y >= 0 &&
+                  neighbor.x < int(spatialWidth) &&
+                  neighbor.y < int(spatialHeight)) {
+                spatialNeighborCount += 1;
+              }
+            }
+          }
+        }
+        float misNormalization =
+            1.0f + (temporalReuseEnabled ? 1.0f : 0.0f) +
+            float(spatialNeighborCount);
+        float misWeight =
+            (misNormalization > 0.0f) ? (1.0f / misNormalization) : 1.0f;
+
+        if (spatialNeighborCount > 0) {
+          uint spatialWidth = restirData0Prev.get_width();
+          uint spatialHeight = restirData0Prev.get_height();
+          int2 basePixel = int2(pixel);
+          int2 offsets[4] = {int2(1, 0), int2(-1, 0), int2(0, 1),
+                             int2(0, -1)};
+          float currentDepth = length(bestHit.point - r.origin);
+          for (uint i = 0; i < 4; ++i) {
+            int2 neighbor = basePixel + offsets[i];
+            if (neighbor.x < 0 || neighbor.y < 0 ||
+                neighbor.x >= int(spatialWidth) ||
+                neighbor.y >= int(spatialHeight)) {
+              continue;
+            }
+            uint2 neighborPixel = uint2(neighbor.x, neighbor.y);
+            float4 neighborSurfacePos =
+                restirSurfacePosPrev.read(neighborPixel);
+            float4 neighborSurfaceNormal =
+                restirSurfaceNormalPrev.read(neighborPixel);
+            float neighborDepth = neighborSurfacePos.w;
+            float neighborNormalLen2 =
+                dot(neighborSurfaceNormal.xyz, neighborSurfaceNormal.xyz);
+            float positionThreshold =
+                max(0.01f * currentDepth, 0.02f);
+            float depthThreshold = max(0.02f * currentDepth, 0.05f);
+            float normalThreshold = 0.9f;
+            bool spatialSurfaceValid = false;
+            if (neighborDepth > 0.0f && neighborNormalLen2 > RAY_EPS) {
+              float positionDelta =
+                  length(neighborSurfacePos.xyz - bestHit.point);
+              float depthDelta = abs(neighborDepth - currentDepth);
+              float3 neighborNormal = normalize(neighborSurfaceNormal.xyz);
+              float3 currentNormal = normalize(offsetNormal);
+              float normalDot = dot(neighborNormal, currentNormal);
+              spatialSurfaceValid = positionDelta <= positionThreshold &&
+                                    depthDelta <= depthThreshold &&
+                                    normalDot >= normalThreshold;
+            }
+            if (!spatialSurfaceValid) {
+              continue;
+            }
+            if (restirStats) {
+              atomic_fetch_add_explicit(&restirStats->reuseCandidates, 1u,
+                                        memory_order_relaxed);
+            }
+            float4 prev0 = restirData0Prev.read(neighborPixel);
+            float4 prev1 = restirData1Prev.read(neighborPixel);
+            float4 prev2 = restirData2Prev.read(neighborPixel);
+            float prevWeightSum = prev2.y;
+            float prevSampleCount = prev2.z;
+            float prevSelectedWeight = prev2.w;
+            if (prevWeightSum <= 0.0f || prevSampleCount <= 0.0f ||
+                prevSelectedWeight <= 0.0f) {
+              continue;
+            }
+            uint prevLightId = static_cast<uint>(max(prev0.w, 0.0f));
+            LightSampleCandidate spatialCandidate;
+            if (!buildRestirCandidateFromStored(
+                    bestHit.point, offsetNormal, viewDir, material,
+                    absorption.xyz, bestHit.primitiveId, prevLightId,
+                    prev0.xyz, prev1.xyz, prev1.w, lightPdfLookup, tlasNodes,
+                    tlasNodeCount, bvhNodes, primitives, materials,
+                    primitiveCount, primitiveIndices, activeMask,
+                    instanceRecords, primitiveRemap, primitiveRayStats,
+                    bounceCache, totalPrimitiveCount, spatialCandidate)) {
+              continue;
+            }
+            if (restirStats) {
+              atomic_fetch_add_explicit(&restirStats->reuseAccepted, 1u,
+                                        memory_order_relaxed);
+            }
+            float3 contribution = restirContribution(spatialCandidate);
+            float weight = restirWeightFromContribution(contribution);
+            float spatialWeight =
+                prevWeightSum * (weight / prevSelectedWeight) * misWeight;
+            restirUpdateReservoir(reservoir, spatialCandidate, contribution,
+                                  spatialWeight, prevSampleCount, seed);
+          }
+        }
+
+        if (temporalReuseEnabled) {
           float4 prevClip = prevViewProjection * float4(bestHit.point, 1.0f);
           if (prevClip.w > RAY_EPS) {
             float3 ndc = prevClip.xyz / prevClip.w;
@@ -1470,7 +1576,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                       float weight =
                           restirWeightFromContribution(contribution);
                       float temporalWeight =
-                          prevWeightSum * (weight / prevSelectedWeight);
+                          prevWeightSum * (weight / prevSelectedWeight) *
+                          misWeight;
                       restirUpdateReservoir(reservoir, temporalCandidate,
                                             contribution, temporalWeight,
                                             prevSampleCount, seed);
