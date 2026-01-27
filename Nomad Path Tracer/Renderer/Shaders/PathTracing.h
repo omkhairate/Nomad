@@ -1421,6 +1421,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         float misNormalization =
             1.0f + (temporalReuseEnabled ? 1.0f : 0.0f) +
             float(spatialNeighborCount);
+        // Canonical ReSTIR MIS for reused reservoirs: use a balance heuristic
+        // over the contributing reservoirs (current + temporal + spatial).
         float misWeight =
             (misNormalization > 0.0f) ? (1.0f / misNormalization) : 1.0f;
 
@@ -1506,6 +1508,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             float spatialWeight = (prevTarget > 0.0f)
                                       ? (normalization * (target / prevTarget))
                                       : 0.0f;
+            // Apply MIS weight in the reuse update (canonical ReSTIR balance
+            // heuristic over reservoirs).
             spatialWeight *= misWeight;
             restirUpdateReservoir(reservoir, spatialCandidate, contribution,
                                   spatialWeight, prevSampleCount, seed);
@@ -1586,9 +1590,12 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                           restirContribution(temporalCandidate);
                       float target =
                           restirTargetFromCandidate(temporalCandidate);
-                      float prevLightPdf = prev2.x;
+                      // Canonical RIS reuse weight uses p_hat_prev(y) derived
+                      // from the previous reservoir: p_hat_prev(y) = w_prev(y) *
+                      // p_prev(y). For temporal reuse, the light geometry is
+                      // unchanged so p_prev(y) matches the current total PDF.
                       float prevTarget =
-                          prevSelectedWeight * max(prevLightPdf, RAY_EPS);
+                          prevSelectedWeight * max(temporalCandidate.pdf, RAY_EPS);
                       float normalization =
                           (prevSampleCount > 0.0f)
                               ? (prevWeightSum / prevSampleCount)
@@ -1599,6 +1606,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                               ? (normalization * (target / prevTarget) *
                                  temporalJacobian)
                               : 0.0f;
+                      // Apply MIS weight in the reuse update (canonical ReSTIR
+                      // balance heuristic over reservoirs).
                       temporalWeight *= misWeight;
                       restirUpdateReservoir(reservoir, temporalCandidate,
                                             contribution, temporalWeight,
