@@ -1676,6 +1676,11 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
               temporalJacobian =
                   (prevDist2 / currentDist2) *
                   (cosCurrent / max(cosPrev, RAY_EPS));
+              if (!isfinite(temporalJacobian) || temporalJacobian < 0.0f) {
+                temporalJacobian = 0.0f;
+              } else {
+                temporalJacobian = min(temporalJacobian, 32.0f);
+              }
             }
             float temporalWeight =
                 (prevTarget > 0.0f)
