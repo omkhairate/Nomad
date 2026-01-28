@@ -615,11 +615,11 @@ size_t Renderer::geometryResidencyCapBytes() const {
 }
 
 double Renderer::effectiveTotalGpuMemoryCapMB() const {
-  if (_totalGpuMemoryCapMB <= 0.0)
-    return 0.0;
-  if (_totalMemoryCapRelaxedMB <= 0.0)
+  if (_totalGpuMemoryCapMB > 0.0)
     return _totalGpuMemoryCapMB;
-  return std::max(_totalGpuMemoryCapMB, _totalMemoryCapRelaxedMB);
+  if (_totalMemoryCapRelaxedMB > 0.0)
+    return _totalMemoryCapRelaxedMB;
+  return 0.0;
 }
 
 size_t Renderer::totalGpuMemoryCapBytes() const {
@@ -660,8 +660,10 @@ size_t Renderer::minimumResidentFootprintBytes() const {
   return mandatoryBytes + historyBytes + geometryBytes;
 }
 
-bool Renderer::checkTotalMemoryCap(size_t requestedBytes, size_t existingBytes,
-                                   const char *context) {
+bool Renderer::canAllocateTotalGpuMemory(size_t requestedBytes,
+                                         size_t existingBytes,
+                                         GpuMemoryTracker::Category category,
+                                         const char *context) {
   size_t capBytes = totalGpuMemoryCapBytes();
   if (capBytes == 0 || !_pDevice)
     return true;
@@ -674,15 +676,70 @@ bool Renderer::checkTotalMemoryCap(size_t requestedBytes, size_t existingBytes,
     return true;
 
   size_t overageBytes = nextBytes - capBytes;
+  const char *label = context ? context : "unspecified";
+  bool residencyCategory =
+      category == GpuMemoryTracker::Category::Textures ||
+      category == GpuMemoryTracker::Category::Geometry ||
+      category == GpuMemoryTracker::Category::HeapsAS;
+  if (!residencyCategory) {
+    ++_totalMemoryCapDeniedCount;
+    ++_frameTotalMemoryCapDeniedCount;
+    ++_totalMemoryCapNonResidencyDeniedCount;
+    ++_frameTotalMemoryCapNonResidencyDeniedCount;
+    std::printf(
+        "[MemoryBudget] Total memory cap deny (%s): requested %.2f MB "
+        "(existing %.2f MB), total %.2f MB cap %.2f MB.\n",
+        label,
+        static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
+        static_cast<double>(existingBytes) / (1024.0 * 1024.0),
+        static_cast<double>(totalBytes) / (1024.0 * 1024.0),
+        static_cast<double>(capBytes) / (1024.0 * 1024.0));
+    return false;
+  }
+
   _pendingTotalMemoryOverageBytes =
       std::max(_pendingTotalMemoryOverageBytes, overageBytes);
+  std::printf(
+      "[MemoryBudget] Total memory cap exceeded (%s): requested %.2f MB "
+      "(existing %.2f MB), total %.2f MB cap %.2f MB. Attempting eviction before allocation.\n",
+      label,
+      static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
+      static_cast<double>(existingBytes) / (1024.0 * 1024.0),
+      static_cast<double>(totalBytes) / (1024.0 * 1024.0),
+      static_cast<double>(capBytes) / (1024.0 * 1024.0));
+
+  if (!_totalMemoryEvictionInProgress && _pCommandQueue &&
+      _renderedFrameCount != _lastTotalMemoryCapEvictionFrame) {
+    _totalMemoryEvictionInProgress = true;
+    _lastTotalMemoryCapEvictionFrame = _renderedFrameCount;
+    MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
+    if (cmd) {
+      updateTextureResidency(cmd);
+      updateGeometryResidency(cmd);
+      cmd->commit();
+      cmd->waitUntilCompleted();
+    }
+    _totalMemoryEvictionInProgress = false;
+  }
+
+  totalBytes = static_cast<size_t>(_pDevice->currentAllocatedSize());
+  nextBytes = totalBytes >= existingBytes
+                  ? totalBytes - existingBytes + requestedBytes
+                  : totalBytes + requestedBytes;
+  if (nextBytes <= capBytes) {
+    _pendingTotalMemoryOverageBytes = 0;
+    return true;
+  }
+
+  _pendingTotalMemoryOverageBytes =
+      std::max(_pendingTotalMemoryOverageBytes, nextBytes - capBytes);
   ++_totalMemoryCapDeniedCount;
   ++_frameTotalMemoryCapDeniedCount;
 
   std::printf(
       "[MemoryBudget] Total memory cap deny (%s): requested %.2f MB "
       "(existing %.2f MB), total %.2f MB cap %.2f MB.\n",
-      context ? context : "unspecified",
+      label,
       static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
       static_cast<double>(existingBytes) / (1024.0 * 1024.0),
       static_cast<double>(totalBytes) / (1024.0 * 1024.0),
@@ -711,13 +768,15 @@ bool Renderer::checkGeometryResidencyCap(size_t objectIndex,
                                          size_t existingBytes,
                                          const char *context) {
   if (_geometryResidencyMemoryCapMB <= 0.0)
-    return checkTotalMemoryCap(requestedBytes, existingBytes,
-                               context ? context : "geometry");
+    return canAllocateTotalGpuMemory(requestedBytes, existingBytes,
+                                     GpuMemoryTracker::Category::Geometry,
+                                     context ? context : "geometry");
 
   size_t capBytes = geometryResidencyCapBytes();
   if (capBytes == 0)
-    return checkTotalMemoryCap(requestedBytes, existingBytes,
-                               context ? context : "geometry");
+    return canAllocateTotalGpuMemory(requestedBytes, existingBytes,
+                                     GpuMemoryTracker::Category::Geometry,
+                                     context ? context : "geometry");
 
   size_t residentBytes = residentGeometryMemoryBytes();
   size_t nextBytes = residentBytes >= existingBytes
@@ -725,8 +784,9 @@ bool Renderer::checkGeometryResidencyCap(size_t objectIndex,
                          : residentBytes + requestedBytes;
 
   if (nextBytes <= capBytes)
-    return checkTotalMemoryCap(requestedBytes, existingBytes,
-                               context ? context : "geometry");
+    return canAllocateTotalGpuMemory(requestedBytes, existingBytes,
+                                     GpuMemoryTracker::Category::Geometry,
+                                     context ? context : "geometry");
 
   size_t overageBytes = nextBytes - capBytes;
   _pendingGeometryResidencyOverageBytes =
@@ -849,6 +909,19 @@ size_t bytesPerPixel(MTL::PixelFormat format) {
   default:
     return 0;
   }
+}
+
+size_t estimateTextureBytes(MTL::PixelFormat format, size_t width, size_t height,
+                            size_t depth, size_t arrayLength) {
+  size_t pixelBytes = bytesPerPixel(format);
+  if (pixelBytes == 0 || width == 0 || height == 0)
+    return 0;
+  size_t clampedDepth = std::max<size_t>(1, depth);
+  size_t rowBytes = width * pixelBytes;
+  size_t alignedRowBytes = alignTo(rowBytes, 256);
+  size_t sliceBytes = alignedRowBytes * height * clampedDepth;
+  size_t clampedArray = std::max<size_t>(1, arrayLength);
+  return sliceBytes * clampedArray;
 }
 
 simd::float4x4 makeViewMatrix(const Camera::State &state) {
@@ -1372,6 +1445,18 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
   if (!hadBuffer)
     growing = true;
 
+  if (!canAllocateTotalGpuMemory(desiredCapacity,
+                                 hadBuffer ? currentCapacity : 0, category,
+                                 resizeContext ? resizeContext
+                                               : (label ? label
+                                                        : "buffer resize"))) {
+    std::printf(
+        "[Renderer][Buffer] Allocation denied for %s (requested=%zu bytes, context=%s).\n",
+        label ? label : "UnnamedBuffer", desiredCapacity,
+        resizeContext ? resizeContext : "capacity");
+    return;
+  }
+
   if (buffer) {
     releaseTrackedResource(buffer);
     buffer = nullptr;
@@ -1383,7 +1468,7 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
 
   desiredCapacity = std::max(desiredCapacity, size_t(1));
   buffer = allocateBuffer(static_cast<NS::UInteger>(desiredCapacity),
-                          storageMode, category, label);
+                          storageMode, category, label, true);
   currentCapacity = buffer ? buffer->length() : 0;
 
   const char *name = label ? label : "UnnamedBuffer";
@@ -1409,9 +1494,17 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
 MTL::Buffer *Renderer::allocateBuffer(NS::UInteger size,
                                       MTL::ResourceOptions storageMode,
                                       GpuMemoryTracker::Category category,
-                                      const char *label) {
+                                      const char *label,
+                                      bool skipCapCheck) {
   if (!_pDevice)
     return nullptr;
+
+  if (!skipCapCheck) {
+    if (!canAllocateTotalGpuMemory(static_cast<size_t>(size), 0, category,
+                                   label ? label : "buffer")) {
+      return nullptr;
+    }
+  }
 
   MTL::Buffer *buffer = _pDevice->newBuffer(size, storageMode);
   if (!buffer)
@@ -1432,19 +1525,15 @@ MTL::Texture *Renderer::allocateTexture(MTL::TextureDescriptor *descriptor,
   if (!_pDevice || !descriptor)
     return nullptr;
 
-  if (category == GpuMemoryTracker::Category::Textures) {
-    size_t pixelBytes = bytesPerPixel(descriptor->pixelFormat());
-    if (pixelBytes > 0) {
-      size_t width = static_cast<size_t>(descriptor->width());
-      size_t height = static_cast<size_t>(descriptor->height());
-      size_t depth = std::max<size_t>(1, descriptor->depth());
-      size_t rowBytes = width * pixelBytes;
-      size_t alignedRowBytes = alignTo(rowBytes, 256);
-      size_t sliceBytes = alignedRowBytes * height * depth;
-      size_t arrayLength = std::max<size_t>(1, descriptor->arrayLength());
-      size_t estimatedBytes = sliceBytes * arrayLength;
-      if (!checkTotalMemoryCap(estimatedBytes, 0, label ? label : "texture"))
-        return nullptr;
+  size_t estimatedBytes = estimateTextureBytes(
+      descriptor->pixelFormat(), static_cast<size_t>(descriptor->width()),
+      static_cast<size_t>(descriptor->height()),
+      static_cast<size_t>(descriptor->depth()),
+      static_cast<size_t>(descriptor->arrayLength()));
+  if (estimatedBytes > 0) {
+    if (!canAllocateTotalGpuMemory(estimatedBytes, 0, category,
+                                   label ? label : "texture")) {
+      return nullptr;
     }
   }
 
@@ -1849,7 +1938,8 @@ void Renderer::writeBenchmarkHeader() {
          "total_memory_cap_mb,minimum_resident_footprint_mb,"
          "total_memory_cap_relaxed_mb,over_memory_cap,geometry_over_memory_cap,"
          "total_over_memory_cap,total_memory_overage_warnings,"
-         "total_memory_cap_denials,total_memory_eviction_stall,geometry_cap_hits,"
+         "total_memory_cap_denials,total_memory_cap_non_residency_denials,"
+         "total_memory_eviction_stall,geometry_cap_hits,"
          "geometry_hard_cap_denials,residency_compacted,"
          "ray_hit_decay,state_cooldown_frames,lod_toggle_budget,"
          "energy_toggle_budget,screen_toggle_budget,rayhit_toggle_budget,"
@@ -1953,6 +2043,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << boolToInt(sample.totalOverMemoryCap) << ','
       << sample.totalMemoryOverageWarnings << ','
       << sample.totalMemoryCapDeniedCount << ','
+      << sample.totalMemoryCapNonResidencyDeniedCount << ','
       << boolToInt(sample.totalMemoryEvictionStall) << ','
       << sample.geometryCapHitCount << ','
       << sample.geometryHardCapDeniedCount << ','
@@ -6539,7 +6630,8 @@ MTL::Texture *Renderer::requestResidentTexture(ManagedTextureSlot &slot,
 
   const char *label = textureSlotLabel(slot);
   size_t requestedBytes = textureByteSize(slot);
-  if (!checkTotalMemoryCap(requestedBytes, 0, label)) {
+  if (!canAllocateTotalGpuMemory(requestedBytes, 0,
+                                 GpuMemoryTracker::Category::Textures, label)) {
     std::printf(
         "[TextureResidency] Deferring slot %s: total memory cap would be exceeded.\n",
         label);
@@ -6890,6 +6982,19 @@ void Renderer::rebuildEnvironmentTexture() {
   EnvironmentTextureData data;
   if (!LoadEnvironmentTextureData(desiredPath, data))
     return;
+
+  size_t estimatedBytes = estimateTextureBytes(
+      MTL::PixelFormat::PixelFormatRGBA32Float, data.width, data.height, 1, 1);
+  if (estimatedBytes > 0) {
+    if (!canAllocateTotalGpuMemory(estimatedBytes, 0,
+                                   GpuMemoryTracker::Category::Textures,
+                                   "EnvironmentTexture")) {
+      std::printf(
+          "[Renderer] Environment texture allocation denied for %s.\n",
+          desiredPath.c_str());
+      return;
+    }
+  }
 
   MTL::Texture *texture = CreateEnvironmentTexture(_pDevice, data);
   if (!texture) {
@@ -7912,6 +8017,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameGeometryResidencyHardCapDeniedCount = 0;
   _frameTotalMemoryOverageWarnings = 0;
   _frameTotalMemoryCapDeniedCount = 0;
+  _frameTotalMemoryCapNonResidencyDeniedCount = 0;
   _frameTotalMemoryEvictionStall = false;
   _frameMinimumResidentFootprintMB = 0.0;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
@@ -12863,6 +12969,8 @@ void Renderer::beginFrameMetrics() {
         _frameGeometryResidencyHardCapDeniedCount;
     sample.totalMemoryOverageWarnings = _frameTotalMemoryOverageWarnings;
     sample.totalMemoryCapDeniedCount = _frameTotalMemoryCapDeniedCount;
+    sample.totalMemoryCapNonResidencyDeniedCount =
+        _frameTotalMemoryCapNonResidencyDeniedCount;
     sample.totalMemoryEvictionStall = _frameTotalMemoryEvictionStall;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
@@ -12940,6 +13048,11 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       "GPU mem (MB) total=%.3f scratch=%.3f geometry=%.3f textures=%.3f restir=%.3f renderer=%.3f heaps=%.3f staging=%.3f other=%.3f\n",
       totalMemoryMB, scratchMB, geometryMB, textureMB, restirMB, rendererMB,
       heapsMB, stagingMB, otherMB);
+  if (_frameTotalMemoryCapNonResidencyDeniedCount > 0) {
+    printf(
+        "[MemoryBudget] Total GPU memory cap blocked non-residency allocations: %zu\n",
+        _frameTotalMemoryCapNonResidencyDeniedCount);
+  }
   double restirReuseRate =
       (_lastRayCount > 0)
           ? static_cast<double>(_lastRestirReuseCandidates) /
