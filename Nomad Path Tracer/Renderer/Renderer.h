@@ -179,7 +179,8 @@ private:
   MTL::Buffer *allocateBuffer(NS::UInteger size,
                               MTL::ResourceOptions storageMode,
                               GpuMemoryTracker::Category category,
-                              const char *label = nullptr);
+                              const char *label = nullptr,
+                              bool skipCapCheck = false);
   MTL::Texture *allocateTexture(MTL::TextureDescriptor *descriptor,
                                 GpuMemoryTracker::Category category,
                                 const char *label = nullptr);
@@ -219,8 +220,9 @@ private:
   size_t minimumResidentFootprintBytes() const;
   size_t essentialGeometryMemoryBytes() const;
   size_t historyFootprintBytes() const;
-  bool checkTotalMemoryCap(size_t requestedBytes, size_t existingBytes,
-                           const char *context);
+  bool canAllocateTotalGpuMemory(size_t requestedBytes, size_t existingBytes,
+                                 GpuMemoryTracker::Category category,
+                                 const char *context);
   void recordGeometryResidencyHardCapDenied(size_t objectIndex,
                                             size_t requestedBytes,
                                             size_t existingBytes,
@@ -507,6 +509,7 @@ private:
     size_t geometryHardCapDeniedCount = 0;
     size_t totalMemoryOverageWarnings = 0;
     size_t totalMemoryCapDeniedCount = 0;
+    size_t totalMemoryCapNonResidencyDeniedCount = 0;
   };
 
   struct FrameCaptureRequest {
@@ -737,11 +740,15 @@ private:
   size_t _frameGeometryResidencyHardCapDeniedCount = 0;
   size_t _frameTotalMemoryOverageWarnings = 0;
   size_t _frameTotalMemoryCapDeniedCount = 0;
+  size_t _frameTotalMemoryCapNonResidencyDeniedCount = 0;
   bool _frameTotalMemoryEvictionStall = false;
+  size_t _lastTotalMemoryCapEvictionFrame = 0;
+  bool _totalMemoryEvictionInProgress = false;
   double _frameMinimumResidentFootprintMB = 0.0;
   size_t _geometryResidencyCapHitCount = 0;
   size_t _geometryResidencyHardCapDeniedCount = 0;
   size_t _totalMemoryCapDeniedCount = 0;
+  size_t _totalMemoryCapNonResidencyDeniedCount = 0;
   size_t _pendingGeometryResidencyOverageBytes = 0;
   size_t _pendingTotalMemoryOverageBytes = 0;
   size_t _totalMemoryBelowFootprintFrames = 0;
