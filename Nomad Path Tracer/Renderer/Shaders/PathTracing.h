@@ -1505,14 +1505,14 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
           float spatialPrevWeightSums[kSpatialNeighborSlots];
           float spatialPrevSampleCounts[kSpatialNeighborSlots];
           float spatialPrevSelectedWeights[kSpatialNeighborSlots];
-          float spatialPrevLightPdfs[kSpatialNeighborSlots];
+          float spatialPrevProposalPdfs[kSpatialNeighborSlots];
           bool spatialValid[kSpatialNeighborSlots];
           for (uint i = 0; i < kSpatialNeighborSlots; ++i) {
             spatialValid[i] = false;
             spatialPrevWeightSums[i] = 0.0f;
             spatialPrevSampleCounts[i] = 0.0f;
             spatialPrevSelectedWeights[i] = 0.0f;
-            spatialPrevLightPdfs[i] = 0.0f;
+            spatialPrevProposalPdfs[i] = 0.0f;
           }
 
           for (uint i = 0; i < 4; ++i) {
@@ -1583,7 +1583,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             spatialPrevWeightSums[i] = prevWeightSum;
             spatialPrevSampleCounts[i] = prevSampleCount;
             spatialPrevSelectedWeights[i] = prevSelectedWeight;
-            spatialPrevLightPdfs[i] = prev2.x;
+            spatialPrevProposalPdfs[i] = prev2.x;
             spatialValid[i] = true;
             totalSpatialSampleCount += prevSampleCount;
           }
@@ -1596,11 +1596,11 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             float prevWeightSum = spatialPrevWeightSums[i];
             float prevSampleCount = spatialPrevSampleCounts[i];
             float prevSelectedWeight = spatialPrevSelectedWeights[i];
-            float prevLightPdf = spatialPrevLightPdfs[i];
+            float prevProposalPdf = spatialPrevProposalPdfs[i];
             float3 contribution = restirContribution(spatialCandidate);
             float target = restirTargetFromCandidate(spatialCandidate);
             float prevTarget =
-                prevSelectedWeight * max(prevLightPdf, RAY_EPS);
+                prevSelectedWeight * max(prevProposalPdf, RAY_EPS);
             float normalization =
                 (prevSampleCount > 0.0f) ? (prevWeightSum / prevSampleCount)
                                          : 0.0f;
@@ -1692,7 +1692,7 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                        reservoir.sample.lightArea),
                 pixel);
             restirData2Out.write(
-                float4(reservoir.sample.lightPdf, reservoir.weightSum,
+                float4(reservoir.sample.pdf, reservoir.weightSum,
                        reservoir.sampleCount, reservoir.selectedWeight),
                 pixel);
           } else {
