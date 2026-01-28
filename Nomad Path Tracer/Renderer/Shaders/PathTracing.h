@@ -1428,6 +1428,9 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
         float4 temporalPrev1 = float4(0.0f);
         bool temporalReservoirValid = false;
         float temporalJacobian = 1.0f;
+        float3 temporalPrevSurfacePos = float3(0.0f);
+        float3 temporalPrevSurfaceNormal = float3(0.0f);
+        bool temporalSurfaceValid = false;
 
         if (temporalReuseEnabled) {
           float4 prevClip = prevViewProjection * float4(bestHit.point, 1.0f);
@@ -1456,7 +1459,6 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                     max(0.01f * currentDepth, 0.02f);
                 float depthThreshold = max(0.02f * currentDepth, 0.05f);
                 float normalThreshold = 0.9f;
-                bool temporalSurfaceValid = false;
                 if (prevDepth > 0.0f && prevNormalLen2 > RAY_EPS) {
                   float positionDelta =
                       length(prevSurfacePos.xyz - bestHit.point);
@@ -1470,6 +1472,8 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                       normalDot >= normalThreshold;
                 }
                 if (temporalSurfaceValid) {
+                  temporalPrevSurfacePos = prevSurfacePos.xyz;
+                  temporalPrevSurfaceNormal = normalize(prevSurfaceNormal.xyz);
                   if (restirStats) {
                     atomic_fetch_add_explicit(&restirStats->reuseCandidates, 1u,
                                               memory_order_relaxed);
@@ -1643,8 +1647,11 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             float target = restirTargetFromCandidate(temporalCandidate);
             // Canonical RIS reuse weight uses p_hat_prev(y) derived
             // from the previous reservoir: p_hat_prev(y) = w_prev(y) *
-            // p_prev(y). For temporal reuse, the light geometry is
-            // unchanged so p_prev(y) matches the current total PDF.
+            // p_prev(y). For temporal reuse, ReSTIR DI adds a Jacobian
+            // term that maps the previous shading point x_prev to the
+            // current x for the same light sample y:
+            // J = (||x_prev - y||^2 / ||x - y||^2) *
+            //     (max(dot(n_x, w_i), 0) / max(dot(n_x_prev, w_i_prev), 0)).
             float prevTarget =
                 temporalPrevSelectedWeight *
                 max(temporalCandidate.pdf, RAY_EPS);
@@ -1652,6 +1659,24 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
                 (temporalSampleCount > 0.0f)
                     ? (temporalPrevWeightSum / temporalSampleCount)
                     : 0.0f;
+            if (temporalSurfaceValid) {
+              float3 toLightCurrent =
+                  temporalCandidate.lightPosition - bestHit.point;
+              float3 toLightPrev =
+                  temporalCandidate.lightPosition - temporalPrevSurfacePos;
+              float currentDist2 =
+                  max(length_squared(toLightCurrent), RAY_EPS);
+              float prevDist2 = max(length_squared(toLightPrev), RAY_EPS);
+              float3 wiCurrent = normalize(toLightCurrent);
+              float3 wiPrev = normalize(toLightPrev);
+              float cosCurrent =
+                  max(dot(normalize(offsetNormal), wiCurrent), 0.0f);
+              float cosPrev =
+                  max(dot(normalize(temporalPrevSurfaceNormal), wiPrev), 0.0f);
+              temporalJacobian =
+                  (prevDist2 / currentDist2) *
+                  (cosCurrent / max(cosPrev, RAY_EPS));
+            }
             float temporalWeight =
                 (prevTarget > 0.0f)
                     ? (normalization * (target / prevTarget) *
