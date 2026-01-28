@@ -1418,13 +1418,80 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             }
           }
         }
-        float misNormalization =
-            1.0f + (temporalReuseEnabled ? 1.0f : 0.0f) +
-            float(spatialNeighborCount);
-        // Canonical ReSTIR MIS for reused reservoirs: use a balance heuristic
-        // over the contributing reservoirs (current + temporal + spatial).
-        float misWeight =
-            (misNormalization > 0.0f) ? (1.0f / misNormalization) : 1.0f;
+        float currentSampleCount = reservoir.sampleCount;
+        float totalSpatialSampleCount = 0.0f;
+        float temporalSampleCount = 0.0f;
+        float temporalPrevWeightSum = 0.0f;
+        float temporalPrevSelectedWeight = 0.0f;
+        uint temporalPrevLightId = 0u;
+        float4 temporalPrev0 = float4(0.0f);
+        float4 temporalPrev1 = float4(0.0f);
+        bool temporalReservoirValid = false;
+        float temporalJacobian = 1.0f;
+
+        if (temporalReuseEnabled) {
+          float4 prevClip = prevViewProjection * float4(bestHit.point, 1.0f);
+          if (prevClip.w > RAY_EPS) {
+            float3 ndc = prevClip.xyz / prevClip.w;
+            float2 prevUv = ndc.xy * 0.5f + float2(0.5f, 0.5f);
+            if (all(prevUv >= float2(0.0f)) &&
+                all(prevUv <= float2(1.0f))) {
+              uint prevWidth = restirData0Prev.get_width();
+              uint prevHeight = restirData0Prev.get_height();
+              if (prevWidth > 0 && prevHeight > 0) {
+                uint prevX =
+                    min(uint(prevUv.x * float(prevWidth)), prevWidth - 1);
+                uint prevY =
+                    min(uint(prevUv.y * float(prevHeight)), prevHeight - 1);
+                uint2 prevPixel = uint2(prevX, prevY);
+                float4 prevSurfacePos =
+                    restirSurfacePosPrev.read(prevPixel);
+                float4 prevSurfaceNormal =
+                    restirSurfaceNormalPrev.read(prevPixel);
+                float prevDepth = prevSurfacePos.w;
+                float prevNormalLen2 =
+                    dot(prevSurfaceNormal.xyz, prevSurfaceNormal.xyz);
+                float currentDepth = length(bestHit.point - r.origin);
+                float positionThreshold =
+                    max(0.01f * currentDepth, 0.02f);
+                float depthThreshold = max(0.02f * currentDepth, 0.05f);
+                float normalThreshold = 0.9f;
+                bool temporalSurfaceValid = false;
+                if (prevDepth > 0.0f && prevNormalLen2 > RAY_EPS) {
+                  float positionDelta =
+                      length(prevSurfacePos.xyz - bestHit.point);
+                  float depthDelta = abs(prevDepth - currentDepth);
+                  float3 prevNormal = normalize(prevSurfaceNormal.xyz);
+                  float3 currentNormal = normalize(offsetNormal);
+                  float normalDot = dot(prevNormal, currentNormal);
+                  temporalSurfaceValid =
+                      positionDelta <= positionThreshold &&
+                      depthDelta <= depthThreshold &&
+                      normalDot >= normalThreshold;
+                }
+                if (temporalSurfaceValid) {
+                  if (restirStats) {
+                    atomic_fetch_add_explicit(&restirStats->reuseCandidates, 1u,
+                                              memory_order_relaxed);
+                  }
+                  temporalPrev0 = restirData0Prev.read(prevPixel);
+                  temporalPrev1 = restirData1Prev.read(prevPixel);
+                  float4 prev2 = restirData2Prev.read(prevPixel);
+                  temporalPrevWeightSum = prev2.y;
+                  temporalSampleCount = prev2.z;
+                  temporalPrevSelectedWeight = prev2.w;
+                  temporalPrevLightId =
+                      static_cast<uint>(max(temporalPrev0.w, 0.0f));
+                  if (temporalPrevWeightSum > 0.0f &&
+                      temporalSampleCount > 0.0f &&
+                      temporalPrevSelectedWeight > 0.0f) {
+                    temporalReservoirValid = true;
+                  }
+                }
+              }
+            }
+          }
+        }
 
         if (spatialNeighborCount > 0) {
           uint spatialWidth = restirData0Prev.get_width();
@@ -1433,6 +1500,21 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
           int2 offsets[4] = {int2(1, 0), int2(-1, 0), int2(0, 1),
                              int2(0, -1)};
           float currentDepth = length(bestHit.point - r.origin);
+          const uint kSpatialNeighborSlots = 4u;
+          LightSampleCandidate spatialCandidates[kSpatialNeighborSlots];
+          float spatialPrevWeightSums[kSpatialNeighborSlots];
+          float spatialPrevSampleCounts[kSpatialNeighborSlots];
+          float spatialPrevSelectedWeights[kSpatialNeighborSlots];
+          float spatialPrevLightPdfs[kSpatialNeighborSlots];
+          bool spatialValid[kSpatialNeighborSlots];
+          for (uint i = 0; i < kSpatialNeighborSlots; ++i) {
+            spatialValid[i] = false;
+            spatialPrevWeightSums[i] = 0.0f;
+            spatialPrevSampleCounts[i] = 0.0f;
+            spatialPrevSelectedWeights[i] = 0.0f;
+            spatialPrevLightPdfs[i] = 0.0f;
+          }
+
           for (uint i = 0; i < 4; ++i) {
             int2 neighbor = basePixel + offsets[i];
             if (neighbor.x < 0 || neighbor.y < 0 ||
@@ -1497,9 +1579,26 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
               atomic_fetch_add_explicit(&restirStats->reuseAccepted, 1u,
                                         memory_order_relaxed);
             }
+            spatialCandidates[i] = spatialCandidate;
+            spatialPrevWeightSums[i] = prevWeightSum;
+            spatialPrevSampleCounts[i] = prevSampleCount;
+            spatialPrevSelectedWeights[i] = prevSelectedWeight;
+            spatialPrevLightPdfs[i] = prev2.x;
+            spatialValid[i] = true;
+            totalSpatialSampleCount += prevSampleCount;
+          }
+
+          for (uint i = 0; i < 4; ++i) {
+            if (!spatialValid[i]) {
+              continue;
+            }
+            LightSampleCandidate spatialCandidate = spatialCandidates[i];
+            float prevWeightSum = spatialPrevWeightSums[i];
+            float prevSampleCount = spatialPrevSampleCounts[i];
+            float prevSelectedWeight = spatialPrevSelectedWeights[i];
+            float prevLightPdf = spatialPrevLightPdfs[i];
             float3 contribution = restirContribution(spatialCandidate);
             float target = restirTargetFromCandidate(spatialCandidate);
-            float prevLightPdf = prev2.x;
             float prevTarget =
                 prevSelectedWeight * max(prevLightPdf, RAY_EPS);
             float normalization =
@@ -1508,115 +1607,69 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
             float spatialWeight = (prevTarget > 0.0f)
                                       ? (normalization * (target / prevTarget))
                                       : 0.0f;
-            // Apply MIS weight in the reuse update (canonical ReSTIR balance
-            // heuristic over reservoirs).
-            spatialWeight *= misWeight;
+            float spatialPdf = max(spatialCandidate.pdf, 0.0f);
+            float misDenominator = spatialPdf *
+                                   (currentSampleCount +
+                                    totalSpatialSampleCount);
+            if (temporalReservoirValid) {
+              misDenominator +=
+                  temporalSampleCount * spatialPdf * temporalJacobian;
+            }
+            float spatialMisWeight =
+                (misDenominator > 0.0f)
+                    ? ((prevSampleCount * spatialPdf) / misDenominator)
+                    : 0.0f;
+            spatialWeight *= spatialMisWeight;
             restirUpdateReservoir(reservoir, spatialCandidate, contribution,
                                   spatialWeight, prevSampleCount, seed);
           }
         }
 
-        if (temporalReuseEnabled) {
-          float4 prevClip = prevViewProjection * float4(bestHit.point, 1.0f);
-          if (prevClip.w > RAY_EPS) {
-            float3 ndc = prevClip.xyz / prevClip.w;
-            float2 prevUv = ndc.xy * 0.5f + float2(0.5f, 0.5f);
-            if (all(prevUv >= float2(0.0f)) &&
-                all(prevUv <= float2(1.0f))) {
-              uint prevWidth = restirData0Prev.get_width();
-              uint prevHeight = restirData0Prev.get_height();
-              if (prevWidth > 0 && prevHeight > 0) {
-                uint prevX =
-                    min(uint(prevUv.x * float(prevWidth)), prevWidth - 1);
-                uint prevY =
-                    min(uint(prevUv.y * float(prevHeight)), prevHeight - 1);
-                uint2 prevPixel = uint2(prevX, prevY);
-                float4 prevSurfacePos =
-                    restirSurfacePosPrev.read(prevPixel);
-                float4 prevSurfaceNormal =
-                    restirSurfaceNormalPrev.read(prevPixel);
-                float prevDepth = prevSurfacePos.w;
-                float prevNormalLen2 =
-                    dot(prevSurfaceNormal.xyz, prevSurfaceNormal.xyz);
-                float currentDepth = length(bestHit.point - r.origin);
-                float positionThreshold =
-                    max(0.01f * currentDepth, 0.02f);
-                float depthThreshold = max(0.02f * currentDepth, 0.05f);
-                float normalThreshold = 0.9f;
-                bool temporalSurfaceValid = false;
-                if (prevDepth > 0.0f && prevNormalLen2 > RAY_EPS) {
-                  float positionDelta =
-                      length(prevSurfacePos.xyz - bestHit.point);
-                  float depthDelta = abs(prevDepth - currentDepth);
-                  float3 prevNormal = normalize(prevSurfaceNormal.xyz);
-                  float3 currentNormal = normalize(offsetNormal);
-                  float normalDot = dot(prevNormal, currentNormal);
-                  temporalSurfaceValid =
-                      positionDelta <= positionThreshold &&
-                      depthDelta <= depthThreshold &&
-                      normalDot >= normalThreshold;
-                }
-                if (temporalSurfaceValid) {
-                  if (restirStats) {
-                    atomic_fetch_add_explicit(&restirStats->reuseCandidates, 1u,
-                                              memory_order_relaxed);
-                  }
-                  float4 prev0 = restirData0Prev.read(prevPixel);
-                  float4 prev1 = restirData1Prev.read(prevPixel);
-                  float4 prev2 = restirData2Prev.read(prevPixel);
-                  float prevWeightSum = prev2.y;
-                  float prevSampleCount = prev2.z;
-                  float prevSelectedWeight = prev2.w;
-                  if (prevWeightSum > 0.0f && prevSampleCount > 0.0f &&
-                      prevSelectedWeight > 0.0f) {
-                    uint prevLightId =
-                        static_cast<uint>(max(prev0.w, 0.0f));
-                    LightSampleCandidate temporalCandidate;
-                    if (buildRestirCandidateFromStored(
-                            bestHit.point, offsetNormal, viewDir, material,
-                            absorption.xyz, bestHit.primitiveId, prevLightId,
-                            prev0.xyz, prev1.xyz, prev1.w, lightPdfLookup,
-                            tlasNodes,
-                            tlasNodeCount, bvhNodes, primitives, materials,
-                            primitiveCount, primitiveIndices, activeMask,
-                            instanceRecords, primitiveRemap, primitiveRayStats,
-                            bounceCache, totalPrimitiveCount,
-                            temporalCandidate)) {
-                      if (restirStats) {
-                        atomic_fetch_add_explicit(&restirStats->reuseAccepted, 1u,
-                                                  memory_order_relaxed);
-                      }
-                      float3 contribution =
-                          restirContribution(temporalCandidate);
-                      float target =
-                          restirTargetFromCandidate(temporalCandidate);
-                      // Canonical RIS reuse weight uses p_hat_prev(y) derived
-                      // from the previous reservoir: p_hat_prev(y) = w_prev(y) *
-                      // p_prev(y). For temporal reuse, the light geometry is
-                      // unchanged so p_prev(y) matches the current total PDF.
-                      float prevTarget =
-                          prevSelectedWeight * max(temporalCandidate.pdf, RAY_EPS);
-                      float normalization =
-                          (prevSampleCount > 0.0f)
-                              ? (prevWeightSum / prevSampleCount)
-                              : 0.0f;
-                      float temporalJacobian = 1.0f;
-                      float temporalWeight =
-                          (prevTarget > 0.0f)
-                              ? (normalization * (target / prevTarget) *
-                                 temporalJacobian)
-                              : 0.0f;
-                      // Apply MIS weight in the reuse update (canonical ReSTIR
-                      // balance heuristic over reservoirs).
-                      temporalWeight *= misWeight;
-                      restirUpdateReservoir(reservoir, temporalCandidate,
-                                            contribution, temporalWeight,
-                                            prevSampleCount, seed);
-                    }
-                  }
-                }
-              }
+        if (temporalReservoirValid) {
+          LightSampleCandidate temporalCandidate;
+          if (buildRestirCandidateFromStored(
+                  bestHit.point, offsetNormal, viewDir, material,
+                  absorption.xyz, bestHit.primitiveId, temporalPrevLightId,
+                  temporalPrev0.xyz, temporalPrev1.xyz, temporalPrev1.w,
+                  lightPdfLookup, tlasNodes, tlasNodeCount, bvhNodes,
+                  primitives, materials, primitiveCount, primitiveIndices,
+                  activeMask, instanceRecords, primitiveRemap, primitiveRayStats,
+                  bounceCache, totalPrimitiveCount, temporalCandidate)) {
+            if (restirStats) {
+              atomic_fetch_add_explicit(&restirStats->reuseAccepted, 1u,
+                                        memory_order_relaxed);
             }
+            float3 contribution = restirContribution(temporalCandidate);
+            float target = restirTargetFromCandidate(temporalCandidate);
+            // Canonical RIS reuse weight uses p_hat_prev(y) derived
+            // from the previous reservoir: p_hat_prev(y) = w_prev(y) *
+            // p_prev(y). For temporal reuse, the light geometry is
+            // unchanged so p_prev(y) matches the current total PDF.
+            float prevTarget =
+                temporalPrevSelectedWeight *
+                max(temporalCandidate.pdf, RAY_EPS);
+            float normalization =
+                (temporalSampleCount > 0.0f)
+                    ? (temporalPrevWeightSum / temporalSampleCount)
+                    : 0.0f;
+            float temporalWeight =
+                (prevTarget > 0.0f)
+                    ? (normalization * (target / prevTarget) *
+                       temporalJacobian)
+                    : 0.0f;
+            float temporalPdf = max(temporalCandidate.pdf, 0.0f);
+            float misDenominator = temporalPdf *
+                                   (currentSampleCount +
+                                    totalSpatialSampleCount);
+            misDenominator += temporalSampleCount * temporalPdf * temporalJacobian;
+            float temporalMisWeight =
+                (misDenominator > 0.0f)
+                    ? ((temporalSampleCount * temporalPdf * temporalJacobian) /
+                       misDenominator)
+                    : 0.0f;
+            temporalWeight *= temporalMisWeight;
+            restirUpdateReservoir(reservoir, temporalCandidate, contribution,
+                                  temporalWeight, temporalSampleCount, seed);
           }
         }
 
