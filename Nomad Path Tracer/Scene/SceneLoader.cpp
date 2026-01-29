@@ -765,6 +765,31 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         root->FloatAttribute("rayHitPriorScale", params.rayHitPriorScale);
     params.rayHitPriorFavorHighProbability = root->BoolAttribute(
         "rayHitPriorFavorHighProbability", params.rayHitPriorFavorHighProbability);
+    params.rayHitAggressiveEvict =
+        root->BoolAttribute("rayHitAggressiveEvict", params.rayHitAggressiveEvict);
+
+    auto parseRayHitAggressiveEnv = []() -> int {
+        const char *env = std::getenv("MPT_RAY_HIT_AGGRESSIVE_EVICT");
+        if (!env)
+            env = std::getenv("RAY_HIT_AGGRESSIVE_EVICT");
+        if (!env)
+            return -1;
+        std::string value(env);
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (value == "1" || value == "true" || value == "yes" || value == "on")
+            return 1;
+        if (value == "0" || value == "false" || value == "no" || value == "off")
+            return 0;
+        char *end = nullptr;
+        long parsed = std::strtol(env, &end, 10);
+        if (end == env)
+            return -1;
+        return parsed != 0 ? 1 : 0;
+    };
+    int aggressiveEnv = parseRayHitAggressiveEnv();
+    if (aggressiveEnv >= 0)
+        params.rayHitAggressiveEvict = aggressiveEnv > 0;
 
     params.probabilityDecay =
         root->FloatAttribute("probabilityDecay", params.probabilityDecay);

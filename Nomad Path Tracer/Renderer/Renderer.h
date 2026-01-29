@@ -717,6 +717,7 @@ private:
   size_t _animationFrame = 0;
 
   ResidencyParameters _residencyConfig;
+  bool _rayHitAggressiveLogged = false;
 
   bool _benchmarkEnabled = false;
   bool _benchmarkHeaderWritten = false;

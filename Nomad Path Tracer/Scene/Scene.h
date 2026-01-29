@@ -78,6 +78,7 @@ struct ResidencyParameters {
   bool enableRayHitPrior = true;
   float rayHitPriorScale = 0.5f;
   bool rayHitPriorFavorHighProbability = false;
+  bool rayHitAggressiveEvict = false;
 
   float probabilityDecay = 0.9f;
   float probabilityThreshold = 0.5f;
