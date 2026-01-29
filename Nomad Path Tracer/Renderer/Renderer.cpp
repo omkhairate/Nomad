@@ -9656,6 +9656,15 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
 
+  const bool aggressiveEvict = _residencyConfig.rayHitAggressiveEvict;
+  if (aggressiveEvict && !_rayHitAggressiveLogged) {
+    std::printf(
+        "[Renderer] Ray-hit aggressive eviction enabled; forcing residency toggles "
+        "and waits may stall GPU work.\n");
+    _rayHitAggressiveLogged = true;
+  }
+  const bool forceRayHitToggles = forceAllToggles || aggressiveEvict;
+
   if (_rayHitSortedIndices.size() != _activePrimitive.size()) {
     _rayHitSortedIndices.resize(_activePrimitive.size());
     std::iota(_rayHitSortedIndices.begin(), _rayHitSortedIndices.end(), size_t(0));
@@ -9664,7 +9673,7 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
     _primitiveHitScores.resize(_activePrimitive.size(), 0.0f);
 
   if (_rayHitRebuildCooldown > 0) {
-    if (forceAllToggles)
+    if (forceRayHitToggles)
       _rayHitRebuildCooldown = 0;
     else {
       --_rayHitRebuildCooldown;
@@ -9787,7 +9796,7 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
     bool shouldBeActive = desired[i];
     if (shouldBeActive == _activePrimitive[i])
       continue;
-    if (!forceAllToggles) {
+    if (!forceRayHitToggles) {
       if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
         continue;
       if (toggles >= _residencyConfig.rayHitMaxTogglesPerFrame)
@@ -11897,6 +11906,7 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
   bool hasRecentChanges = !_recentlyActivated.empty() ||
                           !_recentlyDeactivated.empty() ||
                           !_dirtyResidentObjects.empty();
+  const bool aggressiveEvict = _residencyConfig.rayHitAggressiveEvict;
 
   if (!forceFullRebuild && !hasRecentChanges) {
     for (size_t objectIndex = 0;
@@ -11916,8 +11926,14 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
 
   std::chrono::steady_clock::time_point frameWaitSnapshot;
   if (!waitForPendingFrameCommands(kFrameCommandBufferWaitTimeout,
-                                   &frameWaitSnapshot))
+                                   &frameWaitSnapshot)) {
+    if (aggressiveEvict) {
+      std::printf(
+          "[Renderer] Ray-hit aggressive eviction: pending frame commands did not "
+          "finish in time; skipping residency rebuild to avoid GPU hazards.\n");
+    }
     return;
+  }
 
   rebuildResidentResources(forceFullRebuild);
   _lastResidentFlushCameraVersion = _cameraVersion;
