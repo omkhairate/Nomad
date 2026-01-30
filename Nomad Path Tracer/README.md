@@ -33,3 +33,10 @@ For the memory-budget study, `totalGpuMemoryCapMB` is now the single authoritati
 To prevent eviction scheduling deadlocks, the renderer estimates a minimum resident footprint (mandatory buffers + essential geometry). If the configured total cap remains below this footprint for several frames, it logs a warning, disables texture history, and temporarily relaxes the effective total cap to the minimum footprint. Benchmark metrics report the minimum footprint, relaxed cap, and whether the frame is in eviction-stall mode.
 
 See `StudyNotes.md` for the study-specific memory budget notes and recommended interpretation of the new metrics.
+
+## Optional heap shrinking (opt-in)
+
+The renderer can optionally shrink per-object Metal heaps when utilization stays low for multiple consecutive frames and no heap-backed resources are in flight. This is disabled by default to preserve current allocation behavior.
+
+- **Environment variable:** set `MPT_HEAP_SHRINK=1` to enable heap shrinking.
+- **Behavior:** the heap is only resized after a sustained low-utilization period; shrinking is deferred until it is safe to destroy the existing heap-backed buffers/AS.

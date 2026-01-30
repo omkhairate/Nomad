@@ -25,6 +25,10 @@ public:
 
   void ensureHeapCapacity(NS::UInteger requiredBytes);
   NS::UInteger alignedHeapSize(NS::UInteger size) const;
+  NS::UInteger currentRequiredBytes() const;
+  void maybeShrinkHeap(NS::UInteger requiredBytes, bool hasInFlight);
+  void setHeapShrinkEnabled(bool enabled);
+  bool heapShrinkEnabled() const { return _shrinkEnabled; }
 
   void releaseAllAllocations();
   void makeResourcesPurgeable();
@@ -90,6 +94,10 @@ private:
   GpuMemoryTracker *_memoryTracker = nullptr;
   MTL::StorageMode _storageMode = MTL::StorageMode::StorageModePrivate;
   MTL::HazardTrackingMode _hazardMode = MTL::HazardTrackingModeTracked;
+  bool _shrinkEnabled = false;
+  bool _shrinkPending = false;
+  NS::UInteger _pendingShrinkSize = 0;
+  size_t _lowUtilizationFrames = 0;
 };
 
 } // namespace NomadPathTracer

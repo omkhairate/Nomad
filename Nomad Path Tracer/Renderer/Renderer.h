@@ -210,6 +210,8 @@ private:
   bool updatePredictiveResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void prewarmAlwaysResidentResources();
+  void applyHeapShrinkSetting(bool enabled);
+  void updateHeapShrinkCandidates();
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
@@ -722,6 +724,7 @@ private:
   bool _benchmarkEnabled = false;
   bool _benchmarkLogProbabilities = true;
   bool _benchmarkHeaderWritten = false;
+  bool _heapShrinkEnabled = false;
   std::ofstream _benchmarkStream;
   std::string _benchmarkFilePath;
   size_t _benchmarkFrameCounter = 0;

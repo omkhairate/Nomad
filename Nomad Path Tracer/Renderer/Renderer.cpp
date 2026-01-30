@@ -1641,6 +1641,8 @@ Renderer::Renderer(MTL::Device *pDevice)
   _dummyBlasResources.setMemoryTracker(&_gpuMemoryTracker);
   _tlasHeap.initialize(_pDevice);
   _dummyBlasResources.initialize(_pDevice);
+  _tlasHeap.setHeapShrinkEnabled(_heapShrinkEnabled);
+  _dummyBlasResources.setHeapShrinkEnabled(_heapShrinkEnabled);
 
   Camera::reset();
   _primaryCameraState = Camera::captureState();
@@ -1865,34 +1867,59 @@ void Renderer::initializeBenchmarking() {
   const char *primaryEnv = std::getenv("METALPT_BENCH");
   const char *legacyEnv = std::getenv("METALAPT_BENCH");
   const char *probabilityEnv = std::getenv("METALPT_BENCH_LOG_PROBABILITIES");
+  const char *heapShrinkEnv = std::getenv("MPT_HEAP_SHRINK");
   const char *env = primaryEnv ? primaryEnv : legacyEnv;
   if (!env)
-    return;
+    env = nullptr;
 
   if (!primaryEnv && legacyEnv) {
     printf("METALAPT_BENCH detected; please update to METALPT_BENCH for future runs.\n");
   }
 
-  std::string value(env);
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-  bool enable = value == "1" || value == "true" || value == "yes" || value == "on";
-  if (probabilityEnv) {
-    std::string probabilityValue(probabilityEnv);
-    std::transform(probabilityValue.begin(), probabilityValue.end(),
-                   probabilityValue.begin(), [](unsigned char c) {
+  auto parseBoolEnv = [](const char *value) -> bool {
+    if (!value)
+      return false;
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) {
                      return static_cast<char>(std::tolower(c));
                    });
-    bool logProbabilities = probabilityValue == "1" ||
-                            probabilityValue == "true" ||
-                            probabilityValue == "yes" ||
-                            probabilityValue == "on";
-    _benchmarkLogProbabilities = logProbabilities;
-  } else {
-    _benchmarkLogProbabilities = true;
+    return normalized == "1" || normalized == "true" || normalized == "yes" ||
+           normalized == "on";
+  };
+
+  if (env) {
+    bool enable = parseBoolEnv(env);
+    if (probabilityEnv) {
+      _benchmarkLogProbabilities = parseBoolEnv(probabilityEnv);
+    } else {
+      _benchmarkLogProbabilities = true;
+    }
+    setBenchmarkMode(enable);
   }
-  setBenchmarkMode(enable);
+
+  if (heapShrinkEnv) {
+    applyHeapShrinkSetting(parseBoolEnv(heapShrinkEnv));
+  }
+}
+
+void Renderer::applyHeapShrinkSetting(bool enabled) {
+  _heapShrinkEnabled = enabled;
+  _tlasHeap.setHeapShrinkEnabled(enabled);
+  _dummyBlasResources.setHeapShrinkEnabled(enabled);
+  for (auto &resident : _residentObjectGpuResources) {
+    resident.resources.setHeapShrinkEnabled(enabled);
+  }
+}
+
+void Renderer::updateHeapShrinkCandidates() {
+  if (!_heapShrinkEnabled)
+    return;
+  for (auto &resident : _residentObjectGpuResources) {
+    bool hasInFlight = resident.hasPendingCommands();
+    NS::UInteger requiredBytes = resident.resources.currentRequiredBytes();
+    resident.resources.maybeShrinkHeap(requiredBytes, hasInFlight);
+  }
 }
 
 void Renderer::ensureBenchmarkStream() {
@@ -3145,6 +3172,7 @@ void Renderer::updateVisibleScene() {
     resident.lastStateChange = std::chrono::steady_clock::now();
     resident.resources.setMemoryTracker(&_gpuMemoryTracker);
     resident.resources.initialize(_pDevice);
+    resident.resources.setHeapShrinkEnabled(_heapShrinkEnabled);
   }
 
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
@@ -4154,6 +4182,7 @@ bool Renderer::ensureDummyBlas() {
     return false;
 
   _dummyBlasResources.initialize(_pDevice);
+  _dummyBlasResources.setHeapShrinkEnabled(_heapShrinkEnabled);
 
   MTL::AccelerationStructureTriangleGeometryDescriptor *geometryDesc =
       MTL::AccelerationStructureTriangleGeometryDescriptor::alloc()->init();
@@ -4563,6 +4592,7 @@ void Renderer::updateTopLevelAccelerationStructure(
     return;
 
   _tlasHeap.initialize(_pDevice);
+  _tlasHeap.setHeapShrinkEnabled(_heapShrinkEnabled);
 
   std::vector<MTL::AccelerationStructure *> instancedStructures;
   instancedStructures.reserve(structures.size() + 1);
@@ -8093,6 +8123,8 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   if (_pendingAlwaysResidentPrewarm &&
       strategy == ResidencyStrategy::AlwaysResident)
     prewarmAlwaysResidentResources();
+
+  updateHeapShrinkCandidates();
 }
 
 bool Renderer::updateAlwaysResident(bool forceAllToggles) {
