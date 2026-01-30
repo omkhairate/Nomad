@@ -1864,6 +1864,7 @@ uint32_t Renderer::maxRayDepth() const { return _pScene ? _pScene->maxRayDepth :
 void Renderer::initializeBenchmarking() {
   const char *primaryEnv = std::getenv("METALPT_BENCH");
   const char *legacyEnv = std::getenv("METALAPT_BENCH");
+  const char *probabilityEnv = std::getenv("METALPT_BENCH_LOG_PROBABILITIES");
   const char *env = primaryEnv ? primaryEnv : legacyEnv;
   if (!env)
     return;
@@ -1877,6 +1878,20 @@ void Renderer::initializeBenchmarking() {
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
   bool enable = value == "1" || value == "true" || value == "yes" || value == "on";
+  if (probabilityEnv) {
+    std::string probabilityValue(probabilityEnv);
+    std::transform(probabilityValue.begin(), probabilityValue.end(),
+                   probabilityValue.begin(), [](unsigned char c) {
+                     return static_cast<char>(std::tolower(c));
+                   });
+    bool logProbabilities = probabilityValue == "1" ||
+                            probabilityValue == "true" ||
+                            probabilityValue == "yes" ||
+                            probabilityValue == "on";
+    _benchmarkLogProbabilities = logProbabilities;
+  } else {
+    _benchmarkLogProbabilities = true;
+  }
   setBenchmarkMode(enable);
 }
 
@@ -12849,91 +12864,94 @@ void Renderer::beginFrameMetrics() {
         formatFloatList(_residencyConfig.environmentDepthWeights);
     sample.environmentDepthRadii =
         formatFloatList(_residencyConfig.environmentDepthRadii);
-    if (!_primitiveHitProbability.empty()) {
-      size_t primitiveCount =
-          std::min(_primitiveHitProbability.size(), _allPrimitives.size());
-      std::vector<float> validProbabilities;
-      validProbabilities.reserve(primitiveCount);
-      double probabilitySum = 0.0;
-      std::ostringstream primitiveStream;
-      bool firstPrimitive = true;
+    if (_benchmarkLogProbabilities) {
+      if (!_primitiveHitProbability.empty()) {
+        size_t primitiveCount =
+            std::min(_primitiveHitProbability.size(), _allPrimitives.size());
+        std::vector<float> validProbabilities;
+        validProbabilities.reserve(primitiveCount);
+        double probabilitySum = 0.0;
+        std::ostringstream primitiveStream;
+        bool firstPrimitive = true;
 
-      std::vector<double> objectProbabilitySums(_allSceneObjects.size(), 0.0);
-      std::vector<size_t> objectProbabilityCounts(_allSceneObjects.size(), 0);
+        std::vector<double> objectProbabilitySums(_allSceneObjects.size(), 0.0);
+        std::vector<size_t> objectProbabilityCounts(_allSceneObjects.size(), 0);
 
-      for (size_t index = 0; index < primitiveCount; ++index) {
-        float probability = _primitiveHitProbability[index];
-        bool probabilityFinite = std::isfinite(probability);
-        float sanitized = probabilityFinite
-                               ? std::clamp(probability, 0.0f, 1.0f)
-                               : 0.0f;
+        for (size_t index = 0; index < primitiveCount; ++index) {
+          float probability = _primitiveHitProbability[index];
+          bool probabilityFinite = std::isfinite(probability);
+          float sanitized = probabilityFinite
+                                 ? std::clamp(probability, 0.0f, 1.0f)
+                                 : 0.0f;
 
-        if (!firstPrimitive)
-          primitiveStream << ';';
-        primitiveStream << index << ':'
-                        << formatFixed(static_cast<double>(sanitized), 6);
-        firstPrimitive = false;
+          if (!firstPrimitive)
+            primitiveStream << ';';
+          primitiveStream << index << ':'
+                          << formatFixed(static_cast<double>(sanitized), 6);
+          firstPrimitive = false;
 
-        if (probabilityFinite) {
-          probabilitySum += sanitized;
-          validProbabilities.push_back(sanitized);
-        }
+          if (probabilityFinite) {
+            probabilitySum += sanitized;
+            validProbabilities.push_back(sanitized);
+          }
 
-        if (index < _primitiveToObject.size()) {
-          size_t objectIndex = _primitiveToObject[index];
-          if (objectIndex < objectProbabilitySums.size()) {
-            objectProbabilitySums[objectIndex] += static_cast<double>(sanitized);
-            objectProbabilityCounts[objectIndex] += 1;
+          if (index < _primitiveToObject.size()) {
+            size_t objectIndex = _primitiveToObject[index];
+            if (objectIndex < objectProbabilitySums.size()) {
+              objectProbabilitySums[objectIndex] +=
+                  static_cast<double>(sanitized);
+              objectProbabilityCounts[objectIndex] += 1;
+            }
           }
         }
-      }
 
-      sample.primitiveProbabilities = primitiveStream.str();
+        sample.primitiveProbabilities = primitiveStream.str();
 
-      if (!_allSceneObjects.empty()) {
+        if (!_allSceneObjects.empty()) {
+          std::ostringstream objectStream;
+          bool firstObject = true;
+          for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+               ++objectIndex) {
+            double avgProbability = 0.0;
+            if (objectIndex < objectProbabilitySums.size() &&
+                objectProbabilityCounts[objectIndex] > 0) {
+              avgProbability = objectProbabilitySums[objectIndex] /
+                                static_cast<double>(
+                                    objectProbabilityCounts[objectIndex]);
+            }
+            if (!firstObject)
+              objectStream << ';';
+            objectStream << objectIndex << ':'
+                         << formatFixed(avgProbability, 6);
+            firstObject = false;
+          }
+          sample.objectProbabilities = objectStream.str();
+        }
+
+        if (!validProbabilities.empty()) {
+          sample.avgHitProbability =
+              probabilitySum / static_cast<double>(validProbabilities.size());
+          size_t percentileIndex = static_cast<size_t>(std::floor(
+              0.95 * static_cast<double>(validProbabilities.size() - 1)));
+          percentileIndex = std::min(percentileIndex,
+                                      validProbabilities.size() - 1);
+          std::nth_element(validProbabilities.begin(),
+                           validProbabilities.begin() + percentileIndex,
+                           validProbabilities.end());
+          sample.p95HitProbability = validProbabilities[percentileIndex];
+        }
+      } else if (!_allSceneObjects.empty()) {
         std::ostringstream objectStream;
         bool firstObject = true;
         for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
              ++objectIndex) {
-          double avgProbability = 0.0;
-          if (objectIndex < objectProbabilitySums.size() &&
-              objectProbabilityCounts[objectIndex] > 0) {
-            avgProbability = objectProbabilitySums[objectIndex] /
-                              static_cast<double>(
-                                  objectProbabilityCounts[objectIndex]);
-          }
           if (!firstObject)
             objectStream << ';';
-          objectStream << objectIndex << ':'
-                       << formatFixed(avgProbability, 6);
+          objectStream << objectIndex << ':' << formatFixed(0.0, 6);
           firstObject = false;
         }
         sample.objectProbabilities = objectStream.str();
       }
-
-      if (!validProbabilities.empty()) {
-        sample.avgHitProbability =
-            probabilitySum / static_cast<double>(validProbabilities.size());
-        size_t percentileIndex = static_cast<size_t>(std::floor(
-            0.95 * static_cast<double>(validProbabilities.size() - 1)));
-        percentileIndex = std::min(percentileIndex,
-                                    validProbabilities.size() - 1);
-        std::nth_element(validProbabilities.begin(),
-                         validProbabilities.begin() + percentileIndex,
-                         validProbabilities.end());
-        sample.p95HitProbability = validProbabilities[percentileIndex];
-      }
-    } else if (!_allSceneObjects.empty()) {
-      std::ostringstream objectStream;
-      bool firstObject = true;
-      for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
-           ++objectIndex) {
-        if (!firstObject)
-          objectStream << ';';
-        objectStream << objectIndex << ':' << formatFixed(0.0, 6);
-        firstObject = false;
-      }
-      sample.objectProbabilities = objectStream.str();
     }
     sample.probabilisticToggles = _frameProbabilisticToggles;
     sample.probabilityTargetPrimitives = _frameProbabilityTargetPrimitives;

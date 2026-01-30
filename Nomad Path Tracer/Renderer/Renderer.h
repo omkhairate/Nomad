@@ -719,6 +719,7 @@ private:
   ResidencyParameters _residencyConfig;
 
   bool _benchmarkEnabled = false;
+  bool _benchmarkLogProbabilities = true;
   bool _benchmarkHeaderWritten = false;
   std::ofstream _benchmarkStream;
   std::string _benchmarkFilePath;
