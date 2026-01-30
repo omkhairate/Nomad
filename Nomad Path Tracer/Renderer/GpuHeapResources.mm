@@ -2,6 +2,7 @@
 
 #include <Foundation/Foundation.hpp>
 #include <algorithm>
+#include <cstdio>
 
 #include "../Scene/Primitive.h"
 #include "GpuMemoryTracker.h"
@@ -11,6 +12,8 @@ namespace NomadPathTracer {
 namespace {
 constexpr NS::UInteger kDefaultHeapSizeBytes = 4 * 1024 * 1024; // 4 MB
 constexpr NS::UInteger kHeapAlignment = 256;
+constexpr double kShrinkUtilizationThreshold = 0.5;
+constexpr size_t kShrinkFrameThreshold = 60;
 
 NS::UInteger alignUp(NS::UInteger value, NS::UInteger alignment) {
   if (alignment == 0)
@@ -62,6 +65,9 @@ void GpuHeapResources::destroy() {
   _heapSize = 0;
   _defaultHeapSize = 0;
   _accelerationSize = 0;
+  _shrinkPending = false;
+  _pendingShrinkSize = 0;
+  _lowUtilizationFrames = 0;
 }
 
 void GpuHeapResources::ensureHeapCapacity(NS::UInteger requiredBytes) {
@@ -87,6 +93,61 @@ void GpuHeapResources::ensureHeapCapacity(NS::UInteger requiredBytes) {
 
 NS::UInteger GpuHeapResources::alignedHeapSize(NS::UInteger size) const {
   return alignForHeap(size);
+}
+
+NS::UInteger GpuHeapResources::currentRequiredBytes() const {
+  return _vertex.capacity + _index.capacity + _accelerationSize;
+}
+
+void GpuHeapResources::maybeShrinkHeap(NS::UInteger requiredBytes,
+                                       bool hasInFlight) {
+  if (!_shrinkEnabled || !_heap || _heapSize == 0)
+    return;
+  if (hasInFlight) {
+    _lowUtilizationFrames = 0;
+    return;
+  }
+
+  if (requiredBytes == 0)
+    requiredBytes = currentRequiredBytes();
+
+  const double utilization =
+      static_cast<double>(requiredBytes) / static_cast<double>(_heapSize);
+  if (utilization >= kShrinkUtilizationThreshold) {
+    _lowUtilizationFrames = 0;
+    _shrinkPending = false;
+    _pendingShrinkSize = 0;
+    return;
+  }
+
+  ++_lowUtilizationFrames;
+  if (_lowUtilizationFrames < kShrinkFrameThreshold)
+    return;
+
+  NS::UInteger targetSize = alignForHeap(requiredBytes);
+  if (targetSize == 0) {
+    targetSize =
+        _defaultHeapSize == 0 ? kDefaultHeapSizeBytes : _defaultHeapSize;
+  }
+  targetSize = alignUp(targetSize, kHeapAlignment);
+  NS::UInteger minimumSize =
+      _defaultHeapSize == 0 ? kDefaultHeapSizeBytes : _defaultHeapSize;
+  minimumSize = alignUp(minimumSize, kHeapAlignment);
+  targetSize = std::max(targetSize, minimumSize);
+  if (targetSize >= _heapSize)
+    return;
+
+  _pendingShrinkSize = targetSize;
+  _shrinkPending = true;
+}
+
+void GpuHeapResources::setHeapShrinkEnabled(bool enabled) {
+  _shrinkEnabled = enabled;
+  if (!_shrinkEnabled) {
+    _shrinkPending = false;
+    _pendingShrinkSize = 0;
+    _lowUtilizationFrames = 0;
+  }
 }
 
 void GpuHeapResources::releaseAllAllocations() {
@@ -293,6 +354,9 @@ void GpuHeapResources::recreateHeap(NS::UInteger newSize) {
   desc->release();
 
   _heapSize = _heap ? _heap->size() : 0;
+  _shrinkPending = false;
+  _pendingShrinkSize = 0;
+  _lowUtilizationFrames = 0;
 }
 
 void GpuHeapResources::tryDestroyHeap() {
@@ -300,6 +364,24 @@ void GpuHeapResources::tryDestroyHeap() {
     return;
   if (_vertex.buffer || _index.buffer || _accelerationStructure)
     return;
+  if (_shrinkPending && _pendingShrinkSize > 0 &&
+      _pendingShrinkSize < _heapSize) {
+    const NS::UInteger oldSize = _heapSize;
+    _heap->release();
+    _heap = nullptr;
+    _heapSize = 0;
+    recreateHeap(_pendingShrinkSize);
+    _shrinkPending = false;
+    _pendingShrinkSize = 0;
+    _lowUtilizationFrames = 0;
+    if (_heap && oldSize != _heapSize) {
+      std::printf("[GpuHeapResources] Shrunk heap from %llu to %llu bytes.\n",
+                  static_cast<unsigned long long>(oldSize),
+                  static_cast<unsigned long long>(_heapSize));
+    }
+    return;
+  }
+
   _heap->release();
   _heap = nullptr;
   _heapSize = 0;
