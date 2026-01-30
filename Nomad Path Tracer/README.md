@@ -12,6 +12,18 @@ Long-running path tracing commands can trigger GPU timeout errors when the pixel
 
 The renderer clamps the budget so each command can still process at least one full tile, based on the current tile dimensions and sample count.
 
+### Extra guardrails for GPU timeout errors
+
+On lower-power Apple Silicon (e.g., M1), GPU command buffer aborts often indicate a single command recorded too much work for the driver watchdog. In addition to `maxTileWorkPerCommand`, you can further cap batch size and reduce per-sample workload:
+
+- **Environment variable:** set `MPT_MAX_TILES_PER_COMMAND` to cap the number of tiles recorded per command buffer. This limit is applied in addition to the adaptive budget.
+- **Scene XML:** set `restirEnabled="false"` on the `<Scene>` root to disable ReSTIR sampling if you need a quick way to reduce per-sample work.
+- **Scene XML:** reduce `maxRayDepth` and/or `maxSamplesPerPixel` for smaller per-tile workloads.
+- **Scene XML:** lower `width`/`height` (render resolution) to shrink the total tile count and reduce the number of command buffers dispatched per frame.
+- **Scene XML:** lower `maxTileWorkPerCommand` below the default `128*128*4` (e.g., `32*32*4` on M1-class GPUs) to cap per-command work more aggressively.
+
+These controls stack with the tile work budget and are the most reliable way to eliminate GPU watchdog aborts without globally halving GPU work.
+
 ## Geometry residency memory cap
 
 The `geometryResidencyMemoryCapMB` scene parameter remains a hard ceiling. Geometry residency allocations (including streaming uploads, prewarm passes, and rebuilds) are rejected if the next allocation would exceed the cap; the renderer queues the request and triggers eviction until enough space is available to retry.
