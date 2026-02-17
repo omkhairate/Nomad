@@ -8,11 +8,7 @@ namespace NomadPathTracer {
 
 class RendererViewController {
 public:
-  ~RendererViewController();
-  NS::View *get(CGRect frame, MTL::Device *device);
-
-private:
-  class ViewDelegate *_viewDelegate = nullptr;
+  NS::ViewController *get(CGRect frame, MTL::Device *device);
 };
 
 } // namespace NomadPathTracer

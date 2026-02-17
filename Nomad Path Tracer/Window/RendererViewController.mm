@@ -12,6 +12,7 @@
 
 @implementation RendererViewControllerBridge {
   MTKView *_mtkView;
+  NomadPathTracer::ViewDelegate *_viewDelegate;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame device:(MTL::Device *)device {
@@ -28,14 +29,19 @@
   cppView->setPreferredFramesPerSecond(60);
   cppView->setEnableSetNeedsDisplay(false);
 
-  viewFactory.setViewDelegate(nullptr);
-  cppView->setDelegate(nullptr);
+  _viewDelegate = new NomadPathTracer::ViewDelegate(device);
+  viewFactory.setViewDelegate(_viewDelegate);
+  cppView->setDelegate(_viewDelegate);
   cppView->setPaused(false);
   return self;
 }
 
 - (void)dealloc {
   [_mtkView setDelegate:nil];
+  if (_viewDelegate) {
+    delete _viewDelegate;
+    _viewDelegate = nullptr;
+  }
   [super dealloc];
 }
 
@@ -45,32 +51,9 @@
 
 @end
 
-NomadPathTracer::RendererViewController::~RendererViewController() {
-  if (_viewDelegate) {
-    delete _viewDelegate;
-    _viewDelegate = nullptr;
-  }
-}
-
-NS::View *NomadPathTracer::RendererViewController::get(
+NS::ViewController *NomadPathTracer::RendererViewController::get(
     CGRect frame, MTL::Device *device) {
   RendererViewControllerBridge *controller =
       [[RendererViewControllerBridge alloc] initWithFrame:frame device:device];
-
-  MTKView *mtkView = [controller view];
-  MTK::View *cppView = (__bridge MTK::View *)mtkView;
-
-  if (_viewDelegate) {
-    delete _viewDelegate;
-  }
-  _viewDelegate = new NomadPathTracer::ViewDelegate(device);
-
-  NomadPathTracer::ControllerView viewFactory;
-  viewFactory.setViewDelegate(_viewDelegate);
-  cppView->setDelegate(_viewDelegate);
-
-  NS::View *contentView = (__bridge NS::View *)mtkView;
-  [mtkView retain];
-  [controller release];
-  return contentView;
+  return (__bridge NS::ViewController *)controller;
 }
