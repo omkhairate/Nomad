@@ -136,6 +136,7 @@ public:
   void setResidencyStrategy(ResidencyStrategy strategy);
   ResidencyStrategy residencyStrategy() const;
   const std::string &scenePath() const;
+  bool hasSceneLoaded() const;
 
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);
@@ -780,7 +781,8 @@ private:
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
-  std::string _scenePath = "scene.xml";
+  std::string _scenePath;
+  bool _hasSceneLoaded = false;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
 

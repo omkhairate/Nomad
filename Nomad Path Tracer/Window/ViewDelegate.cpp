@@ -123,9 +123,15 @@ bool ViewDelegate::loadScene(const std::string &path) {
   return _pRenderer->loadScene(path);
 }
 
-bool ViewDelegate::reloadScene() { return _pRenderer->loadScene(_pRenderer->scenePath()); }
+bool ViewDelegate::reloadScene() {
+  if (_pRenderer->scenePath().empty())
+    return false;
+  return _pRenderer->loadScene(_pRenderer->scenePath());
+}
 
 const std::string &ViewDelegate::scenePath() const { return _pRenderer->scenePath(); }
+
+bool ViewDelegate::hasSceneLoaded() const { return _pRenderer->hasSceneLoaded(); }
 
 void ViewDelegate::setMaxRayDepth(uint32_t depth) {
   _pRenderer->setMaxRayDepth(depth);
