@@ -1648,10 +1648,8 @@ Renderer::Renderer(MTL::Device *pDevice)
   _primaryCameraState = Camera::captureState();
   _observerCameraState = _primaryCameraState;
 
-  loadScene(_scenePath);
   buildShaders();
   buildTextures();
-  rebuildEnvironmentTexture();
   _pathTraceTilesPerCommandBudget = kPathTraceMaxTilesPerCommand;
 
   recalculateViewport();
@@ -1884,6 +1882,8 @@ ResidencyStrategy Renderer::residencyStrategy() const {
 }
 
 const std::string &Renderer::scenePath() const { return _scenePath; }
+
+bool Renderer::hasSceneLoaded() const { return _hasSceneLoaded; }
 
 void Renderer::initializeBenchmarking() {
   const char *primaryEnv = std::getenv("METALPT_BENCH");
@@ -2906,17 +2906,22 @@ Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
 }
 
 bool Renderer::loadScene(const std::string &path) {
-  _scenePath = path.empty() ? "scene.xml" : path;
+  _hasSceneLoaded = false;
+  if (path.empty()) {
+    _scenePath.clear();
+    std::printf("No scene selected. Choose a scene file to begin rendering.\n");
+    return false;
+  }
+
+  _scenePath = path;
   resetProbabilisticResidencyState();
   bool loaded = SceneLoader::LoadSceneFromXML(_scenePath, _pScene);
   if (!loaded) {
-    std::filesystem::path alt =
-        std::filesystem::path(__FILE__).parent_path() / "../scene_bistro_test_v2.xml";
-    loaded = SceneLoader::LoadSceneFromXML(alt.string(), _pScene);
-    if (loaded)
-      _scenePath = alt.string();
+    std::printf("Failed to load scene: %s\n", _scenePath.c_str());
+    return false;
   }
 
+  _hasSceneLoaded = true;
   Camera::screenSize = _pScene->screenSize;
   _animationFrame = 0;
   _observerActive = false;
@@ -3251,7 +3256,10 @@ bool Renderer::loadScene(const std::string &path) {
   return loaded;
 }
 
-void Renderer::updateVisibleScene() { loadScene("scene.xml"); }
+void Renderer::updateVisibleScene() {
+  if (!_scenePath.empty())
+    loadScene(_scenePath);
+}
 
 void Renderer::prewarmAlwaysResidentResources() {
   if (!_pScene ||
@@ -7406,6 +7414,31 @@ void Renderer::updateUniforms(bool cameraChanged) {
 
 void Renderer::draw(MTK::View *pView) {
   processRayHitCounters();
+
+  if (!_hasSceneLoaded || !_pScene) {
+    NS::AutoreleasePool *pPool = NS::AutoreleasePool::alloc()->init();
+    MTL::CommandBuffer *cmd = _pCommandQueue ? _pCommandQueue->commandBuffer() : nullptr;
+    if (cmd) {
+      MTL::RenderPassDescriptor *pass = pView ? pView->currentRenderPassDescriptor() : nullptr;
+      MTL::Drawable *drawable = pView ? pView->currentDrawable() : nullptr;
+      if (pass && drawable) {
+        auto *colorAttachment = pass->colorAttachments()->object(0);
+        if (colorAttachment) {
+          colorAttachment->setLoadAction(MTL::LoadActionClear);
+          colorAttachment->setStoreAction(MTL::StoreActionStore);
+          colorAttachment->setClearColor(MTL::ClearColor(0.08, 0.08, 0.1, 1.0));
+        }
+        MTL::RenderCommandEncoder *enc = cmd->renderCommandEncoder(pass);
+        if (enc)
+          enc->endEncoding();
+        cmd->presentDrawable(drawable);
+      }
+      trackFrameCommandBuffer(cmd);
+      cmd->commit();
+    }
+    pPool->release();
+    return;
+  }
   bool cameraChanged = updateCameraStates();
   Camera::State viewCamera =
       _observerActive ? _observerCameraState : _primaryCameraState;
