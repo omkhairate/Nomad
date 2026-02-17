@@ -5,12 +5,14 @@
 using namespace NomadPathTracer;
 
 ApplicationDelegate::~ApplicationDelegate() {
-  if (_pRendererViewController)
-    _pRendererViewController->release();
+  if (_pMtkView)
+    _pMtkView->release();
   if (_pWindow)
     _pWindow->release();
   if (_pDevice)
     _pDevice->release();
+  if (_pViewDelegate)
+    delete _pViewDelegate;
 }
 
 void ApplicationDelegate::applicationWillFinishLaunching(
@@ -44,8 +46,18 @@ void ApplicationDelegate::applicationDidFinishLaunching(
 
   _pDevice = MTL::CreateSystemDefaultDevice();
 
-  _pRendererViewController = _rendererViewController.get(frame, _pDevice);
-  _pWindow->setContentViewController(_pRendererViewController);
+  _pMtkView = _controllerView.get(frame);
+  _pMtkView->setDevice(_pDevice);
+  _pMtkView->setColorPixelFormat(MTL::PixelFormat::PixelFormatRGBA16Float);
+  _pMtkView->setClearColor(MTL::ClearColor::Make(0.0, 0.0, 0.0, 1.0));
+  _pMtkView->setPreferredFramesPerSecond(60);
+  _pMtkView->setEnableSetNeedsDisplay(false);
+  _pViewDelegate = new ViewDelegate(_pDevice);
+  _controllerView.setViewDelegate(_pViewDelegate);
+  _pMtkView->setDelegate(_pViewDelegate);
+  _pMtkView->setPaused(false);
+
+  _pWindow->setContentView(_pMtkView);
   // Window title updated to reflect the new application name.
   _pWindow->setTitle(
       NS::String::string("Nomad", NS::StringEncoding::UTF8StringEncoding));
