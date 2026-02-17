@@ -5,8 +5,8 @@
 using namespace NomadPathTracer;
 
 ApplicationDelegate::~ApplicationDelegate() {
-  if (_pRendererView)
-    _pRendererView->release();
+  if (_pRendererViewController)
+    _pRendererViewController->release();
   if (_pWindow)
     _pWindow->release();
   if (_pDevice)
@@ -44,8 +44,8 @@ void ApplicationDelegate::applicationDidFinishLaunching(
 
   _pDevice = MTL::CreateSystemDefaultDevice();
 
-  _pRendererView = _rendererViewController.get(frame, _pDevice);
-  _pWindow->setContentView(_pRendererView);
+  _pRendererViewController = _rendererViewController.get(frame, _pDevice);
+  _pWindow->setContentViewController(_pRendererViewController);
   // Window title updated to reflect the new application name.
   _pWindow->setTitle(
       NS::String::string("Nomad", NS::StringEncoding::UTF8StringEncoding));
