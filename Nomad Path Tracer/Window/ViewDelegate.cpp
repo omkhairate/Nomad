@@ -120,19 +120,13 @@ void ViewDelegate::drawableSizeWillChange(MTK::View *pView, CGSize size) {
 }
 
 bool ViewDelegate::loadScene(const std::string &path) {
-  bool loaded = _pRenderer->loadScene(path);
-  if (!loaded)
-    std::printf("Renderer is idle: no scene loaded.\n");
-  return loaded;
+  return _pRenderer->loadScene(path);
 }
 
 bool ViewDelegate::reloadScene() {
   if (_pRenderer->scenePath().empty())
     return false;
-  bool loaded = _pRenderer->loadScene(_pRenderer->scenePath());
-  if (!loaded)
-    std::printf("Renderer reload failed; staying in idle no-scene state.\n");
-  return loaded;
+  return _pRenderer->loadScene(_pRenderer->scenePath());
 }
 
 const std::string &ViewDelegate::scenePath() const { return _pRenderer->scenePath(); }
