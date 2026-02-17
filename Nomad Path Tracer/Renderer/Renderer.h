@@ -112,6 +112,7 @@ public:
   Renderer(MTL::Device *pDevice);
   ~Renderer();
 
+  bool loadScene(const std::string &path);
   void updateVisibleScene();
   void buildShaders();
   void buildTextures();
@@ -129,6 +130,12 @@ public:
   void setFrameCaptureInterval(size_t interval);
   void setMaxRayDepth(uint32_t depth);
   uint32_t maxRayDepth() const;
+  void setSamplesPerPixel(uint32_t minSamples, uint32_t maxSamples);
+  uint32_t minSamplesPerPixel() const;
+  uint32_t maxSamplesPerPixel() const;
+  void setResidencyStrategy(ResidencyStrategy strategy);
+  ResidencyStrategy residencyStrategy() const;
+  const std::string &scenePath() const;
 
   bool hasKeyframes() const;
   bool setPrimitiveActive(size_t index, bool active);
@@ -773,6 +780,7 @@ private:
 
   uint32_t _minSamplesPerPixel = 1;
   uint32_t _maxSamplesPerPixel = 4;
+  std::string _scenePath = "scene.xml";
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;
 

@@ -6,8 +6,7 @@
 #include <Metal/Metal.hpp>
 #include <MetalKit/MetalKit.hpp>
 
-#include "ControllerView.hpp"
-#include "ViewDelegate.h"
+#include "RendererViewController.hpp"
 
 namespace NomadPathTracer {
 
@@ -25,10 +24,9 @@ public:
 
 private:
   NS::Window *_pWindow;
-  MTK::View *_pMtkView;
   MTL::Device *_pDevice;
-  ViewDelegate *_pViewDelegate = nullptr;
-  ControllerView _controllerView;
+  NS::ViewController *_pRendererViewController = nullptr;
+  RendererViewController _rendererViewController;
   bool _initialized = false;
 };
 
