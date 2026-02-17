@@ -1,4 +1,6 @@
 #include "ApplicationDelegate.h"
+#include "SceneLoader.h"
+#include <filesystem>
 
 using namespace NomadPathTracer;
 
@@ -24,9 +26,15 @@ void ApplicationDelegate::applicationDidFinishLaunching(
     return;
   _initialized = true;
 
-  constexpr float kDefaultWidth = 1280.0f;
-  constexpr float kDefaultHeight = 720.0f;
-  CGRect frame = {{100.0, 100.0}, {kDefaultWidth, kDefaultHeight}};
+  Scene tmpScene;
+  bool loaded = SceneLoader::LoadSceneFromXML("scene.xml", &tmpScene);
+  if (!loaded) {
+    std::filesystem::path alt =
+        std::filesystem::path(__FILE__).parent_path() / "../scene.xml";
+    SceneLoader::LoadSceneFromXML(alt.string(), &tmpScene);
+  }
+
+  CGRect frame = {{100.0, 100.0}, {tmpScene.screenSize.x, tmpScene.screenSize.y}};
 
   _pWindow = NS::Window::alloc()->init(frame,
                                        NS::WindowStyleMaskClosable |

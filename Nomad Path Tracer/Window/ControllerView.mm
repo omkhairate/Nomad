@@ -21,8 +21,6 @@
  + (void)residencyStrategyChanged:(NSPopUpButton *)sender;
  + (void)openScenePressed:(id)sender;
  + (void)reloadScenePressed:(id)sender;
- + (void)promptForSceneIfNeeded;
- + (void)updateSceneStatus;
 @end
 
 static NomadPathTracer::ViewDelegate *renderDelegate = nullptr;
@@ -37,7 +35,6 @@ static NSSlider *maxSamplesSlider;
 static NSTextField *maxSamplesLabel;
 static NSPopUpButton *strategyPopup;
 static NSTextField *scenePathLabel;
-static bool didPromptForScene = false;
 
 static NSArray<NSString *> *residencyStrategyNames() {
     return @[@"Distance LOD", @"Energy", @"Ray-hit", @"Screen-space", @"Probabilistic", @"Always Resident", @"Environment", @"Predictive Env", @"Unified"];
@@ -131,29 +128,29 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     [memoryLabel setStringValue:@"GPU: 0.0 MB"];
     [adapter addSubview:memoryLabel];
 
-    NSView *controlPanel = [[NSView alloc] initWithFrame:NSMakeRect(10, 10, 300, 320)];
+    NSView *controlPanel = [[NSView alloc] initWithFrame:NSMakeRect(10, 10, 300, 300)];
     [controlPanel setWantsLayer:YES];
     controlPanel.layer.backgroundColor = [[NSColor colorWithCalibratedWhite:0 alpha:0.5] CGColor];
     controlPanel.layer.cornerRadius = 6.0;
 
-    NSButton *openButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, 284, 120, 26)];
+    NSButton *openButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, 264, 120, 26)];
     [openButton setTitle:@"Open Scene…"];
     [openButton setTarget:self];
     [openButton setAction:@selector(openScenePressed:)];
     [controlPanel addSubview:openButton];
 
-    NSButton *reloadButton = [[NSButton alloc] initWithFrame:NSMakeRect(170, 284, 120, 26)];
+    NSButton *reloadButton = [[NSButton alloc] initWithFrame:NSMakeRect(170, 264, 120, 26)];
     [reloadButton setTitle:@"Run / Reload"];
     [reloadButton setTarget:self];
     [reloadButton setAction:@selector(reloadScenePressed:)];
     [controlPanel addSubview:reloadButton];
 
-    scenePathLabel = createLabel(NSMakeRect(10, 260, 280, 18), @"No scene loaded");
+    scenePathLabel = createLabel(NSMakeRect(10, 242, 280, 18), @"Scene: scene.xml");
     [controlPanel addSubview:scenePathLabel];
 
-    refreshRateLabel = createLabel(NSMakeRect(10, 234, 220, 18), @"Refresh: 60 FPS");
+    refreshRateLabel = createLabel(NSMakeRect(10, 216, 220, 18), @"Refresh: 60 FPS");
     [controlPanel addSubview:refreshRateLabel];
-    refreshRateSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 214, 280, 20)];
+    refreshRateSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 196, 280, 20)];
     [refreshRateSlider setMinValue:24];
     [refreshRateSlider setMaxValue:240];
     [refreshRateSlider setIntegerValue:60];
@@ -161,9 +158,9 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     [refreshRateSlider setAction:@selector(refreshRateChanged:)];
     [controlPanel addSubview:refreshRateSlider];
 
-    maxRayDepthLabel = createLabel(NSMakeRect(10, 188, 220, 18), @"Max Ray Depth: 8");
+    maxRayDepthLabel = createLabel(NSMakeRect(10, 170, 220, 18), @"Max Ray Depth: 8");
     [controlPanel addSubview:maxRayDepthLabel];
-    maxRayDepthSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 168, 280, 20)];
+    maxRayDepthSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 150, 280, 20)];
     [maxRayDepthSlider setMinValue:1];
     [maxRayDepthSlider setMaxValue:64];
     [maxRayDepthSlider setIntegerValue:8];
@@ -171,9 +168,9 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     [maxRayDepthSlider setAction:@selector(maxRayDepthChanged:)];
     [controlPanel addSubview:maxRayDepthSlider];
 
-    minSamplesLabel = createLabel(NSMakeRect(10, 142, 220, 18), @"Min Samples: 1");
+    minSamplesLabel = createLabel(NSMakeRect(10, 124, 220, 18), @"Min Samples: 1");
     [controlPanel addSubview:minSamplesLabel];
-    minSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 122, 280, 20)];
+    minSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 104, 280, 20)];
     [minSamplesSlider setMinValue:1];
     [minSamplesSlider setMaxValue:16];
     [minSamplesSlider setIntegerValue:1];
@@ -181,9 +178,9 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     [minSamplesSlider setAction:@selector(minSamplesChanged:)];
     [controlPanel addSubview:minSamplesSlider];
 
-    maxSamplesLabel = createLabel(NSMakeRect(10, 96, 220, 18), @"Max Samples: 4");
+    maxSamplesLabel = createLabel(NSMakeRect(10, 78, 220, 18), @"Max Samples: 4");
     [controlPanel addSubview:maxSamplesLabel];
-    maxSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 76, 280, 20)];
+    maxSamplesSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(10, 58, 280, 20)];
     [maxSamplesSlider setMinValue:1];
     [maxSamplesSlider setMaxValue:32];
     [maxSamplesSlider setIntegerValue:4];
@@ -191,7 +188,7 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     [maxSamplesSlider setAction:@selector(maxSamplesChanged:)];
     [controlPanel addSubview:maxSamplesSlider];
 
-    strategyPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(10, 34, 280, 28) pullsDown:NO];
+    strategyPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(10, 24, 280, 28) pullsDown:NO];
     [strategyPopup addItemsWithTitles:residencyStrategyNames()];
     [strategyPopup setTarget:self];
     [strategyPopup setAction:@selector(residencyStrategyChanged:)];
@@ -217,7 +214,6 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
 + (void)setDelegate:(NomadPathTracer::ViewDelegate *)delegate {
     renderDelegate = delegate;
     [self updateControlValues];
-    [self promptForSceneIfNeeded];
 }
 
 + (void)updateControlValues {
@@ -241,7 +237,8 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
         auto strategy = renderDelegate->residencyStrategy();
         [strategyPopup selectItemAtIndex:static_cast<NSInteger>(strategy)];
 
-        [self updateSceneStatus];
+        std::string scenePath = renderDelegate->scenePath();
+        [scenePathLabel setStringValue:[NSString stringWithFormat:@"Scene: %s", scenePath.c_str()]];
     }
 }
 
@@ -305,13 +302,7 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     if ([panel runModal] == NSModalResponseOK) {
         NSURL *url = panel.URL;
         if (url.path) {
-            bool loaded = renderDelegate->loadScene(std::string(url.path.UTF8String));
-            if (!loaded) {
-                NSAlert *alert = [[NSAlert alloc] init];
-                [alert setMessageText:@"Failed to load scene"];
-                [alert setInformativeText:@"The selected scene could not be loaded."];
-                [alert runModal];
-            }
+            renderDelegate->loadScene(std::string(url.path.UTF8String));
             [self updateControlValues];
         }
     }
@@ -320,44 +311,8 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
 + (void)reloadScenePressed:(id)sender {
     if (!renderDelegate)
         return;
-    if (!renderDelegate->hasSceneLoaded() || renderDelegate->scenePath().empty()) {
-        NSAlert *alert = [[NSAlert alloc] init];
-        [alert setMessageText:@"No scene loaded"];
-        [alert setInformativeText:@"Choose a scene with Open Scene… before running reload."];
-        [alert runModal];
-        return;
-    }
-
-    bool loaded = renderDelegate->reloadScene();
-    if (!loaded) {
-        NSAlert *alert = [[NSAlert alloc] init];
-        [alert setMessageText:@"Reload failed"];
-        [alert setInformativeText:@"The current scene could not be reloaded."];
-        [alert runModal];
-    }
+    renderDelegate->reloadScene();
     [self updateControlValues];
-}
-
-
-+ (void)updateSceneStatus {
-    if (!scenePathLabel)
-        return;
-    if (!renderDelegate || !renderDelegate->hasSceneLoaded() || renderDelegate->scenePath().empty()) {
-        [scenePathLabel setStringValue:@"No scene loaded"];
-        return;
-    }
-
-    std::string scenePath = renderDelegate->scenePath();
-    [scenePathLabel setStringValue:[NSString stringWithFormat:@"Scene: %s", scenePath.c_str()]];
-}
-
-+ (void)promptForSceneIfNeeded {
-    if (didPromptForScene || !renderDelegate)
-        return;
-    if (renderDelegate->hasSceneLoaded() || !renderDelegate->scenePath().empty())
-        return;
-    didPromptForScene = true;
-    [self openScenePressed:nil];
 }
 
 - (id)init {
