@@ -3251,7 +3251,7 @@ bool Renderer::loadScene(const std::string &path) {
   return loaded;
 }
 
-void Renderer::updateVisibleScene() { loadScene(_scenePath); }
+void Renderer::updateVisibleScene() { loadScene("scene.xml"); }
 
 void Renderer::prewarmAlwaysResidentResources() {
   if (!_pScene ||
