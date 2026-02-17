@@ -1648,7 +1648,7 @@ Renderer::Renderer(MTL::Device *pDevice)
   _primaryCameraState = Camera::captureState();
   _observerCameraState = _primaryCameraState;
 
-  loadScene(_scenePath);
+  updateVisibleScene();
   buildShaders();
   buildTextures();
   rebuildEnvironmentTexture();
@@ -1862,28 +1862,6 @@ void Renderer::setMaxRayDepth(uint32_t depth) {
 }
 
 uint32_t Renderer::maxRayDepth() const { return _pScene ? _pScene->maxRayDepth : 0; }
-
-void Renderer::setSamplesPerPixel(uint32_t minSamples, uint32_t maxSamples) {
-  _minSamplesPerPixel = std::max(minSamples, 1u);
-  _maxSamplesPerPixel = std::max(maxSamples, 1u);
-}
-
-uint32_t Renderer::minSamplesPerPixel() const { return _minSamplesPerPixel; }
-
-uint32_t Renderer::maxSamplesPerPixel() const { return _maxSamplesPerPixel; }
-
-void Renderer::setResidencyStrategy(ResidencyStrategy strategy) {
-  if (_pScene)
-    _pScene->setResidencyStrategy(strategy);
-}
-
-ResidencyStrategy Renderer::residencyStrategy() const {
-  if (!_pScene)
-    return ResidencyStrategy::DistanceLOD;
-  return _pScene->getResidencyStrategy();
-}
-
-const std::string &Renderer::scenePath() const { return _scenePath; }
 
 void Renderer::initializeBenchmarking() {
   const char *primaryEnv = std::getenv("METALPT_BENCH");
@@ -2905,16 +2883,12 @@ Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
   return result;
 }
 
-bool Renderer::loadScene(const std::string &path) {
-  _scenePath = path.empty() ? "scene.xml" : path;
+void Renderer::updateVisibleScene() {
   resetProbabilisticResidencyState();
-  bool loaded = SceneLoader::LoadSceneFromXML(_scenePath, _pScene);
-  if (!loaded) {
+  if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
         std::filesystem::path(__FILE__).parent_path() / "../scene_bistro_test_v2.xml";
-    loaded = SceneLoader::LoadSceneFromXML(alt.string(), _pScene);
-    if (loaded)
-      _scenePath = alt.string();
+    SceneLoader::LoadSceneFromXML(alt.string(), _pScene);
   }
 
   Camera::screenSize = _pScene->screenSize;
@@ -3247,11 +3221,7 @@ bool Renderer::loadScene(const std::string &path) {
 
   updateResidency(true, true);
   rebuildEnvironmentTexture();
-
-  return loaded;
 }
-
-void Renderer::updateVisibleScene() { loadScene(_scenePath); }
 
 void Renderer::prewarmAlwaysResidentResources() {
   if (!_pScene ||

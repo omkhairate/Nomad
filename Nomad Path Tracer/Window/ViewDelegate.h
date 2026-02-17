@@ -18,16 +18,8 @@ public:
   virtual ~ViewDelegate() override;
   virtual void drawInMTKView(MTK::View *pView) override;
   virtual void drawableSizeWillChange(MTK::View *pView, CGSize size) override;
-  bool loadScene(const std::string &path);
-  bool reloadScene();
-  const std::string &scenePath() const;
   void setMaxRayDepth(uint32_t depth);
   uint32_t maxRayDepth() const;
-  void setSamplesPerPixel(uint32_t minSamples, uint32_t maxSamples);
-  uint32_t minSamplesPerPixel() const;
-  uint32_t maxSamplesPerPixel() const;
-  void setResidencyStrategy(ResidencyStrategy strategy);
-  ResidencyStrategy residencyStrategy() const;
 
 private:
   Renderer *_pRenderer;

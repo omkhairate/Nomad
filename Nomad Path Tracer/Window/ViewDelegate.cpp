@@ -119,36 +119,8 @@ void ViewDelegate::drawableSizeWillChange(MTK::View *pView, CGSize size) {
   _pRenderer->drawableSizeWillChange(pView, size);
 }
 
-bool ViewDelegate::loadScene(const std::string &path) {
-  return _pRenderer->loadScene(path);
-}
-
-bool ViewDelegate::reloadScene() { return _pRenderer->loadScene(_pRenderer->scenePath()); }
-
-const std::string &ViewDelegate::scenePath() const { return _pRenderer->scenePath(); }
-
 void ViewDelegate::setMaxRayDepth(uint32_t depth) {
   _pRenderer->setMaxRayDepth(depth);
 }
 
 uint32_t ViewDelegate::maxRayDepth() const { return _pRenderer->maxRayDepth(); }
-
-void ViewDelegate::setSamplesPerPixel(uint32_t minSamples, uint32_t maxSamples) {
-  _pRenderer->setSamplesPerPixel(minSamples, maxSamples);
-}
-
-uint32_t ViewDelegate::minSamplesPerPixel() const {
-  return _pRenderer->minSamplesPerPixel();
-}
-
-uint32_t ViewDelegate::maxSamplesPerPixel() const {
-  return _pRenderer->maxSamplesPerPixel();
-}
-
-void ViewDelegate::setResidencyStrategy(ResidencyStrategy strategy) {
-  _pRenderer->setResidencyStrategy(strategy);
-}
-
-ResidencyStrategy ViewDelegate::residencyStrategy() const {
-  return _pRenderer->residencyStrategy();
-}
