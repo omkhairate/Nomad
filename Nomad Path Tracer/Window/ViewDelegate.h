@@ -21,7 +21,6 @@ public:
   bool loadScene(const std::string &path);
   bool reloadScene();
   const std::string &scenePath() const;
-  bool hasSceneLoaded() const;
   void setMaxRayDepth(uint32_t depth);
   uint32_t maxRayDepth() const;
   void setSamplesPerPixel(uint32_t minSamples, uint32_t maxSamples);
