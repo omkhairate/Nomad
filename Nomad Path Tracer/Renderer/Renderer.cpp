@@ -1652,7 +1652,6 @@ Renderer::Renderer(MTL::Device *pDevice)
   buildTextures();
   _pathTraceTilesPerCommandBudget = kPathTraceMaxTilesPerCommand;
 
-  ensureUniformsBufferAllocated();
   recalculateViewport();
   initializeBenchmarking();
 }
@@ -3501,23 +3500,7 @@ Renderer::buildFrustumCorners(const Camera::State &state, float nearDistance,
   return corners;
 }
 
-void Renderer::ensureUniformsBufferAllocated() {
-  const size_t uniformsDataSize = sizeof(UniformsData);
-  if (_pUniformsBuffer)
-    return;
-
-  _pUniformsBuffer =
-      allocateBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged,
-                     GpuMemoryTracker::Category::RendererBuffers,
-                     "Uniforms");
-  if (_pUniformsBuffer)
-    markBufferModified(_pUniformsBuffer, NS::Range::Make(0, uniformsDataSize));
-}
-
 void Renderer::recalculateViewport() {
-  ensureUniformsBufferAllocated();
-  if (!_pUniformsBuffer)
-    return;
 
   float aspectRatio = Camera::screenSize.x / Camera::screenSize.y;
   float fovRad = Camera::verticalFov * (M_PI / 180.0f);
@@ -4919,7 +4902,16 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _compactionCooldown = 0;
   }
 
-  ensureUniformsBufferAllocated();
+  const size_t uniformsDataSize = sizeof(UniformsData);
+  if (!_pUniformsBuffer) {
+    _pUniformsBuffer =
+        allocateBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged,
+                       GpuMemoryTracker::Category::RendererBuffers,
+                       "Uniforms");
+    if (_pUniformsBuffer)
+      markBufferModified(_pUniformsBuffer,
+                         NS::Range::Make(0, uniformsDataSize));
+  }
   if (_primitiveToResidentIndex.size() < totalPrimitiveCount)
     _primitiveToResidentIndex.resize(totalPrimitiveCount, -1);
   std::fill(_primitiveToResidentIndex.begin(), _primitiveToResidentIndex.end(),
@@ -7325,10 +7317,6 @@ bool Renderer::updateCameraStates() {
 }
 
 void Renderer::updateUniforms(bool cameraChanged) {
-  ensureUniformsBufferAllocated();
-  if (!_pUniformsBuffer)
-    return;
-
   UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
 
   const Camera::State &activeView =
