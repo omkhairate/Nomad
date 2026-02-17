@@ -1645,6 +1645,8 @@ Renderer::Renderer(MTL::Device *pDevice)
   _dummyBlasResources.setHeapShrinkEnabled(_heapShrinkEnabled);
 
   Camera::reset();
+  if (Camera::screenSize.x <= 0.0f || Camera::screenSize.y <= 0.0f)
+    Camera::screenSize = {1280.0f, 720.0f};
   _primaryCameraState = Camera::captureState();
   _observerCameraState = _primaryCameraState;
 
@@ -2907,21 +2909,75 @@ Renderer::buildSceneAccelerationStructures(size_t primitiveCount,
 }
 
 bool Renderer::loadScene(const std::string &path) {
+  auto setNoSceneLoadedState = [&]() {
+    simd::float2 fallbackScreenSize = Camera::screenSize;
+    if (fallbackScreenSize.x <= 0.0f || fallbackScreenSize.y <= 0.0f)
+      fallbackScreenSize = {1280.0f, 720.0f};
+
+    _hasSceneLoaded = false;
+    _scenePath.clear();
+    _observerActive = false;
+    _animationFrame = 0;
+    resetProbabilisticResidencyState();
+    _pendingAlwaysResidentPrewarm = false;
+    _residencyConfig = ResidencyParameters{};
+    _residencyConfig.normalizeEnvironmentDepthSettings();
+    _textureResidencyMemoryCapMB = kDefaultTextureResidencyMemoryCapMB;
+    _geometryResidencyMemoryCapMB = kDefaultGeometryResidencyMemoryCapMB;
+    _totalGpuMemoryCapMB = kDefaultTotalGpuMemoryCapMB;
+
+    if (_pScene)
+      delete _pScene;
+    _pScene = new Scene();
+
+    Camera::reset();
+    Camera::screenSize = fallbackScreenSize;
+    _primaryCameraState = Camera::captureState();
+    _observerCameraState = _primaryCameraState;
+  };
+
   _hasSceneLoaded = false;
   if (path.empty()) {
-    _scenePath.clear();
+    setNoSceneLoadedState();
     std::printf("No scene selected. Choose a scene file to begin rendering.\n");
     return false;
   }
 
-  _scenePath = path;
   resetProbabilisticResidencyState();
-  bool loaded = SceneLoader::LoadSceneFromXML(_scenePath, _pScene);
-  if (!loaded) {
-    std::printf("Failed to load scene: %s\n", _scenePath.c_str());
-    return false;
+  std::string loadedPath = path;
+  bool loaded = SceneLoader::LoadSceneFromXML(path, _pScene);
+  std::string fallbackPath;
+  std::filesystem::path primaryPath(path);
+  if (primaryPath.is_absolute()) {
+    fallbackPath = primaryPath.filename().string();
+  } else {
+    std::error_code absoluteError;
+    std::filesystem::path absolutePath =
+        std::filesystem::absolute(primaryPath, absoluteError);
+    if (!absoluteError)
+      fallbackPath = absolutePath.string();
   }
 
+  if (!loaded) {
+    if (!fallbackPath.empty() && fallbackPath != path) {
+      std::printf("Failed to load scene: %s\n", path.c_str());
+      std::printf("Attempting fallback scene path: %s\n", fallbackPath.c_str());
+      loaded = SceneLoader::LoadSceneFromXML(fallbackPath, _pScene);
+      if (loaded)
+        loadedPath = fallbackPath;
+    }
+
+    if (!loaded) {
+      std::printf("Failed to load scene: %s\n", path.c_str());
+      if (!fallbackPath.empty() && fallbackPath != path)
+        std::printf("Fallback scene load also failed: %s\n",
+                    fallbackPath.c_str());
+      setNoSceneLoadedState();
+      return false;
+    }
+  }
+
+  _scenePath = loadedPath;
   _hasSceneLoaded = true;
   Camera::screenSize = _pScene->screenSize;
   _animationFrame = 0;
