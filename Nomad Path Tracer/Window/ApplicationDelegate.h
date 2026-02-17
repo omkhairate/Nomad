@@ -23,9 +23,9 @@ public:
       NS::Application *pSender) override;
 
 private:
-  NS::Window *_pWindow;
-  MTL::Device *_pDevice;
-  NS::ViewController *_pRendererViewController = nullptr;
+  NS::Window *_pWindow = nullptr;
+  MTL::Device *_pDevice = nullptr;
+  NS::View *_pRendererView = nullptr;
   RendererViewController _rendererViewController;
   bool _initialized = false;
 };
