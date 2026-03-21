@@ -208,6 +208,9 @@ private:
   bool updatePrimitiveScreenCoverageForFrame();
   bool updateEnvironmentHitResidency(bool forceAllToggles);
   bool updatePredictiveResidency(bool forceAllToggles);
+  bool enforceEmissiveObjectResidency(bool forceAllToggles);
+  bool enforceTransportCriticalObjectResidency(bool forceAllToggles);
+  bool enforceVisibleObjectResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void prewarmAlwaysResidentResources();
   void applyHeapShrinkSetting(bool enabled);
@@ -316,6 +319,7 @@ private:
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
+  MTL::RenderPipelineState *_pOverlayCapturePSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
 
@@ -449,6 +453,13 @@ private:
     size_t primitiveDeactivations = 0;
     size_t objectActivations = 0;
     size_t objectDeactivations = 0;
+    size_t objectsOnloadRequested = 0;
+    size_t objectsOffloadRequested = 0;
+    double onloadRequestedMB = 0.0;
+    double offloadRequestedMB = 0.0;
+    size_t blasBuildRequests = 0;
+    size_t tlasRebuilds = 0;
+    size_t tlasRefits = 0;
     size_t activePrimitiveCount = 0;
     size_t residentPrimitiveCount = 0;
     size_t totalPrimitiveCount = 0;
@@ -462,6 +473,13 @@ private:
     size_t residentObjectCount = 0;
     double gpuMemoryMB = 0.0;
     double scratchMemoryMB = 0.0;
+    double gpuGeometryMB = 0.0;
+    double gpuTextureMB = 0.0;
+    double gpuRestirMB = 0.0;
+    double gpuRendererMB = 0.0;
+    double gpuHeapsMB = 0.0;
+    double gpuStagingMB = 0.0;
+    double gpuOtherMB = 0.0;
     double residentGeometryMemoryMB = 0.0;
     double residentTextureMemoryMB = 0.0;
     double residencyMemoryMB = 0.0;
@@ -530,6 +548,7 @@ private:
     MTL::PixelFormat format = MTL::PixelFormat::PixelFormatInvalid;
     MTL::PixelFormat albedoFormat = MTL::PixelFormat::PixelFormatInvalid;
     MTL::PixelFormat normalFormat = MTL::PixelFormat::PixelFormatInvalid;
+    bool containsDebugOverlay = false;
   };
 
   std::vector<std::shared_ptr<FrameCaptureRequest>> _completedCaptures;
@@ -538,6 +557,7 @@ private:
 
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
+  std::vector<bool> _previewPrimitiveActive;
   std::vector<uint32_t> _primitiveCooldown;
   std::vector<int32_t> _primitiveToResidentIndex;
   std::vector<size_t> _primitiveToObject;
@@ -548,6 +568,7 @@ private:
   bool _lastUniformCameraStateValid = false;
   std::vector<BoundingSphere> _objectBounds;
   std::vector<bool> _objectActive;
+  std::vector<bool> _previewObjectActive;
   std::vector<uint32_t> _objectCooldown;
   std::vector<uint64_t> _objectLastToggleFrame;
   std::vector<uint8_t> _desiredObjectState;
@@ -707,6 +728,7 @@ private:
   size_t _geometryHandleBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
   size_t _frustumVertexCapacity = 0;
+  std::vector<simd::float3> _primaryCameraTrail;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
@@ -733,6 +755,13 @@ private:
   size_t _framePrimitiveDeactivations = 0;
   size_t _frameObjectActivations = 0;
   size_t _frameObjectDeactivations = 0;
+  size_t _frameObjectsOnloadRequested = 0;
+  size_t _frameObjectsOffloadRequested = 0;
+  size_t _frameOnloadRequestedBytes = 0;
+  size_t _frameOffloadRequestedBytes = 0;
+  size_t _frameBlasBuildRequests = 0;
+  size_t _frameTlasRebuilds = 0;
+  size_t _frameTlasRefits = 0;
   size_t _frameProbabilisticToggles = 0;
   size_t _frameProbabilityTargetPrimitives = 0;
   size_t _frameProbabilityInitialDesiredPrimitives = 0;
@@ -749,6 +778,8 @@ private:
   bool _frameTotalMemoryEvictionStall = false;
   size_t _lastTotalMemoryCapEvictionFrame = 0;
   bool _totalMemoryEvictionInProgress = false;
+  size_t _totalMemoryEvictionNoProgressFrames = 0;
+  size_t _totalMemoryEvictionBackoffUntilFrame = 0;
   double _frameMinimumResidentFootprintMB = 0.0;
   size_t _geometryResidencyCapHitCount = 0;
   size_t _geometryResidencyHardCapDeniedCount = 0;
@@ -761,6 +792,8 @@ private:
   bool _memoryCapFallbackActive = false;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
+  bool _frameTransportCriticalResidencyChanged = false;
+  uint64_t _restirReuseDisableUntilFrame = 0;
   AlwaysResidentCache _alwaysResidentCache;
   bool _forceAlwaysResidentActivation = false;
   bool _pendingAlwaysResidentPrewarm = false;
@@ -769,9 +802,12 @@ private:
   uint64_t _renderedFrameCount = 0;
   bool _frameCaptureDirectoryInitialized = false;
   std::string _frameCaptureDirectory;
+  std::string _frameCaptureSubdirectory = "frames";
+  bool _residencyPreviewOnly = false;
+  bool _forceObserverCapture = false;
   std::deque<BenchmarkSample> _pendingBenchmarkSamples;
 
-  uint32_t _minSamplesPerPixel = 1;
+  uint32_t _minSamplesPerPixel = 4;
   uint32_t _maxSamplesPerPixel = 4;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;

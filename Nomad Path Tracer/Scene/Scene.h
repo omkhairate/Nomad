@@ -27,7 +27,7 @@ enum class ResidencyStrategy {
 // Default budget for the amount of tile/sample work recorded into a single
 // path tracing command buffer. The renderer clamps user-provided values to be
 // at least 1 tile of work.
-constexpr size_t kDefaultMaxTileSampleWorkPerCommand = 128 * 128 * 4;
+constexpr size_t kDefaultMaxTileSampleWorkPerCommand = 64 * 64 * 4;
 
 struct SceneObject {
   size_t firstPrimitive = 0;
@@ -49,7 +49,7 @@ struct ResidencyParameters {
   uint32_t stateCooldownFrames = 5;
   size_t lodMaxTogglesPerFrame = 24;
 
-  float energyTargetFraction = 0.9f;
+  float energyTargetFraction = 0.88f;
   size_t energyMinActivePrimitives = 16;
   size_t energyMaxTogglesPerFrame = 32;
   float energyVisibilityBoost = 1.75f;
@@ -69,10 +69,10 @@ struct ResidencyParameters {
   bool unifiedNormalize = true;
 
   float rayHitDecay = 0.85f;
-  float rayHitTargetFraction = 0.6f;
+  float rayHitTargetFraction = 0.54f;
   size_t rayHitMinActivePrimitives = 16;
-  size_t rayHitMaxTogglesPerFrame = 12;
-  uint32_t rayHitRebuildCooldownFrames = 6;
+  size_t rayHitMaxTogglesPerFrame = 16;
+  uint32_t rayHitRebuildCooldownFrames = 4;
   // Shrinks hit scores when recent hit probability is low. Set the bias flag to
   // true to favor high-probability primitives instead.
   bool enableRayHitPrior = true;
@@ -82,9 +82,9 @@ struct ResidencyParameters {
 
   float probabilityDecay = 0.9f;
   float probabilityThreshold = 0.5f;
-  float probabilityTargetFraction = 0.6f;
+  float probabilityTargetFraction = 0.60f;
   size_t probabilityMinActivePrimitives = 16;
-  size_t probabilityMaxTogglesPerFrame = 16;
+  size_t probabilityMaxTogglesPerFrame = 20;
   float probabilityUncertaintyBoost = 0.25f;
   float probabilityEvidenceWindow = 64.0f;
   float probabilityDesiredHysteresis = 0.02f;
@@ -94,17 +94,17 @@ struct ResidencyParameters {
   float probabilityVisibleFloor = 0.0f;
   uint32_t probabilityVisibleDemotionDwellFrames = 0;
 
-  float screenFootprintTargetFraction = 0.65f;
+  float screenFootprintTargetFraction = 0.68f;
   float screenFootprintMinPixelCoverage = 32.0f;
   size_t screenFootprintMinActivePrimitives = 16;
-  size_t screenFootprintMaxTogglesPerFrame = 10;
+  size_t screenFootprintMaxTogglesPerFrame = 14;
 
-  float environmentTargetActiveFraction = 0.0f;
+  float environmentTargetActiveFraction = 0.25f;
   float environmentEscapeThreshold = 0.4f;
   float envHighEscapeThreshold = 0.6f;
   float envLowEscapeThreshold = 0.3f;
   size_t environmentMinActivePrimitives = 16;
-  size_t environmentMaxTogglesPerFrame = 16;
+  size_t environmentMaxTogglesPerFrame = 20;
   std::vector<float> environmentDepthWeights;
   std::vector<float> environmentDepthRadii;
   bool enableDistanceEnvPrior = false;

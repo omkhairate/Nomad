@@ -2,6 +2,11 @@
 
 using namespace metal;
 
-fragment float4 frustumDebugFragmentMain() {
-    return float4(1.0, 0.4, 0.0, 1.0);
+struct OverlayVertexOut {
+    float4 position [[position]];
+    float4 color;
+};
+
+fragment float4 frustumDebugFragmentMain(OverlayVertexOut in [[stage_in]]) {
+    return in.color;
 }

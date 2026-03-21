@@ -48,12 +48,17 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
   };
 
   bool captureEnabled = parseBoolEnv(std::getenv("MPT_CAPTURE_EXR"));
+  bool observerCapture = parseBoolEnv(std::getenv("MPT_OBSERVER_CAPTURE"));
 
   size_t captureInterval = 4;
   if (const char *intervalEnv = std::getenv("MPT_CAPTURE_INTERVAL")) {
     unsigned long parsed = std::strtoul(intervalEnv, nullptr, 10);
     if (parsed > 0)
       captureInterval = parsed;
+  }
+  if (observerCapture) {
+    captureEnabled = true;
+    captureInterval = 1;
   }
 
   _pRenderer->setFrameCaptureEnabled(captureEnabled);
