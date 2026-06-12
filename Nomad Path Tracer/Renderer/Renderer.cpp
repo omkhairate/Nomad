@@ -6,7 +6,6 @@
 #include "ParallelFor.h"
 #include "Scene.h"
 #include "SceneLoader.h"
-#include "../offline/denoiser_settings.h"
 #include <Metal/MTLArgument.hpp>
 #include <Metal/MTLComputePipeline.hpp>
 #include <algorithm>
@@ -20,10 +19,12 @@
 #include <cctype>
 #include <cstdint>
 #include <ctime>
+#include <dlfcn.h>
 #include <dispatch/dispatch.h>
 #include <thread>
 #include <limits>
 #include <functional>
+#include <type_traits>
 #include <utility>
 #include <filesystem>
 #include <fstream>
@@ -87,8 +88,232 @@ TaskLimiter &sceneBvhTaskLimiter() {
 } // namespace
 
 namespace {
+bool parseEnvBool(const char *value) {
+  if (!value || !value[0])
+    return false;
+  if (std::isdigit(static_cast<unsigned char>(value[0])))
+    return std::strtoul(value, nullptr, 10) != 0;
+  char first =
+      static_cast<char>(std::tolower(static_cast<unsigned char>(value[0])));
+  return first == 't' || first == 'y' || first == 'o';
+}
+
+struct OidnApi {
+  using Device = void *;
+  using Filter = void *;
+  using ErrorCode = int;
+  using NewDeviceFn = Device (*)(int);
+  using CommitDeviceFn = void (*)(Device);
+  using GetDeviceErrorFn = const char *(*)(Device, ErrorCode *);
+  using NewFilterFn = Filter (*)(Device, const char *);
+  using SetSharedFilterImageFn = void (*)(Filter, const char *, void *, int,
+                                          size_t, size_t, size_t, size_t,
+                                          size_t);
+  using SetFilterBoolFn = void (*)(Filter, const char *, bool);
+  using SetFilter1bFn = void (*)(Filter, const char *, bool);
+  using CommitFilterFn = void (*)(Filter);
+  using ExecuteFilterFn = void (*)(Filter);
+  using ReleaseFilterFn = void (*)(Filter);
+  using ReleaseDeviceFn = void (*)(Device);
+
+  void *libraryHandle = nullptr;
+  NewDeviceFn newDevice = nullptr;
+  CommitDeviceFn commitDevice = nullptr;
+  GetDeviceErrorFn getDeviceError = nullptr;
+  NewFilterFn newFilter = nullptr;
+  SetSharedFilterImageFn setSharedFilterImage = nullptr;
+  SetFilterBoolFn setFilterBool = nullptr;
+  SetFilter1bFn setFilter1b = nullptr;
+  CommitFilterFn commitFilter = nullptr;
+  ExecuteFilterFn executeFilter = nullptr;
+  ReleaseFilterFn releaseFilter = nullptr;
+  ReleaseDeviceFn releaseDevice = nullptr;
+  bool loadAttempted = false;
+  bool loaded = false;
+  std::string loadError;
+};
+
+constexpr int kOidnDeviceTypeDefault = 0;
+constexpr int kOidnFormatFloat3 = 3;
+
+OidnApi &oidnApi() {
+  static OidnApi api;
+  if (api.loadAttempted)
+    return api;
+
+  api.loadAttempted = true;
+  const std::array<const char *, 5> candidateLibraries = {
+      "libOpenImageDenoise.dylib",
+      "/opt/homebrew/lib/libOpenImageDenoise.dylib",
+      "/usr/local/lib/libOpenImageDenoise.dylib",
+      "libOpenImageDenoise.2.dylib",
+      "libOpenImageDenoise.1.dylib",
+  };
+
+  for (const char *candidate : candidateLibraries) {
+    api.libraryHandle = dlopen(candidate, RTLD_NOW | RTLD_LOCAL);
+    if (api.libraryHandle)
+      break;
+  }
+
+  if (!api.libraryHandle) {
+    const char *err = dlerror();
+    api.loadError = err ? err : "OIDN library not found.";
+    return api;
+  }
+
+  auto loadSymbol = [&](auto &target, const char *symbol) -> bool {
+    target = reinterpret_cast<std::remove_reference_t<decltype(target)>>(
+        dlsym(api.libraryHandle, symbol));
+    return target != nullptr;
+  };
+
+  const bool requiredSymbolsLoaded =
+      loadSymbol(api.newDevice, "oidnNewDevice") &&
+      loadSymbol(api.commitDevice, "oidnCommitDevice") &&
+      loadSymbol(api.getDeviceError, "oidnGetDeviceError") &&
+      loadSymbol(api.newFilter, "oidnNewFilter") &&
+      loadSymbol(api.setSharedFilterImage, "oidnSetSharedFilterImage") &&
+      loadSymbol(api.commitFilter, "oidnCommitFilter") &&
+      loadSymbol(api.executeFilter, "oidnExecuteFilter") &&
+      loadSymbol(api.releaseFilter, "oidnReleaseFilter") &&
+      loadSymbol(api.releaseDevice, "oidnReleaseDevice");
+
+  if (!requiredSymbolsLoaded) {
+    const char *err = dlerror();
+    api.loadError = err ? err : "Missing required OIDN symbols.";
+    dlclose(api.libraryHandle);
+    api.libraryHandle = nullptr;
+    return api;
+  }
+
+  loadSymbol(api.setFilterBool, "oidnSetFilterBool");
+  loadSymbol(api.setFilter1b, "oidnSetFilter1b");
+  if (!api.setFilterBool && !api.setFilter1b) {
+    api.loadError = "OIDN bool setter symbol not found.";
+    dlclose(api.libraryHandle);
+    api.libraryHandle = nullptr;
+    return api;
+  }
+
+  api.loaded = true;
+  return api;
+}
+
+void oidnSetBoolOption(OidnApi &api, OidnApi::Filter filter, const char *name,
+                       bool value) {
+  if (api.setFilterBool) {
+    api.setFilterBool(filter, name, value);
+    return;
+  }
+  if (api.setFilter1b)
+    api.setFilter1b(filter, name, value);
+}
+
+bool applyOidnOfflineDenoise(std::vector<float> &rgba,
+                             const std::vector<float> &albedoData,
+                             const std::vector<float> &normalData,
+                             size_t width, size_t height,
+                             uint64_t frameIndex) {
+  const size_t pixelCount = width * height;
+  if (pixelCount == 0 || rgba.size() < pixelCount * 4)
+    return false;
+  if (albedoData.size() < pixelCount * 4 || normalData.size() < pixelCount * 4)
+    return false;
+
+  OidnApi &api = oidnApi();
+  if (!api.loaded) {
+    std::printf("OIDN unavailable for frame %llu: %s\n",
+                static_cast<unsigned long long>(frameIndex),
+                api.loadError.empty() ? "library load failed"
+                                      : api.loadError.c_str());
+    return false;
+  }
+
+  std::vector<float> color(pixelCount * 3, 0.0f);
+  std::vector<float> output(pixelCount * 3, 0.0f);
+  std::vector<float> albedo(pixelCount * 3, 0.0f);
+  std::vector<float> normal(pixelCount * 3, 0.0f);
+  for (size_t i = 0; i < pixelCount; ++i) {
+    color[i * 3 + 0] = rgba[i * 4 + 0];
+    color[i * 3 + 1] = rgba[i * 4 + 1];
+    color[i * 3 + 2] = rgba[i * 4 + 2];
+
+    albedo[i * 3 + 0] = albedoData[i * 4 + 0];
+    albedo[i * 3 + 1] = albedoData[i * 4 + 1];
+    albedo[i * 3 + 2] = albedoData[i * 4 + 2];
+
+    float nx = normalData[i * 4 + 0];
+    float ny = normalData[i * 4 + 1];
+    float nz = normalData[i * 4 + 2];
+    float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+    if (len > 1e-6f) {
+      nx /= len;
+      ny /= len;
+      nz /= len;
+    }
+    normal[i * 3 + 0] = nx;
+    normal[i * 3 + 1] = ny;
+    normal[i * 3 + 2] = nz;
+  }
+
+  OidnApi::Device device = api.newDevice(kOidnDeviceTypeDefault);
+  if (!device) {
+    std::printf("OIDN failed to create device for frame %llu.\n",
+                static_cast<unsigned long long>(frameIndex));
+    return false;
+  }
+  api.commitDevice(device);
+
+  OidnApi::Filter filter = api.newFilter(device, "RT");
+  if (!filter) {
+    std::printf("OIDN failed to create RT filter for frame %llu.\n",
+                static_cast<unsigned long long>(frameIndex));
+    api.releaseDevice(device);
+    return false;
+  }
+
+  const size_t pixelStride = sizeof(float) * 3;
+  const size_t rowStride = width * pixelStride;
+  api.setSharedFilterImage(filter, "color", color.data(), kOidnFormatFloat3,
+                           width, height, 0, pixelStride, rowStride);
+  api.setSharedFilterImage(filter, "output", output.data(), kOidnFormatFloat3,
+                           width, height, 0, pixelStride, rowStride);
+  api.setSharedFilterImage(filter, "albedo", albedo.data(), kOidnFormatFloat3,
+                           width, height, 0, pixelStride, rowStride);
+  api.setSharedFilterImage(filter, "normal", normal.data(), kOidnFormatFloat3,
+                           width, height, 0, pixelStride, rowStride);
+  oidnSetBoolOption(api, filter, "hdr", true);
+
+  api.commitFilter(filter);
+  api.executeFilter(filter);
+
+  OidnApi::ErrorCode errorCode = 0;
+  const char *errorMessage = api.getDeviceError(device, &errorCode);
+  bool success = errorCode == 0;
+  if (!success) {
+    std::printf("OIDN error for frame %llu: %s (code %d)\n",
+                static_cast<unsigned long long>(frameIndex),
+                errorMessage ? errorMessage : "unknown",
+                static_cast<int>(errorCode));
+  } else {
+    for (size_t i = 0; i < pixelCount; ++i) {
+      rgba[i * 4 + 0] = output[i * 3 + 0];
+      rgba[i * 4 + 1] = output[i * 3 + 1];
+      rgba[i * 4 + 2] = output[i * 3 + 2];
+      rgba[i * 4 + 3] = 1.0f;
+    }
+  }
+
+  api.releaseFilter(filter);
+  api.releaseDevice(device);
+  return success;
+}
+
 constexpr float kIdleVisibleExploreSeed = 1.0f;
 constexpr size_t kTotalMemoryCapStallFrames = 8;
+constexpr size_t kTotalMemoryEvictionNoProgressLimit = 3;
+constexpr size_t kTotalMemoryEvictionBackoffFrames = 2;
 }
 
 namespace NomadPathTracer {
@@ -312,7 +537,8 @@ bool ResidentObjectGpuResources::ensureResident(
 
   transitionToStreaming();
   geometryValid = false;
-  bool built = renderer.buildObjectBlas(objectIndex, object, *this);
+  bool built = renderer.buildObjectBlas(objectIndex, object, *this,
+                                        previousState == ResidencyState::Cold);
   if (!built) {
     if (renderer.isAlwaysResidentStrategy()) {
       state = previousState;
@@ -600,10 +826,24 @@ double Renderer::residentGeometryMemoryMB() const {
   return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
 }
 
+double Renderer::strictResidentGeometryMemoryMB() const {
+  size_t totalBytes = strictResidentGeometryMemoryBytes();
+  return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+}
+
 size_t Renderer::residentGeometryMemoryBytes() const {
   size_t totalBytes = 0;
   for (const auto &resident : _residentObjectGpuResources) {
     if (resident.state != ResidentObjectGpuResources::ResidencyState::Cold)
+      totalBytes += resident.byteSize;
+  }
+  return totalBytes;
+}
+
+size_t Renderer::strictResidentGeometryMemoryBytes() const {
+  size_t totalBytes = 0;
+  for (const auto &resident : _residentObjectGpuResources) {
+    if (resident.state == ResidentObjectGpuResources::ResidencyState::Resident)
       totalBytes += resident.byteSize;
   }
   return totalBytes;
@@ -708,10 +948,15 @@ bool Renderer::canAllocateTotalGpuMemory(size_t requestedBytes,
       static_cast<double>(totalBytes) / (1024.0 * 1024.0),
       static_cast<double>(capBytes) / (1024.0 * 1024.0));
 
-  if (!_totalMemoryEvictionInProgress && _pCommandQueue &&
+  bool evictionAttempted = false;
+  if (_renderedFrameCount >= _totalMemoryEvictionBackoffUntilFrame &&
+      !_totalMemoryEvictionInProgress && _pCommandQueue &&
       _renderedFrameCount != _lastTotalMemoryCapEvictionFrame) {
+    evictionAttempted = true;
     _totalMemoryEvictionInProgress = true;
     _lastTotalMemoryCapEvictionFrame = _renderedFrameCount;
+    size_t preEvictionBytes =
+        static_cast<size_t>(_pDevice->currentAllocatedSize());
     MTL::CommandBuffer *cmd = _pCommandQueue->commandBuffer();
     if (cmd) {
       updateTextureResidency(cmd);
@@ -719,7 +964,17 @@ bool Renderer::canAllocateTotalGpuMemory(size_t requestedBytes,
       cmd->commit();
       cmd->waitUntilCompleted();
     }
+    size_t postEvictionBytes =
+        static_cast<size_t>(_pDevice->currentAllocatedSize());
     _totalMemoryEvictionInProgress = false;
+
+    if (postEvictionBytes + (1ull << 20) < preEvictionBytes) {
+      _totalMemoryEvictionNoProgressFrames = 0;
+    } else {
+      ++_totalMemoryEvictionNoProgressFrames;
+      _totalMemoryEvictionBackoffUntilFrame =
+          _renderedFrameCount + kTotalMemoryEvictionBackoffFrames;
+    }
   }
 
   totalBytes = static_cast<size_t>(_pDevice->currentAllocatedSize());
@@ -728,11 +983,45 @@ bool Renderer::canAllocateTotalGpuMemory(size_t requestedBytes,
                   : totalBytes + requestedBytes;
   if (nextBytes <= capBytes) {
     _pendingTotalMemoryOverageBytes = 0;
+    _totalMemoryEvictionNoProgressFrames = 0;
     return true;
   }
 
   _pendingTotalMemoryOverageBytes =
       std::max(_pendingTotalMemoryOverageBytes, nextBytes - capBytes);
+
+  if (evictionAttempted && _totalMemoryEvictionNoProgressFrames >=
+                              kTotalMemoryEvictionNoProgressLimit) {
+    double minimumFootprintMB =
+        static_cast<double>(minimumResidentFootprintBytes()) / (1024.0 * 1024.0);
+    double currentTotalMB = static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+    double relaxedCapMB =
+        std::max({minimumFootprintMB, currentTotalMB * 1.03, _totalGpuMemoryCapMB});
+    if (!_memoryCapFallbackActive || relaxedCapMB > _totalMemoryCapRelaxedMB) {
+      _memoryCapFallbackActive = true;
+      _totalMemoryCapRelaxedMB = relaxedCapMB;
+      _frameTotalMemoryEvictionStall = true;
+      disableHistoryForMemoryCap();
+      std::printf(
+          "[MemoryBudget] Eviction loop guard: no progress for %zu attempts. "
+          "Temporarily relaxing total cap to %.2f MB (configured %.2f MB, "
+          "footprint %.2f MB).\n",
+          _totalMemoryEvictionNoProgressFrames, _totalMemoryCapRelaxedMB,
+          _totalGpuMemoryCapMB, minimumFootprintMB);
+
+      capBytes = totalGpuMemoryCapBytes();
+      if (capBytes > 0) {
+        size_t relaxedNextBytes = totalBytes >= existingBytes
+                                      ? totalBytes - existingBytes + requestedBytes
+                                      : totalBytes + requestedBytes;
+        if (relaxedNextBytes <= capBytes) {
+          _pendingTotalMemoryOverageBytes = 0;
+          return true;
+        }
+      }
+    }
+  }
+
   ++_totalMemoryCapDeniedCount;
   ++_frameTotalMemoryCapDeniedCount;
 
@@ -850,9 +1139,9 @@ struct TileDispatchRegion {
   uint32_t height;
 };
 
-constexpr uint32_t kPathTraceTileWidth = 128;
-constexpr uint32_t kPathTraceTileHeight = 128;
-constexpr size_t kPathTraceMaxTilesPerCommand = 16;
+constexpr uint32_t kPathTraceTileWidth = 64;
+constexpr uint32_t kPathTraceTileHeight = 64;
+constexpr size_t kPathTraceMaxTilesPerCommand = 4;
 constexpr size_t kPathTraceMinTilesPerCommand = 2;
 constexpr double kPathTraceTargetGpuMsPerCommand = 6.0;
 constexpr size_t kPathTraceCommandHistorySamples = 30;
@@ -887,9 +1176,46 @@ constexpr double kDefaultTotalGpuMemoryCapMB = 4096.0;
 constexpr size_t kMaxTextureHistoryBytes = 16ull * 1024ull * 1024ull;
 constexpr float kFrustumDebugNear = 0.1f;
 constexpr float kFrustumDebugFarMultiplier = 5.0f;
+constexpr float kFrustumDebugThicknessWorld = 0.035f;
+constexpr size_t kCameraTrailMaxPoints = 4096;
+constexpr float kCameraTrailMinStep = 0.05f;
+
+inline float clampUnit(float value) {
+  return std::clamp(value, 0.0f, 1.0f);
+}
+
+inline float lerpFloat(float a, float b, float t) {
+  return a + (b - a) * clampUnit(t);
+}
+
+inline simd::float3 lerpFloat3(const simd::float3 &a, const simd::float3 &b,
+                               float t) {
+  float clamped = clampUnit(t);
+  return a + (b - a) * clamped;
+}
+
+Material makeResidencyPreviewMaterial(const Material &source, bool active) {
+  Material result = source;
+  const simd::float3 tint =
+      active ? simd::make_float3(0.15f, 0.95f, 0.20f)
+             : simd::make_float3(1.0f, 0.18f, 0.12f);
+  const float tintStrength = active ? 0.65f : 0.85f;
+  result.diffuseColor = lerpFloat3(source.diffuseColor, tint, tintStrength);
+  result.specularColor =
+      lerpFloat3(source.specularColor, simd::make_float3(0.04f, 0.04f, 0.04f),
+                 0.7f);
+  result.diffuseTextureIndex = -1;
+  result.specularTextureIndex = -1;
+  return result;
+}
 
 struct OverlayUniforms {
   simd::float4x4 viewProjection;
+};
+
+struct OverlayLineVertex {
+  simd::float3 position;
+  simd::float4 color;
 };
 
 constexpr std::array<std::pair<uint32_t, uint32_t>, 12> kFrustumEdges = {
@@ -1431,13 +1757,18 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
     if (buffer && requiredBytes > currentCapacity)
       growing = true;
   } else if (buffer) {
-    size_t shrinkThreshold = currentCapacity / 2;
+    constexpr double kShrinkRetainRatio = 0.90;
+    constexpr double kCompactedGrowthFactor = 1.25;
+    size_t shrinkThreshold = static_cast<size_t>(
+        std::floor(static_cast<double>(currentCapacity) * kShrinkRetainRatio));
     if (requiredBytes <= currentCapacity && requiredBytes > shrinkThreshold)
       return;
     if (requiredBytes <= shrinkThreshold) {
       shrinking = requiredBytes < currentCapacity;
     } else if (requiredBytes > currentCapacity) {
-      desiredCapacity = std::max(requiredBytes, currentCapacity * 2);
+      size_t growthTarget = static_cast<size_t>(std::ceil(
+          static_cast<double>(currentCapacity) * kCompactedGrowthFactor));
+      desiredCapacity = std::max(requiredBytes, growthTarget);
       growing = true;
     }
   }
@@ -1647,6 +1978,49 @@ Renderer::Renderer(MTL::Device *pDevice)
   Camera::reset();
   _primaryCameraState = Camera::captureState();
   _observerCameraState = _primaryCameraState;
+  _residencyPreviewOnly =
+      parseEnvBool(std::getenv("MPT_RESIDENCY_PREVIEW_ONLY"));
+  _forceObserverCapture = parseEnvBool(std::getenv("MPT_OBSERVER_CAPTURE"));
+  _disableOfflineOidn = parseEnvBool(std::getenv("MPT_DISABLE_OFFLINE_OIDN"));
+  _neuralFeatureLoggingEnabled =
+      parseEnvBool(std::getenv("MPT_LOG_NEURAL_FEATURES"));
+  if (const char *clipLengthEnv = std::getenv("MPT_NEURAL_CLIP_LENGTH")) {
+    unsigned long parsed = std::strtoul(clipLengthEnv, nullptr, 10);
+    if (parsed > 0)
+      _neuralClipLength = static_cast<size_t>(parsed);
+  }
+  if (const char *forcedObjectEnv = std::getenv("MPT_FORCE_OBJECT_OFF")) {
+    char *end = nullptr;
+    unsigned long long parsed = std::strtoull(forcedObjectEnv, &end, 10);
+    if (end != forcedObjectEnv)
+      _forcedObjectOffIndex = static_cast<size_t>(parsed);
+  }
+  if (const char *runsPath = std::getenv("MPT_RUNS_PATH"))
+    _runOutputRoot = runsPath;
+  if (const char *sceneVariant = std::getenv("MPT_SCENE_VARIANT"))
+    _sceneVariantName = sceneVariant;
+  if (_forceObserverCapture)
+    _frameCaptureSubdirectory = "observer_frames";
+  if (_residencyPreviewOnly) {
+    std::printf("[Renderer] Residency preview-only mode enabled.\n");
+  }
+  if (_forceObserverCapture) {
+    std::printf("[Renderer] Observer capture mode enabled. Frames will be "
+                "saved under Benchmarks/%s.\n",
+                _frameCaptureSubdirectory.c_str());
+  }
+  if (_disableOfflineOidn) {
+    std::printf("[Renderer] Offline OIDN is disabled during capture; raw EXRs "
+                "will be written for deferred denoising.\n");
+  }
+  if (_neuralFeatureLoggingEnabled) {
+    std::printf("[Renderer] Neural feature logging enabled (clip length %zu).\n",
+                _neuralClipLength);
+  }
+  if (_forcedObjectOffIndex != std::numeric_limits<size_t>::max()) {
+    std::printf("[Renderer] Forced object-off ablation enabled for object %zu.\n",
+                _forcedObjectOffIndex);
+  }
 
   updateVisibleScene();
   buildShaders();
@@ -1656,10 +2030,12 @@ Renderer::Renderer(MTL::Device *pDevice)
 
   recalculateViewport();
   initializeBenchmarking();
+  initializeNeuralFeatureLogging();
 }
 
 Renderer::~Renderer() {
   processPendingCapturedFrames();
+  flushNeuralClipFeatures(true);
   std::chrono::steady_clock::time_point frameWaitSnapshot;
   waitForPendingFrameCommands(std::chrono::milliseconds::max(),
                               &frameWaitSnapshot);
@@ -1765,6 +2141,8 @@ Renderer::~Renderer() {
     _pAdaptiveSamplingPSO->release();
   if (_pOverlayPSO)
     _pOverlayPSO->release();
+  if (_pOverlayCapturePSO)
+    _pOverlayCapturePSO->release();
 
   for (auto &resident : _residentObjectGpuResources) {
     resident.clearPendingCommand();
@@ -1783,6 +2161,8 @@ Renderer::~Renderer() {
 
   if (_benchmarkStream.is_open())
     _benchmarkStream.close();
+  if (_neuralFeatureStream.is_open())
+    _neuralFeatureStream.close();
 
   delete _pScene;
 }
@@ -1797,7 +2177,10 @@ void Renderer::setBenchmarkMode(bool enabled) {
     _benchmarkHeaderWritten = false;
     _pendingBenchmarkSamples.clear();
     _benchmarkStartTime = std::chrono::steady_clock::now();
+    _neuralClipStartFrame = 0;
+    _neuralClipAccumulators.clear();
     ensureBenchmarkStream();
+    ensureNeuralFeatureStream();
     resetProbabilisticResidencyState();
     if (_benchmarkStream.is_open()) {
       printf("Benchmark logging enabled: %s\n",
@@ -1807,8 +2190,290 @@ void Renderer::setBenchmarkMode(bool enabled) {
   } else {
     if (_benchmarkStream.is_open())
       _benchmarkStream.close();
+    if (_neuralFeatureLoggingEnabled)
+      flushNeuralClipFeatures(true);
     _pendingBenchmarkSamples.clear();
   }
+}
+
+bool Renderer::objectForcedOff(size_t objectIndex) const {
+  return _forcedObjectOffIndex != std::numeric_limits<size_t>::max() &&
+         objectIndex == _forcedObjectOffIndex;
+}
+
+void Renderer::initializeNeuralFeatureLogging() {
+  if (!_neuralFeatureLoggingEnabled)
+    return;
+  ensureNeuralFeatureStream();
+}
+
+void Renderer::ensureNeuralFeatureStream() {
+  if (!_neuralFeatureLoggingEnabled)
+    return;
+  if (_neuralFeatureStream.is_open())
+    return;
+
+  std::filesystem::path baseDir;
+  if (!_runOutputRoot.empty())
+    baseDir = _runOutputRoot;
+  else
+    baseDir = std::filesystem::current_path() / "Benchmarks";
+
+  std::error_code ec;
+  std::filesystem::create_directories(baseDir, ec);
+
+  std::filesystem::path outPath = baseDir / "neural_object_features.csv";
+  _neuralFeatureFilePath = outPath.string();
+  _neuralFeatureStream.open(_neuralFeatureFilePath,
+                            std::ios::out | std::ios::trunc);
+  if (!_neuralFeatureStream.is_open()) {
+    std::printf("Failed to open neural feature log '%s'\n",
+                _neuralFeatureFilePath.c_str());
+    return;
+  }
+
+  _neuralFeatureStream
+      << "scene_variant,strategy,strategy_id,clip_id,clip_start_frame,"
+         "clip_end_frame,clip_frame_count,forced_object_off,object_id,"
+         "primitive_count,visible_frame_fraction,mean_visible_coverage,"
+         "max_visible_coverage,mean_distance,min_distance,"
+         "mean_hit_probability,mean_object_rayhit_score,total_object_hits,"
+         "total_object_rays_tested,toggle_count,active_frame_fraction,"
+         "resident_frame_fraction,streaming_frame_fraction,"
+         "transport_critical_frame_fraction,mean_object_importance,"
+         "mean_estimated_object_bytes,emissive_importance\n";
+  _neuralFeatureHeaderWritten = true;
+}
+
+void Renderer::accumulateNeuralClipFeatures() {
+  if (!_neuralFeatureLoggingEnabled)
+    return;
+  ensureNeuralFeatureStream();
+  if (!_neuralFeatureStream.is_open())
+    return;
+
+  updatePrimitiveScreenCoverageForFrame();
+
+  const size_t objectCount = _allSceneObjects.size();
+  if (objectCount == 0 || _neuralClipLength == 0)
+    return;
+
+  if (_neuralClipAccumulators.size() != objectCount)
+    _neuralClipAccumulators.assign(objectCount, NeuralObjectClipAccumulator{});
+
+  if (_benchmarkEnabled && _benchmarkFrameCounter > 0 &&
+      ((_benchmarkFrameCounter - 1) % _neuralClipLength == 0)) {
+    bool anyInitialized = false;
+    for (const auto &acc : _neuralClipAccumulators) {
+      if (acc.initialized) {
+        anyInitialized = true;
+        break;
+      }
+    }
+    if (anyInitialized)
+      flushNeuralClipFeatures(false);
+    _neuralClipStartFrame = _benchmarkFrameCounter - 1;
+  }
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    NeuralObjectClipAccumulator &acc = _neuralClipAccumulators[objectIndex];
+    if (!acc.initialized) {
+      acc = NeuralObjectClipAccumulator{};
+      acc.initialized = true;
+      acc.primitiveCount = objectIndex < _objectPrimitiveCounts.size()
+                               ? _objectPrimitiveCounts[objectIndex]
+                               : _allSceneObjects[objectIndex].primitiveCount;
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      const size_t first = obj.firstPrimitive;
+      const size_t last = std::min(first + obj.primitiveCount, _allPrimitives.size());
+      double emissive = 0.0;
+      for (size_t primIndex = first; primIndex < last; ++primIndex) {
+        const Material &m = _allPrimitives[primIndex].material;
+        emissive += std::max(
+            m.emissionPower * luminance(m.emissionColor) *
+                primitiveArea(_allPrimitives[primIndex]),
+            0.0f);
+      }
+      acc.emissiveImportance = emissive;
+    }
+
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    bool visible =
+        objectIndex < _objectVisible.size() && _objectVisible[objectIndex] != 0u;
+    if (!visible && objectIndex < _objectBounds.size())
+      visible = isInView(_objectBounds[objectIndex]);
+    if (visible)
+      acc.visibleFrames += 1;
+
+    double coverage = 0.0;
+    const size_t first = obj.firstPrimitive;
+    const size_t last =
+        std::min(first + obj.primitiveCount, _primitiveScreenCoverage.size());
+    for (size_t primIndex = first; primIndex < last; ++primIndex)
+      coverage += std::max(_primitiveScreenCoverage[primIndex], 0.0f);
+    if (visible)
+      acc.visibleCoverageSum += coverage;
+    acc.maxVisibleCoverage = std::max(acc.maxVisibleCoverage, coverage);
+
+    if (objectIndex < _objectBounds.size()) {
+      simd::float3 delta = _objectBounds[objectIndex].center - Camera::position;
+      double distance = static_cast<double>(simd::length(delta));
+      acc.distanceSum += distance;
+      acc.minDistance = std::min(acc.minDistance, distance);
+    }
+
+    if (objectIndex < _objectHitProbability.size())
+      acc.hitProbabilitySum +=
+          std::clamp(static_cast<double>(_objectHitProbability[objectIndex]), 0.0,
+                     1.0);
+    if (objectIndex < _objectRayHitScore.size())
+      acc.rayHitScoreSum +=
+          std::max(static_cast<double>(_objectRayHitScore[objectIndex]), 0.0);
+    if (objectIndex < _objectHitLastFrame.size())
+      acc.totalHits += _objectHitLastFrame[objectIndex];
+    if (objectIndex < _objectRaysTestedLastFrame.size())
+      acc.totalRaysTested += _objectRaysTestedLastFrame[objectIndex];
+    if (objectIndex < _objectLastToggleFrame.size() &&
+        _objectLastToggleFrame[objectIndex] == _renderedFrameCount)
+      acc.toggleCount += 1;
+    if (objectIndex < _objectActive.size() && _objectActive[objectIndex])
+      acc.activeFrames += 1;
+    if (objectIndex < _residentObjectGpuResources.size()) {
+      const auto &resident = _residentObjectGpuResources[objectIndex];
+      if (resident.state == ResidentObjectGpuResources::ResidencyState::Resident)
+        acc.residentFrames += 1;
+      if (resident.state == ResidentObjectGpuResources::ResidencyState::Streaming)
+        acc.streamingFrames += 1;
+      acc.estimatedBytesSum += static_cast<double>(resident.byteSize > 0
+                                                       ? resident.byteSize
+                                                       : resident.resources.currentRequiredBytes());
+    }
+    double objectImportance = 0.0;
+    if (objectIndex < _objectImportance.size())
+      objectImportance = std::max(_objectImportance[objectIndex], 0.0f);
+    if (!(objectImportance > 0.0)) {
+      for (size_t primIndex = first; primIndex < last && primIndex < _primitiveImportance.size();
+           ++primIndex) {
+        objectImportance += std::max(static_cast<double>(_primitiveImportance[primIndex]), 0.0);
+      }
+    }
+    acc.objectImportanceSum += objectImportance;
+    bool transportCritical = false;
+    for (size_t primIndex = first; primIndex < last && primIndex < _allPrimitives.size();
+         ++primIndex) {
+      const Material &m = _allPrimitives[primIndex].material;
+      if (m.emissionPower * luminance(m.emissionColor) > 0.0f) {
+        transportCritical = true;
+        break;
+      }
+    }
+    if (transportCritical)
+      acc.transportCriticalFrames += 1;
+  }
+}
+
+void Renderer::flushNeuralClipFeatures(bool forcePartialClip) {
+  if (!_neuralFeatureLoggingEnabled || !_neuralFeatureStream.is_open() ||
+      _neuralClipAccumulators.empty())
+    return;
+
+  size_t frameCount = _benchmarkFrameCounter > _neuralClipStartFrame
+                          ? (_benchmarkFrameCounter - _neuralClipStartFrame)
+                          : 0;
+  if (!forcePartialClip && frameCount < _neuralClipLength)
+    return;
+  if (frameCount == 0)
+    return;
+
+  auto formatFixedLocal = [](double value, int precision = 6) {
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(precision) << value;
+    return ss.str();
+  };
+  auto appendCsvEscapedLocal = [](std::ostringstream &ss,
+                                  const std::string &value) {
+    ss << '"';
+    for (char c : value) {
+      if (c == '"')
+        ss << '"';
+      ss << c;
+    }
+    ss << '"';
+  };
+
+  ResidencyStrategy currentStrategy = _frameStrategy;
+  if (_pScene)
+    currentStrategy = _pScene->getResidencyStrategy();
+  const std::string strategyName = residencyStrategyName(currentStrategy);
+  const std::string sceneName =
+      _sceneVariantName.empty() ? std::string("unknown_scene") : _sceneVariantName;
+  const size_t clipEndFrame =
+      _benchmarkFrameCounter > 0 ? (_benchmarkFrameCounter - 1) : 0;
+  const size_t clipId =
+      _neuralClipLength > 0 ? (_neuralClipStartFrame / _neuralClipLength) : 0;
+
+  for (size_t objectIndex = 0; objectIndex < _neuralClipAccumulators.size();
+       ++objectIndex) {
+    const NeuralObjectClipAccumulator &acc = _neuralClipAccumulators[objectIndex];
+    if (!acc.initialized || acc.primitiveCount == 0)
+      continue;
+
+    const double invFrames = 1.0 / static_cast<double>(frameCount);
+    const double visibleFrameFraction =
+        static_cast<double>(acc.visibleFrames) * invFrames;
+    const double activeFrameFraction =
+        static_cast<double>(acc.activeFrames) * invFrames;
+    const double residentFrameFraction =
+        static_cast<double>(acc.residentFrames) * invFrames;
+    const double streamingFrameFraction =
+        static_cast<double>(acc.streamingFrames) * invFrames;
+    const double transportCriticalFrameFraction =
+        static_cast<double>(acc.transportCriticalFrames) * invFrames;
+    const double meanVisibleCoverage =
+        acc.visibleFrames > 0
+            ? (acc.visibleCoverageSum / static_cast<double>(acc.visibleFrames))
+            : 0.0;
+    const double meanDistance = acc.distanceSum * invFrames;
+    const double minDistance =
+        std::isfinite(acc.minDistance) ? acc.minDistance : 0.0;
+    const double meanHitProbability = acc.hitProbabilitySum * invFrames;
+    const double meanRayHitScore = acc.rayHitScoreSum * invFrames;
+    const double meanObjectImportance = acc.objectImportanceSum * invFrames;
+    const double meanEstimatedBytes = acc.estimatedBytesSum * invFrames;
+
+    std::ostringstream row;
+    appendCsvEscapedLocal(row, sceneName);
+    row << ',';
+    appendCsvEscapedLocal(row, strategyName);
+    row << ',' << static_cast<int>(currentStrategy) << ','
+        << clipId << ',' << _neuralClipStartFrame << ',' << clipEndFrame << ','
+        << frameCount << ',';
+    if (_forcedObjectOffIndex == std::numeric_limits<size_t>::max())
+      row << -1;
+    else
+      row << static_cast<long long>(_forcedObjectOffIndex);
+    row << ',' << objectIndex << ',' << acc.primitiveCount << ','
+        << formatFixedLocal(visibleFrameFraction) << ','
+        << formatFixedLocal(meanVisibleCoverage) << ','
+        << formatFixedLocal(acc.maxVisibleCoverage) << ','
+        << formatFixedLocal(meanDistance) << ','
+        << formatFixedLocal(minDistance) << ','
+        << formatFixedLocal(meanHitProbability) << ','
+        << formatFixedLocal(meanRayHitScore) << ','
+        << acc.totalHits << ',' << acc.totalRaysTested << ','
+        << acc.toggleCount << ','
+        << formatFixedLocal(activeFrameFraction) << ','
+        << formatFixedLocal(residentFrameFraction) << ','
+        << formatFixedLocal(streamingFrameFraction) << ','
+        << formatFixedLocal(transportCriticalFrameFraction) << ','
+        << formatFixedLocal(meanObjectImportance) << ','
+        << formatFixedLocal(meanEstimatedBytes) << ','
+        << formatFixedLocal(acc.emissiveImportance);
+    _neuralFeatureStream << row.str() << '\n';
+  }
+  _neuralFeatureStream.flush();
+  _neuralClipAccumulators.assign(_neuralClipAccumulators.size(),
+                                 NeuralObjectClipAccumulator{});
 }
 
 void Renderer::resetProbabilisticResidencyState() {
@@ -1962,9 +2627,14 @@ void Renderer::writeBenchmarkHeader() {
       << "frame,wall_seconds,cpu_ms,gpu_ms,rays_per_second,rays_cast,strategy,"
          "strategy_id,delta_time_seconds,min_samples_per_pixel,max_samples_per_pixel,"
          "primitive_activations,primitive_deactivations,object_activations,"
-         "object_deactivations,active_primitives,resident_primitives,total_primitives,"
+         "object_deactivations,objects_onload_requested,objects_offload_requested,"
+         "onload_requested_mb,offload_requested_mb,blas_build_requests,tlas_rebuilds,"
+         "tlas_refits,active_primitives,resident_primitives,total_primitives,"
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
          "resident_nodes,total_nodes,active_objects,resident_objects,"
+         "visible_primitives,visible_objects,"
+         "primitive_hits_last_frame,primitive_rays_tested_last_frame,"
+         "object_hits_last_frame,object_rays_tested_last_frame,"
          "avg_hit_probability,p95_hit_probability,probability_threshold,"
          "probability_target_fraction,probability_visible_floor,"
          "probability_target_primitives,"
@@ -1974,7 +2644,9 @@ void Renderer::writeBenchmarkHeader() {
          "camera_motion_metric,"
          "primitive_probabilities,"
          "object_probabilities,probabilistic_toggles,"
-         "gpu_memory_mb,scratch_memory_mb,resident_geometry_memory_mb,"
+         "gpu_memory_mb,scratch_memory_mb,gpu_geometry_mb,gpu_textures_mb,"
+         "gpu_restir_mb,gpu_renderer_mb,gpu_heaps_mb,gpu_staging_mb,gpu_other_mb,"
+         "resident_geometry_memory_mb,strict_resident_geometry_memory_mb,"
          "resident_texture_memory_mb,residency_memory_mb,"
          "texture_memory_cap_mb,geometry_memory_cap_mb,"
          "total_memory_cap_mb,minimum_resident_footprint_mb,"
@@ -2048,12 +2720,22 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.minSamplesPerPixel << ',' << sample.maxSamplesPerPixel << ','
       << sample.primitiveActivations << ',' << sample.primitiveDeactivations << ','
       << sample.objectActivations << ',' << sample.objectDeactivations << ','
+      << sample.objectsOnloadRequested << ','
+      << sample.objectsOffloadRequested << ','
+      << formatFixed(sample.onloadRequestedMB, 3) << ','
+      << formatFixed(sample.offloadRequestedMB, 3) << ','
+      << sample.blasBuildRequests << ','
+      << sample.tlasRebuilds << ','
+      << sample.tlasRefits << ','
       << sample.activePrimitiveCount << ',' << sample.residentPrimitiveCount << ','
       << sample.totalPrimitiveCount << ',' << sample.activeTriangleCount << ','
       << sample.residentTriangleCount << ',' << sample.totalTriangleCount << ','
       << sample.activeNodeCount << ',' << sample.residentNodeCount << ','
       << sample.totalNodeCount << ',' << sample.activeObjectCount << ','
-      << sample.residentObjectCount << ','
+      << sample.residentObjectCount << ',' << sample.visiblePrimitiveCount << ','
+      << sample.visibleObjectCount << ',' << sample.primitiveHitsLastFrame << ','
+      << sample.primitiveRaysTestedLastFrame << ',' << sample.objectHitsLastFrame
+      << ',' << sample.objectRaysTestedLastFrame << ','
       << formatFixed(sample.avgHitProbability, 6) << ','
       << formatFixed(sample.p95HitProbability, 6) << ','
       << formatFixed(sample.probabilityThreshold, 3) << ','
@@ -2072,7 +2754,15 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.probabilisticToggles << ','
       << formatFixed(sample.gpuMemoryMB, 3) << ','
       << formatFixed(sample.scratchMemoryMB, 3) << ','
+      << formatFixed(sample.gpuGeometryMB, 3) << ','
+      << formatFixed(sample.gpuTextureMB, 3) << ','
+      << formatFixed(sample.gpuRestirMB, 3) << ','
+      << formatFixed(sample.gpuRendererMB, 3) << ','
+      << formatFixed(sample.gpuHeapsMB, 3) << ','
+      << formatFixed(sample.gpuStagingMB, 3) << ','
+      << formatFixed(sample.gpuOtherMB, 3) << ','
       << formatFixed(sample.residentGeometryMemoryMB, 3) << ','
+      << formatFixed(sample.strictResidentGeometryMemoryMB, 3) << ','
       << formatFixed(sample.residentTextureMemoryMB, 3) << ','
       << formatFixed(sample.residencyMemoryMB, 3) << ','
       << formatFixed(sample.textureMemoryCapMB, 3) << ','
@@ -2143,6 +2833,8 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
     return "Probabilistic";
   case ResidencyStrategy::UnifiedScore:
     return "Unified score";
+  case ResidencyStrategy::UnifiedNeural:
+    return "Unified neural";
   case ResidencyStrategy::PredictiveEnvironment:
     return "Predictive environment";
   case ResidencyStrategy::EnvironmentHit:
@@ -2159,15 +2851,20 @@ void Renderer::ensureFrameCaptureDirectory() {
   if (_frameCaptureDirectoryInitialized)
     return;
 
-  std::filesystem::path benchmarksDir =
-      std::filesystem::current_path() / "Benchmarks";
-  std::filesystem::path framesDir = benchmarksDir / "frames";
+  std::filesystem::path baseDir;
+  if (const char *runsPath = std::getenv("MPT_RUNS_PATH");
+      runsPath && runsPath[0]) {
+    baseDir = std::filesystem::path(runsPath);
+  } else {
+    baseDir = std::filesystem::current_path() / "Benchmarks";
+  }
+  std::filesystem::path framesDir = baseDir / _frameCaptureSubdirectory;
 
   std::error_code ec;
   std::filesystem::create_directories(framesDir, ec);
   if (ec) {
     std::error_code fallbackError;
-    std::filesystem::create_directories(benchmarksDir, fallbackError);
+    std::filesystem::create_directories(baseDir, fallbackError);
     if (fallbackError) {
       std::printf(
           "Failed to initialize frame capture directory '%s': %s\n",
@@ -2176,7 +2873,7 @@ void Renderer::ensureFrameCaptureDirectory() {
       _frameCaptureDirectoryInitialized = true;
       return;
     }
-    _frameCaptureDirectory = benchmarksDir.string();
+    _frameCaptureDirectory = baseDir.string();
   } else {
     _frameCaptureDirectory = framesDir.string();
   }
@@ -2450,6 +3147,8 @@ void Renderer::processPendingCapturedFrames() {
       releaseCaptureBuffers();
       continue;
     }
+    const std::vector<float> overlayReference =
+        capture->containsDebugOverlay ? rgba : std::vector<float>{};
 
     std::vector<float> albedoData;
     if (capture->albedoBuffer && capture->albedoAlignedRowBytes > 0) {
@@ -2469,121 +3168,70 @@ void Renderer::processPendingCapturedFrames() {
       }
     }
 
-    if (!albedoData.empty() && !normalData.empty()) {
-      std::printf("Applying offline EXR denoiser to frame %llu\n",
-                 static_cast<unsigned long long>(capture->frameIndex));
-
-      const int radius = 1;
-      const float spatialSigma =
-          NomadPathTracer::DenoiserSettings::kSharpenedSpatialSigma;
-      const float albedoSigma =
-          NomadPathTracer::DenoiserSettings::kSharpenedAlbedoSigma;
-      const float normalSigma =
-          NomadPathTracer::DenoiserSettings::kSharpenedNormalSigma;
-      std::vector<float> denoised(pixelCount * 3, 0.0f);
-
-      auto normalizeVector = [](const float *v) {
-        std::array<float, 3> out{v[0], v[1], v[2]};
-        float len = std::sqrt(out[0] * out[0] + out[1] * out[1] +
-                              out[2] * out[2]);
-        if (len > 1e-6f) {
-          out[0] /= len;
-          out[1] /= len;
-          out[2] /= len;
-        }
-        return out;
-      };
-
-      for (size_t y = 0; y < capture->height; ++y) {
-        for (size_t x = 0; x < capture->width; ++x) {
-          size_t index = y * capture->width + x;
-          const float *baseColor = &rgba[index * 4];
-          const float *baseAlbedo = &albedoData[index * 4];
-          const float *baseNormalPtr = &normalData[index * 4];
-          auto baseNormal = normalizeVector(baseNormalPtr);
-
-          float accum[3] = {0.0f, 0.0f, 0.0f};
-          float totalWeight = 0.0f;
-
-          for (int dy = -radius; dy <= radius; ++dy) {
-            int ny = static_cast<int>(y) + dy;
-            if (ny < 0 || ny >= static_cast<int>(capture->height))
-              continue;
-            for (int dx = -radius; dx <= radius; ++dx) {
-              int nx = static_cast<int>(x) + dx;
-              if (nx < 0 || nx >= static_cast<int>(capture->width))
-                continue;
-              size_t neighborIndex = static_cast<size_t>(ny) * capture->width +
-                                     static_cast<size_t>(nx);
-              const float *neighborColor = &rgba[neighborIndex * 4];
-              const float *neighborAlbedo = &albedoData[neighborIndex * 4];
-              const float *neighborNormalPtr = &normalData[neighborIndex * 4];
-              auto neighborNormal = normalizeVector(neighborNormalPtr);
-
-              float spatialDist2 = static_cast<float>(dx * dx + dy * dy);
-              float spatialWeight = std::exp(
-                  -spatialDist2 / (2.0f * spatialSigma * spatialSigma));
-
-              float albedoDiff0 = neighborAlbedo[0] - baseAlbedo[0];
-              float albedoDiff1 = neighborAlbedo[1] - baseAlbedo[1];
-              float albedoDiff2 = neighborAlbedo[2] - baseAlbedo[2];
-              float albedoDist2 = albedoDiff0 * albedoDiff0 +
-                                  albedoDiff1 * albedoDiff1 +
-                                  albedoDiff2 * albedoDiff2;
-              float albedoWeight = std::exp(
-                  -albedoDist2 / (2.0f * albedoSigma * albedoSigma));
-
-              float dotVal = baseNormal[0] * neighborNormal[0] +
-                             baseNormal[1] * neighborNormal[1] +
-                             baseNormal[2] * neighborNormal[2];
-              dotVal = std::clamp(dotVal, -1.0f, 1.0f);
-              float normalDiff = std::max(0.0f, 1.0f - dotVal);
-              float normalWeight = std::exp(
-                  -normalDiff / (2.0f * normalSigma * normalSigma));
-
-              float weight = spatialWeight * albedoWeight * normalWeight;
-              accum[0] += neighborColor[0] * weight;
-              accum[1] += neighborColor[1] * weight;
-              accum[2] += neighborColor[2] * weight;
-              totalWeight += weight;
-            }
-          }
-
-          std::array<float, 3> filtered{baseColor[0], baseColor[1],
-                                         baseColor[2]};
-          if (totalWeight > 1e-6f) {
-            filtered[0] = accum[0] / totalWeight;
-            filtered[1] = accum[1] / totalWeight;
-            filtered[2] = accum[2] / totalWeight;
-          }
-          const float strength =
-              NomadPathTracer::DenoiserSettings::kSharpenedDenoiseStrength;
-          std::array<float, 3> blended{
-              baseColor[0] + (filtered[0] - baseColor[0]) * strength,
-              baseColor[1] + (filtered[1] - baseColor[1]) * strength,
-              baseColor[2] + (filtered[2] - baseColor[2]) * strength,
-          };
-          if (NomadPathTracer::DenoiserSettings::kSharpenedClampOutput) {
-            denoised[index * 3 + 0] = std::clamp(blended[0], 0.0f, 1.0f);
-            denoised[index * 3 + 1] = std::clamp(blended[1], 0.0f, 1.0f);
-            denoised[index * 3 + 2] = std::clamp(blended[2], 0.0f, 1.0f);
-          } else {
-            denoised[index * 3 + 0] = blended[0];
-            denoised[index * 3 + 1] = blended[1];
-            denoised[index * 3 + 2] = blended[2];
-          }
-        }
-      }
-
-      for (size_t i = 0; i < pixelCount; ++i) {
-        rgba[i * 4 + 0] = denoised[i * 3 + 0];
-        rgba[i * 4 + 1] = denoised[i * 3 + 1];
-        rgba[i * 4 + 2] = denoised[i * 3 + 2];
-        rgba[i * 4 + 3] = 1.0f;
+    bool attemptedOidn = false;
+    bool oidnApplied = false;
+    if (_disableOfflineOidn) {
+      std::printf("Skipping OIDN for frame %llu: deferred denoise mode is "
+                  "enabled.\n",
+                  static_cast<unsigned long long>(capture->frameIndex));
+    } else if (!albedoData.empty() && !normalData.empty()) {
+      attemptedOidn = true;
+      std::printf("Applying OIDN offline EXR denoiser to frame %llu\n",
+                  static_cast<unsigned long long>(capture->frameIndex));
+      oidnApplied =
+          applyOidnOfflineDenoise(rgba, albedoData, normalData, capture->width,
+                                  capture->height, capture->frameIndex);
+      if (!oidnApplied) {
+        std::printf("OIDN denoise failed for frame %llu; saving original color.\n",
+                    static_cast<unsigned long long>(capture->frameIndex));
       }
     } else {
+      std::printf("Skipping OIDN for frame %llu: missing albedo/normal AOVs.\n",
+                  static_cast<unsigned long long>(capture->frameIndex));
+    }
+    if (_disableOfflineOidn || !attemptedOidn || !oidnApplied) {
       for (size_t i = 0; i < pixelCount; ++i)
         rgba[i * 4 + 3] = 1.0f;
+    }
+
+    if (!overlayReference.empty() && overlayReference.size() == rgba.size()) {
+      auto closeToColor = [](float r, float g, float b,
+                             float cr, float cg, float cb) {
+        constexpr float kPerChannelTol = 0.18f;
+        return std::fabs(r - cr) <= kPerChannelTol &&
+               std::fabs(g - cg) <= kPerChannelTol &&
+               std::fabs(b - cb) <= kPerChannelTol;
+      };
+
+      size_t restoredOverlayPixels = 0;
+      for (size_t i = 0; i < pixelCount; ++i) {
+        size_t o = i * 4;
+        float srcR = overlayReference[o + 0];
+        float srcG = overlayReference[o + 1];
+        float srcB = overlayReference[o + 2];
+
+        bool warmOverlayShape =
+            srcR >= 0.82f && srcG >= 0.56f && srcB <= 0.34f &&
+            (srcR - srcB) >= 0.42f && (srcG - srcB) >= 0.20f;
+        bool frustumColor =
+            closeToColor(srcR, srcG, srcB, 1.00f, 0.95f, 0.10f);
+        bool trailColor =
+            closeToColor(srcR, srcG, srcB, 1.00f, 0.72f, 0.10f);
+        if (!(warmOverlayShape && (frustumColor || trailColor)))
+          continue;
+
+        rgba[o + 0] = srcR;
+        rgba[o + 1] = srcG;
+        rgba[o + 2] = srcB;
+        rgba[o + 3] = std::max(rgba[o + 3], overlayReference[o + 3]);
+        ++restoredOverlayPixels;
+      }
+
+      if (restoredOverlayPixels > 0) {
+        std::printf("Restored %zu observer overlay pixels after OIDN for frame %llu\n",
+                   restoredOverlayPixels,
+                   static_cast<unsigned long long>(capture->frameIndex));
+      }
     }
 
     const char *err = nullptr;
@@ -2683,6 +3331,10 @@ void Renderer::buildShaders() {
     _pOverlayPSO->release();
     _pOverlayPSO = nullptr;
   }
+  if (_pOverlayCapturePSO) {
+    _pOverlayCapturePSO->release();
+    _pOverlayCapturePSO = nullptr;
+  }
   if (_pPathTracePSO) {
     _pPathTracePSO->release();
     _pPathTracePSO = nullptr;
@@ -2737,6 +3389,23 @@ void Renderer::buildShaders() {
       __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
     }
     pOverlayDesc->release();
+
+    pError = nullptr;
+    MTL::RenderPipelineDescriptor *pOverlayCaptureDesc =
+        MTL::RenderPipelineDescriptor::alloc()->init();
+    pOverlayCaptureDesc->setVertexFunction(pOverlayVertexFn);
+    pOverlayCaptureDesc->setFragmentFunction(pOverlayFragmentFn);
+    pOverlayCaptureDesc->colorAttachments()->object(0)->setPixelFormat(
+        MTL::PixelFormat::PixelFormatRGBA32Float);
+    pOverlayCaptureDesc->setInputPrimitiveTopology(
+        MTL::PrimitiveTopologyClass::PrimitiveTopologyClassLine);
+
+    _pOverlayCapturePSO =
+        _pDevice->newRenderPipelineState(pOverlayCaptureDesc, &pError);
+    if (!_pOverlayCapturePSO && pError) {
+      __builtin_printf("%s\n", pError->localizedDescription()->utf8String());
+    }
+    pOverlayCaptureDesc->release();
   }
   if (pOverlayVertexFn)
     pOverlayVertexFn->release();
@@ -2887,13 +3556,14 @@ void Renderer::updateVisibleScene() {
   resetProbabilisticResidencyState();
   if (!SceneLoader::LoadSceneFromXML("scene.xml", _pScene)) {
     std::filesystem::path alt =
-        std::filesystem::path(__FILE__).parent_path() / "../scene_bistro_test_v2.xml";
+        std::filesystem::path(__FILE__).parent_path() / "../scene_bistro_test_v2_distance.xml";
     SceneLoader::LoadSceneFromXML(alt.string(), _pScene);
   }
 
   Camera::screenSize = _pScene->screenSize;
   _animationFrame = 0;
   _observerActive = false;
+  _primaryCameraTrail.clear();
 
   if (!_pScene->cameraPath.empty()) {
     const auto &k = _pScene->cameraPath.front();
@@ -2974,6 +3644,9 @@ void Renderer::updateVisibleScene() {
   case ResidencyStrategy::UnifiedScore:
     strategyName = "Unified score";
     break;
+  case ResidencyStrategy::UnifiedNeural:
+    strategyName = "Unified neural";
+    break;
   case ResidencyStrategy::PredictiveEnvironment:
     strategyName = "Predictive environment";
     break;
@@ -2993,7 +3666,8 @@ void Renderer::updateVisibleScene() {
   _alwaysResidentCache.reset();
   _forceAlwaysResidentActivation = true;
   _pendingAlwaysResidentPrewarm =
-      _pScene->getResidencyStrategy() == ResidencyStrategy::AlwaysResident;
+      _pScene->getResidencyStrategy() == ResidencyStrategy::AlwaysResident ||
+      _residencyPreviewOnly;
 
   ++_cameraVersion;
   _depthWeightCameraVersion = 0;
@@ -3224,7 +3898,9 @@ void Renderer::updateVisibleScene() {
 }
 
 void Renderer::prewarmAlwaysResidentResources() {
-  if (!_pScene ||
+  if (!_pScene)
+    return;
+  if (!_residencyPreviewOnly &&
       _pScene->getResidencyStrategy() != ResidencyStrategy::AlwaysResident)
     return;
 
@@ -3496,7 +4172,8 @@ void Renderer::recalculateViewport() {
 }
 
 bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
-                               ResidentObjectGpuResources &resident) {
+                               ResidentObjectGpuResources &resident,
+                               bool coldOnloadRequest) {
   if (!_pDevice || !_pCommandQueue)
     return false;
 
@@ -3532,6 +4209,8 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     resident.vertexBufferOffset = 0;
     resident.indexBufferOffset = 0;
     resident.geometryValid = false;
+    resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
+    resident.lastStateChange = std::chrono::steady_clock::now();
     cleanupPool();
     return true;
   }
@@ -3634,6 +4313,8 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     resident.vertexBufferOffset = 0;
     resident.indexBufferOffset = 0;
     resident.geometryValid = false;
+    resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
+    resident.lastStateChange = std::chrono::steady_clock::now();
     cleanupPool();
     return true;
   }
@@ -3647,6 +4328,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   buildRequest->renderer = this;
   buildRequest->resident = &resident;
   buildRequest->objectIndex = objectIndex;
+  buildRequest->coldOnloadRequest = coldOnloadRequest;
   buildRequest->vertices = std::move(vertices);
   buildRequest->indices = std::move(indices);
   buildRequest->triangleCount = triangleCount;
@@ -4000,6 +4682,10 @@ Renderer::BlasBuildStartResult Renderer::startBlasBuild(
   buildRequest->scratchBuffer = scratchBuffer;
   buildRequest->commandBuffer = commandBuffer;
   buildRequest->totalHeapBytes = totalHeapBytes;
+
+  if (buildRequest->coldOnloadRequest) {
+    _frameOnloadRequestedBytes += static_cast<size_t>(buildRequest->totalHeapBytes);
+  }
 
   // Release CPU copies now that staging buffers are populated.
   buildRequest->vertices.clear();
@@ -4802,9 +5488,11 @@ void Renderer::updateTopLevelAccelerationStructure(
   }
 
   if (needsRebuild) {
+    ++_frameTlasRebuilds;
     encoder->buildAccelerationStructure(_pTlasStructure, instanceDesc,
                                         scratchBuffer, 0);
   } else {
+    ++_frameTlasRefits;
     encoder->refitAccelerationStructure(_pTlasStructure, instanceDesc,
                                         _pTlasStructure, scratchBuffer, 0);
   }
@@ -5157,6 +5845,9 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       useCompaction = false;
   }
 
+  if (_residencyPreviewOnly)
+    useCompaction = false;
+
   bool compactionStateChanged = (useCompaction != _residentCompacted);
   if (compactionStateChanged) {
     _residentCompacted = useCompaction;
@@ -5167,6 +5858,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   bool occupancyShrinkActive = _residencyConfig.enableBufferShrink &&
                                activeRatio <= shrinkTarget &&
                                totalPrimitiveCount > 0;
+  if (_residencyPreviewOnly)
+    occupancyShrinkActive = false;
 
   bool allowShrink = useCompaction;
   const char *shrinkContext = nullptr;
@@ -5196,6 +5889,7 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
       &_cachedTriangleVertices;
   const std::vector<simd::uint3> *triangleIndexSource =
       &_cachedTriangleIndices;
+  std::vector<simd::float4> previewMaterialData;
   if (!useCompaction) {
     remapUpload.resize(totalPrimitiveCount);
     for (size_t i = 0; i < totalPrimitiveCount; ++i) {
@@ -5690,6 +6384,39 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     _lightCount = _cachedLightIndices.size();
   }
 
+  if (_residencyPreviewOnly) {
+    for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
+         ++objectIndex) {
+      const SceneObject &obj = sceneObjects[objectIndex];
+      objectShouldBeResident[objectIndex] = obj.primitiveCount > 0;
+      BlasInstanceRecord &record = _instanceRecords[objectIndex];
+      record.primitiveBase = static_cast<uint32_t>(obj.firstPrimitive);
+      record.primitiveCount = static_cast<uint32_t>(obj.primitiveCount);
+      record.primitiveIndexBase = static_cast<uint32_t>(obj.firstPrimitive);
+      record.blasRootIndex = obj.primitiveCount > 0 ? obj.blasRootIndex : -1;
+    }
+  }
+
+  if (_residencyPreviewOnly && _forceObserverCapture) {
+    previewMaterialData.clear();
+    previewMaterialData.reserve(remapUpload.size() * kMaterialFloat4Count);
+    for (uint32_t globalIndex : remapUpload) {
+      if (globalIndex >= _allPrimitives.size())
+        continue;
+      bool active = globalIndex < _previewPrimitiveActive.size()
+                        ? _previewPrimitiveActive[globalIndex]
+                        : (globalIndex < _activePrimitive.size() &&
+                           _activePrimitive[globalIndex]);
+      Material previewMaterial =
+          makeResidencyPreviewMaterial(_allPrimitives[globalIndex].material,
+                                       active);
+      auto packedMaterial = encodeMaterial(previewMaterial);
+      for (size_t j = 0; j < kMaterialFloat4Count; ++j)
+        previewMaterialData.push_back(packedMaterial[j]);
+    }
+    materialSource = &previewMaterialData;
+  }
+
   if (_frameStrategy == ResidencyStrategy::AlwaysResident) {
     for (size_t objectIndex = 0; objectIndex < sceneObjects.size();
          ++objectIndex) {
@@ -5705,11 +6432,15 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   bool geometryHardCapEnabled =
       _geometryResidencyMemoryCapMB > 0.0 && geometryCapBytes > 0;
   bool geometryHardCapReached = _pendingGeometryResidencyOverageBytes > 0;
+  constexpr size_t kMaxColdObjectOnloadsPerFrame = 32;
+  size_t coldObjectOnloadsStarted = 0;
 
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
     auto &gpuResident = _residentObjectGpuResources[objectIndex];
     auto &instanceRecord = _instanceRecords[objectIndex];
+    ResidentObjectGpuResources::ResidencyState previousState = gpuResident.state;
+    size_t previousByteSize = gpuResident.byteSize;
 
     if (geometryHardCapEnabled && shouldBeResident &&
         gpuResident.state ==
@@ -5730,17 +6461,40 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     if (shouldBeResident) {
+      bool deferColdOnload =
+          !_residencyPreviewOnly &&
+          _frameStrategy != ResidencyStrategy::AlwaysResident &&
+          previousState == ResidentObjectGpuResources::ResidencyState::Cold &&
+          coldObjectOnloadsStarted >= kMaxColdObjectOnloadsPerFrame;
+      if (deferColdOnload)
+        continue;
+
       bool built = gpuResident.ensureResident(
           *this, objectIndex, sceneObjects[objectIndex], instanceRecord,
           needFullUpload);
       if (!built) {
         shouldBeResident = false;
         objectShouldBeResident[objectIndex] = false;
+      } else if (previousState == ResidentObjectGpuResources::ResidencyState::Cold &&
+                 gpuResident.state != ResidentObjectGpuResources::ResidencyState::Cold) {
+        ++coldObjectOnloadsStarted;
+        ++_frameObjectsOnloadRequested;
+        if (gpuResident.state == ResidentObjectGpuResources::ResidencyState::Streaming)
+          ++_frameBlasBuildRequests;
       }
     }
 
-    if (!shouldBeResident &&
+    if (!shouldBeResident && !_residencyPreviewOnly &&
         _frameStrategy != ResidencyStrategy::AlwaysResident) {
+      if (previousState != ResidentObjectGpuResources::ResidencyState::Cold) {
+        size_t previousRequestedBytes = previousByteSize;
+        if (previousRequestedBytes == 0) {
+          previousRequestedBytes = static_cast<size_t>(
+              gpuResident.resources.currentRequiredBytes());
+        }
+        ++_frameObjectsOffloadRequested;
+        _frameOffloadRequestedBytes += previousRequestedBytes;
+      }
       requestResidentEviction(objectIndex, gpuResident, instanceRecord);
     }
   }
@@ -5812,7 +6566,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
 
   _residentRemap = remapUpload;
 
-  bool uploadAll = needFullUpload || useCompaction || compactionStateChanged;
+  bool uploadAll = needFullUpload || useCompaction || compactionStateChanged ||
+                   (_residencyPreviewOnly && _forceObserverCapture);
 
   if (uploadAll) {
     size_t primitiveFloat4Count = primitiveSource->size();
@@ -6045,7 +6800,10 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   if (_pActiveBuffer) {
     uint8_t *activePtr =
         static_cast<uint8_t *>(_pActiveBuffer->contents());
-    if (useCompaction) {
+    if (_residencyPreviewOnly) {
+      std::memset(activePtr, 1, activeBytes);
+      markBufferModified(_pActiveBuffer, NS::Range::Make(0, activeBytes));
+    } else if (useCompaction) {
       if (_residentPrimitiveCount > 0) {
         std::memcpy(activePtr, compactActiveMask.data(),
                     _residentPrimitiveCount * sizeof(uint8_t));
@@ -6926,6 +7684,14 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
     if (objectIndex >= _instanceRecords.size())
       continue;
 
+    bool visible = false;
+    if (objectIndex < _objectBounds.size())
+      visible = isInView(_objectBounds[objectIndex]);
+    if (objectIndex < _objectVisible.size())
+      visible = visible || (_objectVisible[objectIndex] != 0u);
+    if (visible)
+      continue;
+
     double bytesMB =
         static_cast<double>(resident.byteSize) / (1024.0 * 1024.0);
     if (bytesMB <= 0.0)
@@ -7149,9 +7915,11 @@ void Renderer::buildTextures() {
 
   MTL::TextureUsage usage = static_cast<MTL::TextureUsage>(
       MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite);
+  MTL::TextureUsage colorUsage = static_cast<MTL::TextureUsage>(
+      usage | MTL::TextureUsageRenderTarget);
 
   configureTextureSlot(_colorSlot, width, height,
-                       MTL::PixelFormat::PixelFormatRGBA32Float, usage);
+                       MTL::PixelFormat::PixelFormatRGBA32Float, colorUsage);
   configureTextureSlot(_albedoSlot, width, height,
                        MTL::PixelFormat::PixelFormatRGBA32Float, usage);
   configureTextureSlot(_normalSlot, width, height,
@@ -7188,9 +7956,15 @@ bool Renderer::updateCameraStates() {
   bool hadObserver = _observerActive;
   Camera::State previousViewState =
       hadObserver ? _observerCameraState : _primaryCameraState;
+  const bool freezeAlwaysResidentAnimation =
+      _pScene && _pScene->getResidencyStrategy() == ResidencyStrategy::AlwaysResident &&
+      _renderedFrameCount == 0;
 
   bool toggled = false;
-  if (InputSystem::observerToggleRequest) {
+  if (_forceObserverCapture) {
+    _observerActive = true;
+    InputSystem::observerToggleRequest = false;
+  } else if (InputSystem::observerToggleRequest) {
     _observerActive = !_observerActive;
     InputSystem::observerToggleRequest = false;
     toggled = true;
@@ -7250,7 +8024,8 @@ bool Renderer::updateCameraStates() {
     if (Camera::transformWithInputs())
       _observerCameraState = Camera::captureState();
 
-    _animationFrame++;
+    if (!freezeAlwaysResidentAnimation)
+      _animationFrame++;
   } else {
     Camera::State *target =
         _observerActive ? &_observerCameraState : &_primaryCameraState;
@@ -7309,7 +8084,11 @@ void Renderer::updateUniforms(bool cameraChanged) {
   u.environmentPadding1 = 0.0f;
   u.restirEnabled = (_pScene && _pScene->getRestirEnabled()) ? 1u : 0u;
   u.restirCandidateCount = 8u;
-  u.restirTemporalReuse = (u.restirEnabled && _renderedFrameCount > 0) ? 1u : 0u;
+  const bool restirReuseAllowed =
+      (_renderedFrameCount > 0) &&
+      (_renderedFrameCount >= _restirReuseDisableUntilFrame);
+  u.restirTemporalReuse =
+      (u.restirEnabled && restirReuseAllowed) ? 1u : 0u;
   u.restirPadding0 = 0u;
   float aspect = Camera::screenSize.y > 0.0f
                      ? Camera::screenSize.x / Camera::screenSize.y
@@ -7375,6 +8154,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
 }
 
 void Renderer::draw(MTK::View *pView) {
+  _didRenderFrame = false;
   processRayHitCounters();
   bool cameraChanged = updateCameraStates();
   Camera::State viewCamera =
@@ -7382,6 +8162,20 @@ void Renderer::draw(MTK::View *pView) {
 
   Camera::applyState(_primaryCameraState);
   updateResidency();
+
+  if (_frameStrategy == ResidencyStrategy::AlwaysResident &&
+      !alwaysResidentResidencyReady()) {
+    ++_alwaysResidentWarmupWaitCount;
+    if (_alwaysResidentWarmupWaitCount == 1 ||
+        (_alwaysResidentWarmupWaitCount % 60) == 0) {
+      std::printf(
+          "[AlwaysResident] Waiting for full residency warmup before first "
+          "measured frame (pending=%zu active=%zu).\n",
+          _pendingBlasBuilds.size(), _activeBlasBuilds.size());
+    }
+    return;
+  }
+  _alwaysResidentWarmupWaitCount = 0;
 
   Camera::applyState(viewCamera);
   if (_captureOutputsPending.load(std::memory_order_acquire))
@@ -7415,6 +8209,8 @@ void Renderer::draw(MTK::View *pView) {
         configuredTotalCapMB >= minimumFootprintMB) {
       _memoryCapFallbackActive = false;
       _totalMemoryCapRelaxedMB = 0.0;
+      _totalMemoryEvictionNoProgressFrames = 0;
+      _totalMemoryEvictionBackoffUntilFrame = 0;
       std::printf(
           "[MemoryBudget] Total cap %.2f MB now meets minimum footprint %.2f MB; "
           "clearing fallback.\n",
@@ -7921,6 +8717,9 @@ void Renderer::draw(MTK::View *pView) {
 
   MTL::RenderPassDescriptor *pRpd = pView->currentRenderPassDescriptor();
   MTL::RenderCommandEncoder *pEnc = presentCmd->renderCommandEncoder(pRpd);
+  std::vector<OverlayLineVertex> overlayVertices;
+  OverlayUniforms overlayUniforms{};
+  bool overlayReady = false;
 
   pEnc->setRenderPipelineState(_pPSO);
   pEnc->setFragmentTexture(colorTexture, 0);
@@ -7929,6 +8728,8 @@ void Renderer::draw(MTK::View *pView) {
                        NS::UInteger(0), NS::UInteger(6));
 
   if (_pOverlayPSO && _observerActive) {
+    overlayVertices.reserve(kFrustumEdges.size() * 2 + kCameraTrailMaxPoints * 2);
+
     float nearDistance = kFrustumDebugNear;
     float baseDistance = std::max(_primaryCameraState.focalLength, 1.0f);
     float farDistance =
@@ -7936,18 +8737,51 @@ void Renderer::draw(MTK::View *pView) {
 
     auto corners =
         buildFrustumCorners(_primaryCameraState, nearDistance, farDistance);
-    std::array<simd::float3, kFrustumEdges.size() * 2> frustumVertices{};
-    size_t vertexCount = 0;
+    const simd::float4 frustumColor = {1.0f, 0.95f, 0.10f, 1.0f};
+    const std::array<simd::float3, 5> frustumOffsets = {
+        simd::make_float3(0.0f, 0.0f, 0.0f),
+        simd::make_float3(kFrustumDebugThicknessWorld, 0.0f, 0.0f),
+        simd::make_float3(-kFrustumDebugThicknessWorld, 0.0f, 0.0f),
+        simd::make_float3(0.0f, kFrustumDebugThicknessWorld, 0.0f),
+        simd::make_float3(0.0f, -kFrustumDebugThicknessWorld, 0.0f)};
     for (const auto &edge : kFrustumEdges) {
       size_t firstIndex = static_cast<size_t>(edge.first);
       size_t secondIndex = static_cast<size_t>(edge.second);
       if (firstIndex >= corners.size() || secondIndex >= corners.size())
         continue;
-      frustumVertices[vertexCount++] = corners[firstIndex];
-      frustumVertices[vertexCount++] = corners[secondIndex];
+      for (const simd::float3 &offset : frustumOffsets) {
+        overlayVertices.push_back({corners[firstIndex] + offset, frustumColor});
+        overlayVertices.push_back({corners[secondIndex] + offset, frustumColor});
+      }
     }
 
-    size_t requiredBytes = vertexCount * sizeof(simd::float3);
+    if (_residencyPreviewOnly && _forceObserverCapture) {
+      const simd::float3 cameraPosition = _primaryCameraState.position;
+      const float minStepSq = kCameraTrailMinStep * kCameraTrailMinStep;
+      bool appendPoint = _primaryCameraTrail.empty();
+      if (!appendPoint) {
+        simd::float3 delta = cameraPosition - _primaryCameraTrail.back();
+        appendPoint = simd::length_squared(delta) >= minStepSq;
+      }
+      if (appendPoint) {
+        _primaryCameraTrail.push_back(cameraPosition);
+        if (_primaryCameraTrail.size() > kCameraTrailMaxPoints) {
+          _primaryCameraTrail.erase(_primaryCameraTrail.begin(),
+                                    _primaryCameraTrail.begin() +
+                                        (_primaryCameraTrail.size() -
+                                         kCameraTrailMaxPoints));
+        }
+      }
+
+      const simd::float4 trailColor = {1.0f, 0.72f, 0.10f, 1.0f};
+      for (size_t i = 1; i < _primaryCameraTrail.size(); ++i) {
+        overlayVertices.push_back({_primaryCameraTrail[i - 1], trailColor});
+        overlayVertices.push_back({_primaryCameraTrail[i], trailColor});
+      }
+    }
+
+    size_t vertexCount = overlayVertices.size();
+    size_t requiredBytes = vertexCount * sizeof(OverlayLineVertex);
     ensureBufferCapacity(_pFrustumVertexBuffer, requiredBytes,
                          _frustumVertexCapacity, false,
                          MTL::ResourceStorageModeShared,
@@ -7956,7 +8790,7 @@ void Renderer::draw(MTK::View *pView) {
     if (_pFrustumVertexBuffer && requiredBytes > 0) {
       void *dst = _pFrustumVertexBuffer->contents();
       if (dst)
-        std::memcpy(dst, frustumVertices.data(), requiredBytes);
+        std::memcpy(dst, overlayVertices.data(), requiredBytes);
       if (_pFrustumVertexBuffer->storageMode() == MTL::StorageModeManaged)
         markBufferModified(_pFrustumVertexBuffer,
                            NS::Range::Make(0, requiredBytes));
@@ -7966,15 +8800,15 @@ void Renderer::draw(MTK::View *pView) {
                          : 1.0f;
       constexpr float kViewNear = 0.1f;
       constexpr float kViewFar = 1000.0f;
-      OverlayUniforms uniforms{};
-      uniforms.viewProjection =
+      overlayUniforms.viewProjection =
           simd_mul(makePerspectiveMatrix(viewCamera.verticalFov, aspect,
                                          kViewNear, kViewFar),
                    makeViewMatrix(viewCamera));
+      overlayReady = vertexCount > 0;
 
       pEnc->setRenderPipelineState(_pOverlayPSO);
       pEnc->setVertexBuffer(_pFrustumVertexBuffer, 0, 0);
-      pEnc->setVertexBytes(&uniforms, sizeof(uniforms), 1);
+      pEnc->setVertexBytes(&overlayUniforms, sizeof(overlayUniforms), 1);
       pEnc->drawPrimitives(MTL::PrimitiveTypeLine, NS::UInteger(0),
                            NS::UInteger(vertexCount));
 
@@ -7985,16 +8819,57 @@ void Renderer::draw(MTK::View *pView) {
 
   pEnc->endEncoding();
 
+  if (captureThisFrame && overlayReady && _pOverlayCapturePSO &&
+      _pFrustumVertexBuffer &&
+      colorTexture) {
+    MTL::RenderPassDescriptor *captureOverlayRpd =
+        MTL::RenderPassDescriptor::renderPassDescriptor();
+    if (captureOverlayRpd) {
+      MTL::RenderPassColorAttachmentDescriptor *colorAttachment =
+          captureOverlayRpd->colorAttachments()->object(0);
+      if (colorAttachment) {
+        colorAttachment->setTexture(colorTexture);
+        colorAttachment->setLoadAction(MTL::LoadActionLoad);
+        colorAttachment->setStoreAction(MTL::StoreActionStore);
+      }
+
+      MTL::RenderCommandEncoder *captureOverlayEnc =
+          presentCmd->renderCommandEncoder(captureOverlayRpd);
+      if (captureOverlayEnc) {
+        captureOverlayEnc->setRenderPipelineState(_pOverlayCapturePSO);
+        captureOverlayEnc->setVertexBuffer(_pFrustumVertexBuffer, 0, 0);
+        captureOverlayEnc->setVertexBytes(&overlayUniforms, sizeof(overlayUniforms),
+                                          1);
+        captureOverlayEnc->drawPrimitives(
+            MTL::PrimitiveTypeLine, NS::UInteger(0),
+            NS::UInteger(overlayVertices.size()));
+        captureOverlayEnc->endEncoding();
+      }
+    }
+  }
+
   MTL::BlitCommandEncoder *pBlit = nullptr;
   bool performedRayHitReadback = false;
 
   if (captureThisFrame && colorTexture) {
     if (auto capture = encodeFrameCapture(colorTexture, albedoTexture, normalTexture,
-                                          frameIndex, presentCmd, pBlit))
+                                          frameIndex, presentCmd, pBlit)) {
+      capture->containsDebugOverlay = overlayReady && _observerActive;
       captureList->push_back(capture);
+    }
   }
 
+  bool canScheduleRayHitReadback = false;
   if (_pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
+    if (!_lastRayHitCommandBuffer) {
+      canScheduleRayHitReadback = true;
+    } else if (rayHitCopyReady()) {
+      flushRayHitCopy();
+      canScheduleRayHitReadback = (_lastRayHitCommandBuffer == nullptr);
+    }
+  }
+
+  if (canScheduleRayHitReadback) {
     if (!pBlit)
       pBlit = presentCmd->blitCommandEncoder();
     if (pBlit) {
@@ -8042,6 +8917,7 @@ void Renderer::draw(MTK::View *pView) {
     _rayHitCopyError = false;
   }
 
+  _didRenderFrame = true;
   ++_renderedFrameCount;
   pPool->release();
 
@@ -8055,6 +8931,13 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _framePrimitiveDeactivations = 0;
   _frameObjectActivations = 0;
   _frameObjectDeactivations = 0;
+  _frameObjectsOnloadRequested = 0;
+  _frameObjectsOffloadRequested = 0;
+  _frameOnloadRequestedBytes = 0;
+  _frameOffloadRequestedBytes = 0;
+  _frameBlasBuildRequests = 0;
+  _frameTlasRebuilds = 0;
+  _frameTlasRefits = 0;
   _frameProbabilisticToggles = 0;
   _frameScreenMinPixelCoverageSkips = 0;
   _frameEnvironmentActivationFloor = 0;
@@ -8065,12 +8948,16 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
   _frameTotalMemoryCapNonResidencyDeniedCount = 0;
   _frameTotalMemoryEvictionStall = false;
   _frameMinimumResidentFootprintMB = 0.0;
+  _frameTransportCriticalResidencyChanged = false;
   ResidencyStrategy strategy = _pScene->getResidencyStrategy();
   if (strategy != _lastResidencyStrategy) {
     if (strategy == ResidencyStrategy::AlwaysResident) {
       _alwaysResidentCache.markDirty();
       _forceAlwaysResidentActivation = true;
       _pendingAlwaysResidentPrewarm = true;
+      _alwaysResidentWarmupWaitCount = 0;
+    } else {
+      _alwaysResidentWarmupWaitCount = 0;
     }
     _lastResidencyStrategy = strategy;
   }
@@ -8091,6 +8978,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     changed = updateEnergyImportance(forceAllToggles);
     break;
   case ResidencyStrategy::UnifiedScore:
+  case ResidencyStrategy::UnifiedNeural:
     changed = updateUnifiedResidency(forceAllToggles);
     break;
   case ResidencyStrategy::RayHitBudget:
@@ -8117,14 +9005,413 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     break;
   }
 
+  const bool requiresVisibleGuard =
+      strategy != ResidencyStrategy::DistanceLOD &&
+      strategy != ResidencyStrategy::RayHitBudget &&
+      strategy != ResidencyStrategy::AlwaysResident;
+  if (requiresVisibleGuard &&
+      enforceTransportCriticalObjectResidency(forceAllToggles))
+    changed = true;
+  if (requiresVisibleGuard && enforceEmissiveObjectResidency(forceAllToggles))
+    changed = true;
+  if (requiresVisibleGuard && enforceVisibleObjectResidency(forceAllToggles))
+    changed = true;
+
+  if (requiresVisibleGuard) {
+    const size_t primitiveChurn =
+        _framePrimitiveActivations + _framePrimitiveDeactivations;
+    const size_t objectChurn = _frameObjectActivations + _frameObjectDeactivations;
+    const size_t primitiveCount = _activePrimitive.size();
+    const size_t churnThreshold =
+        std::max<size_t>(24, static_cast<size_t>(std::ceil(
+                                 static_cast<double>(primitiveCount) * 0.03)));
+    if (_frameTransportCriticalResidencyChanged || primitiveChurn >= churnThreshold ||
+        objectChurn >= 6) {
+      _restirReuseDisableUntilFrame =
+          std::max(_restirReuseDisableUntilFrame, _renderedFrameCount + 3);
+    }
+  }
+
+  if (_residencyPreviewOnly) {
+    _previewPrimitiveActive = _activePrimitive;
+    _previewObjectActive = _objectActive;
+  }
+
   if (changed || forceFullRebuild)
     flushResidencyChanges(forceFullRebuild);
 
   if (_pendingAlwaysResidentPrewarm &&
-      strategy == ResidencyStrategy::AlwaysResident)
+      (strategy == ResidencyStrategy::AlwaysResident || _residencyPreviewOnly))
     prewarmAlwaysResidentResources();
 
   updateHeapShrinkCandidates();
+}
+
+bool Renderer::enforceEmissiveObjectResidency(bool forceAllToggles) {
+  const size_t objectCount = _allSceneObjects.size();
+  if (objectCount == 0 || _activePrimitive.empty())
+    return false;
+
+  size_t baseBudget = 0;
+  switch (_frameStrategy) {
+  case ResidencyStrategy::EnergyImportance:
+  case ResidencyStrategy::UnifiedScore:
+  case ResidencyStrategy::UnifiedNeural:
+    baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::ScreenSpaceFootprint:
+    baseBudget = _residencyConfig.screenFootprintMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::Probabilistic:
+    baseBudget = _residencyConfig.probabilityMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::PredictiveEnvironment:
+  case ResidencyStrategy::EnvironmentHit:
+    baseBudget = _residencyConfig.environmentMaxTogglesPerFrame;
+    break;
+  default:
+    baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
+    break;
+  }
+
+  size_t emissiveToggleBudget = std::max<size_t>(32, baseBudget * 4);
+  if (forceAllToggles)
+    emissiveToggleBudget = std::numeric_limits<size_t>::max();
+
+  bool changed = false;
+  size_t usedBudget = 0;
+
+  auto promoteEmissivePass = [&](bool visibleOnly) {
+    for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      if (obj.primitiveCount == 0)
+        continue;
+
+      const size_t first = obj.firstPrimitive;
+      const size_t last =
+          std::min(first + obj.primitiveCount, _activePrimitive.size());
+      bool hasEmissivePrimitive = false;
+      bool missingEmissivePrimitive = false;
+      for (size_t primIndex = first; primIndex < last; ++primIndex) {
+        if (primIndex >= _allPrimitives.size())
+          break;
+        const Material &m = _allPrimitives[primIndex].material;
+        const float emissionStrength =
+            m.emissionPower * luminance(m.emissionColor);
+        if (emissionStrength <= 0.0f)
+          continue;
+        hasEmissivePrimitive = true;
+        if (!_activePrimitive[primIndex])
+          missingEmissivePrimitive = true;
+      }
+
+      if (!hasEmissivePrimitive || !missingEmissivePrimitive)
+        continue;
+
+      bool visible = false;
+      if (objectIndex < _objectBounds.size())
+        visible = isInView(_objectBounds[objectIndex]);
+      if (objectIndex < _objectVisible.size())
+        _objectVisible[objectIndex] = visible ? 1u : 0u;
+      if (visibleOnly && !visible)
+        continue;
+
+      if (!forceAllToggles && usedBudget >= emissiveToggleBudget)
+        return;
+
+      size_t toggled = setObjectActive(objectIndex, true);
+      if (toggled > 0) {
+        changed = true;
+        _frameTransportCriticalResidencyChanged = true;
+        if (!forceAllToggles)
+          usedBudget = std::min(usedBudget + toggled, emissiveToggleBudget);
+      }
+    }
+  };
+
+  promoteEmissivePass(true);
+  if (usedBudget < emissiveToggleBudget)
+    promoteEmissivePass(false);
+
+  return changed;
+}
+
+bool Renderer::enforceTransportCriticalObjectResidency(bool forceAllToggles) {
+  const size_t objectCount = _allSceneObjects.size();
+  if (objectCount == 0 || _activePrimitive.empty())
+    return false;
+
+  size_t baseBudget = 0;
+  switch (_frameStrategy) {
+  case ResidencyStrategy::EnergyImportance:
+  case ResidencyStrategy::UnifiedScore:
+  case ResidencyStrategy::UnifiedNeural:
+    baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::ScreenSpaceFootprint:
+    baseBudget = _residencyConfig.screenFootprintMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::Probabilistic:
+    baseBudget = _residencyConfig.probabilityMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::PredictiveEnvironment:
+  case ResidencyStrategy::EnvironmentHit:
+    baseBudget = _residencyConfig.environmentMaxTogglesPerFrame;
+    break;
+  default:
+    baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
+    break;
+  }
+
+  size_t toggleBudget = std::max<size_t>(12, baseBudget);
+  if (forceAllToggles)
+    toggleBudget = std::numeric_limits<size_t>::max();
+
+  struct Candidate {
+    size_t objectIndex = 0;
+    float score = 0.0f;
+    bool visible = false;
+    bool emissive = false;
+    bool stronglyNeeded = false;
+  };
+
+  std::vector<float> supportImportance(objectCount, 0.0f);
+  std::vector<float> emissiveImportance(objectCount, 0.0f);
+  std::vector<float> hitScore(objectCount, 0.0f);
+  std::vector<float> exploration(objectCount, 0.0f);
+  std::vector<float> nearWeight(objectCount, 0.0f);
+  std::vector<float> visibilityCoverage(objectCount, 0.0f);
+  std::vector<uint8_t> visibleMask(objectCount, 0u);
+
+  float maxSupportImportance = 0.0f;
+  float maxEmissiveImportance = 0.0f;
+  float maxHitScore = 0.0f;
+  float maxExploration = 0.0f;
+
+  float screenArea = Camera::screenSize.x * Camera::screenSize.y;
+  if (!(screenArea > 0.0f))
+    screenArea = 1.0f;
+  const simd::float3 forward = simd::normalize(Camera::forward);
+  const float tanHalfFov =
+      std::max(std::tan(Camera::verticalFov * static_cast<float>(M_PI) /
+                            180.0f * 0.5f),
+               1.0e-3f);
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    if (obj.primitiveCount == 0)
+      continue;
+
+    const size_t first = obj.firstPrimitive;
+    const size_t last =
+        std::min({first + obj.primitiveCount, _allPrimitives.size(),
+                  _primitiveImportance.size()});
+    for (size_t primIndex = first; primIndex < last; ++primIndex) {
+      const Primitive &p = _allPrimitives[primIndex];
+      const Material &m = p.material;
+      supportImportance[objectIndex] +=
+          std::max(_primitiveImportance[primIndex], 0.0f);
+      emissiveImportance[objectIndex] +=
+          std::max(m.emissionPower * luminance(m.emissionColor) * primitiveArea(p),
+                   0.0f);
+    }
+
+    hitScore[objectIndex] = (objectIndex < _objectRayHitScore.size())
+                                ? std::max(_objectRayHitScore[objectIndex], 0.0f)
+                                : 0.0f;
+    exploration[objectIndex] = (objectIndex < _objectExplorationScore.size())
+                                   ? std::max(_objectExplorationScore[objectIndex],
+                                              0.0f)
+                                   : 0.0f;
+    maxSupportImportance =
+        std::max(maxSupportImportance, supportImportance[objectIndex]);
+    maxEmissiveImportance =
+        std::max(maxEmissiveImportance, emissiveImportance[objectIndex]);
+    maxHitScore = std::max(maxHitScore, hitScore[objectIndex]);
+    maxExploration = std::max(maxExploration, exploration[objectIndex]);
+
+    if (objectIndex < _objectBounds.size()) {
+      const BoundingSphere &bounds = _objectBounds[objectIndex];
+      const simd::float3 toCenter = bounds.center - Camera::position;
+      const float depth = std::max(simd::dot(toCenter, forward), 0.0f);
+      const float distance = std::max(simd::length(toCenter), 1.0e-3f);
+      visibleMask[objectIndex] = isInView(bounds) ? 1u : 0u;
+      if (visibleMask[objectIndex] != 0 && depth > 1.0e-3f) {
+        float radiusPixels =
+            (bounds.radius / depth) / tanHalfFov * (Camera::screenSize.y * 0.5f);
+        radiusPixels = std::max(radiusPixels, 0.0f);
+        visibilityCoverage[objectIndex] =
+            std::clamp((static_cast<float>(M_PI) * radiusPixels * radiusPixels) /
+                           screenArea,
+                       0.0f, 1.0f);
+      }
+      nearWeight[objectIndex] =
+          std::clamp((bounds.radius * 8.0f) / (distance + bounds.radius * 8.0f),
+                     0.0f, 1.0f);
+    }
+    if (objectIndex < _objectVisible.size())
+      _objectVisible[objectIndex] = visibleMask[objectIndex];
+  }
+
+  auto normalizeByMax = [](float value, float maximum) {
+    if (!(maximum > 0.0f))
+      return 0.0f;
+    return std::clamp(value / maximum, 0.0f, 1.0f);
+  };
+
+  std::vector<Candidate> candidates;
+  candidates.reserve(objectCount);
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    if (obj.primitiveCount == 0)
+      continue;
+
+    const bool active =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    if (active)
+      continue;
+
+    const float hitProbability =
+        (objectIndex < _objectHitProbability.size())
+            ? std::clamp(_objectHitProbability[objectIndex], 0.0f, 1.0f)
+            : 0.0f;
+    const float supportNorm =
+        normalizeByMax(supportImportance[objectIndex], maxSupportImportance);
+    const float emissiveNorm =
+        normalizeByMax(emissiveImportance[objectIndex], maxEmissiveImportance);
+    const float hitScoreNorm = normalizeByMax(hitScore[objectIndex], maxHitScore);
+    const float explorationNorm =
+        normalizeByMax(exploration[objectIndex], maxExploration);
+    const float coverage = visibilityCoverage[objectIndex];
+    const float near = nearWeight[objectIndex];
+    const bool visible = visibleMask[objectIndex] != 0;
+    const bool emissive = emissiveImportance[objectIndex] > 0.0f;
+
+    const float score = 2.6f * coverage + 1.8f * hitProbability +
+                        1.25f * hitScoreNorm + 1.1f * near +
+                        0.9f * supportNorm + 0.35f * explorationNorm +
+                        (emissive ? 2.0f + 2.0f * emissiveNorm : 0.0f) +
+                        (visible ? 1.0f : 0.0f);
+
+    const bool stronglyNeeded =
+        emissive || (visible && (coverage >= 0.0025f || hitProbability >= 0.10f ||
+                                 supportNorm >= 0.25f)) ||
+        (hitProbability >= 0.28f && near >= 0.45f) ||
+        (hitScoreNorm >= 0.35f && near >= 0.40f) ||
+        (supportNorm >= 0.55f && near >= 0.60f);
+
+    if (!stronglyNeeded && score < 1.75f)
+      continue;
+
+    candidates.push_back({objectIndex, score, visible, emissive, stronglyNeeded});
+  }
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate &a, const Candidate &b) {
+              if (a.stronglyNeeded != b.stronglyNeeded)
+                return a.stronglyNeeded > b.stronglyNeeded;
+              if (a.emissive != b.emissive)
+                return a.emissive > b.emissive;
+              if (a.visible != b.visible)
+                return a.visible > b.visible;
+              if (a.score == b.score)
+                return a.objectIndex < b.objectIndex;
+              return a.score > b.score;
+            });
+
+  bool changed = false;
+  size_t usedBudget = 0;
+  for (const Candidate &candidate : candidates) {
+    if (!forceAllToggles) {
+      if (candidate.objectIndex < _objectCooldown.size() &&
+          _objectCooldown[candidate.objectIndex] > 0)
+        continue;
+      if (usedBudget >= toggleBudget)
+        break;
+    }
+
+    size_t toggled = setObjectActive(candidate.objectIndex, true);
+    if (toggled > 0) {
+      changed = true;
+      _frameTransportCriticalResidencyChanged = true;
+      if (!forceAllToggles)
+        usedBudget = std::min(usedBudget + toggled, toggleBudget);
+    }
+  }
+
+  return changed;
+}
+
+bool Renderer::enforceVisibleObjectResidency(bool forceAllToggles) {
+  const size_t objectCount = _allSceneObjects.size();
+  if (objectCount == 0)
+    return false;
+
+  size_t baseBudget = 0;
+  switch (_frameStrategy) {
+  case ResidencyStrategy::EnergyImportance:
+  case ResidencyStrategy::UnifiedScore:
+  case ResidencyStrategy::UnifiedNeural:
+    baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::ScreenSpaceFootprint:
+    baseBudget = _residencyConfig.screenFootprintMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::Probabilistic:
+    baseBudget = _residencyConfig.probabilityMaxTogglesPerFrame;
+    break;
+  case ResidencyStrategy::PredictiveEnvironment:
+  case ResidencyStrategy::EnvironmentHit:
+    baseBudget = _residencyConfig.environmentMaxTogglesPerFrame;
+    break;
+  default:
+    baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
+    break;
+  }
+
+  size_t visibleToggleBudget = std::max<size_t>(8, baseBudget / 2);
+  if (forceAllToggles)
+    visibleToggleBudget = std::numeric_limits<size_t>::max();
+
+  bool changed = false;
+  size_t usedBudget = 0;
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (objectIndex >= _allSceneObjects.size())
+      break;
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    if (obj.primitiveCount == 0)
+      continue;
+
+    bool currentlyActive =
+        (objectIndex < _objectActive.size()) ? _objectActive[objectIndex] : false;
+    if (currentlyActive)
+      continue;
+
+    bool visible = false;
+    if (objectIndex < _objectBounds.size())
+      visible = isInView(_objectBounds[objectIndex]);
+    if (objectIndex < _objectVisible.size())
+      _objectVisible[objectIndex] = visible ? 1u : 0u;
+    if (!visible)
+      continue;
+
+    if (!forceAllToggles) {
+      if (objectIndex < _objectCooldown.size() && _objectCooldown[objectIndex] > 0)
+        continue;
+      if (usedBudget >= visibleToggleBudget)
+        break;
+    }
+
+    size_t toggled = setObjectActive(objectIndex, true);
+    if (toggled > 0) {
+      changed = true;
+      if (!forceAllToggles)
+        usedBudget = std::min(usedBudget + toggled, visibleToggleBudget);
+    }
+  }
+
+  return changed;
 }
 
 bool Renderer::updateAlwaysResident(bool forceAllToggles) {
@@ -8132,6 +9419,8 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
   size_t objectCount = _allSceneObjects.size();
   bool hasRecentChanges = !_recentlyActivated.empty() || !_recentlyDeactivated.empty();
   bool forceActivation = forceAllToggles || _forceAlwaysResidentActivation;
+  const bool hasForcedObjectOff =
+      _forcedObjectOffIndex != std::numeric_limits<size_t>::max();
 
   bool changed = false;
 
@@ -8148,9 +9437,17 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
         changed = true;
     }
 
-    for (size_t primIndex = 0; primIndex < _activePrimitive.size(); ++primIndex) {
-      if (setPrimitiveActive(primIndex, true))
-        changed = true;
+    for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+         ++objectIndex) {
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      const bool keepActive = !objectForcedOff(objectIndex);
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      for (size_t primIndex = first;
+           primIndex < last && primIndex < _activePrimitive.size(); ++primIndex) {
+        if (setPrimitiveActive(primIndex, keepActive))
+          changed = true;
+      }
     }
 
     _alwaysResidentCache.markUpdated(primitiveCount, objectCount);
@@ -8162,6 +9459,8 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
                   [](bool active) { return !active; });
   bool anyInactiveObject = false;
   for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size(); ++objectIndex) {
+    if (objectForcedOff(objectIndex))
+      continue;
     const SceneObject &obj = _allSceneObjects[objectIndex];
     if (obj.primitiveCount == 0)
       continue;
@@ -8173,19 +9472,49 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
     }
   }
 
-  if (anyInactivePrimitive || anyInactiveObject || !_recentlyDeactivated.empty()) {
+  if ((anyInactivePrimitive || anyInactiveObject || !_recentlyDeactivated.empty()) &&
+      !hasForcedObjectOff) {
     printf("Always-resident strategy detected attempted eviction (%zu primitives pending).\n",
            _recentlyDeactivated.size());
   }
 
-  assert(!anyInactivePrimitive &&
+  assert((!anyInactivePrimitive || hasForcedObjectOff) &&
          "Always-resident strategy should keep all primitives active");
-  assert(!anyInactiveObject &&
+  assert((!anyInactiveObject || hasForcedObjectOff) &&
          "Always-resident strategy should keep populated objects active");
-  assert(_recentlyDeactivated.empty() &&
+  assert((_recentlyDeactivated.empty() || hasForcedObjectOff) &&
          "Always-resident strategy should not queue primitive deactivations");
 
   return changed;
+}
+
+bool Renderer::alwaysResidentResidencyReady() {
+  if (_pendingAlwaysResidentPrewarm)
+    return false;
+  if (!_pendingBlasBuilds.empty() || !_activeBlasBuilds.empty())
+    return false;
+
+  for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+       ++objectIndex) {
+    if (objectForcedOff(objectIndex))
+      continue;
+    const SceneObject &object = _allSceneObjects[objectIndex];
+    if (object.primitiveCount == 0)
+      continue;
+    if (objectIndex >= _residentObjectGpuResources.size())
+      return false;
+
+    auto &resident = _residentObjectGpuResources[objectIndex];
+    resident.clearPendingCommand();
+    if (resident.hasPendingCommands())
+      return false;
+    if (!resident.isResident())
+      return false;
+    if (resident.triangleCount > 0 && !resident.geometryValid)
+      return false;
+  }
+
+  return true;
 }
 
 bool Renderer::updateLODByDistance(bool forceAllToggles) {
@@ -8200,6 +9529,22 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
 
   size_t toggles = 0;
   bool changed = false;
+
+  const float cameraMotion =
+      clampUnit(static_cast<float>(std::min(_frameCameraMotionMetric, 1.0)));
+  const double totalCapMB = effectiveTotalGpuMemoryCapMB();
+  const double gpuMB = currentGPUMemoryMB();
+  const float memoryPressure =
+      (totalCapMB > 0.0)
+          ? clampUnit(static_cast<float>((gpuMB / totalCapMB - 0.80) / 0.20))
+          : 0.0f;
+  const size_t baseLodToggleBudget =
+      std::max<size_t>(_residencyConfig.lodMaxTogglesPerFrame, 1);
+  const size_t adaptiveLodToggleBudget = std::max<size_t>(
+      1, static_cast<size_t>(std::llround(
+             static_cast<double>(baseLodToggleBudget) *
+             (1.0 + 0.40 * static_cast<double>(cameraMotion) +
+              0.60 * static_cast<double>(memoryPressure)))));
 
   const size_t objectCount = _allSceneObjects.size();
   std::vector<float> objectDistances(objectCount,
@@ -8354,8 +9699,7 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
       continue;
 
     size_t toggleCost = forceAllToggles ? togglesNeeded : size_t(1);
-    if (!forceAllToggles &&
-        toggles + toggleCost > _residencyConfig.lodMaxTogglesPerFrame)
+    if (!forceAllToggles && toggles + toggleCost > adaptiveLodToggleBudget)
       continue;
 
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
@@ -8382,6 +9726,8 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
 size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
   if (objectIndex >= _allSceneObjects.size())
     return 0;
+  if (objectForcedOff(objectIndex))
+    active = false;
 
   if (objectIndex >= _objectActive.size())
     _objectActive.resize(objectIndex + 1, false);
@@ -8760,6 +10106,26 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
 
+  const float cameraMotion =
+      clampUnit(static_cast<float>(std::min(_frameCameraMotionMetric, 1.0)));
+  const double totalCapMB = effectiveTotalGpuMemoryCapMB();
+  const double gpuMB = currentGPUMemoryMB();
+  const float memoryPressure =
+      (totalCapMB > 0.0)
+          ? clampUnit(static_cast<float>((gpuMB / totalCapMB - 0.78) / 0.22))
+          : 0.0f;
+  const float adaptiveEnergyTargetFraction =
+      std::clamp(_residencyConfig.energyTargetFraction +
+                     0.08f * cameraMotion - 0.12f * memoryPressure,
+                 0.65f, 0.97f);
+  const size_t baseEnergyToggleBudget =
+      std::max<size_t>(_residencyConfig.energyMaxTogglesPerFrame, 1);
+  const size_t adaptiveEnergyToggleBudget = std::max<size_t>(
+      1, static_cast<size_t>(std::llround(
+             static_cast<double>(baseEnergyToggleBudget) *
+             (1.0 + 0.55 * static_cast<double>(cameraMotion) +
+              0.35 * static_cast<double>(memoryPressure)))));
+
   float recomputedTotalImportance = 0.0f;
   for (float importance : _primitiveImportance)
     recomputedTotalImportance += std::max(importance, 0.0f);
@@ -8775,7 +10141,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     size_t minActive =
         std::min(primCount, _residencyConfig.energyMinActivePrimitives);
     size_t targetActive = static_cast<size_t>(std::ceil(
-        static_cast<float>(primCount) * _residencyConfig.energyTargetFraction));
+        static_cast<float>(primCount) * adaptiveEnergyTargetFraction));
     size_t sortCount =
         std::min(primCount, std::max(minActive, targetActive));
     if (sortCount > 0) {
@@ -8803,7 +10169,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     } else {
       float cumulative = 0.0f;
       float targetImportance =
-          _totalPrimitiveImportance * _residencyConfig.energyTargetFraction;
+          _totalPrimitiveImportance * adaptiveEnergyTargetFraction;
       size_t enabled = 0;
       for (size_t i = 0; i < sortCount; ++i) {
         size_t index = sortedIndices[i];
@@ -8832,7 +10198,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
         if (primIndex < _primitiveCooldown.size() &&
             _primitiveCooldown[primIndex] > 0)
           continue;
-        if (toggles >= _residencyConfig.energyMaxTogglesPerFrame)
+        if (toggles >= adaptiveEnergyToggleBudget)
           break;
       }
       if (setPrimitiveActive(primIndex, shouldBeActive)) {
@@ -8925,26 +10291,42 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
 
   const auto &objectPrimitiveCounts = _objectPrimitiveCounts;
   bool anyMeshGroups = _anyMeshGroups;
+  std::vector<float> objectTransportBoost(objectCount, 1.0f);
+  std::vector<float> objectEmissiveImportance(objectCount, 0.0f);
+  float maxObjectEmissiveImportance = 0.0f;
+  float maxObjectRayHitScore = 0.0f;
   float boostedTotalImportance = 0.0f;
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const SceneObject &obj = _allSceneObjects[objectIndex];
     size_t first = obj.firstPrimitive;
     size_t last = first + obj.primitiveCount;
     float totalImportance = 0.0f;
-    float coverage = 0.0f;
     for (size_t prim = first; prim < last && prim < _primitiveImportance.size();
          ++prim) {
       totalImportance += std::max(_primitiveImportance[prim], 0.0f);
-      if (applyVisibilityBoost && prim < _primitiveScreenCoverage.size())
-        coverage += std::max(_primitiveScreenCoverage[prim], 0.0f);
+      const Primitive &p = _allPrimitives[prim];
+      const Material &m = p.material;
+      objectEmissiveImportance[objectIndex] +=
+          std::max(m.emissionPower * luminance(m.emissionColor) * primitiveArea(p),
+                   0.0f);
     }
+    maxObjectEmissiveImportance = std::max(maxObjectEmissiveImportance,
+                                           objectEmissiveImportance[objectIndex]);
+    float rayHitScore = (objectIndex < _objectRayHitScore.size())
+                            ? std::max(_objectRayHitScore[objectIndex], 0.0f)
+                            : 0.0f;
+    maxObjectRayHitScore = std::max(maxObjectRayHitScore, rayHitScore);
     if (applyVisibilityBoost) {
       float sphereCoverage = 0.0f;
-      if (objectIndex < _objectBounds.size())
+      bool visible = false;
+      if (objectIndex < _objectBounds.size()) {
         sphereCoverage = coverageForSphere(_objectBounds[objectIndex]);
-      float combinedCoverage = std::max(coverage, sphereCoverage);
+        visible = isInView(_objectBounds[objectIndex]);
+      }
+      if (objectIndex < _objectVisible.size())
+        _objectVisible[objectIndex] = visible ? 1u : 0u;
       float coverageFraction =
-          std::clamp(combinedCoverage / screenArea, 0.0f, 1.0f);
+          std::clamp(sphereCoverage / screenArea, 0.0f, 1.0f);
       float multiplier =
           1.0f + (visibilityBoost - 1.0f) * coverageFraction;
       _objectImportance[objectIndex] = totalImportance * multiplier;
@@ -8954,6 +10336,39 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
 
     if (applyVisibilityBoost)
       boostedTotalImportance += std::max(_objectImportance[objectIndex], 0.0f);
+  }
+
+  auto normalizeByMax = [](float value, float maximum) {
+    if (!(maximum > 0.0f))
+      return 0.0f;
+    return std::clamp(value / maximum, 0.0f, 1.0f);
+  };
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    float hitProbability =
+        (objectIndex < _objectHitProbability.size())
+            ? std::clamp(_objectHitProbability[objectIndex], 0.0f, 1.0f)
+            : 0.0f;
+    float rayHitNorm = normalizeByMax(
+        (objectIndex < _objectRayHitScore.size())
+            ? std::max(_objectRayHitScore[objectIndex], 0.0f)
+            : 0.0f,
+        maxObjectRayHitScore);
+    float emissiveNorm =
+        normalizeByMax(objectEmissiveImportance[objectIndex],
+                       maxObjectEmissiveImportance);
+    float depthWeight = (objectIndex < _objectDepthWeight.size())
+                            ? std::max(_objectDepthWeight[objectIndex], 0.0f)
+                            : 1.0f;
+    float visibleWeight =
+        (objectIndex < _objectVisible.size() && _objectVisible[objectIndex] != 0u)
+            ? 1.0f
+            : 0.0f;
+    float transportBoost = 1.0f + 0.90f * hitProbability + 0.55f * rayHitNorm +
+                           0.40f * depthWeight + 0.45f * visibleWeight +
+                           0.90f * emissiveNorm;
+    objectTransportBoost[objectIndex] = transportBoost;
+    _objectImportance[objectIndex] *= transportBoost;
   }
 
   std::vector<float> energyImportance(objectCount, 0.0f);
@@ -9059,8 +10474,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     } else {
       float cumulativeImportance = 0.0f;
       float targetImportance =
-          targetImportanceBaseSelection *
-          _residencyConfig.energyTargetFraction;
+          targetImportanceBaseSelection * adaptiveEnergyTargetFraction;
       for (size_t idx : _energySortedIndices) {
         if (idx >= objectPrimitiveCounts.size())
           continue;
@@ -9135,14 +10549,14 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
         return 0;
 
       if (!forceAllToggles &&
-          toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
+          toggledPrimitiveCount >= adaptiveEnergyToggleBudget)
         return 0;
 
       size_t toggled = setObjectActive(objectIndex, shouldBeActive);
       if (toggled > 0 && !forceAllToggles) {
         toggledPrimitiveCount =
             std::min(toggledPrimitiveCount + toggled,
-                     _residencyConfig.energyMaxTogglesPerFrame);
+                     adaptiveEnergyToggleBudget);
       }
       return toggled;
     };
@@ -9280,7 +10694,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   } else {
     float cumulativeImportance = 0.0f;
     float targetImportance =
-        targetImportanceBase * _residencyConfig.energyTargetFraction;
+        targetImportanceBase * adaptiveEnergyTargetFraction;
     for (size_t sortedPos = 0; sortedPos < meshSortedIndices.size();
          ++sortedPos) {
       size_t idx = meshSortedIndices[sortedPos];
@@ -9431,14 +10845,14 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
     if (!canToggle || togglesNeeded == 0)
       return size_t(0);
     if (!forceAllToggles &&
-        toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
+        toggledPrimitiveCount >= adaptiveEnergyToggleBudget)
       return size_t(0);
 
     size_t toggled = setObjectActive(objectIndex, shouldBeActive);
     if (toggled > 0 && !forceAllToggles) {
       toggledPrimitiveCount =
           std::min(toggledPrimitiveCount + toggled,
-                   _residencyConfig.energyMaxTogglesPerFrame);
+                   adaptiveEnergyToggleBudget);
     }
     return toggled;
   };
@@ -9500,7 +10914,7 @@ bool Renderer::updateEnergyImportance(bool forceAllToggles) {
       continue;
 
     if (!forceAllToggles &&
-        toggledPrimitiveCount >= _residencyConfig.energyMaxTogglesPerFrame)
+        toggledPrimitiveCount >= adaptiveEnergyToggleBudget)
       continue;
 
     size_t toggledThisGroup = 0;
@@ -9676,26 +11090,268 @@ bool Renderer::updatePrimitiveScreenCoverageForFrame() {
 }
 
 bool Renderer::updateUnifiedResidency(bool forceAllToggles) {
+  if (_activePrimitive.empty())
+    return false;
+
   float totalUnifiedScore = 0.0f;
   std::vector<float> unifiedScores = computeUnifiedImportance(totalUnifiedScore);
   if (unifiedScores.empty())
     return false;
 
-  std::vector<float> originalImportance = _primitiveImportance;
-  float originalTotalImportance = 0.0f;
-  for (float importance : originalImportance)
-    originalTotalImportance += std::max(importance, 0.0f);
-  float originalVisibilityBoost = _residencyConfig.energyVisibilityBoost;
+  const float cameraMotion =
+      clampUnit(static_cast<float>(std::min(_frameCameraMotionMetric, 1.0)));
+  const double totalCapMB = effectiveTotalGpuMemoryCapMB();
+  const double gpuMB = currentGPUMemoryMB();
+  const float memoryPressure =
+      (totalCapMB > 0.0)
+          ? clampUnit(static_cast<float>((gpuMB / totalCapMB - 0.79) / 0.21))
+          : 0.0f;
+  const float adaptiveUnifiedTargetFraction =
+      std::clamp(_residencyConfig.energyTargetFraction + 0.06f * cameraMotion -
+                     0.12f * memoryPressure,
+                 0.55f, 0.96f);
+  const size_t baseUnifiedToggleBudget =
+      std::max<size_t>(_residencyConfig.energyMaxTogglesPerFrame, 1);
+  const size_t adaptiveUnifiedToggleBudget = std::max<size_t>(
+      1, static_cast<size_t>(std::llround(
+             static_cast<double>(baseUnifiedToggleBudget) *
+             (1.0 + 0.45 * static_cast<double>(cameraMotion) +
+              0.40 * static_cast<double>(memoryPressure)))));
 
-  _primitiveImportance = std::move(unifiedScores);
-  _totalPrimitiveImportance = totalUnifiedScore;
-  _residencyConfig.energyVisibilityBoost = 1.0f;
+  const size_t primCount = _activePrimitive.size();
+  const size_t minActivePrimitives =
+      std::min(primCount, _residencyConfig.energyMinActivePrimitives);
+  size_t targetResidentPrimitives = static_cast<size_t>(std::ceil(
+      static_cast<double>(primCount) *
+      static_cast<double>(adaptiveUnifiedTargetFraction)));
+  targetResidentPrimitives =
+      std::max(targetResidentPrimitives, minActivePrimitives);
+  targetResidentPrimitives = std::min(targetResidentPrimitives, primCount);
 
-  bool changed = updateEnergyImportance(forceAllToggles);
+  const size_t objectCount = _allSceneObjects.size();
+  if (objectCount == 0) {
+    std::vector<size_t> sortedIndices(primCount);
+    std::iota(sortedIndices.begin(), sortedIndices.end(), size_t(0));
+    std::sort(sortedIndices.begin(), sortedIndices.end(),
+              [&unifiedScores](size_t a, size_t b) {
+                float scoreA = (a < unifiedScores.size())
+                                   ? sanitizeSortValue(unifiedScores[a])
+                                   : 0.0f;
+                float scoreB = (b < unifiedScores.size())
+                                   ? sanitizeSortValue(unifiedScores[b])
+                                   : 0.0f;
+                if (scoreA == scoreB)
+                  return a < b;
+                return scoreA > scoreB;
+              });
 
-  _primitiveImportance = std::move(originalImportance);
-  _totalPrimitiveImportance = originalTotalImportance;
-  _residencyConfig.energyVisibilityBoost = originalVisibilityBoost;
+    std::vector<bool> desired(primCount, false);
+    for (size_t i = 0; i < targetResidentPrimitives && i < sortedIndices.size();
+         ++i)
+      desired[sortedIndices[i]] = true;
+
+    bool changed = false;
+    size_t toggles = 0;
+    for (size_t primIndex = 0; primIndex < primCount; ++primIndex) {
+      bool shouldBeActive = desired[primIndex];
+      if (_activePrimitive[primIndex] == shouldBeActive)
+        continue;
+      if (!forceAllToggles) {
+        if (primIndex < _primitiveCooldown.size() &&
+            _primitiveCooldown[primIndex] > 0)
+          continue;
+        if (toggles >= adaptiveUnifiedToggleBudget)
+          break;
+      }
+      if (setPrimitiveActive(primIndex, shouldBeActive)) {
+        changed = true;
+        ++toggles;
+      }
+    }
+    return changed;
+  }
+
+  if (_objectLastToggleFrame.size() < objectCount)
+    _objectLastToggleFrame.resize(objectCount, 0);
+
+  auto primitiveCountForObject = [&](size_t objectIndex) -> size_t {
+    if (objectIndex < _objectPrimitiveCounts.size() &&
+        _objectPrimitiveCounts[objectIndex] > 0)
+      return _objectPrimitiveCounts[objectIndex];
+    if (objectIndex < _allSceneObjects.size())
+      return _allSceneObjects[objectIndex].primitiveCount;
+    return 0;
+  };
+
+  auto withinObjectStateCooldown = [&](size_t objectIndex) {
+    if (forceAllToggles)
+      return false;
+    uint64_t minDuration =
+        static_cast<uint64_t>(_residencyConfig.stateCooldownFrames);
+    if (minDuration == 0)
+      return false;
+    if (objectIndex >= _objectLastToggleFrame.size())
+      return false;
+    uint64_t lastFrame = _objectLastToggleFrame[objectIndex];
+    if (lastFrame == 0)
+      return false;
+    return (_renderedFrameCount >= lastFrame) &&
+           (_renderedFrameCount - lastFrame < minDuration);
+  };
+
+  struct UnifiedCandidate {
+    size_t objectIndex = 0;
+    float utility = 0.0f;
+    float adjustedCost = 1.0f;
+    float efficiency = 0.0f;
+    size_t primitiveCount = 0;
+  };
+
+  std::vector<UnifiedCandidate> candidates;
+  candidates.reserve(objectCount);
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    const size_t primitiveCount = primitiveCountForObject(objectIndex);
+    if (primitiveCount == 0)
+      continue;
+
+    const size_t first = obj.firstPrimitive;
+    const size_t last = std::min(first + obj.primitiveCount, unifiedScores.size());
+    float utility = 0.0f;
+    for (size_t prim = first; prim < last; ++prim)
+      utility += std::max(unifiedScores[prim], 0.0f);
+
+    bool currentlyActive =
+        objectIndex < _objectActive.size() && _objectActive[objectIndex];
+    float adjustedCost = static_cast<float>(std::max<size_t>(primitiveCount, 1));
+    if (objectIndex < _residentObjectGpuResources.size()) {
+      const auto state = _residentObjectGpuResources[objectIndex].state;
+      if (state == ResidentObjectGpuResources::ResidencyState::Cold)
+        adjustedCost *= 1.20f;
+      else if (state == ResidentObjectGpuResources::ResidencyState::Streaming)
+        adjustedCost *= 1.10f;
+    }
+    if (currentlyActive)
+      adjustedCost *= 0.92f;
+
+    float efficiency = utility / std::max(adjustedCost, 1.0e-5f);
+    candidates.push_back(
+        {objectIndex, utility, adjustedCost, efficiency, primitiveCount});
+  }
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const UnifiedCandidate &a, const UnifiedCandidate &b) {
+              float effA = sanitizeSortValue(a.efficiency);
+              float effB = sanitizeSortValue(b.efficiency);
+              if (effA != effB)
+                return effA > effB;
+              float utilityA = sanitizeSortValue(a.utility);
+              float utilityB = sanitizeSortValue(b.utility);
+              if (utilityA != utilityB)
+                return utilityA > utilityB;
+              return a.objectIndex < b.objectIndex;
+            });
+
+  std::vector<bool> desiredObjectState(objectCount, false);
+  size_t selectedPrimitiveCount = 0;
+  for (const UnifiedCandidate &candidate : candidates) {
+    if (selectedPrimitiveCount >= targetResidentPrimitives)
+      break;
+    desiredObjectState[candidate.objectIndex] = true;
+    selectedPrimitiveCount += candidate.primitiveCount;
+  }
+
+  if (selectedPrimitiveCount < minActivePrimitives) {
+    for (const UnifiedCandidate &candidate : candidates) {
+      if (desiredObjectState[candidate.objectIndex])
+        continue;
+      desiredObjectState[candidate.objectIndex] = true;
+      selectedPrimitiveCount += candidate.primitiveCount;
+      if (selectedPrimitiveCount >= minActivePrimitives)
+        break;
+    }
+  }
+
+  bool changed = false;
+  size_t toggledPrimitiveCount = 0;
+  auto attemptToggleObject = [&](size_t objectIndex,
+                                 bool shouldBeActive) -> size_t {
+    if (objectIndex >= _allSceneObjects.size())
+      return 0;
+
+    bool currentlyActive =
+        objectIndex < _objectActive.size() && _objectActive[objectIndex];
+    if (currentlyActive == shouldBeActive)
+      return 0;
+
+    if (!forceAllToggles) {
+      if (objectIndex < _objectCooldown.size() &&
+          _objectCooldown[objectIndex] > 0)
+        return 0;
+      if (withinObjectStateCooldown(objectIndex))
+        return 0;
+      if (toggledPrimitiveCount >= adaptiveUnifiedToggleBudget)
+        return 0;
+    }
+
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    const size_t first = obj.firstPrimitive;
+    const size_t last = first + obj.primitiveCount;
+    size_t togglesNeeded = 0;
+    for (size_t prim = first; prim < last && prim < _activePrimitive.size();
+         ++prim) {
+      if (_activePrimitive[prim] == shouldBeActive)
+        continue;
+      if (!forceAllToggles && prim < _primitiveCooldown.size() &&
+          _primitiveCooldown[prim] > 0)
+        return 0;
+      ++togglesNeeded;
+    }
+
+    if (togglesNeeded == 0)
+      return 0;
+
+    size_t toggled = setObjectActive(objectIndex, shouldBeActive);
+    if (toggled > 0 && !forceAllToggles) {
+      toggledPrimitiveCount =
+          std::min(toggledPrimitiveCount + toggled, adaptiveUnifiedToggleBudget);
+    }
+    return toggled;
+  };
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (primitiveCountForObject(objectIndex) == 0)
+      continue;
+    if (attemptToggleObject(objectIndex, desiredObjectState[objectIndex]) > 0)
+      changed = true;
+  }
+
+  bool anyActiveObject = false;
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    if (primitiveCountForObject(objectIndex) == 0)
+      continue;
+    if (objectIndex < _objectActive.size() && _objectActive[objectIndex]) {
+      anyActiveObject = true;
+      break;
+    }
+  }
+
+  if (!anyActiveObject) {
+    for (const UnifiedCandidate &candidate : candidates) {
+      if (attemptToggleObject(candidate.objectIndex, true) > 0) {
+        changed = true;
+        anyActiveObject = true;
+        break;
+      }
+    }
+  }
+
+  if (!anyActiveObject && !_activePrimitive.empty()) {
+    if (setPrimitiveActive(0, true))
+      changed = true;
+  }
+
   return changed;
 }
 
@@ -9711,6 +11367,26 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
     _rayHitAggressiveLogged = true;
   }
   const bool forceRayHitToggles = forceAllToggles || aggressiveEvict;
+
+  const float cameraMotion =
+      clampUnit(static_cast<float>(std::min(_frameCameraMotionMetric, 1.0)));
+  const double totalCapMB = effectiveTotalGpuMemoryCapMB();
+  const double gpuMB = currentGPUMemoryMB();
+  const float memoryPressure =
+      (totalCapMB > 0.0)
+          ? clampUnit(static_cast<float>((gpuMB / totalCapMB - 0.80) / 0.20))
+          : 0.0f;
+  const float adaptiveRayHitTargetFraction =
+      std::clamp(_residencyConfig.rayHitTargetFraction + 0.10f * cameraMotion -
+                     0.24f * memoryPressure,
+                 0.34f, 0.92f);
+  const size_t baseRayHitToggleBudget =
+      std::max<size_t>(_residencyConfig.rayHitMaxTogglesPerFrame, 1);
+  const size_t adaptiveRayHitToggleBudget = std::max<size_t>(
+      1, static_cast<size_t>(std::llround(
+             static_cast<double>(baseRayHitToggleBudget) *
+             (1.0 + 0.45 * static_cast<double>(cameraMotion) +
+              0.60 * static_cast<double>(memoryPressure)))));
 
   if (_rayHitSortedIndices.size() != _activePrimitive.size()) {
     _rayHitSortedIndices.resize(_activePrimitive.size());
@@ -9761,7 +11437,7 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
         if (hitsLast == 0)
           score = 0.0f;
         else
-          score *= 0.5f;
+          score *= lerpFloat(0.5f, 0.2f, memoryPressure);
       } else if (score <= 0.0f) {
         score = 1.0f;
       }
@@ -9797,8 +11473,8 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
 
   const size_t minActive =
       std::min(primCount, _residencyConfig.rayHitMinActivePrimitives);
-  size_t targetActive = static_cast<size_t>(
-      std::ceil(primCount * _residencyConfig.rayHitTargetFraction));
+  size_t targetActive =
+      static_cast<size_t>(std::ceil(primCount * adaptiveRayHitTargetFraction));
   targetActive = std::max(targetActive, minActive);
   targetActive = std::min(targetActive, primCount);
 
@@ -9832,6 +11508,23 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
     ++enabled;
   }
 
+  const size_t visibilityReserve = std::min(
+      primCount,
+      static_cast<size_t>(std::ceil(primCount * (0.02f + 0.06f * cameraMotion))));
+  size_t visiblePromotions = 0;
+  for (size_t idx : _rayHitSortedIndices) {
+    if (visiblePromotions >= visibilityReserve)
+      break;
+    bool visible = (idx < _primitiveVisible.size()) && (_primitiveVisible[idx] != 0);
+    if (!visible)
+      continue;
+    if (!desired[idx]) {
+      desired[idx] = true;
+      ++enabled;
+    }
+    ++visiblePromotions;
+  }
+
   for (size_t i = 0; i < minActive && i < _rayHitSortedIndices.size(); ++i)
     desired[_rayHitSortedIndices[i]] = true;
 
@@ -9846,7 +11539,7 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
     if (!forceRayHitToggles) {
       if (i < _primitiveCooldown.size() && _primitiveCooldown[i] > 0)
         continue;
-      if (toggles >= _residencyConfig.rayHitMaxTogglesPerFrame)
+      if (toggles >= adaptiveRayHitToggleBudget)
         break;
     }
     if (setPrimitiveActive(i, shouldBeActive)) {
@@ -9876,6 +11569,26 @@ bool Renderer::updateRayHitBudget(bool forceAllToggles) {
 bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
+
+  const float cameraMotion =
+      clampUnit(static_cast<float>(std::min(_frameCameraMotionMetric, 1.0)));
+  const double totalCapMB = effectiveTotalGpuMemoryCapMB();
+  const double gpuMB = currentGPUMemoryMB();
+  const float memoryPressure =
+      (totalCapMB > 0.0)
+          ? clampUnit(static_cast<float>((gpuMB / totalCapMB - 0.80) / 0.20))
+          : 0.0f;
+  const float adaptiveProbabilityTargetFraction = std::clamp(
+      _residencyConfig.probabilityTargetFraction + 0.08f * cameraMotion -
+          0.12f * memoryPressure,
+      0.45f, 0.93f);
+  const size_t baseProbabilityToggleBudget =
+      std::max<size_t>(_residencyConfig.probabilityMaxTogglesPerFrame, 1);
+  const size_t adaptiveProbabilityToggleBudget = std::max<size_t>(
+      1, static_cast<size_t>(std::llround(
+             static_cast<double>(baseProbabilityToggleBudget) *
+             (1.0 + 0.40 * static_cast<double>(cameraMotion) +
+              0.50 * static_cast<double>(memoryPressure)))));
 
   _frameProbabilityTargetPrimitives = 0;
   _frameProbabilityInitialDesiredPrimitives = 0;
@@ -10198,7 +11911,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
     size_t toggles = 0;
     bool changed = false;
-    size_t maxToggles = _residencyConfig.probabilityMaxTogglesPerFrame;
+    size_t maxToggles = adaptiveProbabilityToggleBudget;
 #ifndef NDEBUG
     assert(_probabilitySortedIndices.size() == primCount);
 #endif
@@ -10486,8 +12199,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
               return scoreA > scoreB;
             });
 
-  float targetFraction =
-      std::clamp(_residencyConfig.probabilityTargetFraction, 0.0f, 1.0f);
+  float targetFraction = adaptiveProbabilityTargetFraction;
   size_t targetPrimitiveBudget = static_cast<size_t>(std::ceil(
       static_cast<float>(primCount) * targetFraction));
   targetPrimitiveBudget = std::max(targetPrimitiveBudget, minActivePrimitives);
@@ -10810,7 +12522,7 @@ bool Renderer::updateProbabilisticResidency(bool forceAllToggles) {
 
   bool changed = false;
   size_t toggledPrimitiveCount = 0;
-  size_t maxPrimitiveToggles = _residencyConfig.probabilityMaxTogglesPerFrame;
+  size_t maxPrimitiveToggles = adaptiveProbabilityToggleBudget;
 
   std::vector<size_t> toggleOrder;
   toggleOrder.reserve(objectCount);
@@ -10984,6 +12696,26 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
 
+  const float cameraMotion =
+      clampUnit(static_cast<float>(std::min(_frameCameraMotionMetric, 1.0)));
+  const double totalCapMB = effectiveTotalGpuMemoryCapMB();
+  const double gpuMB = currentGPUMemoryMB();
+  const float memoryPressure =
+      (totalCapMB > 0.0)
+          ? clampUnit(static_cast<float>((gpuMB / totalCapMB - 0.80) / 0.20))
+          : 0.0f;
+  const float adaptiveScreenTargetFraction =
+      std::clamp(_residencyConfig.screenFootprintTargetFraction +
+                     0.08f * cameraMotion - 0.10f * memoryPressure,
+                 0.50f, 0.94f);
+  const size_t baseScreenToggleBudget =
+      std::max<size_t>(_residencyConfig.screenFootprintMaxTogglesPerFrame, 1);
+  const size_t adaptiveScreenToggleBudget = std::max<size_t>(
+      1, static_cast<size_t>(std::llround(
+             static_cast<double>(baseScreenToggleBudget) *
+             (1.0 + 0.40 * static_cast<double>(cameraMotion) +
+              0.50 * static_cast<double>(memoryPressure)))));
+
   const size_t primCount = _activePrimitive.size();
   if (_screenCoverageSortedIndices.size() != primCount) {
     _screenCoverageSortedIndices.resize(primCount);
@@ -11000,27 +12732,62 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   if (objectCount == 0)
     return false;
 
-  std::vector<float> objectCoverage(objectCount, 0.0f);
-  std::vector<size_t> objectPrimitiveContribution(objectCount, 0);
-  for (size_t primIndex = 0; primIndex < primCount; ++primIndex) {
-    size_t objectIndex =
-        primIndex < _primitiveToObject.size() ? _primitiveToObject[primIndex]
-                                              : std::numeric_limits<size_t>::max();
-    if (objectIndex >= objectCount)
-      continue;
-    objectCoverage[objectIndex] += _primitiveScreenCoverage[primIndex];
-    ++objectPrimitiveContribution[objectIndex];
-  }
-
   std::vector<size_t> objectPrimitiveTotals(objectCount, 0);
+  std::vector<float> objectCoverage(objectCount, 0.0f);
+  auto objectCoverageForSphere =
+      [this, screenArea](const BoundingSphere &b) -> float {
+    if (!isInView(b))
+      return 0.0f;
+
+    float halfFov =
+        Camera::verticalFov * static_cast<float>(M_PI) / 180.0f * 0.5f;
+    float tanHalfFov = std::tan(halfFov);
+    if (tanHalfFov <= 0.0f)
+      tanHalfFov = 1e-3f;
+
+    simd::float3 forward = simd::normalize(Camera::forward);
+    simd::float3 up = simd::normalize(Camera::up);
+    simd::float3 right = simd::cross(forward, up);
+    float rightLenSq = simd::length_squared(right);
+    if (rightLenSq < 1e-6f)
+      right = {1.0f, 0.0f, 0.0f};
+    else
+      right /= std::sqrt(rightLenSq);
+
+    float aspect = Camera::screenSize.y > 0.0f
+                       ? Camera::screenSize.x / Camera::screenSize.y
+                       : 1.0f;
+    float horizontalHalfFov = std::atan(tanHalfFov * aspect);
+
+    simd::float3 toCenter = b.center - Camera::position;
+    float depth = simd::dot(toCenter, forward);
+    if (depth <= 1e-3f)
+      return 0.0f;
+
+    float dist = simd::length(toCenter);
+    float cosAngle = depth / std::max(dist, 1e-3f);
+    float horiz = simd::dot(toCenter, right);
+    float horizAngle = std::atan2(std::fabs(horiz), depth);
+    if (horizAngle > horizontalHalfFov + 0.1f)
+      return 0.0f;
+
+    float radiusPixels =
+        (b.radius / depth) / tanHalfFov * (Camera::screenSize.y * 0.5f);
+    radiusPixels = std::max(radiusPixels, 0.0f);
+    float area = static_cast<float>(M_PI) * radiusPixels * radiusPixels;
+    float angleFactor = std::max(cosAngle, 0.0f);
+    return std::min(area * angleFactor, screenArea);
+  };
+
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     size_t declaredPrimitiveCount =
         objectIndex < _allSceneObjects.size()
             ? _allSceneObjects[objectIndex].primitiveCount
             : size_t(0);
-    if (declaredPrimitiveCount == 0)
-      declaredPrimitiveCount = objectPrimitiveContribution[objectIndex];
     objectPrimitiveTotals[objectIndex] = declaredPrimitiveCount;
+    if (objectIndex < _objectBounds.size())
+      objectCoverage[objectIndex] =
+          objectCoverageForSphere(_objectBounds[objectIndex]);
   }
 
   const auto &meshGroups = _meshGroups;
@@ -11061,8 +12828,7 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
   std::vector<bool> desiredGroupState(meshGroups.size(), false);
   const size_t minActivePrimitives = std::min(
       primCount, _residencyConfig.screenFootprintMinActivePrimitives);
-  const float targetCoverage =
-      screenArea * _residencyConfig.screenFootprintTargetFraction;
+  const float targetCoverage = screenArea * adaptiveScreenTargetFraction;
   size_t primitivesEnabled = 0;
   float accumulatedCoverage = 0.0f;
 
@@ -11131,8 +12897,7 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     if (groupIndex >= meshGroups.size())
       continue;
     if (!forceAllToggles &&
-        toggledPrimitiveCount >=
-            _residencyConfig.screenFootprintMaxTogglesPerFrame)
+        toggledPrimitiveCount >= adaptiveScreenToggleBudget)
       break;
 
     bool groupDesired = desiredGroupState[groupIndex];
@@ -11182,9 +12947,8 @@ bool Renderer::updateScreenSpaceFootprint(bool forceAllToggles) {
     for (size_t objectIndex : objectsToToggle) {
       size_t toggled = setObjectActive(objectIndex, groupDesired);
       if (toggled > 0) {
-        toggledPrimitiveCount = std::min(
-            toggledPrimitiveCount + toggled,
-            _residencyConfig.screenFootprintMaxTogglesPerFrame);
+        toggledPrimitiveCount =
+            std::min(toggledPrimitiveCount + toggled, adaptiveScreenToggleBudget);
         changed = true;
       }
     }
@@ -11238,6 +13002,30 @@ bool Renderer::updatePredictiveResidency(bool forceAllToggles) {
   size_t primitiveCount = _activePrimitive.size();
   if (objectCount == 0 || primitiveCount == 0)
     return false;
+
+  const float cameraMotion =
+      clampUnit(static_cast<float>(std::min(_frameCameraMotionMetric, 1.0)));
+  const double totalCapMB = effectiveTotalGpuMemoryCapMB();
+  const double gpuMB = currentGPUMemoryMB();
+  const float memoryPressure =
+      (totalCapMB > 0.0)
+          ? clampUnit(static_cast<float>((gpuMB / totalCapMB - 0.80) / 0.20))
+          : 0.0f;
+  const float adaptiveEnvironmentEscapeThreshold =
+      std::clamp(_residencyConfig.environmentEscapeThreshold +
+                     0.03f * cameraMotion + 0.08f * memoryPressure,
+                 0.12f, 0.95f);
+  const float adaptiveEnvironmentTargetFraction =
+      std::clamp(_residencyConfig.environmentTargetActiveFraction +
+                     0.08f * cameraMotion - 0.10f * memoryPressure,
+                 0.12f, 0.92f);
+  const size_t baseEnvironmentToggleBudget =
+      std::max<size_t>(_residencyConfig.environmentMaxTogglesPerFrame, 1);
+  const size_t adaptiveEnvironmentToggleBudget = std::max<size_t>(
+      1, static_cast<size_t>(std::llround(
+             static_cast<double>(baseEnvironmentToggleBudget) *
+             (1.0 + 0.40 * static_cast<double>(cameraMotion) +
+              0.70 * static_cast<double>(memoryPressure)))));
 
   if (_objectProbabilitySortedIndices.size() != objectCount) {
     _objectProbabilitySortedIndices.resize(objectCount);
@@ -11366,15 +13154,13 @@ bool Renderer::updatePredictiveResidency(bool forceAllToggles) {
               return scoreA > scoreB;
             });
 
-  float escapeThreshold =
-      std::clamp(_residencyConfig.environmentEscapeThreshold, 0.0f, 1.0f);
+  float escapeThreshold = adaptiveEnvironmentEscapeThreshold;
   size_t minActivePrimitives =
       std::min(primitiveCount, _residencyConfig.environmentMinActivePrimitives);
   if (minActivePrimitives == 0 && primitiveCount > 0)
     minActivePrimitives = 1;
 
-  float targetFraction =
-      std::clamp(_residencyConfig.environmentTargetActiveFraction, 0.0f, 1.0f);
+  float targetFraction = adaptiveEnvironmentTargetFraction;
   size_t targetPrimitiveCount = 0;
   if (targetFraction > 0.0f && primitiveCount > 0) {
     targetPrimitiveCount = static_cast<size_t>(std::ceil(
@@ -11454,7 +13240,7 @@ bool Renderer::updatePredictiveResidency(bool forceAllToggles) {
     offscreenActivePrimitiveCount += primitives;
   }
 
-  size_t baseToggleBudget = _residencyConfig.environmentMaxTogglesPerFrame;
+  size_t baseToggleBudget = adaptiveEnvironmentToggleBudget;
   size_t maxToggleBudget = baseToggleBudget;
   if (offscreenActivePrimitiveCount > baseToggleBudget) {
     size_t catchUpBudget = (offscreenActivePrimitiveCount + 1) / 2;
@@ -11578,6 +13364,30 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
   size_t primitiveCount = _activePrimitive.size();
   if (objectCount == 0 || primitiveCount == 0)
     return false;
+
+  const float cameraMotion =
+      clampUnit(static_cast<float>(std::min(_frameCameraMotionMetric, 1.0)));
+  const double totalCapMB = effectiveTotalGpuMemoryCapMB();
+  const double gpuMB = currentGPUMemoryMB();
+  const float memoryPressure =
+      (totalCapMB > 0.0)
+          ? clampUnit(static_cast<float>((gpuMB / totalCapMB - 0.80) / 0.20))
+          : 0.0f;
+  const float adaptiveEnvironmentEscapeThreshold =
+      std::clamp(_residencyConfig.environmentEscapeThreshold +
+                     0.03f * cameraMotion + 0.08f * memoryPressure,
+                 0.12f, 0.95f);
+  const float adaptiveEnvironmentTargetFraction =
+      std::clamp(_residencyConfig.environmentTargetActiveFraction +
+                     0.08f * cameraMotion - 0.10f * memoryPressure,
+                 0.12f, 0.94f);
+  const size_t baseEnvironmentToggleBudget =
+      std::max<size_t>(_residencyConfig.environmentMaxTogglesPerFrame, 1);
+  const size_t adaptiveEnvironmentToggleBudget = std::max<size_t>(
+      1, static_cast<size_t>(std::llround(
+             static_cast<double>(baseEnvironmentToggleBudget) *
+             (1.0 + 0.40 * static_cast<double>(cameraMotion) +
+              0.70 * static_cast<double>(memoryPressure)))));
 
   _frameEnvironmentActivationFloor = 0;
 
@@ -11724,15 +13534,13 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
               return scoreA > scoreB;
             });
 
-  float escapeThreshold =
-      std::clamp(_residencyConfig.environmentEscapeThreshold, 0.0f, 1.0f);
+  float escapeThreshold = adaptiveEnvironmentEscapeThreshold;
   size_t minActivePrimitives =
       std::min(primitiveCount, _residencyConfig.environmentMinActivePrimitives);
   if (minActivePrimitives == 0 && primitiveCount > 0)
     minActivePrimitives = 1;
 
-  float targetFraction =
-      std::clamp(_residencyConfig.environmentTargetActiveFraction, 0.0f, 1.0f);
+  float targetFraction = adaptiveEnvironmentTargetFraction;
   size_t targetPrimitiveCount = 0;
   if (targetFraction > 0.0f && primitiveCount > 0) {
     targetPrimitiveCount = static_cast<size_t>(std::ceil(
@@ -11826,7 +13634,7 @@ bool Renderer::updateEnvironmentHitResidency(bool forceAllToggles) {
     offscreenActivePrimitiveCount += primitives;
   }
 
-  size_t baseToggleBudget = _residencyConfig.environmentMaxTogglesPerFrame;
+  size_t baseToggleBudget = adaptiveEnvironmentToggleBudget;
   size_t maxToggleBudget = baseToggleBudget;
   if (offscreenActivePrimitiveCount > baseToggleBudget) {
     size_t catchUpBudget = (offscreenActivePrimitiveCount + 1) / 2;
@@ -11963,7 +13771,8 @@ void Renderer::flushResidencyChanges(bool forceFullRebuild) {
       resident.clearPendingCommand();
       bool pending = resident.hasPendingCommands();
 
-      if (_frameStrategy != ResidencyStrategy::AlwaysResident &&
+      if (!_residencyPreviewOnly &&
+          _frameStrategy != ResidencyStrategy::AlwaysResident &&
           !resident.isResident() && !pending) {
         transitionResidentToCold(objectIndex, resident, record);
       }
@@ -12140,6 +13949,26 @@ bool Renderer::flushRayHitCopy() {
 
   auto status = _lastRayHitCommandBuffer->status();
 
+  const ResidencyStrategy strategy =
+      _pScene ? _pScene->getResidencyStrategy()
+              : ResidencyStrategy::DistanceLOD;
+  const bool strategyUsesHits =
+      strategy == ResidencyStrategy::RayHitBudget ||
+      strategy == ResidencyStrategy::Probabilistic ||
+      strategy == ResidencyStrategy::EnvironmentHit ||
+      strategy == ResidencyStrategy::PredictiveEnvironment ||
+      strategy == ResidencyStrategy::UnifiedScore ||
+      strategy == ResidencyStrategy::UnifiedNeural;
+
+  if ((status == MTL::CommandBufferStatus::CommandBufferStatusCommitted ||
+       status == MTL::CommandBufferStatus::CommandBufferStatusScheduled ||
+       status == MTL::CommandBufferStatus::CommandBufferStatusEnqueued ||
+       status == MTL::CommandBufferStatus::CommandBufferStatusNotEnqueued) &&
+      (strategyUsesHits || _benchmarkEnabled)) {
+    _lastRayHitCommandBuffer->waitUntilCompleted();
+    status = _lastRayHitCommandBuffer->status();
+  }
+
   switch (status) {
   case MTL::CommandBufferStatus::CommandBufferStatusCompleted:
     _rayHitCopyError = false;
@@ -12258,7 +14087,9 @@ void Renderer::processRayHitCounters() {
       strategy == ResidencyStrategy::Probabilistic ||
       strategy == ResidencyStrategy::EnvironmentHit ||
       strategy == ResidencyStrategy::PredictiveEnvironment ||
-      strategy == ResidencyStrategy::UnifiedScore;
+      strategy == ResidencyStrategy::UnifiedScore ||
+      strategy == ResidencyStrategy::UnifiedNeural ||
+      _benchmarkEnabled || _neuralFeatureLoggingEnabled;
   if (!strategyUsesHits) {
     std::memset(hitPtr, 0, bufferLength);
     _primitiveHitScores.clear();
@@ -12862,6 +14693,15 @@ void Renderer::beginFrameMetrics() {
     sample.primitiveDeactivations = _framePrimitiveDeactivations;
     sample.objectActivations = _frameObjectActivations;
     sample.objectDeactivations = _frameObjectDeactivations;
+    sample.objectsOnloadRequested = _frameObjectsOnloadRequested;
+    sample.objectsOffloadRequested = _frameObjectsOffloadRequested;
+    sample.onloadRequestedMB =
+        static_cast<double>(_frameOnloadRequestedBytes) / (1024.0 * 1024.0);
+    sample.offloadRequestedMB =
+        static_cast<double>(_frameOffloadRequestedBytes) / (1024.0 * 1024.0);
+    sample.blasBuildRequests = _frameBlasBuildRequests;
+    sample.tlasRebuilds = _frameTlasRebuilds;
+    sample.tlasRefits = _frameTlasRefits;
     sample.activePrimitiveCount = _activePrimitiveCount;
     sample.residentPrimitiveCount = _residentPrimitiveCount;
     sample.totalPrimitiveCount = _allPrimitives.size();
@@ -12881,6 +14721,22 @@ void Renderer::beginFrameMetrics() {
       if (resident.isResident())
         ++residentObjects;
     sample.residentObjectCount = residentObjects;
+    sample.visiblePrimitiveCount = static_cast<size_t>(std::count_if(
+        _primitiveVisible.begin(), _primitiveVisible.end(),
+        [](uint8_t visible) { return visible != 0; }));
+    sample.visibleObjectCount = static_cast<size_t>(std::count_if(
+        _objectVisible.begin(), _objectVisible.end(),
+        [](uint8_t visible) { return visible != 0; }));
+    sample.primitiveHitsLastFrame = std::accumulate(
+        _primitiveHitLastFrame.begin(), _primitiveHitLastFrame.end(), size_t(0));
+    sample.primitiveRaysTestedLastFrame =
+        std::accumulate(_primitiveRaysTestedLastFrame.begin(),
+                        _primitiveRaysTestedLastFrame.end(), size_t(0));
+    sample.objectHitsLastFrame = std::accumulate(
+        _objectHitLastFrame.begin(), _objectHitLastFrame.end(), size_t(0));
+    sample.objectRaysTestedLastFrame =
+        std::accumulate(_objectRaysTestedLastFrame.begin(),
+                        _objectRaysTestedLastFrame.end(), size_t(0));
     sample.gpuMemoryMB = currentGPUMemoryMB();
     sample.scratchMemoryMB = scratchMemoryMB();
     sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
@@ -12889,8 +14745,10 @@ void Renderer::beginFrameMetrics() {
     sample.minimumResidentFootprintMB = _frameMinimumResidentFootprintMB;
     sample.totalMemoryCapRelaxedMB = _totalMemoryCapRelaxedMB;
     double geometryResidentMB = residentGeometryMemoryMB();
+    double strictGeometryResidentMB = strictResidentGeometryMemoryMB();
     double textureResidentMB = residentTextureMemoryMB();
     sample.residentGeometryMemoryMB = geometryResidentMB;
+    sample.strictResidentGeometryMemoryMB = strictGeometryResidentMB;
     sample.residentTextureMemoryMB = textureResidentMB;
     sample.residencyMemoryMB =
         std::max(0.0, geometryResidentMB + textureResidentMB);
@@ -13040,6 +14898,9 @@ void Renderer::beginFrameMetrics() {
     sample.totalMemoryEvictionStall = _frameTotalMemoryEvictionStall;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
+
+  if (_neuralFeatureLoggingEnabled && _benchmarkEnabled)
+    accumulateNeuralClipFeatures();
 }
 
 void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
@@ -13099,6 +14960,8 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
   double textureMB = bytesToMB(memSnapshot.bytes[static_cast<size_t>(
       GpuMemoryTracker::Category::Textures)]);
   double restirMB = restirTextureMemoryMB();
+  if (!_pScene || !_pScene->getRestirEnabled())
+    restirMB = 0.0;
   double rendererMB = bytesToMB(memSnapshot.bytes[static_cast<size_t>(
       GpuMemoryTracker::Category::RendererBuffers)]);
   double heapsMB = bytesToMB(memSnapshot.bytes[static_cast<size_t>(
@@ -13138,7 +15001,8 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       "reuseCandidates)\n",
       _lastRestirReuseCandidates, _lastRestirReuseAccepted, restirReuseRate,
       restirAcceptRate);
-  if (isAlwaysResidentStrategy() && offloaded > 0) {
+  if (isAlwaysResidentStrategy() && offloaded > 0 &&
+      _forcedObjectOffIndex == std::numeric_limits<size_t>::max()) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",
            offloaded);
     assert(offloaded == 0 &&
@@ -13153,6 +15017,15 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
     sample.gpuTimeSeconds = _lastGPUTime;
     sample.raysPerSecond = _lastRaysPerSecond;
     sample.rayCount = _lastRayCount;
+    sample.gpuMemoryMB = totalMemoryMB;
+    sample.scratchMemoryMB = scratchMB;
+    sample.gpuGeometryMB = geometryMB;
+    sample.gpuTextureMB = textureMB;
+    sample.gpuRestirMB = restirMB;
+    sample.gpuRendererMB = rendererMB;
+    sample.gpuHeapsMB = heapsMB;
+    sample.gpuStagingMB = stagingMB;
+    sample.gpuOtherMB = otherMB;
     sample.wallSeconds = std::chrono::duration<double>(
                             std::chrono::steady_clock::now() - _benchmarkStartTime)
                             .count();

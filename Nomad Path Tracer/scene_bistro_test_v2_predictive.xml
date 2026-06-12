@@ -1,13 +1,14 @@
-<Scene width="720" height="576" maxRayDepth="4" startCompacted="true" residencyStrategy="predictive" environmentBrightness="0">
+<Scene targetMemoryMB="1000" width="720" height="576" maxRayDepth="2" startCompacted="true" residencyStrategy="predictive" environmentBrightness="0">
   <CameraPath>
-    <Keyframe frame="1" position="-9.8374,-1.4931,3.4163" lookAt="0,0,0" up="0,0,1" />
-    <Keyframe frame="60" position="-6.42,-6.18,3.18" lookAt="0,0,0" up="0,0,1" />
-    <Keyframe frame="120" position="-0.65,-8.75,2.92" lookAt="0,0,0" up="0,0,1" />
-    <Keyframe frame="180" position="4.95,-4.35,2.64" lookAt="0,0,0" up="0,0,1" />
-    <Keyframe frame="240" position="6.45,1.85,2.92" lookAt="0,0,0" up="0,0,1" />
-    <Keyframe frame="300" position="2.35,6.25,3.18" lookAt="0,0,0" up="0,0,1" />
-    <Keyframe frame="360" position="-4.75,4.25,3.34" lookAt="0,0,0" up="0,0,1" />
-    <Keyframe frame="420" position="-9.45,-1.15,3.42" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="0" position="-9.8374,-1.4931,3.4163" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="200" position="-9.8374,-1.4931,3.4163" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="250" position="-6.42,-6.18,3.18" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="290" position="-0.65,-8.75,2.92" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="330" position="4.95,-4.35,2.64" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="370" position="6.45,1.85,2.92" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="410" position="2.35,6.25,3.18" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="450" position="-4.75,4.25,3.34" lookAt="0,0,0" up="0,0,1" />
+    <Keyframe frame="490" position="-9.45,-1.15,3.42" lookAt="0,0,0" up="0,0,1" />
   </CameraPath>
   <Mesh file="meshes/_m_0_Mesh.obj" position="-1.2857,13.082,5.4094" scale="0.0089" clusterMaxTriangles="0" clusterMaxExtent="0" rotation="-9.8066,-3.3111,-131.57" />
   <Mesh file="meshes/_m_1_Mesh.obj" position="-1.2857,13.082,5.4094" scale="0.0089" clusterMaxTriangles="0" clusterMaxExtent="0" rotation="-9.8066,-3.3111,-131.57" />

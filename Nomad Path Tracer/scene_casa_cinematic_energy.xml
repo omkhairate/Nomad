@@ -1,20 +1,19 @@
-<Scene width="960" height="540" maxRayDepth="5" startCompacted="true"
-       residencyStrategy="energy" textureResidencyMemoryCapMB="256" residencyCooldown="2" energyTargetFraction="0.48" energyMinActive="420" energyToggleBudget="22000" energyVisibilityBoost="1.4" buildCachedBlas="true">
+<Scene width="960" height="540" maxRayDepth="2" startCompacted="true"
+       residencyStrategy="energy" textureResidencyMemoryCapMB="256" residencyCooldown="2" restirEnabled="false" energyTargetFraction="0.78" energyMinActive="4200" energyToggleBudget="22000" energyVisibilityBoost="1.4" environmentTexture="textures/orchard_2.exr" environmentBrightness="1.25" buildCachedBlas="true">
 
 <ObserverCamera position="22,10,26" lookAt="0,4,0" verticalFov="45" />
 
 <CameraPath>
     <Keyframe frame="0" position="24,7,30" lookAt="0,4,0" />
-    <Keyframe frame="150" position="12,5,14" lookAt="3,3,4" />
-    <Keyframe frame="300" position="-6,4,14" lookAt="-10,3,12" />
-    <Keyframe frame="450" position="-18,5,24" lookAt="-24,4,30" />
-    <Keyframe frame="600" position="-26,6,6" lookAt="-22,4,8" />
-    <Keyframe frame="750" position="-22,6,-12" lookAt="-14,4,-12" />
-    <Keyframe frame="900" position="18,5,-18" lookAt="6,3,-8" />
-    <Keyframe frame="1020" position="30,6,6" lookAt="20,4,20" />
+    <Keyframe frame="60" position="12,5,14" lookAt="3,3,4" />
+    <Keyframe frame="120" position="-6,4,14" lookAt="-10,3,12" />
+    <Keyframe frame="180" position="-18,5,24" lookAt="-24,4,30" />
+    <Keyframe frame="240" position="-26,6,6" lookAt="-22,4,8" />
+    <Keyframe frame="300" position="-22,6,-12" lookAt="-14,4,-12" />
+    <Keyframe frame="360" position="18,5,-18" lookAt="6,3,-8" />
+    <Keyframe frame="400" position="30,6,6" lookAt="20,4,20" />
 </CameraPath>
 
-    <!-- Layout matches scene_casa_cinematic_alwaysresident.xml for SSIM comparisons -->
     <!-- Camera-adjacent fill lights to reduce path tracing noise -->
     <Sphere position="24.324324,7.040541,28.378378" radius="0.20"
             albedo="0,0,0" emission="12,11.5,11" materialType="0"
@@ -45,15 +44,6 @@
 
     <Rectangle position="0,0,0" u="28,0,0" v="0,0,-28" albedo="0.36,0.28,0.22"
            emission="0,0,0" materialType="0" emissionPower="0" />
-
-<Rectangle position="-5,12,-5" u="20,0,0" v="0,0,20" rotation="180,0,0"
-           albedo="1,1,1" emission="1.0,0.94,0.84" materialType="-1" emissionPower="6.5" />
-
-<Rectangle position="-23,18,17" u="12,0,0" v="0,0,-20" rotation="140,25,0"
-           albedo="1,1,1" emission="1.0,0.97,0.9" materialType="-1" emissionPower="8.5" />
-
-<Rectangle position="2,9,-21" u="16,0,0" v="0,0,12" rotation="160,-10,0"
-           albedo="1,1,1" emission="0.85,0.9,1.0" materialType="-1" emissionPower="4.5" />
 
 <Rectangle position="0,0,12" u="8,0,0" v="0,0,12" albedo="0.37,0.36,0.34"
            emission="0,0,0" materialType="0" emissionPower="0" />
@@ -158,5 +148,30 @@
       rotation="0,-30,0" clusterMaxTriangles="384" clusterMaxExtent="6"
       albedo="0.55,0.82,0.92" emission="0,0,0"
       materialType="0" roughness="0.18" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="-8.5,0.1,11.0" scale="1.0"
+      rotation="0,20,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.55,0.82,0.92" emission="0,0,0"
+      materialType="0" roughness="0.12" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="2.5,0.1,-2.0" scale="0.8"
+      rotation="0,-10,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.55,0.82,0.92" emission="0,0,0"
+      materialType="0" roughness="0.16" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="-1.5,0.1,-4.5" scale="0.82"
+      rotation="0,15,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.55,0.82,0.92" emission="0,0,0"
+      materialType="0" roughness="0.14" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="6.0,0.1,-8.0" scale="0.88"
+      rotation="0,45,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.55,0.82,0.92" emission="0,0,0"
+      materialType="0" roughness="0.2" emissionPower="0" />
+
+<Mesh file="assets/bunny.obj" position="-6.0,0.1,-7.0" scale="0.86"
+      rotation="0,-35,0" clusterMaxTriangles="384" clusterMaxExtent="6"
+      albedo="0.55,0.82,0.92" emission="0,0,0"
+      materialType="0" roughness="0.22" emissionPower="0" />
 
 </Scene>

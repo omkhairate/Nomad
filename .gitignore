@@ -1,0 +1,53 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Build outputs
+build/
+.build/
+
+# Xcode user-local state
+DerivedData/
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+*.xcscmblueprint
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Local benchmark outputs
+Benchmarks/**/*.exr
+Benchmarks/**/*.mp4
+Benchmarks/**/*_comparison.png
+Benchmarks/**/*.log
+Benchmarks/**/metrics_*.csv
+Benchmarks/**/plots/
+Benchmarks/metrics_*.csv
+Benchmarks/videos/
+Benchmarks/run*/
+
+# Local benchmark helper environments and downloads
+Benchmarks/cgvqm/.venv/
+Benchmarks/cgvqm/.torch/
+Benchmarks/cgvqm/media/
+Benchmarks/cgvqm/weights/
+Benchmarks/cgvqm/__pycache__/
+Benchmarks/cgvqm/
+
+# Root-level generated analysis images
+flip.frame_*.png
+exposure_map.frame_*.png
+
+# Logs and temporary files
+*.log

@@ -9,14 +9,22 @@ struct OverlayUniforms {
 
 struct OverlayVertexOut {
     float4 position [[position]];
+    float4 color;
+};
+
+struct OverlayLineVertex {
+    float3 position;
+    float4 color;
 };
 
 vertex OverlayVertexOut frustumDebugVertexMain(
     uint vertexId [[vertex_id]],
-    device const float3 *positions [[buffer(0)]],
+    device const OverlayLineVertex *vertices [[buffer(0)]],
     constant OverlayUniforms &uniforms [[buffer(1)]]) {
     OverlayVertexOut out;
-    float3 worldPos = positions[vertexId];
+    OverlayLineVertex lineVertex = vertices[vertexId];
+    float3 worldPos = lineVertex.position;
     out.position = uniforms.viewProjection * float4(worldPos, 1.0);
+    out.color = lineVertex.color;
     return out;
 }

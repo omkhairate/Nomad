@@ -14,7 +14,7 @@ constant uint kMaxMaterialTextures = 64;
 
 constant sampler kMaterialTextureSampler(address::repeat, filter::linear);
 
-constexpr float RAY_EPS = 1e-4f;
+constant float RAY_EPS = 1e-4f;
 
 struct PathTraceSample {
   float3 radiance;
@@ -1881,3 +1881,4 @@ inline PathTraceSample rayColor(Ray r, float3 rayDx, float3 rayDy,
 }
 
 #endif
+

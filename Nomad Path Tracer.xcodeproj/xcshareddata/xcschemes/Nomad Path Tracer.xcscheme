@@ -36,7 +36,7 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       launchStyle = "0"
       useCustomWorkingDirectory = "YES"
-      customWorkingDirectory = "/Users/apollo/Downloads/MetalPathtracer-codex-add-alwaysresident-strategy-to-scene-residency"
+      customWorkingDirectory = "/Users/apollo/Downloads/MetalPathtracer-dev_alt_4"
       ignoresPersistentStateOnLaunch = "NO"
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
@@ -61,13 +61,43 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "MPT_CAPTURE_EXR"
-            value = "0"
+            value = "1"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "MPT_CAPTURE_INTERVAL"
-            value = "6"
+            value = "1"
             isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "MPT_MAX_FRAMES"
+            value = "500"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "MPT_MAX_TILE_WORK"
+            value = "10000"
+            isEnabled = "NO">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "METALPT_BENCH_LOG_PROBABILITIES"
+            value = "0"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "MPT_HEAP_SHRINK"
+            value = "1"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "MPT_OBSERVER_CAPTURE"
+            value = "1"
+            isEnabled = "NO">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "MPT_RESIDENCY_PREVIEW_ONLY"
+            value = "1"
+            isEnabled = "NO">
          </EnvironmentVariable>
       </EnvironmentVariables>
    </LaunchAction>

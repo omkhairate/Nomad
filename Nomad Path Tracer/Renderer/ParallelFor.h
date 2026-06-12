@@ -110,24 +110,23 @@ void parallelFor(size_t count, Func &&func,
   func(begin, end);
 
   auto remainingTasks = std::make_shared<std::atomic<size_t>>(taskCount - 1);
-  std::mutex doneMutex;
-  std::condition_variable doneCv;
+  auto doneMutex = std::make_shared<std::mutex>();
+  auto doneCv = std::make_shared<std::condition_variable>();
 
   for (size_t i = 1; i < taskCount; ++i) {
     size_t taskBegin = i * chunkSize;
     size_t taskEnd = std::min(taskBegin + chunkSize, count);
-    pool.enqueue([&, taskBegin, taskEnd, remainingTasks]() {
+    pool.enqueue([&, taskBegin, taskEnd, remainingTasks, doneMutex, doneCv]() {
       func(taskBegin, taskEnd);
       if (--(*remainingTasks) == 0) {
-        std::lock_guard<std::mutex> lock(doneMutex);
-        doneCv.notify_one();
+        std::lock_guard<std::mutex> lock(*doneMutex);
+        doneCv->notify_one();
       }
     });
   }
 
-  std::unique_lock<std::mutex> lock(doneMutex);
-  doneCv.wait(lock, [&]() { return remainingTasks->load() == 0; });
+  std::unique_lock<std::mutex> lock(*doneMutex);
+  doneCv->wait(lock, [&]() { return remainingTasks->load() == 0; });
 }
 
 } // namespace NomadPathTracer
-

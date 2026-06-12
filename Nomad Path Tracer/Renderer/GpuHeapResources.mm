@@ -12,8 +12,8 @@ namespace NomadPathTracer {
 namespace {
 constexpr NS::UInteger kDefaultHeapSizeBytes = 4 * 1024 * 1024; // 4 MB
 constexpr NS::UInteger kHeapAlignment = 256;
-constexpr double kShrinkUtilizationThreshold = 0.5;
-constexpr size_t kShrinkFrameThreshold = 60;
+constexpr double kShrinkUtilizationThreshold = 0.85;
+constexpr size_t kShrinkFrameThreshold = 2;
 
 NS::UInteger alignUp(NS::UInteger value, NS::UInteger alignment) {
   if (alignment == 0)

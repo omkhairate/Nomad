@@ -1,4 +1,4 @@
-<Scene width="720" height="576" maxRayDepth="4" startCompacted="true" environmentTexture="Textures/orchard.exr" environmentBrightness="1.2" residencyStrategy="alwaysresident">
+<Scene width="720" height="576" maxRayDepth="4" startCompacted="true" environmentTexture="Textures/orchard.exr" environmentBrightness="1.2" residencyStrategy="alwaysresident" total>
   <CameraPath>
     <Keyframe frame="1" position="-9.8374,-1.4931,3.4163" lookAt="0,0,0" up="0,0,1"/>
   </CameraPath>

@@ -138,6 +138,7 @@ public:
   double currentGPUMemoryMB() const;
   double scratchMemoryMB() const;
   double residentGeometryMemoryMB() const;
+  double strictResidentGeometryMemoryMB() const;
   double residentTextureMemoryMB() const;
   double restirTextureMemoryMB() const;
 
@@ -148,6 +149,7 @@ public:
   size_t residentNodeCount() const;
   size_t totalNodeCount() const;
   bool isAlwaysResidentStrategy() const;
+  bool didRenderFrame() const { return _didRenderFrame; }
 
   std::vector<std::pair<simd::float3, float>> _allSpheres;
 
@@ -163,6 +165,7 @@ public:
 
 private:
   struct BenchmarkSample;
+  struct NeuralObjectClipAccumulator;
   struct FrameCaptureRequest;
   struct ManagedTextureSlot;
   void recalculateNodeCounters(const std::vector<bool> &residentMask);
@@ -208,14 +211,19 @@ private:
   bool updatePrimitiveScreenCoverageForFrame();
   bool updateEnvironmentHitResidency(bool forceAllToggles);
   bool updatePredictiveResidency(bool forceAllToggles);
+  bool enforceEmissiveObjectResidency(bool forceAllToggles);
+  bool enforceTransportCriticalObjectResidency(bool forceAllToggles);
+  bool enforceVisibleObjectResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void prewarmAlwaysResidentResources();
+  bool alwaysResidentResidencyReady();
   void applyHeapShrinkSetting(bool enabled);
   void updateHeapShrinkCandidates();
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   size_t residentGeometryMemoryBytes() const;
+  size_t strictResidentGeometryMemoryBytes() const;
   size_t geometryResidencyCapBytes() const;
   double effectiveTotalGpuMemoryCapMB() const;
   size_t totalGpuMemoryCapBytes() const;
@@ -246,7 +254,8 @@ private:
   bool rayHitCopyReady() const;
   void processRayHitCounters();
   bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
-                       ResidentObjectGpuResources &residentResources);
+                       ResidentObjectGpuResources &residentResources,
+                       bool coldOnloadRequest);
   bool ensureDummyBlas();
   void updateTopLevelAccelerationStructure(
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
@@ -292,6 +301,11 @@ private:
   void ensureBenchmarkStream();
   void writeBenchmarkHeader();
   void writeBenchmarkRow(const BenchmarkSample &sample);
+  void initializeNeuralFeatureLogging();
+  void ensureNeuralFeatureStream();
+  void accumulateNeuralClipFeatures();
+  void flushNeuralClipFeatures(bool forcePartialClip);
+  bool objectForcedOff(size_t objectIndex) const;
   std::string residencyStrategyName(ResidencyStrategy strategy) const;
   void ensureFrameCaptureDirectory();
   std::shared_ptr<FrameCaptureRequest>
@@ -316,6 +330,7 @@ private:
   MTL::CommandQueue *_pCommandQueue = nullptr;
   MTL::RenderPipelineState *_pPSO = nullptr;
   MTL::RenderPipelineState *_pOverlayPSO = nullptr;
+  MTL::RenderPipelineState *_pOverlayCapturePSO = nullptr;
   MTL::ComputePipelineState *_pPathTracePSO = nullptr;
   MTL::ComputePipelineState *_pAdaptiveSamplingPSO = nullptr;
 
@@ -415,6 +430,7 @@ private:
     Renderer *renderer = nullptr;
     ResidentObjectGpuResources *resident = nullptr;
     size_t objectIndex = 0;
+    bool coldOnloadRequest = false;
     std::vector<simd::float3> vertices;
     std::vector<uint32_t> indices;
     size_t triangleCount = 0;
@@ -449,6 +465,13 @@ private:
     size_t primitiveDeactivations = 0;
     size_t objectActivations = 0;
     size_t objectDeactivations = 0;
+    size_t objectsOnloadRequested = 0;
+    size_t objectsOffloadRequested = 0;
+    double onloadRequestedMB = 0.0;
+    double offloadRequestedMB = 0.0;
+    size_t blasBuildRequests = 0;
+    size_t tlasRebuilds = 0;
+    size_t tlasRefits = 0;
     size_t activePrimitiveCount = 0;
     size_t residentPrimitiveCount = 0;
     size_t totalPrimitiveCount = 0;
@@ -460,9 +483,23 @@ private:
     size_t totalNodeCount = 0;
     size_t activeObjectCount = 0;
     size_t residentObjectCount = 0;
+    size_t visiblePrimitiveCount = 0;
+    size_t visibleObjectCount = 0;
+    size_t primitiveHitsLastFrame = 0;
+    size_t primitiveRaysTestedLastFrame = 0;
+    size_t objectHitsLastFrame = 0;
+    size_t objectRaysTestedLastFrame = 0;
     double gpuMemoryMB = 0.0;
     double scratchMemoryMB = 0.0;
+    double gpuGeometryMB = 0.0;
+    double gpuTextureMB = 0.0;
+    double gpuRestirMB = 0.0;
+    double gpuRendererMB = 0.0;
+    double gpuHeapsMB = 0.0;
+    double gpuStagingMB = 0.0;
+    double gpuOtherMB = 0.0;
     double residentGeometryMemoryMB = 0.0;
+    double strictResidentGeometryMemoryMB = 0.0;
     double residentTextureMemoryMB = 0.0;
     double residencyMemoryMB = 0.0;
     double textureMemoryCapMB = 0.0;
@@ -514,6 +551,28 @@ private:
     size_t totalMemoryCapNonResidencyDeniedCount = 0;
   };
 
+  struct NeuralObjectClipAccumulator {
+    size_t visibleFrames = 0;
+    double visibleCoverageSum = 0.0;
+    double maxVisibleCoverage = 0.0;
+    double distanceSum = 0.0;
+    double minDistance = std::numeric_limits<double>::infinity();
+    double hitProbabilitySum = 0.0;
+    double rayHitScoreSum = 0.0;
+    uint64_t totalHits = 0;
+    uint64_t totalRaysTested = 0;
+    size_t toggleCount = 0;
+    size_t activeFrames = 0;
+    size_t residentFrames = 0;
+    size_t streamingFrames = 0;
+    size_t transportCriticalFrames = 0;
+    double objectImportanceSum = 0.0;
+    size_t primitiveCount = 0;
+    double estimatedBytesSum = 0.0;
+    double emissiveImportance = 0.0;
+    bool initialized = false;
+  };
+
   struct FrameCaptureRequest {
     uint64_t frameIndex = 0;
     std::string filePath;
@@ -530,6 +589,7 @@ private:
     MTL::PixelFormat format = MTL::PixelFormat::PixelFormatInvalid;
     MTL::PixelFormat albedoFormat = MTL::PixelFormat::PixelFormatInvalid;
     MTL::PixelFormat normalFormat = MTL::PixelFormat::PixelFormatInvalid;
+    bool containsDebugOverlay = false;
   };
 
   std::vector<std::shared_ptr<FrameCaptureRequest>> _completedCaptures;
@@ -538,6 +598,7 @@ private:
 
   std::vector<Primitive> _allPrimitives;
   std::vector<bool> _activePrimitive;
+  std::vector<bool> _previewPrimitiveActive;
   std::vector<uint32_t> _primitiveCooldown;
   std::vector<int32_t> _primitiveToResidentIndex;
   std::vector<size_t> _primitiveToObject;
@@ -548,6 +609,7 @@ private:
   bool _lastUniformCameraStateValid = false;
   std::vector<BoundingSphere> _objectBounds;
   std::vector<bool> _objectActive;
+  std::vector<bool> _previewObjectActive;
   std::vector<uint32_t> _objectCooldown;
   std::vector<uint64_t> _objectLastToggleFrame;
   std::vector<uint8_t> _desiredObjectState;
@@ -707,6 +769,7 @@ private:
   size_t _geometryHandleBufferCapacity = 0;
   size_t _primitiveHitReadbackCapacity = 0;
   size_t _frustumVertexCapacity = 0;
+  std::vector<simd::float3> _primaryCameraTrail;
 
   std::chrono::high_resolution_clock::time_point _cpuStart;
   double _lastCPUTime = 0.0;
@@ -733,6 +796,13 @@ private:
   size_t _framePrimitiveDeactivations = 0;
   size_t _frameObjectActivations = 0;
   size_t _frameObjectDeactivations = 0;
+  size_t _frameObjectsOnloadRequested = 0;
+  size_t _frameObjectsOffloadRequested = 0;
+  size_t _frameOnloadRequestedBytes = 0;
+  size_t _frameOffloadRequestedBytes = 0;
+  size_t _frameBlasBuildRequests = 0;
+  size_t _frameTlasRebuilds = 0;
+  size_t _frameTlasRefits = 0;
   size_t _frameProbabilisticToggles = 0;
   size_t _frameProbabilityTargetPrimitives = 0;
   size_t _frameProbabilityInitialDesiredPrimitives = 0;
@@ -749,6 +819,8 @@ private:
   bool _frameTotalMemoryEvictionStall = false;
   size_t _lastTotalMemoryCapEvictionFrame = 0;
   bool _totalMemoryEvictionInProgress = false;
+  size_t _totalMemoryEvictionNoProgressFrames = 0;
+  size_t _totalMemoryEvictionBackoffUntilFrame = 0;
   double _frameMinimumResidentFootprintMB = 0.0;
   size_t _geometryResidencyCapHitCount = 0;
   size_t _geometryResidencyHardCapDeniedCount = 0;
@@ -761,17 +833,35 @@ private:
   bool _memoryCapFallbackActive = false;
   ResidencyStrategy _frameStrategy = ResidencyStrategy::DistanceLOD;
   ResidencyStrategy _lastResidencyStrategy = ResidencyStrategy::DistanceLOD;
+  bool _frameTransportCriticalResidencyChanged = false;
+  uint64_t _restirReuseDisableUntilFrame = 0;
   AlwaysResidentCache _alwaysResidentCache;
   bool _forceAlwaysResidentActivation = false;
   bool _pendingAlwaysResidentPrewarm = false;
+  uint64_t _alwaysResidentWarmupWaitCount = 0;
+  bool _didRenderFrame = false;
   bool _frameCaptureEnabled = false;
   size_t _frameCaptureInterval = 4;
   uint64_t _renderedFrameCount = 0;
   bool _frameCaptureDirectoryInitialized = false;
   std::string _frameCaptureDirectory;
+  std::string _frameCaptureSubdirectory = "frames";
+  bool _residencyPreviewOnly = false;
+  bool _forceObserverCapture = false;
+  bool _disableOfflineOidn = false;
   std::deque<BenchmarkSample> _pendingBenchmarkSamples;
+  bool _neuralFeatureLoggingEnabled = false;
+  bool _neuralFeatureHeaderWritten = false;
+  std::ofstream _neuralFeatureStream;
+  std::string _neuralFeatureFilePath;
+  std::string _runOutputRoot;
+  std::string _sceneVariantName;
+  size_t _neuralClipLength = 16;
+  size_t _neuralClipStartFrame = 0;
+  size_t _forcedObjectOffIndex = std::numeric_limits<size_t>::max();
+  std::vector<NeuralObjectClipAccumulator> _neuralClipAccumulators;
 
-  uint32_t _minSamplesPerPixel = 1;
+  uint32_t _minSamplesPerPixel = 4;
   uint32_t _maxSamplesPerPixel = 4;
   MTL::Buffer *_pTextureClearBuffer = nullptr;
   size_t _textureClearBufferCapacity = 0;

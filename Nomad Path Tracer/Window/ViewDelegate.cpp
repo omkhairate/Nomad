@@ -16,12 +16,26 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
       _lastTime(std::chrono::steady_clock::now()) {
   if (const char *env = std::getenv("MPT_MAX_FRAMES"))
     _maxFrames = std::strtoul(env, nullptr, 10);
+  auto parseBoolEnv = [](const char *value) {
+    if (!value || !value[0])
+      return false;
+    if (std::isdigit(static_cast<unsigned char>(value[0])))
+      return std::strtoul(value, nullptr, 10) != 0;
+    char first = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(value[0])));
+    return first == 't' || first == 'y';
+  };
+
   if (const char *runs = std::getenv("MPT_RUNS_PATH")) {
     std::filesystem::path base(runs);
     std::filesystem::create_directories(base);
 
-    _dumpPath = (base / "as").string();
-    std::filesystem::create_directories(_dumpPath);
+    bool dumpAccelerationStructure =
+        parseBoolEnv(std::getenv("MPT_DUMP_ACCELERATION_STRUCTURE"));
+    if (dumpAccelerationStructure) {
+      _dumpPath = (base / "as").string();
+      std::filesystem::create_directories(_dumpPath);
+    }
 
     std::filesystem::path perf = base / "perf.csv";
     _perfLog.open(perf);
@@ -37,23 +51,18 @@ ViewDelegate::ViewDelegate(MTL::Device *pDevice)
                     "residency_memory_mb\n";
   }
 
-  auto parseBoolEnv = [](const char *value) {
-    if (!value || !value[0])
-      return false;
-    if (std::isdigit(static_cast<unsigned char>(value[0])))
-      return std::strtoul(value, nullptr, 10) != 0;
-    char first = static_cast<char>(
-        std::tolower(static_cast<unsigned char>(value[0])));
-    return first == 't' || first == 'y';
-  };
-
   bool captureEnabled = parseBoolEnv(std::getenv("MPT_CAPTURE_EXR"));
+  bool observerCapture = parseBoolEnv(std::getenv("MPT_OBSERVER_CAPTURE"));
 
   size_t captureInterval = 4;
   if (const char *intervalEnv = std::getenv("MPT_CAPTURE_INTERVAL")) {
     unsigned long parsed = std::strtoul(intervalEnv, nullptr, 10);
     if (parsed > 0)
       captureInterval = parsed;
+  }
+  if (observerCapture) {
+    captureEnabled = true;
+    captureInterval = 1;
   }
 
   _pRenderer->setFrameCaptureEnabled(captureEnabled);
@@ -80,6 +89,8 @@ void ViewDelegate::drawInMTKView(MTK::View *pView) {
   updateMemoryUsage(_pRenderer->currentGPUMemoryMB());
   _pRenderer->setDeltaTime(deltaSeconds);
   _pRenderer->draw(pView);
+  if (!_pRenderer->didRenderFrame())
+    return;
   if (_perfLog.is_open()) {
     double cpu_ms = _pRenderer->lastCPUTime() * 1000.0;
     double gpu_ms = _pRenderer->lastGPUTime() * 1000.0;
