@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 import argparse
 
-from timing_analysis_common import analyze_single_timing, load_metrics, merge_temperature_data
+from timing_analysis_common import analyze_combined
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Analyze GPU timing correlation with residency activity, outliers, regression, and lag plots."
+        description=(
+            "Analyze CPU/GPU timing against residency activity with lag profiles, "
+            "outlier handling, regression estimates, and optional temperature/throttling correlation."
+        )
     )
     parser.add_argument("csv", help="Path to metrics CSV")
     parser.add_argument("--max-lag", type=int, default=15, help="Max lag (frames) for lag profiles")
@@ -30,15 +33,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    df = load_metrics(args.csv)
-    df, _ = merge_temperature_data(df, args.temperature_csv, args.temperature_key, args.temperature_column)
-    analyze_single_timing(
-        df=df,
+    analyze_combined(
         csv_path=args.csv,
-        timing_col="gpu_ms",
         max_lag=args.max_lag,
         outlier_quantile=args.outlier_quantile,
         plot_dir=args.plot_dir,
+        temperature_csv=args.temperature_csv,
+        temperature_key=args.temperature_key,
+        temperature_column=args.temperature_column,
     )
 
 

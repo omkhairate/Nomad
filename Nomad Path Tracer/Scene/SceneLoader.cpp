@@ -673,6 +673,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         } else if (value == "unified" || value == "hybrid" ||
                    value == "unifiedscore" || value == "unified_score") {
             scene->setResidencyStrategy(ResidencyStrategy::UnifiedScore);
+        } else if (value == "unifiedneural" || value == "unified_neural" ||
+                   value == "neural" || value == "neural_unified" ||
+                   value == "neural-unified") {
+            scene->setResidencyStrategy(ResidencyStrategy::UnifiedNeural);
         } else if (value == "distance" || value == "lod" || value == "distance_lod" ||
                    value == "distancelod" || value == "distancebased") {
             scene->setResidencyStrategy(ResidencyStrategy::DistanceLOD);
@@ -730,6 +734,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.energyUseAverageImportance =
         root->BoolAttribute("energyUseAverageImportance",
                             params.energyUseAverageImportance);
+    params.energyTargetMemoryMB =
+        root->FloatAttribute("energyTargetMemoryMB", params.energyTargetMemoryMB);
 
     params.unifiedEnergyWeight =
         root->FloatAttribute("unifiedEnergyWeight", params.unifiedEnergyWeight);
@@ -749,6 +755,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         root->FloatAttribute("unifiedReentryBoost", params.unifiedReentryBoost);
     params.unifiedNormalize =
         root->BoolAttribute("unifiedNormalize", params.unifiedNormalize);
+    params.unifiedTargetMemoryMB = root->FloatAttribute(
+        "unifiedTargetMemoryMB", params.unifiedTargetMemoryMB);
 
     params.rayHitDecay = root->FloatAttribute("rayHitDecay", params.rayHitDecay);
     params.rayHitTargetFraction =
@@ -767,6 +775,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "rayHitPriorFavorHighProbability", params.rayHitPriorFavorHighProbability);
     params.rayHitAggressiveEvict =
         root->BoolAttribute("rayHitAggressiveEvict", params.rayHitAggressiveEvict);
+    params.rayHitTargetMemoryMB =
+        root->FloatAttribute("rayHitTargetMemoryMB", params.rayHitTargetMemoryMB);
 
     auto parseRayHitAggressiveEnv = []() -> int {
         const char *env = std::getenv("MPT_RAY_HIT_AGGRESSIVE_EVICT");
@@ -822,6 +832,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         "probabilityIdleCooldown", params.probabilityIdleCooldownFrames);
     params.probabilityIdleDecay =
         root->FloatAttribute("probabilityIdleDecay", params.probabilityIdleDecay);
+    params.probabilityTargetMemoryMB = root->FloatAttribute(
+        "probabilityTargetMemoryMB", params.probabilityTargetMemoryMB);
 
     params.screenFootprintTargetFraction = root->FloatAttribute(
         "screenTargetFraction", params.screenFootprintTargetFraction);
@@ -833,6 +845,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.screenFootprintMaxTogglesPerFrame = static_cast<size_t>(root->Unsigned64Attribute(
         "screenToggleBudget",
         static_cast<uint64_t>(params.screenFootprintMaxTogglesPerFrame)));
+    params.screenTargetMemoryMB =
+        root->FloatAttribute("screenTargetMemoryMB", params.screenTargetMemoryMB);
+    params.screenTargetMemoryMB = root->FloatAttribute(
+        "screenspaceTargetMemoryMB", params.screenTargetMemoryMB);
     params.environmentTargetActiveFraction = root->FloatAttribute(
         "environmentTargetActiveFraction", params.environmentTargetActiveFraction);
     params.environmentTargetActiveFraction = root->FloatAttribute(
@@ -883,12 +899,26 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     params.distancePriorFavorHighProbability = root->BoolAttribute(
         "distancePriorFavorHighProbability",
         params.distancePriorFavorHighProbability);
+    params.environmentTargetMemoryMB = root->FloatAttribute(
+        "environmentTargetMemoryMB", params.environmentTargetMemoryMB);
+    params.environmentTargetMemoryMB =
+        root->FloatAttribute("envTargetMemoryMB", params.environmentTargetMemoryMB);
     params.enableBufferShrink = root->BoolAttribute(
         "enableBufferShrink", params.enableBufferShrink);
     params.bufferShrinkActiveRatio = root->FloatAttribute(
         "bufferShrinkActiveRatio", params.bufferShrinkActiveRatio);
     params.buildCachedBlas = root->BoolAttribute(
         "buildCachedBlas", params.buildCachedBlas);
+    params.distanceTargetMemoryMB = root->FloatAttribute(
+        "distanceTargetMemoryMB", params.distanceTargetMemoryMB);
+    params.predictiveTargetMemoryMB = root->FloatAttribute(
+        "predictiveTargetMemoryMB", params.predictiveTargetMemoryMB);
+    params.predictiveTargetMemoryMB = root->FloatAttribute(
+        "predictiveEnvTargetMemoryMB", params.predictiveTargetMemoryMB);
+    params.targetMemoryMB =
+        root->FloatAttribute("targetMemoryMB", params.targetMemoryMB);
+    params.targetResidentGeometryMB = root->FloatAttribute(
+        "targetResidentGeometryMB", params.targetResidentGeometryMB);
 
     scene->setResidencyParameters(params);
 

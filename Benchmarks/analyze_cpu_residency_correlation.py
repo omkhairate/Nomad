@@ -1,71 +1,45 @@
 #!/usr/bin/env python3
 import argparse
-import pandas as pd
+
+from timing_analysis_common import analyze_single_timing, load_metrics, merge_temperature_data
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Analyze CPU timing correlation with residency onload/offload activity.")
+        description="Analyze CPU timing correlation with residency activity, outliers, regression, and lag plots."
+    )
     parser.add_argument("csv", help="Path to metrics CSV")
-    parser.add_argument("--max-lag", type=int, default=10,
-                        help="Max lag (frames) for lagged correlation")
+    parser.add_argument("--max-lag", type=int, default=15, help="Max lag (frames) for lag profiles")
+    parser.add_argument(
+        "--outlier-quantile",
+        type=float,
+        default=0.99,
+        help="Upper quantile used for winsorized/trimmed outlier handling",
+    )
+    parser.add_argument("--plot-dir", default=None, help="Directory for lag-profile plots/CSVs")
+    parser.add_argument("--temperature-csv", default=None, help="Optional external CSV with temperature samples")
+    parser.add_argument(
+        "--temperature-key",
+        default="frame",
+        help="Join key shared by the metrics CSV and the external temperature CSV",
+    )
+    parser.add_argument(
+        "--temperature-column",
+        default=None,
+        help="Optional explicit temperature column name from the external temperature CSV",
+    )
     args = parser.parse_args()
 
-    df = pd.read_csv(args.csv)
-    required = [
-        "frame", "cpu_ms", "objects_onload_requested", "objects_offload_requested",
-        "onload_requested_mb", "offload_requested_mb", "blas_build_requests",
-        "tlas_rebuilds", "tlas_refits"
-    ]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise SystemExit(f"Missing required columns: {missing}")
-
-    df = df.sort_values("frame").reset_index(drop=True)
-
-    signals = [
-        "objects_onload_requested",
-        "objects_offload_requested",
-        "onload_requested_mb",
-        "offload_requested_mb",
-        "blas_build_requests",
-        "tlas_rebuilds",
-        "tlas_refits",
-    ]
-
-    print("=== Same-frame Pearson Correlation with cpu_ms ===")
-    for col in signals:
-        corr = df["cpu_ms"].corr(df[col])
-        print(f"{col:28s}: {corr: .4f}")
-
-    print("\n=== Lagged Correlation: corr(cpu_ms[t], signal[t-k]) ===")
-    for col in signals:
-        best_k = 0
-        best = df["cpu_ms"].corr(df[col])
-        for k in range(1, args.max_lag + 1):
-            lag_corr = df["cpu_ms"].corr(df[col].shift(k))
-            if pd.notna(lag_corr) and (pd.isna(best) or abs(lag_corr) > abs(best)):
-                best = lag_corr
-                best_k = k
-        print(f"{col:28s}: best={best: .4f} at lag={best_k}")
-
-    print("\n=== Segment Stats (cpu_ms) ===")
-    on = df["objects_onload_requested"] > 0
-    off = df["objects_offload_requested"] > 0
-    segments = {
-        "none": ~(on | off),
-        "onload_only": on & ~off,
-        "offload_only": ~on & off,
-        "both": on & off,
-    }
-    for name, mask in segments.items():
-        sub = df.loc[mask, "cpu_ms"]
-        if sub.empty:
-            print(f"{name:12s}: n=0")
-            continue
-        print(
-            f"{name:12s}: n={len(sub):4d} mean={sub.mean():7.3f} "
-            f"median={sub.median():7.3f} p95={sub.quantile(0.95):7.3f}")
+    df = load_metrics(args.csv)
+    df, _ = merge_temperature_data(df, args.temperature_csv, args.temperature_key, args.temperature_column)
+    analyze_single_timing(
+        df=df,
+        csv_path=args.csv,
+        timing_col="cpu_ms",
+        max_lag=args.max_lag,
+        outlier_quantile=args.outlier_quantile,
+        plot_dir=args.plot_dir,
+    )
 
 
 if __name__ == "__main__":

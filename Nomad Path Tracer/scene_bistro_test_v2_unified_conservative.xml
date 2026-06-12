@@ -1,5 +1,6 @@
-<Scene targetMemoryMB="1000" width="720" height="576" maxRayDepth="2" startCompacted="true" residencyStrategy="screenSpaceFootprint" residencyCooldown="0" restirEnabled="false" screenTargetFraction="0.72" screenMinPixelCoverage="32" screenMinActive="340" screenToggleBudget="18000" environmentTexture="textures/orchard_2.exr" environmentBrightness="1.25">
-    <CameraPath>
+<!-- Unified strategy, conservative variant: keeps off-screen scores decaying slowly with a higher floor. -->
+<Scene targetMemoryMB="1000" width="720" height="576" maxRayDepth="2" startCompacted="true" residencyStrategy="unified" environmentTexture="textures/orchard_2.exr" environmentBrightness="2.25" buildCachedBlas="true" totalGpuMemoryCapMB="1700" restirEnabled="false" unifiedOffscreenDecay="0.03" unifiedOffscreenFloor="0.08" residencyCooldown="2">
+  <CameraPath>
     <Keyframe frame="0" position="-9.8374,-1.4931,3.4163" lookAt="0,0,0" up="0,0,1" />
     <Keyframe frame="200" position="-9.8374,-1.4931,3.4163" lookAt="0,0,0" up="0,0,1" />
     <Keyframe frame="250" position="-6.42,-6.18,3.18" lookAt="0,0,0" up="0,0,1" />

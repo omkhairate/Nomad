@@ -22,6 +22,7 @@ enum class ResidencyStrategy {
   EnvironmentHit = 6,
   PredictiveEnvironment = 7,
   UnifiedScore = 8,
+  UnifiedNeural = 9,
 };
 
 // Default budget for the amount of tile/sample work recorded into a single
@@ -55,6 +56,7 @@ struct ResidencyParameters {
   float energyVisibilityBoost = 1.75f;
   float energyImportanceSmoothing = 0.85f;
   bool energyUseAverageImportance = true;
+  float energyTargetMemoryMB = 0.0f;
 
   // Favor immediate view cues over historical hit data so residency reacts
   // quickly to camera motion.
@@ -67,6 +69,7 @@ struct ResidencyParameters {
   float unifiedOffscreenFloor = 0.02f;
   float unifiedReentryBoost = 3.0f;
   bool unifiedNormalize = true;
+  float unifiedTargetMemoryMB = 0.0f;
 
   float rayHitDecay = 0.85f;
   float rayHitTargetFraction = 0.54f;
@@ -79,6 +82,7 @@ struct ResidencyParameters {
   float rayHitPriorScale = 0.5f;
   bool rayHitPriorFavorHighProbability = false;
   bool rayHitAggressiveEvict = false;
+  float rayHitTargetMemoryMB = 0.0f;
 
   float probabilityDecay = 0.9f;
   float probabilityThreshold = 0.5f;
@@ -93,11 +97,13 @@ struct ResidencyParameters {
   float probabilityIdleDecay = 0.9f;
   float probabilityVisibleFloor = 0.0f;
   uint32_t probabilityVisibleDemotionDwellFrames = 0;
+  float probabilityTargetMemoryMB = 0.0f;
 
   float screenFootprintTargetFraction = 0.68f;
   float screenFootprintMinPixelCoverage = 32.0f;
   size_t screenFootprintMinActivePrimitives = 16;
   size_t screenFootprintMaxTogglesPerFrame = 14;
+  float screenTargetMemoryMB = 0.0f;
 
   float environmentTargetActiveFraction = 0.25f;
   float environmentEscapeThreshold = 0.4f;
@@ -112,6 +118,7 @@ struct ResidencyParameters {
   // bias flag to true to preserve the original high-hit shrink direction.
   float distancePriorScale = 0.5f;
   bool distancePriorFavorHighProbability = false;
+  float environmentTargetMemoryMB = 0.0f;
 
   // Allows resident buffers to shrink when most primitives remain inactive.
   bool enableBufferShrink = true;
@@ -121,6 +128,10 @@ struct ResidencyParameters {
   // construction. Disabling this reduces build time at the cost of on-demand
   // rebuilds when residency streaming requires the data.
   bool buildCachedBlas = true;
+  float distanceTargetMemoryMB = 0.0f;
+  float predictiveTargetMemoryMB = 0.0f;
+  float targetMemoryMB = 0.0f;
+  float targetResidentGeometryMB = 0.0f;
 
   void normalizeEnvironmentDepthSettings();
 };

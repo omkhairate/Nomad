@@ -537,7 +537,8 @@ bool ResidentObjectGpuResources::ensureResident(
 
   transitionToStreaming();
   geometryValid = false;
-  bool built = renderer.buildObjectBlas(objectIndex, object, *this);
+  bool built = renderer.buildObjectBlas(objectIndex, object, *this,
+                                        previousState == ResidencyState::Cold);
   if (!built) {
     if (renderer.isAlwaysResidentStrategy()) {
       state = previousState;
@@ -825,10 +826,24 @@ double Renderer::residentGeometryMemoryMB() const {
   return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
 }
 
+double Renderer::strictResidentGeometryMemoryMB() const {
+  size_t totalBytes = strictResidentGeometryMemoryBytes();
+  return static_cast<double>(totalBytes) / (1024.0 * 1024.0);
+}
+
 size_t Renderer::residentGeometryMemoryBytes() const {
   size_t totalBytes = 0;
   for (const auto &resident : _residentObjectGpuResources) {
     if (resident.state != ResidentObjectGpuResources::ResidencyState::Cold)
+      totalBytes += resident.byteSize;
+  }
+  return totalBytes;
+}
+
+size_t Renderer::strictResidentGeometryMemoryBytes() const {
+  size_t totalBytes = 0;
+  for (const auto &resident : _residentObjectGpuResources) {
+    if (resident.state == ResidentObjectGpuResources::ResidencyState::Resident)
       totalBytes += resident.byteSize;
   }
   return totalBytes;
@@ -1742,13 +1757,18 @@ void Renderer::ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
     if (buffer && requiredBytes > currentCapacity)
       growing = true;
   } else if (buffer) {
-    size_t shrinkThreshold = currentCapacity / 2;
+    constexpr double kShrinkRetainRatio = 0.90;
+    constexpr double kCompactedGrowthFactor = 1.25;
+    size_t shrinkThreshold = static_cast<size_t>(
+        std::floor(static_cast<double>(currentCapacity) * kShrinkRetainRatio));
     if (requiredBytes <= currentCapacity && requiredBytes > shrinkThreshold)
       return;
     if (requiredBytes <= shrinkThreshold) {
       shrinking = requiredBytes < currentCapacity;
     } else if (requiredBytes > currentCapacity) {
-      desiredCapacity = std::max(requiredBytes, currentCapacity * 2);
+      size_t growthTarget = static_cast<size_t>(std::ceil(
+          static_cast<double>(currentCapacity) * kCompactedGrowthFactor));
+      desiredCapacity = std::max(requiredBytes, growthTarget);
       growing = true;
     }
   }
@@ -1961,6 +1981,24 @@ Renderer::Renderer(MTL::Device *pDevice)
   _residencyPreviewOnly =
       parseEnvBool(std::getenv("MPT_RESIDENCY_PREVIEW_ONLY"));
   _forceObserverCapture = parseEnvBool(std::getenv("MPT_OBSERVER_CAPTURE"));
+  _disableOfflineOidn = parseEnvBool(std::getenv("MPT_DISABLE_OFFLINE_OIDN"));
+  _neuralFeatureLoggingEnabled =
+      parseEnvBool(std::getenv("MPT_LOG_NEURAL_FEATURES"));
+  if (const char *clipLengthEnv = std::getenv("MPT_NEURAL_CLIP_LENGTH")) {
+    unsigned long parsed = std::strtoul(clipLengthEnv, nullptr, 10);
+    if (parsed > 0)
+      _neuralClipLength = static_cast<size_t>(parsed);
+  }
+  if (const char *forcedObjectEnv = std::getenv("MPT_FORCE_OBJECT_OFF")) {
+    char *end = nullptr;
+    unsigned long long parsed = std::strtoull(forcedObjectEnv, &end, 10);
+    if (end != forcedObjectEnv)
+      _forcedObjectOffIndex = static_cast<size_t>(parsed);
+  }
+  if (const char *runsPath = std::getenv("MPT_RUNS_PATH"))
+    _runOutputRoot = runsPath;
+  if (const char *sceneVariant = std::getenv("MPT_SCENE_VARIANT"))
+    _sceneVariantName = sceneVariant;
   if (_forceObserverCapture)
     _frameCaptureSubdirectory = "observer_frames";
   if (_residencyPreviewOnly) {
@@ -1971,6 +2009,18 @@ Renderer::Renderer(MTL::Device *pDevice)
                 "saved under Benchmarks/%s.\n",
                 _frameCaptureSubdirectory.c_str());
   }
+  if (_disableOfflineOidn) {
+    std::printf("[Renderer] Offline OIDN is disabled during capture; raw EXRs "
+                "will be written for deferred denoising.\n");
+  }
+  if (_neuralFeatureLoggingEnabled) {
+    std::printf("[Renderer] Neural feature logging enabled (clip length %zu).\n",
+                _neuralClipLength);
+  }
+  if (_forcedObjectOffIndex != std::numeric_limits<size_t>::max()) {
+    std::printf("[Renderer] Forced object-off ablation enabled for object %zu.\n",
+                _forcedObjectOffIndex);
+  }
 
   updateVisibleScene();
   buildShaders();
@@ -1980,10 +2030,12 @@ Renderer::Renderer(MTL::Device *pDevice)
 
   recalculateViewport();
   initializeBenchmarking();
+  initializeNeuralFeatureLogging();
 }
 
 Renderer::~Renderer() {
   processPendingCapturedFrames();
+  flushNeuralClipFeatures(true);
   std::chrono::steady_clock::time_point frameWaitSnapshot;
   waitForPendingFrameCommands(std::chrono::milliseconds::max(),
                               &frameWaitSnapshot);
@@ -2109,6 +2161,8 @@ Renderer::~Renderer() {
 
   if (_benchmarkStream.is_open())
     _benchmarkStream.close();
+  if (_neuralFeatureStream.is_open())
+    _neuralFeatureStream.close();
 
   delete _pScene;
 }
@@ -2123,7 +2177,10 @@ void Renderer::setBenchmarkMode(bool enabled) {
     _benchmarkHeaderWritten = false;
     _pendingBenchmarkSamples.clear();
     _benchmarkStartTime = std::chrono::steady_clock::now();
+    _neuralClipStartFrame = 0;
+    _neuralClipAccumulators.clear();
     ensureBenchmarkStream();
+    ensureNeuralFeatureStream();
     resetProbabilisticResidencyState();
     if (_benchmarkStream.is_open()) {
       printf("Benchmark logging enabled: %s\n",
@@ -2133,8 +2190,290 @@ void Renderer::setBenchmarkMode(bool enabled) {
   } else {
     if (_benchmarkStream.is_open())
       _benchmarkStream.close();
+    if (_neuralFeatureLoggingEnabled)
+      flushNeuralClipFeatures(true);
     _pendingBenchmarkSamples.clear();
   }
+}
+
+bool Renderer::objectForcedOff(size_t objectIndex) const {
+  return _forcedObjectOffIndex != std::numeric_limits<size_t>::max() &&
+         objectIndex == _forcedObjectOffIndex;
+}
+
+void Renderer::initializeNeuralFeatureLogging() {
+  if (!_neuralFeatureLoggingEnabled)
+    return;
+  ensureNeuralFeatureStream();
+}
+
+void Renderer::ensureNeuralFeatureStream() {
+  if (!_neuralFeatureLoggingEnabled)
+    return;
+  if (_neuralFeatureStream.is_open())
+    return;
+
+  std::filesystem::path baseDir;
+  if (!_runOutputRoot.empty())
+    baseDir = _runOutputRoot;
+  else
+    baseDir = std::filesystem::current_path() / "Benchmarks";
+
+  std::error_code ec;
+  std::filesystem::create_directories(baseDir, ec);
+
+  std::filesystem::path outPath = baseDir / "neural_object_features.csv";
+  _neuralFeatureFilePath = outPath.string();
+  _neuralFeatureStream.open(_neuralFeatureFilePath,
+                            std::ios::out | std::ios::trunc);
+  if (!_neuralFeatureStream.is_open()) {
+    std::printf("Failed to open neural feature log '%s'\n",
+                _neuralFeatureFilePath.c_str());
+    return;
+  }
+
+  _neuralFeatureStream
+      << "scene_variant,strategy,strategy_id,clip_id,clip_start_frame,"
+         "clip_end_frame,clip_frame_count,forced_object_off,object_id,"
+         "primitive_count,visible_frame_fraction,mean_visible_coverage,"
+         "max_visible_coverage,mean_distance,min_distance,"
+         "mean_hit_probability,mean_object_rayhit_score,total_object_hits,"
+         "total_object_rays_tested,toggle_count,active_frame_fraction,"
+         "resident_frame_fraction,streaming_frame_fraction,"
+         "transport_critical_frame_fraction,mean_object_importance,"
+         "mean_estimated_object_bytes,emissive_importance\n";
+  _neuralFeatureHeaderWritten = true;
+}
+
+void Renderer::accumulateNeuralClipFeatures() {
+  if (!_neuralFeatureLoggingEnabled)
+    return;
+  ensureNeuralFeatureStream();
+  if (!_neuralFeatureStream.is_open())
+    return;
+
+  updatePrimitiveScreenCoverageForFrame();
+
+  const size_t objectCount = _allSceneObjects.size();
+  if (objectCount == 0 || _neuralClipLength == 0)
+    return;
+
+  if (_neuralClipAccumulators.size() != objectCount)
+    _neuralClipAccumulators.assign(objectCount, NeuralObjectClipAccumulator{});
+
+  if (_benchmarkEnabled && _benchmarkFrameCounter > 0 &&
+      ((_benchmarkFrameCounter - 1) % _neuralClipLength == 0)) {
+    bool anyInitialized = false;
+    for (const auto &acc : _neuralClipAccumulators) {
+      if (acc.initialized) {
+        anyInitialized = true;
+        break;
+      }
+    }
+    if (anyInitialized)
+      flushNeuralClipFeatures(false);
+    _neuralClipStartFrame = _benchmarkFrameCounter - 1;
+  }
+
+  for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
+    NeuralObjectClipAccumulator &acc = _neuralClipAccumulators[objectIndex];
+    if (!acc.initialized) {
+      acc = NeuralObjectClipAccumulator{};
+      acc.initialized = true;
+      acc.primitiveCount = objectIndex < _objectPrimitiveCounts.size()
+                               ? _objectPrimitiveCounts[objectIndex]
+                               : _allSceneObjects[objectIndex].primitiveCount;
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      const size_t first = obj.firstPrimitive;
+      const size_t last = std::min(first + obj.primitiveCount, _allPrimitives.size());
+      double emissive = 0.0;
+      for (size_t primIndex = first; primIndex < last; ++primIndex) {
+        const Material &m = _allPrimitives[primIndex].material;
+        emissive += std::max(
+            m.emissionPower * luminance(m.emissionColor) *
+                primitiveArea(_allPrimitives[primIndex]),
+            0.0f);
+      }
+      acc.emissiveImportance = emissive;
+    }
+
+    const SceneObject &obj = _allSceneObjects[objectIndex];
+    bool visible =
+        objectIndex < _objectVisible.size() && _objectVisible[objectIndex] != 0u;
+    if (!visible && objectIndex < _objectBounds.size())
+      visible = isInView(_objectBounds[objectIndex]);
+    if (visible)
+      acc.visibleFrames += 1;
+
+    double coverage = 0.0;
+    const size_t first = obj.firstPrimitive;
+    const size_t last =
+        std::min(first + obj.primitiveCount, _primitiveScreenCoverage.size());
+    for (size_t primIndex = first; primIndex < last; ++primIndex)
+      coverage += std::max(_primitiveScreenCoverage[primIndex], 0.0f);
+    if (visible)
+      acc.visibleCoverageSum += coverage;
+    acc.maxVisibleCoverage = std::max(acc.maxVisibleCoverage, coverage);
+
+    if (objectIndex < _objectBounds.size()) {
+      simd::float3 delta = _objectBounds[objectIndex].center - Camera::position;
+      double distance = static_cast<double>(simd::length(delta));
+      acc.distanceSum += distance;
+      acc.minDistance = std::min(acc.minDistance, distance);
+    }
+
+    if (objectIndex < _objectHitProbability.size())
+      acc.hitProbabilitySum +=
+          std::clamp(static_cast<double>(_objectHitProbability[objectIndex]), 0.0,
+                     1.0);
+    if (objectIndex < _objectRayHitScore.size())
+      acc.rayHitScoreSum +=
+          std::max(static_cast<double>(_objectRayHitScore[objectIndex]), 0.0);
+    if (objectIndex < _objectHitLastFrame.size())
+      acc.totalHits += _objectHitLastFrame[objectIndex];
+    if (objectIndex < _objectRaysTestedLastFrame.size())
+      acc.totalRaysTested += _objectRaysTestedLastFrame[objectIndex];
+    if (objectIndex < _objectLastToggleFrame.size() &&
+        _objectLastToggleFrame[objectIndex] == _renderedFrameCount)
+      acc.toggleCount += 1;
+    if (objectIndex < _objectActive.size() && _objectActive[objectIndex])
+      acc.activeFrames += 1;
+    if (objectIndex < _residentObjectGpuResources.size()) {
+      const auto &resident = _residentObjectGpuResources[objectIndex];
+      if (resident.state == ResidentObjectGpuResources::ResidencyState::Resident)
+        acc.residentFrames += 1;
+      if (resident.state == ResidentObjectGpuResources::ResidencyState::Streaming)
+        acc.streamingFrames += 1;
+      acc.estimatedBytesSum += static_cast<double>(resident.byteSize > 0
+                                                       ? resident.byteSize
+                                                       : resident.resources.currentRequiredBytes());
+    }
+    double objectImportance = 0.0;
+    if (objectIndex < _objectImportance.size())
+      objectImportance = std::max(_objectImportance[objectIndex], 0.0f);
+    if (!(objectImportance > 0.0)) {
+      for (size_t primIndex = first; primIndex < last && primIndex < _primitiveImportance.size();
+           ++primIndex) {
+        objectImportance += std::max(static_cast<double>(_primitiveImportance[primIndex]), 0.0);
+      }
+    }
+    acc.objectImportanceSum += objectImportance;
+    bool transportCritical = false;
+    for (size_t primIndex = first; primIndex < last && primIndex < _allPrimitives.size();
+         ++primIndex) {
+      const Material &m = _allPrimitives[primIndex].material;
+      if (m.emissionPower * luminance(m.emissionColor) > 0.0f) {
+        transportCritical = true;
+        break;
+      }
+    }
+    if (transportCritical)
+      acc.transportCriticalFrames += 1;
+  }
+}
+
+void Renderer::flushNeuralClipFeatures(bool forcePartialClip) {
+  if (!_neuralFeatureLoggingEnabled || !_neuralFeatureStream.is_open() ||
+      _neuralClipAccumulators.empty())
+    return;
+
+  size_t frameCount = _benchmarkFrameCounter > _neuralClipStartFrame
+                          ? (_benchmarkFrameCounter - _neuralClipStartFrame)
+                          : 0;
+  if (!forcePartialClip && frameCount < _neuralClipLength)
+    return;
+  if (frameCount == 0)
+    return;
+
+  auto formatFixedLocal = [](double value, int precision = 6) {
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(precision) << value;
+    return ss.str();
+  };
+  auto appendCsvEscapedLocal = [](std::ostringstream &ss,
+                                  const std::string &value) {
+    ss << '"';
+    for (char c : value) {
+      if (c == '"')
+        ss << '"';
+      ss << c;
+    }
+    ss << '"';
+  };
+
+  ResidencyStrategy currentStrategy = _frameStrategy;
+  if (_pScene)
+    currentStrategy = _pScene->getResidencyStrategy();
+  const std::string strategyName = residencyStrategyName(currentStrategy);
+  const std::string sceneName =
+      _sceneVariantName.empty() ? std::string("unknown_scene") : _sceneVariantName;
+  const size_t clipEndFrame =
+      _benchmarkFrameCounter > 0 ? (_benchmarkFrameCounter - 1) : 0;
+  const size_t clipId =
+      _neuralClipLength > 0 ? (_neuralClipStartFrame / _neuralClipLength) : 0;
+
+  for (size_t objectIndex = 0; objectIndex < _neuralClipAccumulators.size();
+       ++objectIndex) {
+    const NeuralObjectClipAccumulator &acc = _neuralClipAccumulators[objectIndex];
+    if (!acc.initialized || acc.primitiveCount == 0)
+      continue;
+
+    const double invFrames = 1.0 / static_cast<double>(frameCount);
+    const double visibleFrameFraction =
+        static_cast<double>(acc.visibleFrames) * invFrames;
+    const double activeFrameFraction =
+        static_cast<double>(acc.activeFrames) * invFrames;
+    const double residentFrameFraction =
+        static_cast<double>(acc.residentFrames) * invFrames;
+    const double streamingFrameFraction =
+        static_cast<double>(acc.streamingFrames) * invFrames;
+    const double transportCriticalFrameFraction =
+        static_cast<double>(acc.transportCriticalFrames) * invFrames;
+    const double meanVisibleCoverage =
+        acc.visibleFrames > 0
+            ? (acc.visibleCoverageSum / static_cast<double>(acc.visibleFrames))
+            : 0.0;
+    const double meanDistance = acc.distanceSum * invFrames;
+    const double minDistance =
+        std::isfinite(acc.minDistance) ? acc.minDistance : 0.0;
+    const double meanHitProbability = acc.hitProbabilitySum * invFrames;
+    const double meanRayHitScore = acc.rayHitScoreSum * invFrames;
+    const double meanObjectImportance = acc.objectImportanceSum * invFrames;
+    const double meanEstimatedBytes = acc.estimatedBytesSum * invFrames;
+
+    std::ostringstream row;
+    appendCsvEscapedLocal(row, sceneName);
+    row << ',';
+    appendCsvEscapedLocal(row, strategyName);
+    row << ',' << static_cast<int>(currentStrategy) << ','
+        << clipId << ',' << _neuralClipStartFrame << ',' << clipEndFrame << ','
+        << frameCount << ',';
+    if (_forcedObjectOffIndex == std::numeric_limits<size_t>::max())
+      row << -1;
+    else
+      row << static_cast<long long>(_forcedObjectOffIndex);
+    row << ',' << objectIndex << ',' << acc.primitiveCount << ','
+        << formatFixedLocal(visibleFrameFraction) << ','
+        << formatFixedLocal(meanVisibleCoverage) << ','
+        << formatFixedLocal(acc.maxVisibleCoverage) << ','
+        << formatFixedLocal(meanDistance) << ','
+        << formatFixedLocal(minDistance) << ','
+        << formatFixedLocal(meanHitProbability) << ','
+        << formatFixedLocal(meanRayHitScore) << ','
+        << acc.totalHits << ',' << acc.totalRaysTested << ','
+        << acc.toggleCount << ','
+        << formatFixedLocal(activeFrameFraction) << ','
+        << formatFixedLocal(residentFrameFraction) << ','
+        << formatFixedLocal(streamingFrameFraction) << ','
+        << formatFixedLocal(transportCriticalFrameFraction) << ','
+        << formatFixedLocal(meanObjectImportance) << ','
+        << formatFixedLocal(meanEstimatedBytes) << ','
+        << formatFixedLocal(acc.emissiveImportance);
+    _neuralFeatureStream << row.str() << '\n';
+  }
+  _neuralFeatureStream.flush();
+  _neuralClipAccumulators.assign(_neuralClipAccumulators.size(),
+                                 NeuralObjectClipAccumulator{});
 }
 
 void Renderer::resetProbabilisticResidencyState() {
@@ -2293,6 +2632,9 @@ void Renderer::writeBenchmarkHeader() {
          "tlas_refits,active_primitives,resident_primitives,total_primitives,"
          "active_triangles,resident_triangles,total_triangles,active_nodes,"
          "resident_nodes,total_nodes,active_objects,resident_objects,"
+         "visible_primitives,visible_objects,"
+         "primitive_hits_last_frame,primitive_rays_tested_last_frame,"
+         "object_hits_last_frame,object_rays_tested_last_frame,"
          "avg_hit_probability,p95_hit_probability,probability_threshold,"
          "probability_target_fraction,probability_visible_floor,"
          "probability_target_primitives,"
@@ -2304,7 +2646,8 @@ void Renderer::writeBenchmarkHeader() {
          "object_probabilities,probabilistic_toggles,"
          "gpu_memory_mb,scratch_memory_mb,gpu_geometry_mb,gpu_textures_mb,"
          "gpu_restir_mb,gpu_renderer_mb,gpu_heaps_mb,gpu_staging_mb,gpu_other_mb,"
-         "resident_geometry_memory_mb,resident_texture_memory_mb,residency_memory_mb,"
+         "resident_geometry_memory_mb,strict_resident_geometry_memory_mb,"
+         "resident_texture_memory_mb,residency_memory_mb,"
          "texture_memory_cap_mb,geometry_memory_cap_mb,"
          "total_memory_cap_mb,minimum_resident_footprint_mb,"
          "total_memory_cap_relaxed_mb,over_memory_cap,geometry_over_memory_cap,"
@@ -2389,7 +2732,10 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << sample.residentTriangleCount << ',' << sample.totalTriangleCount << ','
       << sample.activeNodeCount << ',' << sample.residentNodeCount << ','
       << sample.totalNodeCount << ',' << sample.activeObjectCount << ','
-      << sample.residentObjectCount << ','
+      << sample.residentObjectCount << ',' << sample.visiblePrimitiveCount << ','
+      << sample.visibleObjectCount << ',' << sample.primitiveHitsLastFrame << ','
+      << sample.primitiveRaysTestedLastFrame << ',' << sample.objectHitsLastFrame
+      << ',' << sample.objectRaysTestedLastFrame << ','
       << formatFixed(sample.avgHitProbability, 6) << ','
       << formatFixed(sample.p95HitProbability, 6) << ','
       << formatFixed(sample.probabilityThreshold, 3) << ','
@@ -2416,6 +2762,7 @@ void Renderer::writeBenchmarkRow(const BenchmarkSample &sample) {
       << formatFixed(sample.gpuStagingMB, 3) << ','
       << formatFixed(sample.gpuOtherMB, 3) << ','
       << formatFixed(sample.residentGeometryMemoryMB, 3) << ','
+      << formatFixed(sample.strictResidentGeometryMemoryMB, 3) << ','
       << formatFixed(sample.residentTextureMemoryMB, 3) << ','
       << formatFixed(sample.residencyMemoryMB, 3) << ','
       << formatFixed(sample.textureMemoryCapMB, 3) << ','
@@ -2486,6 +2833,8 @@ std::string Renderer::residencyStrategyName(ResidencyStrategy strategy) const {
     return "Probabilistic";
   case ResidencyStrategy::UnifiedScore:
     return "Unified score";
+  case ResidencyStrategy::UnifiedNeural:
+    return "Unified neural";
   case ResidencyStrategy::PredictiveEnvironment:
     return "Predictive environment";
   case ResidencyStrategy::EnvironmentHit:
@@ -2502,16 +2851,20 @@ void Renderer::ensureFrameCaptureDirectory() {
   if (_frameCaptureDirectoryInitialized)
     return;
 
-  std::filesystem::path benchmarksDir =
-      std::filesystem::current_path() / "Benchmarks";
-  std::filesystem::path framesDir =
-      benchmarksDir / _frameCaptureSubdirectory;
+  std::filesystem::path baseDir;
+  if (const char *runsPath = std::getenv("MPT_RUNS_PATH");
+      runsPath && runsPath[0]) {
+    baseDir = std::filesystem::path(runsPath);
+  } else {
+    baseDir = std::filesystem::current_path() / "Benchmarks";
+  }
+  std::filesystem::path framesDir = baseDir / _frameCaptureSubdirectory;
 
   std::error_code ec;
   std::filesystem::create_directories(framesDir, ec);
   if (ec) {
     std::error_code fallbackError;
-    std::filesystem::create_directories(benchmarksDir, fallbackError);
+    std::filesystem::create_directories(baseDir, fallbackError);
     if (fallbackError) {
       std::printf(
           "Failed to initialize frame capture directory '%s': %s\n",
@@ -2520,7 +2873,7 @@ void Renderer::ensureFrameCaptureDirectory() {
       _frameCaptureDirectoryInitialized = true;
       return;
     }
-    _frameCaptureDirectory = benchmarksDir.string();
+    _frameCaptureDirectory = baseDir.string();
   } else {
     _frameCaptureDirectory = framesDir.string();
   }
@@ -2815,19 +3168,28 @@ void Renderer::processPendingCapturedFrames() {
       }
     }
 
-    if (!albedoData.empty() && !normalData.empty()) {
+    bool attemptedOidn = false;
+    bool oidnApplied = false;
+    if (_disableOfflineOidn) {
+      std::printf("Skipping OIDN for frame %llu: deferred denoise mode is "
+                  "enabled.\n",
+                  static_cast<unsigned long long>(capture->frameIndex));
+    } else if (!albedoData.empty() && !normalData.empty()) {
+      attemptedOidn = true;
       std::printf("Applying OIDN offline EXR denoiser to frame %llu\n",
-                 static_cast<unsigned long long>(capture->frameIndex));
-      if (!applyOidnOfflineDenoise(rgba, albedoData, normalData, capture->width,
-                                   capture->height, capture->frameIndex)) {
+                  static_cast<unsigned long long>(capture->frameIndex));
+      oidnApplied =
+          applyOidnOfflineDenoise(rgba, albedoData, normalData, capture->width,
+                                  capture->height, capture->frameIndex);
+      if (!oidnApplied) {
         std::printf("OIDN denoise failed for frame %llu; saving original color.\n",
-                   static_cast<unsigned long long>(capture->frameIndex));
-        for (size_t i = 0; i < pixelCount; ++i)
-          rgba[i * 4 + 3] = 1.0f;
+                    static_cast<unsigned long long>(capture->frameIndex));
       }
     } else {
       std::printf("Skipping OIDN for frame %llu: missing albedo/normal AOVs.\n",
-                 static_cast<unsigned long long>(capture->frameIndex));
+                  static_cast<unsigned long long>(capture->frameIndex));
+    }
+    if (_disableOfflineOidn || !attemptedOidn || !oidnApplied) {
       for (size_t i = 0; i < pixelCount; ++i)
         rgba[i * 4 + 3] = 1.0f;
     }
@@ -3281,6 +3643,9 @@ void Renderer::updateVisibleScene() {
     break;
   case ResidencyStrategy::UnifiedScore:
     strategyName = "Unified score";
+    break;
+  case ResidencyStrategy::UnifiedNeural:
+    strategyName = "Unified neural";
     break;
   case ResidencyStrategy::PredictiveEnvironment:
     strategyName = "Predictive environment";
@@ -3807,7 +4172,8 @@ void Renderer::recalculateViewport() {
 }
 
 bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
-                               ResidentObjectGpuResources &resident) {
+                               ResidentObjectGpuResources &resident,
+                               bool coldOnloadRequest) {
   if (!_pDevice || !_pCommandQueue)
     return false;
 
@@ -3843,6 +4209,8 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     resident.vertexBufferOffset = 0;
     resident.indexBufferOffset = 0;
     resident.geometryValid = false;
+    resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
+    resident.lastStateChange = std::chrono::steady_clock::now();
     cleanupPool();
     return true;
   }
@@ -3945,6 +4313,8 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
     resident.vertexBufferOffset = 0;
     resident.indexBufferOffset = 0;
     resident.geometryValid = false;
+    resident.state = ResidentObjectGpuResources::ResidencyState::Resident;
+    resident.lastStateChange = std::chrono::steady_clock::now();
     cleanupPool();
     return true;
   }
@@ -3958,6 +4328,7 @@ bool Renderer::buildObjectBlas(size_t objectIndex, const SceneObject &object,
   buildRequest->renderer = this;
   buildRequest->resident = &resident;
   buildRequest->objectIndex = objectIndex;
+  buildRequest->coldOnloadRequest = coldOnloadRequest;
   buildRequest->vertices = std::move(vertices);
   buildRequest->indices = std::move(indices);
   buildRequest->triangleCount = triangleCount;
@@ -4311,6 +4682,10 @@ Renderer::BlasBuildStartResult Renderer::startBlasBuild(
   buildRequest->scratchBuffer = scratchBuffer;
   buildRequest->commandBuffer = commandBuffer;
   buildRequest->totalHeapBytes = totalHeapBytes;
+
+  if (buildRequest->coldOnloadRequest) {
+    _frameOnloadRequestedBytes += static_cast<size_t>(buildRequest->totalHeapBytes);
+  }
 
   // Release CPU copies now that staging buffers are populated.
   buildRequest->vertices.clear();
@@ -6057,6 +6432,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
   bool geometryHardCapEnabled =
       _geometryResidencyMemoryCapMB > 0.0 && geometryCapBytes > 0;
   bool geometryHardCapReached = _pendingGeometryResidencyOverageBytes > 0;
+  constexpr size_t kMaxColdObjectOnloadsPerFrame = 32;
+  size_t coldObjectOnloadsStarted = 0;
 
   for (size_t objectIndex = 0; objectIndex < sceneObjects.size(); ++objectIndex) {
     bool shouldBeResident = objectShouldBeResident[objectIndex];
@@ -6084,6 +6461,14 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     }
 
     if (shouldBeResident) {
+      bool deferColdOnload =
+          !_residencyPreviewOnly &&
+          _frameStrategy != ResidencyStrategy::AlwaysResident &&
+          previousState == ResidentObjectGpuResources::ResidencyState::Cold &&
+          coldObjectOnloadsStarted >= kMaxColdObjectOnloadsPerFrame;
+      if (deferColdOnload)
+        continue;
+
       bool built = gpuResident.ensureResident(
           *this, objectIndex, sceneObjects[objectIndex], instanceRecord,
           needFullUpload);
@@ -6092,8 +6477,8 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         objectShouldBeResident[objectIndex] = false;
       } else if (previousState == ResidentObjectGpuResources::ResidencyState::Cold &&
                  gpuResident.state != ResidentObjectGpuResources::ResidencyState::Cold) {
+        ++coldObjectOnloadsStarted;
         ++_frameObjectsOnloadRequested;
-        _frameOnloadRequestedBytes += gpuResident.byteSize;
         if (gpuResident.state == ResidentObjectGpuResources::ResidencyState::Streaming)
           ++_frameBlasBuildRequests;
       }
@@ -6102,8 +6487,13 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
     if (!shouldBeResident && !_residencyPreviewOnly &&
         _frameStrategy != ResidencyStrategy::AlwaysResident) {
       if (previousState != ResidentObjectGpuResources::ResidencyState::Cold) {
+        size_t previousRequestedBytes = previousByteSize;
+        if (previousRequestedBytes == 0) {
+          previousRequestedBytes = static_cast<size_t>(
+              gpuResident.resources.currentRequiredBytes());
+        }
         ++_frameObjectsOffloadRequested;
-        _frameOffloadRequestedBytes += previousByteSize;
+        _frameOffloadRequestedBytes += previousRequestedBytes;
       }
       requestResidentEviction(objectIndex, gpuResident, instanceRecord);
     }
@@ -7294,6 +7684,14 @@ void Renderer::updateGeometryResidency(MTL::CommandBuffer *cmd) {
     if (objectIndex >= _instanceRecords.size())
       continue;
 
+    bool visible = false;
+    if (objectIndex < _objectBounds.size())
+      visible = isInView(_objectBounds[objectIndex]);
+    if (objectIndex < _objectVisible.size())
+      visible = visible || (_objectVisible[objectIndex] != 0u);
+    if (visible)
+      continue;
+
     double bytesMB =
         static_cast<double>(resident.byteSize) / (1024.0 * 1024.0);
     if (bytesMB <= 0.0)
@@ -7558,6 +7956,9 @@ bool Renderer::updateCameraStates() {
   bool hadObserver = _observerActive;
   Camera::State previousViewState =
       hadObserver ? _observerCameraState : _primaryCameraState;
+  const bool freezeAlwaysResidentAnimation =
+      _pScene && _pScene->getResidencyStrategy() == ResidencyStrategy::AlwaysResident &&
+      _renderedFrameCount == 0;
 
   bool toggled = false;
   if (_forceObserverCapture) {
@@ -7623,7 +8024,8 @@ bool Renderer::updateCameraStates() {
     if (Camera::transformWithInputs())
       _observerCameraState = Camera::captureState();
 
-    _animationFrame++;
+    if (!freezeAlwaysResidentAnimation)
+      _animationFrame++;
   } else {
     Camera::State *target =
         _observerActive ? &_observerCameraState : &_primaryCameraState;
@@ -7752,6 +8154,7 @@ void Renderer::updateUniforms(bool cameraChanged) {
 }
 
 void Renderer::draw(MTK::View *pView) {
+  _didRenderFrame = false;
   processRayHitCounters();
   bool cameraChanged = updateCameraStates();
   Camera::State viewCamera =
@@ -7759,6 +8162,20 @@ void Renderer::draw(MTK::View *pView) {
 
   Camera::applyState(_primaryCameraState);
   updateResidency();
+
+  if (_frameStrategy == ResidencyStrategy::AlwaysResident &&
+      !alwaysResidentResidencyReady()) {
+    ++_alwaysResidentWarmupWaitCount;
+    if (_alwaysResidentWarmupWaitCount == 1 ||
+        (_alwaysResidentWarmupWaitCount % 60) == 0) {
+      std::printf(
+          "[AlwaysResident] Waiting for full residency warmup before first "
+          "measured frame (pending=%zu active=%zu).\n",
+          _pendingBlasBuilds.size(), _activeBlasBuilds.size());
+    }
+    return;
+  }
+  _alwaysResidentWarmupWaitCount = 0;
 
   Camera::applyState(viewCamera);
   if (_captureOutputsPending.load(std::memory_order_acquire))
@@ -8442,7 +8859,17 @@ void Renderer::draw(MTK::View *pView) {
     }
   }
 
+  bool canScheduleRayHitReadback = false;
   if (_pPrimitiveHitBufferGPU && _pPrimitiveHitReadback) {
+    if (!_lastRayHitCommandBuffer) {
+      canScheduleRayHitReadback = true;
+    } else if (rayHitCopyReady()) {
+      flushRayHitCopy();
+      canScheduleRayHitReadback = (_lastRayHitCommandBuffer == nullptr);
+    }
+  }
+
+  if (canScheduleRayHitReadback) {
     if (!pBlit)
       pBlit = presentCmd->blitCommandEncoder();
     if (pBlit) {
@@ -8490,6 +8917,7 @@ void Renderer::draw(MTK::View *pView) {
     _rayHitCopyError = false;
   }
 
+  _didRenderFrame = true;
   ++_renderedFrameCount;
   pPool->release();
 
@@ -8527,6 +8955,9 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
       _alwaysResidentCache.markDirty();
       _forceAlwaysResidentActivation = true;
       _pendingAlwaysResidentPrewarm = true;
+      _alwaysResidentWarmupWaitCount = 0;
+    } else {
+      _alwaysResidentWarmupWaitCount = 0;
     }
     _lastResidencyStrategy = strategy;
   }
@@ -8547,6 +8978,7 @@ void Renderer::updateResidency(bool forceAllToggles, bool forceFullRebuild) {
     changed = updateEnergyImportance(forceAllToggles);
     break;
   case ResidencyStrategy::UnifiedScore:
+  case ResidencyStrategy::UnifiedNeural:
     changed = updateUnifiedResidency(forceAllToggles);
     break;
   case ResidencyStrategy::RayHitBudget:
@@ -8624,6 +9056,7 @@ bool Renderer::enforceEmissiveObjectResidency(bool forceAllToggles) {
   switch (_frameStrategy) {
   case ResidencyStrategy::EnergyImportance:
   case ResidencyStrategy::UnifiedScore:
+  case ResidencyStrategy::UnifiedNeural:
     baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
@@ -8712,6 +9145,7 @@ bool Renderer::enforceTransportCriticalObjectResidency(bool forceAllToggles) {
   switch (_frameStrategy) {
   case ResidencyStrategy::EnergyImportance:
   case ResidencyStrategy::UnifiedScore:
+  case ResidencyStrategy::UnifiedNeural:
     baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
@@ -8917,6 +9351,7 @@ bool Renderer::enforceVisibleObjectResidency(bool forceAllToggles) {
   switch (_frameStrategy) {
   case ResidencyStrategy::EnergyImportance:
   case ResidencyStrategy::UnifiedScore:
+  case ResidencyStrategy::UnifiedNeural:
     baseBudget = _residencyConfig.energyMaxTogglesPerFrame;
     break;
   case ResidencyStrategy::ScreenSpaceFootprint:
@@ -8984,6 +9419,8 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
   size_t objectCount = _allSceneObjects.size();
   bool hasRecentChanges = !_recentlyActivated.empty() || !_recentlyDeactivated.empty();
   bool forceActivation = forceAllToggles || _forceAlwaysResidentActivation;
+  const bool hasForcedObjectOff =
+      _forcedObjectOffIndex != std::numeric_limits<size_t>::max();
 
   bool changed = false;
 
@@ -9000,9 +9437,17 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
         changed = true;
     }
 
-    for (size_t primIndex = 0; primIndex < _activePrimitive.size(); ++primIndex) {
-      if (setPrimitiveActive(primIndex, true))
-        changed = true;
+    for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+         ++objectIndex) {
+      const SceneObject &obj = _allSceneObjects[objectIndex];
+      const bool keepActive = !objectForcedOff(objectIndex);
+      size_t first = obj.firstPrimitive;
+      size_t last = first + obj.primitiveCount;
+      for (size_t primIndex = first;
+           primIndex < last && primIndex < _activePrimitive.size(); ++primIndex) {
+        if (setPrimitiveActive(primIndex, keepActive))
+          changed = true;
+      }
     }
 
     _alwaysResidentCache.markUpdated(primitiveCount, objectCount);
@@ -9014,6 +9459,8 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
                   [](bool active) { return !active; });
   bool anyInactiveObject = false;
   for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size(); ++objectIndex) {
+    if (objectForcedOff(objectIndex))
+      continue;
     const SceneObject &obj = _allSceneObjects[objectIndex];
     if (obj.primitiveCount == 0)
       continue;
@@ -9025,19 +9472,49 @@ bool Renderer::updateAlwaysResident(bool forceAllToggles) {
     }
   }
 
-  if (anyInactivePrimitive || anyInactiveObject || !_recentlyDeactivated.empty()) {
+  if ((anyInactivePrimitive || anyInactiveObject || !_recentlyDeactivated.empty()) &&
+      !hasForcedObjectOff) {
     printf("Always-resident strategy detected attempted eviction (%zu primitives pending).\n",
            _recentlyDeactivated.size());
   }
 
-  assert(!anyInactivePrimitive &&
+  assert((!anyInactivePrimitive || hasForcedObjectOff) &&
          "Always-resident strategy should keep all primitives active");
-  assert(!anyInactiveObject &&
+  assert((!anyInactiveObject || hasForcedObjectOff) &&
          "Always-resident strategy should keep populated objects active");
-  assert(_recentlyDeactivated.empty() &&
+  assert((_recentlyDeactivated.empty() || hasForcedObjectOff) &&
          "Always-resident strategy should not queue primitive deactivations");
 
   return changed;
+}
+
+bool Renderer::alwaysResidentResidencyReady() {
+  if (_pendingAlwaysResidentPrewarm)
+    return false;
+  if (!_pendingBlasBuilds.empty() || !_activeBlasBuilds.empty())
+    return false;
+
+  for (size_t objectIndex = 0; objectIndex < _allSceneObjects.size();
+       ++objectIndex) {
+    if (objectForcedOff(objectIndex))
+      continue;
+    const SceneObject &object = _allSceneObjects[objectIndex];
+    if (object.primitiveCount == 0)
+      continue;
+    if (objectIndex >= _residentObjectGpuResources.size())
+      return false;
+
+    auto &resident = _residentObjectGpuResources[objectIndex];
+    resident.clearPendingCommand();
+    if (resident.hasPendingCommands())
+      return false;
+    if (!resident.isResident())
+      return false;
+    if (resident.triangleCount > 0 && !resident.geometryValid)
+      return false;
+  }
+
+  return true;
 }
 
 bool Renderer::updateLODByDistance(bool forceAllToggles) {
@@ -9249,6 +9726,8 @@ bool Renderer::updateLODByDistance(bool forceAllToggles) {
 size_t Renderer::setObjectActive(size_t objectIndex, bool active) {
   if (objectIndex >= _allSceneObjects.size())
     return 0;
+  if (objectForcedOff(objectIndex))
+    active = false;
 
   if (objectIndex >= _objectActive.size())
     _objectActive.resize(objectIndex + 1, false);
@@ -13470,6 +13949,26 @@ bool Renderer::flushRayHitCopy() {
 
   auto status = _lastRayHitCommandBuffer->status();
 
+  const ResidencyStrategy strategy =
+      _pScene ? _pScene->getResidencyStrategy()
+              : ResidencyStrategy::DistanceLOD;
+  const bool strategyUsesHits =
+      strategy == ResidencyStrategy::RayHitBudget ||
+      strategy == ResidencyStrategy::Probabilistic ||
+      strategy == ResidencyStrategy::EnvironmentHit ||
+      strategy == ResidencyStrategy::PredictiveEnvironment ||
+      strategy == ResidencyStrategy::UnifiedScore ||
+      strategy == ResidencyStrategy::UnifiedNeural;
+
+  if ((status == MTL::CommandBufferStatus::CommandBufferStatusCommitted ||
+       status == MTL::CommandBufferStatus::CommandBufferStatusScheduled ||
+       status == MTL::CommandBufferStatus::CommandBufferStatusEnqueued ||
+       status == MTL::CommandBufferStatus::CommandBufferStatusNotEnqueued) &&
+      (strategyUsesHits || _benchmarkEnabled)) {
+    _lastRayHitCommandBuffer->waitUntilCompleted();
+    status = _lastRayHitCommandBuffer->status();
+  }
+
   switch (status) {
   case MTL::CommandBufferStatus::CommandBufferStatusCompleted:
     _rayHitCopyError = false;
@@ -13588,7 +14087,9 @@ void Renderer::processRayHitCounters() {
       strategy == ResidencyStrategy::Probabilistic ||
       strategy == ResidencyStrategy::EnvironmentHit ||
       strategy == ResidencyStrategy::PredictiveEnvironment ||
-      strategy == ResidencyStrategy::UnifiedScore;
+      strategy == ResidencyStrategy::UnifiedScore ||
+      strategy == ResidencyStrategy::UnifiedNeural ||
+      _benchmarkEnabled || _neuralFeatureLoggingEnabled;
   if (!strategyUsesHits) {
     std::memset(hitPtr, 0, bufferLength);
     _primitiveHitScores.clear();
@@ -14220,6 +14721,22 @@ void Renderer::beginFrameMetrics() {
       if (resident.isResident())
         ++residentObjects;
     sample.residentObjectCount = residentObjects;
+    sample.visiblePrimitiveCount = static_cast<size_t>(std::count_if(
+        _primitiveVisible.begin(), _primitiveVisible.end(),
+        [](uint8_t visible) { return visible != 0; }));
+    sample.visibleObjectCount = static_cast<size_t>(std::count_if(
+        _objectVisible.begin(), _objectVisible.end(),
+        [](uint8_t visible) { return visible != 0; }));
+    sample.primitiveHitsLastFrame = std::accumulate(
+        _primitiveHitLastFrame.begin(), _primitiveHitLastFrame.end(), size_t(0));
+    sample.primitiveRaysTestedLastFrame =
+        std::accumulate(_primitiveRaysTestedLastFrame.begin(),
+                        _primitiveRaysTestedLastFrame.end(), size_t(0));
+    sample.objectHitsLastFrame = std::accumulate(
+        _objectHitLastFrame.begin(), _objectHitLastFrame.end(), size_t(0));
+    sample.objectRaysTestedLastFrame =
+        std::accumulate(_objectRaysTestedLastFrame.begin(),
+                        _objectRaysTestedLastFrame.end(), size_t(0));
     sample.gpuMemoryMB = currentGPUMemoryMB();
     sample.scratchMemoryMB = scratchMemoryMB();
     sample.textureMemoryCapMB = _textureResidencyMemoryCapMB;
@@ -14228,8 +14745,10 @@ void Renderer::beginFrameMetrics() {
     sample.minimumResidentFootprintMB = _frameMinimumResidentFootprintMB;
     sample.totalMemoryCapRelaxedMB = _totalMemoryCapRelaxedMB;
     double geometryResidentMB = residentGeometryMemoryMB();
+    double strictGeometryResidentMB = strictResidentGeometryMemoryMB();
     double textureResidentMB = residentTextureMemoryMB();
     sample.residentGeometryMemoryMB = geometryResidentMB;
+    sample.strictResidentGeometryMemoryMB = strictGeometryResidentMB;
     sample.residentTextureMemoryMB = textureResidentMB;
     sample.residencyMemoryMB =
         std::max(0.0, geometryResidentMB + textureResidentMB);
@@ -14379,6 +14898,9 @@ void Renderer::beginFrameMetrics() {
     sample.totalMemoryEvictionStall = _frameTotalMemoryEvictionStall;
     _pendingBenchmarkSamples.push_back(std::move(sample));
   }
+
+  if (_neuralFeatureLoggingEnabled && _benchmarkEnabled)
+    accumulateNeuralClipFeatures();
 }
 
 void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
@@ -14479,7 +15001,8 @@ void Renderer::completeFrameMetrics(MTL::CommandBuffer *pCmd) {
       "reuseCandidates)\n",
       _lastRestirReuseCandidates, _lastRestirReuseAccepted, restirReuseRate,
       restirAcceptRate);
-  if (isAlwaysResidentStrategy() && offloaded > 0) {
+  if (isAlwaysResidentStrategy() && offloaded > 0 &&
+      _forcedObjectOffIndex == std::numeric_limits<size_t>::max()) {
     printf("Always-resident strategy reported %zu offloaded nodes.\n",
            offloaded);
     assert(offloaded == 0 &&

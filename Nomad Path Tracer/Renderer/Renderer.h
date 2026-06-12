@@ -138,6 +138,7 @@ public:
   double currentGPUMemoryMB() const;
   double scratchMemoryMB() const;
   double residentGeometryMemoryMB() const;
+  double strictResidentGeometryMemoryMB() const;
   double residentTextureMemoryMB() const;
   double restirTextureMemoryMB() const;
 
@@ -148,6 +149,7 @@ public:
   size_t residentNodeCount() const;
   size_t totalNodeCount() const;
   bool isAlwaysResidentStrategy() const;
+  bool didRenderFrame() const { return _didRenderFrame; }
 
   std::vector<std::pair<simd::float3, float>> _allSpheres;
 
@@ -163,6 +165,7 @@ public:
 
 private:
   struct BenchmarkSample;
+  struct NeuralObjectClipAccumulator;
   struct FrameCaptureRequest;
   struct ManagedTextureSlot;
   void recalculateNodeCounters(const std::vector<bool> &residentMask);
@@ -213,12 +216,14 @@ private:
   bool enforceVisibleObjectResidency(bool forceAllToggles);
   bool updateAlwaysResident(bool forceAllToggles);
   void prewarmAlwaysResidentResources();
+  bool alwaysResidentResidencyReady();
   void applyHeapShrinkSetting(bool enabled);
   void updateHeapShrinkCandidates();
   void flushResidencyChanges(bool forceFullRebuild);
   void beginFrameMetrics();
   void completeFrameMetrics(MTL::CommandBuffer *pCmd);
   size_t residentGeometryMemoryBytes() const;
+  size_t strictResidentGeometryMemoryBytes() const;
   size_t geometryResidencyCapBytes() const;
   double effectiveTotalGpuMemoryCapMB() const;
   size_t totalGpuMemoryCapBytes() const;
@@ -249,7 +254,8 @@ private:
   bool rayHitCopyReady() const;
   void processRayHitCounters();
   bool buildObjectBlas(size_t objectIndex, const SceneObject &object,
-                       ResidentObjectGpuResources &residentResources);
+                       ResidentObjectGpuResources &residentResources,
+                       bool coldOnloadRequest);
   bool ensureDummyBlas();
   void updateTopLevelAccelerationStructure(
       const std::vector<MTL::AccelerationStructureInstanceDescriptor>
@@ -295,6 +301,11 @@ private:
   void ensureBenchmarkStream();
   void writeBenchmarkHeader();
   void writeBenchmarkRow(const BenchmarkSample &sample);
+  void initializeNeuralFeatureLogging();
+  void ensureNeuralFeatureStream();
+  void accumulateNeuralClipFeatures();
+  void flushNeuralClipFeatures(bool forcePartialClip);
+  bool objectForcedOff(size_t objectIndex) const;
   std::string residencyStrategyName(ResidencyStrategy strategy) const;
   void ensureFrameCaptureDirectory();
   std::shared_ptr<FrameCaptureRequest>
@@ -419,6 +430,7 @@ private:
     Renderer *renderer = nullptr;
     ResidentObjectGpuResources *resident = nullptr;
     size_t objectIndex = 0;
+    bool coldOnloadRequest = false;
     std::vector<simd::float3> vertices;
     std::vector<uint32_t> indices;
     size_t triangleCount = 0;
@@ -471,6 +483,12 @@ private:
     size_t totalNodeCount = 0;
     size_t activeObjectCount = 0;
     size_t residentObjectCount = 0;
+    size_t visiblePrimitiveCount = 0;
+    size_t visibleObjectCount = 0;
+    size_t primitiveHitsLastFrame = 0;
+    size_t primitiveRaysTestedLastFrame = 0;
+    size_t objectHitsLastFrame = 0;
+    size_t objectRaysTestedLastFrame = 0;
     double gpuMemoryMB = 0.0;
     double scratchMemoryMB = 0.0;
     double gpuGeometryMB = 0.0;
@@ -481,6 +499,7 @@ private:
     double gpuStagingMB = 0.0;
     double gpuOtherMB = 0.0;
     double residentGeometryMemoryMB = 0.0;
+    double strictResidentGeometryMemoryMB = 0.0;
     double residentTextureMemoryMB = 0.0;
     double residencyMemoryMB = 0.0;
     double textureMemoryCapMB = 0.0;
@@ -530,6 +549,28 @@ private:
     size_t totalMemoryOverageWarnings = 0;
     size_t totalMemoryCapDeniedCount = 0;
     size_t totalMemoryCapNonResidencyDeniedCount = 0;
+  };
+
+  struct NeuralObjectClipAccumulator {
+    size_t visibleFrames = 0;
+    double visibleCoverageSum = 0.0;
+    double maxVisibleCoverage = 0.0;
+    double distanceSum = 0.0;
+    double minDistance = std::numeric_limits<double>::infinity();
+    double hitProbabilitySum = 0.0;
+    double rayHitScoreSum = 0.0;
+    uint64_t totalHits = 0;
+    uint64_t totalRaysTested = 0;
+    size_t toggleCount = 0;
+    size_t activeFrames = 0;
+    size_t residentFrames = 0;
+    size_t streamingFrames = 0;
+    size_t transportCriticalFrames = 0;
+    double objectImportanceSum = 0.0;
+    size_t primitiveCount = 0;
+    double estimatedBytesSum = 0.0;
+    double emissiveImportance = 0.0;
+    bool initialized = false;
   };
 
   struct FrameCaptureRequest {
@@ -797,6 +838,8 @@ private:
   AlwaysResidentCache _alwaysResidentCache;
   bool _forceAlwaysResidentActivation = false;
   bool _pendingAlwaysResidentPrewarm = false;
+  uint64_t _alwaysResidentWarmupWaitCount = 0;
+  bool _didRenderFrame = false;
   bool _frameCaptureEnabled = false;
   size_t _frameCaptureInterval = 4;
   uint64_t _renderedFrameCount = 0;
@@ -805,7 +848,18 @@ private:
   std::string _frameCaptureSubdirectory = "frames";
   bool _residencyPreviewOnly = false;
   bool _forceObserverCapture = false;
+  bool _disableOfflineOidn = false;
   std::deque<BenchmarkSample> _pendingBenchmarkSamples;
+  bool _neuralFeatureLoggingEnabled = false;
+  bool _neuralFeatureHeaderWritten = false;
+  std::ofstream _neuralFeatureStream;
+  std::string _neuralFeatureFilePath;
+  std::string _runOutputRoot;
+  std::string _sceneVariantName;
+  size_t _neuralClipLength = 16;
+  size_t _neuralClipStartFrame = 0;
+  size_t _forcedObjectOffIndex = std::numeric_limits<size_t>::max();
+  std::vector<NeuralObjectClipAccumulator> _neuralClipAccumulators;
 
   uint32_t _minSamplesPerPixel = 4;
   uint32_t _maxSamplesPerPixel = 4;
