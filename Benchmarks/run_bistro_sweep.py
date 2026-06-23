@@ -117,6 +117,14 @@ def parse_args() -> argparse.Namespace:
         help="Write clip-level object features for neural residency training.",
     )
     parser.add_argument(
+        "--log-unified-neural-scores",
+        action="store_true",
+        help=(
+            "Write per-frame UnifiedNeural score breakdowns "
+            "(heuristic/neural/blended) to unified_neural_scores.csv."
+        ),
+    )
+    parser.add_argument(
         "--neural-clip-length",
         type=int,
         default=16,
@@ -476,6 +484,7 @@ def run_scene(
     capture_interval: int,
     defer_oidn: bool,
     log_neural_features: bool,
+    log_unified_neural_scores: bool,
     neural_clip_length: int,
     force_object_off: int | None,
     thermal_log: bool,
@@ -488,6 +497,20 @@ def run_scene(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
+    # Clear sticky debug/capture vars that may have been left in the shell from
+    # earlier experiments. This keeps ordinary sweep runs deterministic unless
+    # the corresponding command-line flags intentionally re-enable them below.
+    for key in (
+        "MPT_OBSERVER_CAPTURE",
+        "MPT_RESIDENCY_PREVIEW_ONLY",
+        "MPT_FORCE_OBJECT_OFF",
+        "MPT_DISABLE_OFFLINE_OIDN",
+        "MPT_LOG_NEURAL_FEATURES",
+        "MPT_LOG_UNIFIED_NEURAL_SCORES",
+        "MPT_NEURAL_CLIP_LENGTH",
+    ):
+        env.pop(key, None)
+
     env["METALPT_BENCH"] = "1"
     env["METALPT_BENCH_LOG_PROBABILITIES"] = "0"
     env["MPT_MAX_FRAMES"] = str(max_frames)
@@ -496,6 +519,9 @@ def run_scene(
     env["MPT_CAPTURE_EXR"] = "1" if capture_exr else "0"
     env["MPT_CAPTURE_INTERVAL"] = str(max(1, capture_interval))
     env["MPT_LOG_NEURAL_FEATURES"] = "1" if log_neural_features else "0"
+    env["MPT_LOG_UNIFIED_NEURAL_SCORES"] = (
+        "1" if log_unified_neural_scores else "0"
+    )
     env["MPT_NEURAL_CLIP_LENGTH"] = str(max(1, neural_clip_length))
     if force_object_off is not None and force_object_off >= 0:
         env["MPT_FORCE_OBJECT_OFF"] = str(force_object_off)
@@ -641,6 +667,10 @@ def main() -> int:
     print(f"EXR capture: {'on' if args.capture_exr else 'off'}")
     print(f"Deferred OIDN: {'on' if args.defer_oidn else 'off'}")
     print(f"Neural feature logging: {'on' if args.log_neural_features else 'off'}")
+    print(
+        "UnifiedNeural score logging: "
+        f"{'on' if args.log_unified_neural_scores else 'off'}"
+    )
     if args.log_neural_features:
         print(f"Neural clip length: {args.neural_clip_length}")
     if args.force_object_off is not None:
@@ -736,6 +766,7 @@ def main() -> int:
                 capture_interval=args.capture_interval,
                 defer_oidn=args.defer_oidn,
                 log_neural_features=args.log_neural_features,
+                log_unified_neural_scores=args.log_unified_neural_scores,
                 neural_clip_length=args.neural_clip_length,
                 force_object_off=args.force_object_off,
                 thermal_log=args.thermal_log,

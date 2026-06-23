@@ -98,6 +98,380 @@ bool parseEnvBool(const char *value) {
   return first == 't' || first == 'y' || first == 'o';
 }
 
+uint32_t sanitizeDebugAccelerationModeForUniforms() {
+  using DebugMode = NomadPathTracer::InputSystem::DebugAccelerationMode;
+  DebugMode mode = NomadPathTracer::InputSystem::debugAccelerationMode;
+  if (NomadPathTracer::InputSystem::isExposedDebugAccelerationMode(mode)) {
+    return NomadPathTracer::InputSystem::rawDebugAccelerationMode(mode);
+  }
+
+  static bool warnedAboutNonExposedMode = false;
+  if (mode != DebugMode::None && !warnedAboutNonExposedMode) {
+    warnedAboutNonExposedMode = true;
+    std::printf(
+        "[Renderer] Ignoring non-exposed debug acceleration mode %u during "
+        "normal rendering.\n",
+        NomadPathTracer::InputSystem::rawDebugAccelerationMode(mode));
+  }
+
+  NomadPathTracer::InputSystem::setDebugAccelerationMode(DebugMode::None);
+  return NomadPathTracer::InputSystem::rawDebugAccelerationMode(
+      DebugMode::None);
+}
+
+struct TinyJsonValue {
+  enum class Type { Null, Bool, Number, String, Array, Object };
+
+  Type type = Type::Null;
+  bool boolValue = false;
+  double numberValue = 0.0;
+  std::string stringValue;
+  std::vector<TinyJsonValue> arrayValue;
+  std::map<std::string, TinyJsonValue> objectValue;
+};
+
+class TinyJsonParser {
+public:
+  explicit TinyJsonParser(const std::string &text) : _text(text) {}
+
+  bool parse(TinyJsonValue &outValue, std::string &outError) {
+    _pos = 0;
+    outError.clear();
+    skipWhitespace();
+    if (!parseValue(outValue, outError))
+      return false;
+    skipWhitespace();
+    if (_pos != _text.size()) {
+      outError = "Unexpected trailing JSON content.";
+      return false;
+    }
+    return true;
+  }
+
+private:
+  bool parseValue(TinyJsonValue &outValue, std::string &outError) {
+    skipWhitespace();
+    if (_pos >= _text.size()) {
+      outError = "Unexpected end of JSON input.";
+      return false;
+    }
+
+    const char c = _text[_pos];
+    if (c == '{')
+      return parseObject(outValue, outError);
+    if (c == '[')
+      return parseArray(outValue, outError);
+    if (c == '"')
+      return parseStringValue(outValue, outError);
+    if (c == '-' || std::isdigit(static_cast<unsigned char>(c)))
+      return parseNumber(outValue, outError);
+    if (matchLiteral("true")) {
+      outValue = TinyJsonValue{};
+      outValue.type = TinyJsonValue::Type::Bool;
+      outValue.boolValue = true;
+      return true;
+    }
+    if (matchLiteral("false")) {
+      outValue = TinyJsonValue{};
+      outValue.type = TinyJsonValue::Type::Bool;
+      outValue.boolValue = false;
+      return true;
+    }
+    if (matchLiteral("null")) {
+      outValue = TinyJsonValue{};
+      outValue.type = TinyJsonValue::Type::Null;
+      return true;
+    }
+
+    outError = "Unexpected token while parsing JSON.";
+    return false;
+  }
+
+  bool parseObject(TinyJsonValue &outValue, std::string &outError) {
+    if (!consume('{', outError))
+      return false;
+
+    outValue = TinyJsonValue{};
+    outValue.type = TinyJsonValue::Type::Object;
+    skipWhitespace();
+    if (peek('}')) {
+      ++_pos;
+      return true;
+    }
+
+    while (true) {
+      TinyJsonValue keyValue;
+      if (!parseStringValue(keyValue, outError))
+        return false;
+      skipWhitespace();
+      if (!consume(':', outError))
+        return false;
+      TinyJsonValue value;
+      if (!parseValue(value, outError))
+        return false;
+      outValue.objectValue[keyValue.stringValue] = std::move(value);
+      skipWhitespace();
+      if (peek('}')) {
+        ++_pos;
+        return true;
+      }
+      if (!consume(',', outError))
+        return false;
+      skipWhitespace();
+    }
+  }
+
+  bool parseArray(TinyJsonValue &outValue, std::string &outError) {
+    if (!consume('[', outError))
+      return false;
+
+    outValue = TinyJsonValue{};
+    outValue.type = TinyJsonValue::Type::Array;
+    skipWhitespace();
+    if (peek(']')) {
+      ++_pos;
+      return true;
+    }
+
+    while (true) {
+      TinyJsonValue value;
+      if (!parseValue(value, outError))
+        return false;
+      outValue.arrayValue.push_back(std::move(value));
+      skipWhitespace();
+      if (peek(']')) {
+        ++_pos;
+        return true;
+      }
+      if (!consume(',', outError))
+        return false;
+      skipWhitespace();
+    }
+  }
+
+  bool parseStringValue(TinyJsonValue &outValue, std::string &outError) {
+    std::string parsed;
+    if (!parseString(parsed, outError))
+      return false;
+    outValue = TinyJsonValue{};
+    outValue.type = TinyJsonValue::Type::String;
+    outValue.stringValue = std::move(parsed);
+    return true;
+  }
+
+  bool parseString(std::string &outString, std::string &outError) {
+    if (!consume('"', outError))
+      return false;
+
+    outString.clear();
+    while (_pos < _text.size()) {
+      char c = _text[_pos++];
+      if (c == '"')
+        return true;
+      if (c == '\\') {
+        if (_pos >= _text.size()) {
+          outError = "Incomplete JSON escape sequence.";
+          return false;
+        }
+        char escaped = _text[_pos++];
+        switch (escaped) {
+        case '"':
+        case '\\':
+        case '/':
+          outString.push_back(escaped);
+          break;
+        case 'b':
+          outString.push_back('\b');
+          break;
+        case 'f':
+          outString.push_back('\f');
+          break;
+        case 'n':
+          outString.push_back('\n');
+          break;
+        case 'r':
+          outString.push_back('\r');
+          break;
+        case 't':
+          outString.push_back('\t');
+          break;
+        case 'u':
+          if (_pos + 4 > _text.size()) {
+            outError = "Incomplete JSON unicode escape.";
+            return false;
+          }
+          outString.push_back('?');
+          _pos += 4;
+          break;
+        default:
+          outError = "Unsupported JSON escape sequence.";
+          return false;
+        }
+      } else {
+        outString.push_back(c);
+      }
+    }
+
+    outError = "Unterminated JSON string.";
+    return false;
+  }
+
+  bool parseNumber(TinyJsonValue &outValue, std::string &outError) {
+    const size_t start = _pos;
+    if (_text[_pos] == '-')
+      ++_pos;
+
+    if (_pos >= _text.size()) {
+      outError = "Unexpected end of numeric literal.";
+      return false;
+    }
+
+    if (_text[_pos] == '0') {
+      ++_pos;
+    } else {
+      if (!std::isdigit(static_cast<unsigned char>(_text[_pos]))) {
+        outError = "Invalid numeric literal.";
+        return false;
+      }
+      while (_pos < _text.size() &&
+             std::isdigit(static_cast<unsigned char>(_text[_pos]))) {
+        ++_pos;
+      }
+    }
+
+    if (_pos < _text.size() && _text[_pos] == '.') {
+      ++_pos;
+      if (_pos >= _text.size() ||
+          !std::isdigit(static_cast<unsigned char>(_text[_pos]))) {
+        outError = "Invalid fractional numeric literal.";
+        return false;
+      }
+      while (_pos < _text.size() &&
+             std::isdigit(static_cast<unsigned char>(_text[_pos]))) {
+        ++_pos;
+      }
+    }
+
+    if (_pos < _text.size() && (_text[_pos] == 'e' || _text[_pos] == 'E')) {
+      ++_pos;
+      if (_pos < _text.size() && (_text[_pos] == '+' || _text[_pos] == '-'))
+        ++_pos;
+      if (_pos >= _text.size() ||
+          !std::isdigit(static_cast<unsigned char>(_text[_pos]))) {
+        outError = "Invalid exponent in numeric literal.";
+        return false;
+      }
+      while (_pos < _text.size() &&
+             std::isdigit(static_cast<unsigned char>(_text[_pos]))) {
+        ++_pos;
+      }
+    }
+
+    try {
+      outValue = TinyJsonValue{};
+      outValue.type = TinyJsonValue::Type::Number;
+      outValue.numberValue =
+          std::stod(_text.substr(start, _pos - start));
+      return true;
+    } catch (const std::exception &) {
+      outError = "Failed to parse numeric literal.";
+      return false;
+    }
+  }
+
+  bool matchLiteral(const char *literal) {
+    size_t len = std::strlen(literal);
+    if (_text.compare(_pos, len, literal) != 0)
+      return false;
+    _pos += len;
+    return true;
+  }
+
+  bool consume(char expected, std::string &outError) {
+    skipWhitespace();
+    if (_pos >= _text.size() || _text[_pos] != expected) {
+      std::ostringstream ss;
+      ss << "Expected '" << expected << "' while parsing JSON.";
+      outError = ss.str();
+      return false;
+    }
+    ++_pos;
+    return true;
+  }
+
+  bool peek(char expected) const {
+    return _pos < _text.size() && _text[_pos] == expected;
+  }
+
+  void skipWhitespace() {
+    while (_pos < _text.size() &&
+           std::isspace(static_cast<unsigned char>(_text[_pos]))) {
+      ++_pos;
+    }
+  }
+
+  const std::string &_text;
+  size_t _pos = 0;
+};
+
+const TinyJsonValue *findJsonMember(const TinyJsonValue &value,
+                                    const char *name) {
+  if (value.type != TinyJsonValue::Type::Object)
+    return nullptr;
+  auto it = value.objectValue.find(name);
+  if (it == value.objectValue.end())
+    return nullptr;
+  return &it->second;
+}
+
+bool jsonStringValue(const TinyJsonValue &value, std::string &outString) {
+  if (value.type != TinyJsonValue::Type::String)
+    return false;
+  outString = value.stringValue;
+  return true;
+}
+
+bool jsonNumberValue(const TinyJsonValue &value, float &outNumber) {
+  if (value.type != TinyJsonValue::Type::Number)
+    return false;
+  outNumber = static_cast<float>(value.numberValue);
+  return std::isfinite(outNumber);
+}
+
+bool jsonBoolValue(const TinyJsonValue &value, bool &outBool) {
+  if (value.type != TinyJsonValue::Type::Bool)
+    return false;
+  outBool = value.boolValue;
+  return true;
+}
+
+bool jsonStringArray(const TinyJsonValue &value, std::vector<std::string> &out) {
+  if (value.type != TinyJsonValue::Type::Array)
+    return false;
+  out.clear();
+  out.reserve(value.arrayValue.size());
+  for (const TinyJsonValue &entry : value.arrayValue) {
+    if (entry.type != TinyJsonValue::Type::String)
+      return false;
+    out.push_back(entry.stringValue);
+  }
+  return true;
+}
+
+bool jsonNumberArray(const TinyJsonValue &value, std::vector<float> &out) {
+  if (value.type != TinyJsonValue::Type::Array)
+    return false;
+  out.clear();
+  out.reserve(value.arrayValue.size());
+  for (const TinyJsonValue &entry : value.arrayValue) {
+    float number = 0.0f;
+    if (!jsonNumberValue(entry, number))
+      return false;
+    out.push_back(number);
+  }
+  return true;
+}
+
 struct OidnApi {
   using Device = void *;
   using Filter = void *;
@@ -1132,6 +1506,30 @@ struct UniformsData {
   simd::float4x4 prevViewProjection{};
 };
 
+void populateViewportUniforms(UniformsData &uData) {
+  float aspectRatio = Camera::screenSize.x / Camera::screenSize.y;
+  float fovRad = Camera::verticalFov * (M_PI / 180.0f);
+  float halfHeight = tanf(fovRad * 0.5f);
+  float halfWidth = aspectRatio * halfHeight;
+
+  simd::float3 w = simd::normalize(-Camera::forward);
+  simd::float3 u = simd::normalize(simd::cross(Camera::up, w));
+  simd::float3 v = simd::cross(w, u);
+
+  simd::float3 viewportU = u * (2.0f * halfWidth);
+  simd::float3 viewportV = -v * (2.0f * halfHeight);
+  simd::float3 firstPixelPosition =
+      Camera::position - w - (viewportU * 0.5f) - (viewportV * 0.5f);
+
+  uData.cameraPosition = Camera::position;
+  uData.viewportU = viewportU;
+  uData.viewportV = viewportV;
+  uData.firstPixelPosition = firstPixelPosition;
+  uData.rayDx = viewportU / Camera::screenSize.x;
+  uData.rayDy = viewportV / Camera::screenSize.y;
+  uData.screenSize = Camera::screenSize;
+}
+
 struct TileDispatchRegion {
   uint32_t originX;
   uint32_t originY;
@@ -1984,6 +2382,8 @@ Renderer::Renderer(MTL::Device *pDevice)
   _disableOfflineOidn = parseEnvBool(std::getenv("MPT_DISABLE_OFFLINE_OIDN"));
   _neuralFeatureLoggingEnabled =
       parseEnvBool(std::getenv("MPT_LOG_NEURAL_FEATURES"));
+  _unifiedNeuralScoreLoggingEnabled =
+      parseEnvBool(std::getenv("MPT_LOG_UNIFIED_NEURAL_SCORES"));
   if (const char *clipLengthEnv = std::getenv("MPT_NEURAL_CLIP_LENGTH")) {
     unsigned long parsed = std::strtoul(clipLengthEnv, nullptr, 10);
     if (parsed > 0)
@@ -2017,6 +2417,9 @@ Renderer::Renderer(MTL::Device *pDevice)
     std::printf("[Renderer] Neural feature logging enabled (clip length %zu).\n",
                 _neuralClipLength);
   }
+  if (_unifiedNeuralScoreLoggingEnabled) {
+    std::printf("[Renderer] UnifiedNeural score logging enabled.\n");
+  }
   if (_forcedObjectOffIndex != std::numeric_limits<size_t>::max()) {
     std::printf("[Renderer] Forced object-off ablation enabled for object %zu.\n",
                 _forcedObjectOffIndex);
@@ -2031,6 +2434,7 @@ Renderer::Renderer(MTL::Device *pDevice)
   recalculateViewport();
   initializeBenchmarking();
   initializeNeuralFeatureLogging();
+  initializeUnifiedNeuralScoreLogging();
 }
 
 Renderer::~Renderer() {
@@ -2163,6 +2567,8 @@ Renderer::~Renderer() {
     _benchmarkStream.close();
   if (_neuralFeatureStream.is_open())
     _neuralFeatureStream.close();
+  if (_unifiedNeuralScoreStream.is_open())
+    _unifiedNeuralScoreStream.close();
 
   delete _pScene;
 }
@@ -2207,6 +2613,12 @@ void Renderer::initializeNeuralFeatureLogging() {
   ensureNeuralFeatureStream();
 }
 
+void Renderer::initializeUnifiedNeuralScoreLogging() {
+  if (!_unifiedNeuralScoreLoggingEnabled)
+    return;
+  ensureUnifiedNeuralScoreStream();
+}
+
 void Renderer::ensureNeuralFeatureStream() {
   if (!_neuralFeatureLoggingEnabled)
     return;
@@ -2243,6 +2655,39 @@ void Renderer::ensureNeuralFeatureStream() {
          "transport_critical_frame_fraction,mean_object_importance,"
          "mean_estimated_object_bytes,emissive_importance\n";
   _neuralFeatureHeaderWritten = true;
+}
+
+void Renderer::ensureUnifiedNeuralScoreStream() {
+  if (!_unifiedNeuralScoreLoggingEnabled)
+    return;
+  if (_unifiedNeuralScoreStream.is_open())
+    return;
+
+  std::filesystem::path baseDir;
+  if (!_runOutputRoot.empty())
+    baseDir = _runOutputRoot;
+  else
+    baseDir = std::filesystem::current_path() / "Benchmarks";
+
+  std::error_code ec;
+  std::filesystem::create_directories(baseDir, ec);
+
+  std::filesystem::path outPath = baseDir / "unified_neural_scores.csv";
+  _unifiedNeuralScoreFilePath = outPath.string();
+  _unifiedNeuralScoreStream.open(_unifiedNeuralScoreFilePath,
+                                 std::ios::out | std::ios::trunc);
+  if (!_unifiedNeuralScoreStream.is_open()) {
+    std::printf("Failed to open UnifiedNeural score log '%s'\n",
+                _unifiedNeuralScoreFilePath.c_str());
+    return;
+  }
+
+  _unifiedNeuralScoreStream
+      << "scene_variant,frame,strategy,strategy_id,object_id,primitive_count,"
+         "currently_active,desired_active,residency_state,visible,"
+         "adjusted_cost,heuristic_utility,heuristic_norm,neural_prediction,"
+         "neural_norm,blend_weight,blended_utility,blended_efficiency\n";
+  _unifiedNeuralScoreHeaderWritten = true;
 }
 
 void Renderer::accumulateNeuralClipFeatures() {
@@ -3598,6 +4043,10 @@ void Renderer::updateVisibleScene() {
 
   _residencyConfig = _pScene->getResidencyParameters();
   _residencyConfig.normalizeEnvironmentDepthSettings();
+  clearUnifiedNeuralModel();
+  if (_pScene->getResidencyStrategy() == ResidencyStrategy::UnifiedNeural) {
+    loadUnifiedNeuralModel(_residencyConfig.unifiedNeuralModelPath);
+  }
   bool requiresCachedBlas =
       _pScene->getResidencyStrategy() != ResidencyStrategy::AlwaysResident;
   if (_residencyConfig.buildCachedBlas != requiresCachedBlas) {
@@ -4139,33 +4588,11 @@ Renderer::buildFrustumCorners(const Camera::State &state, float nearDistance,
 }
 
 void Renderer::recalculateViewport() {
-
-  float aspectRatio = Camera::screenSize.x / Camera::screenSize.y;
-  float fovRad = Camera::verticalFov * (M_PI / 180.0f);
-  float halfHeight = tanf(fovRad * 0.5f);
-  float halfWidth = aspectRatio * halfHeight;
-
-  simd::float3 w = simd::normalize(-Camera::forward);
-  simd::float3 u = simd::normalize(simd::cross(Camera::up, w));
-  simd::float3 v = simd::cross(w, u);
-
-  simd::float3 viewportU = u * (2.0f * halfWidth);
-  simd::float3 viewportV = -v * (2.0f * halfHeight);
-
-  simd::float3 firstPixelPosition =
-      Camera::position - w - (viewportU * 0.5f) - (viewportV * 0.5f);
-
-  simd::float3 rayDx = viewportU / Camera::screenSize.x;
-  simd::float3 rayDy = viewportV / Camera::screenSize.y;
-
   UniformsData *uData = (UniformsData *)_pUniformsBuffer->contents();
-  uData->cameraPosition = Camera::position;
-  uData->viewportU = viewportU;
-  uData->viewportV = viewportV;
-  uData->firstPixelPosition = firstPixelPosition;
-  uData->rayDx = rayDx;
-  uData->rayDy = rayDy;
-  uData->screenSize = Camera::screenSize;
+  if (!uData)
+    return;
+
+  populateViewportUniforms(*uData);
 
   markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
 
@@ -5558,9 +5985,11 @@ void Renderer::rebuildResidentResources(bool forceFullRebuild) {
         allocateBuffer(uniformsDataSize, MTL::ResourceStorageModeManaged,
                        GpuMemoryTracker::Category::RendererBuffers,
                        "Uniforms");
-    if (_pUniformsBuffer)
+    if (_pUniformsBuffer) {
+      std::memset(_pUniformsBuffer->contents(), 0, uniformsDataSize);
       markBufferModified(_pUniformsBuffer,
                          NS::Range::Make(0, uniformsDataSize));
+    }
   }
   if (_primitiveToResidentIndex.size() < totalPrimitiveCount)
     _primitiveToResidentIndex.resize(totalPrimitiveCount, -1);
@@ -7957,7 +8386,8 @@ bool Renderer::updateCameraStates() {
   Camera::State previousViewState =
       hadObserver ? _observerCameraState : _primaryCameraState;
   const bool freezeAlwaysResidentAnimation =
-      _pScene && _pScene->getResidencyStrategy() == ResidencyStrategy::AlwaysResident &&
+      _pScene &&
+      _pScene->getResidencyStrategy() == ResidencyStrategy::AlwaysResident &&
       _renderedFrameCount == 0;
 
   bool toggled = false;
@@ -8054,7 +8484,7 @@ bool Renderer::updateCameraStates() {
 }
 
 void Renderer::updateUniforms(bool cameraChanged) {
-  UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
+  UniformsData nextUniforms{};
 
   const Camera::State &activeView =
       _observerActive ? _observerCameraState : _primaryCameraState;
@@ -8063,56 +8493,60 @@ void Renderer::updateUniforms(bool cameraChanged) {
     motionMetric = computeCameraMotionMetric(activeView, _lastUniformCameraState);
   }
 
-  u.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
+  populateViewportUniforms(nextUniforms);
+  nextUniforms.primitiveIndex = 0;
+  nextUniforms.randomSeed = {randomFloat(), randomFloat(), randomFloat()};
 
   uint32_t minSamples = std::min(_minSamplesPerPixel, _maxSamplesPerPixel);
   uint32_t maxSamples = std::max(_minSamplesPerPixel, _maxSamplesPerPixel);
   minSamples = std::max<uint32_t>(minSamples, 1);
   maxSamples = std::max(maxSamples, minSamples);
 
-  u.minSamplesPerPixel = minSamples;
-  u.maxSamplesPerPixel = maxSamples;
+  nextUniforms.minSamplesPerPixel = minSamples;
+  nextUniforms.maxSamplesPerPixel = maxSamples;
   size_t boundTextureCount = std::min(
       _materialTextures.size(), static_cast<size_t>(kMaxMaterialTextureSlots));
-  u.textureCount = static_cast<uint32_t>(boundTextureCount);
-  u.aperture = activeView.aperture;
-  u.focusDistance = activeView.focusDistance;
-  u.environmentMapEnabled =
+  nextUniforms.textureCount = static_cast<uint32_t>(boundTextureCount);
+  nextUniforms.aperture = activeView.aperture;
+  nextUniforms.focusDistance = activeView.focusDistance;
+  nextUniforms.environmentMapEnabled =
       (_environmentTexture && _environmentSampler) ? 1u : 0u;
-  u.environmentMapIntensity = _environmentBrightness;
-  u.environmentPadding0 = 0.0f;
-  u.environmentPadding1 = 0.0f;
-  u.restirEnabled = (_pScene && _pScene->getRestirEnabled()) ? 1u : 0u;
-  u.restirCandidateCount = 8u;
+  nextUniforms.environmentMapIntensity = _environmentBrightness;
+  nextUniforms.environmentPadding0 = 0.0f;
+  nextUniforms.environmentPadding1 = 0.0f;
+  nextUniforms.restirEnabled =
+      (_pScene && _pScene->getRestirEnabled()) ? 1u : 0u;
+  nextUniforms.restirCandidateCount = 8u;
   const bool restirReuseAllowed =
       (_renderedFrameCount > 0) &&
       (_renderedFrameCount >= _restirReuseDisableUntilFrame);
-  u.restirTemporalReuse =
-      (u.restirEnabled && restirReuseAllowed) ? 1u : 0u;
-  u.restirPadding0 = 0u;
+  nextUniforms.restirTemporalReuse =
+      (nextUniforms.restirEnabled && restirReuseAllowed) ? 1u : 0u;
+  nextUniforms.restirPadding0 = 0u;
   float aspect = Camera::screenSize.y > 0.0f
                      ? Camera::screenSize.x / Camera::screenSize.y
                      : 1.0f;
-  u.currentViewProjection =
+  nextUniforms.currentViewProjection =
       simd_mul(makePerspectiveMatrix(activeView.verticalFov, aspect,
                                      kReprojectionNearPlane,
                                      kReprojectionFarPlane),
                makeViewMatrix(activeView));
   if (_lastUniformCameraStateValid) {
-    u.prevViewProjection =
+    nextUniforms.prevViewProjection =
         simd_mul(makePerspectiveMatrix(_lastUniformCameraState.verticalFov,
                                        aspect, kReprojectionNearPlane,
                                        kReprojectionFarPlane),
                  makeViewMatrix(_lastUniformCameraState));
   } else {
-    u.prevViewProjection =
+    nextUniforms.prevViewProjection =
         simd_mul(makePerspectiveMatrix(activeView.verticalFov, aspect,
                                        kReprojectionNearPlane,
                                        kReprojectionFarPlane),
                  makeViewMatrix(activeView));
   }
-  u.cameraMotionMetric = _lastUniformCameraStateValid ? motionMetric : 0.0f;
-  _frameCameraMotionMetric = u.cameraMotionMetric;
+  nextUniforms.cameraMotionMetric =
+      _lastUniformCameraStateValid ? motionMetric : 0.0f;
+  _frameCameraMotionMetric = nextUniforms.cameraMotionMetric;
   _lastUniformCameraState = activeView;
   _lastUniformCameraStateValid = true;
 
@@ -8140,15 +8574,18 @@ void Renderer::updateUniforms(bool cameraChanged) {
   if (totalPrimitiveCount == 0)
     totalPrimitiveCount = _allPrimitives.size();
 
-  u.primitiveCount = residentPrimitiveCount;
-  u.triangleCount = residentTriangleCount;
-  u.totalPrimitiveCount = totalPrimitiveCount;
-  u.tlasNodeCount = _tlasNodeCount;
-  u.blasNodeCount = _blasNodeCount;
-  u.maxRayDepth = _pScene->maxRayDepth;
-  u.debugAS = InputSystem::debugAS;
-  u.lightCount = static_cast<uint32_t>(_lightCount);
-  u.lightTotalWeight = _lightTotalWeight;
+  nextUniforms.primitiveCount = residentPrimitiveCount;
+  nextUniforms.triangleCount = residentTriangleCount;
+  nextUniforms.totalPrimitiveCount = totalPrimitiveCount;
+  nextUniforms.tlasNodeCount = _tlasNodeCount;
+  nextUniforms.blasNodeCount = _blasNodeCount;
+  nextUniforms.maxRayDepth = _pScene->maxRayDepth;
+  nextUniforms.debugAS = sanitizeDebugAccelerationModeForUniforms();
+  nextUniforms.lightCount = static_cast<uint32_t>(_lightCount);
+  nextUniforms.lightTotalWeight = _lightTotalWeight;
+
+  UniformsData &u = *((UniformsData *)_pUniformsBuffer->contents());
+  u = nextUniforms;
 
   markBufferModified(_pUniformsBuffer, NS::Range::Make(0, sizeof(UniformsData)));
 }
@@ -10102,6 +10539,470 @@ std::vector<float> Renderer::computeUnifiedImportance(float &outTotalScore) {
   return unifiedScores;
 }
 
+void Renderer::clearUnifiedNeuralModel() {
+  _unifiedNeuralModel = UnifiedNeuralModel{};
+  _unifiedNeuralModelLoadAttempted = false;
+}
+
+bool Renderer::loadUnifiedNeuralModel(const std::string &path) {
+  _unifiedNeuralModel = UnifiedNeuralModel{};
+  _unifiedNeuralModelLoadAttempted = true;
+
+  if (path.empty()) {
+    std::printf(
+        "[Renderer] UnifiedNeural selected but no unifiedNeuralModel path was "
+        "provided; falling back to heuristic unified scoring.\n");
+    return false;
+  }
+
+  std::ifstream input(path);
+  if (!input.is_open()) {
+    std::printf(
+        "[Renderer] Failed to open UnifiedNeural model JSON at %s; falling "
+        "back to heuristic unified scoring.\n",
+        path.c_str());
+    return false;
+  }
+
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  const std::string text = buffer.str();
+
+  TinyJsonParser parser(text);
+  TinyJsonValue root;
+  std::string error;
+  if (!parser.parse(root, error)) {
+    std::printf(
+        "[Renderer] Failed to parse UnifiedNeural model JSON at %s: %s\n",
+        path.c_str(), error.c_str());
+    return false;
+  }
+
+  const TinyJsonValue *formatValue = findJsonMember(root, "format");
+  const TinyJsonValue *targetValue = findJsonMember(root, "target");
+  const TinyJsonValue *targetTransformValue =
+      findJsonMember(root, "target_transform");
+  const TinyJsonValue *inputNormalizationValue =
+      findJsonMember(root, "input_normalization");
+  const TinyJsonValue *networkValue = findJsonMember(root, "network");
+  if (!formatValue || !targetValue || !targetTransformValue ||
+      !inputNormalizationValue || !networkValue) {
+    std::printf(
+        "[Renderer] UnifiedNeural model JSON at %s is missing required top-level "
+        "fields.\n",
+        path.c_str());
+    return false;
+  }
+
+  UnifiedNeuralModel loadedModel;
+  loadedModel.sourcePath = path;
+  if (!jsonStringValue(*formatValue, loadedModel.format) ||
+      !jsonStringValue(*targetValue, loadedModel.target) ||
+      !jsonStringValue(*targetTransformValue, loadedModel.targetTransform)) {
+    std::printf(
+        "[Renderer] UnifiedNeural model JSON at %s has invalid metadata types.\n",
+      path.c_str());
+    return false;
+  }
+
+  const TinyJsonValue *trainingValue = findJsonMember(root, "training");
+  if (trainingValue) {
+    const TinyJsonValue *allowNegativeValue =
+        findJsonMember(*trainingValue, "allow_negative_target");
+    if (allowNegativeValue &&
+        !jsonBoolValue(*allowNegativeValue, loadedModel.allowNegativeTarget)) {
+      std::printf(
+          "[Renderer] UnifiedNeural training metadata at %s has invalid "
+          "allow_negative_target flag.\n",
+          path.c_str());
+      return false;
+    }
+  }
+
+  const TinyJsonValue *residualTeacherValue =
+      findJsonMember(root, "residual_teacher");
+  if (residualTeacherValue) {
+    const TinyJsonValue *kindValue =
+        findJsonMember(*residualTeacherValue, "kind");
+    const TinyJsonValue *scaleValue =
+        findJsonMember(*residualTeacherValue, "scale");
+    const TinyJsonValue *biasValue =
+        findJsonMember(*residualTeacherValue, "bias");
+    if (!kindValue || !scaleValue || !biasValue ||
+        !jsonStringValue(*kindValue, loadedModel.residualTeacher.kind) ||
+        !jsonNumberValue(*scaleValue, loadedModel.residualTeacher.scale) ||
+        !jsonNumberValue(*biasValue, loadedModel.residualTeacher.bias)) {
+      std::printf(
+          "[Renderer] UnifiedNeural residual_teacher block at %s is invalid.\n",
+          path.c_str());
+      return false;
+    }
+
+    const TinyJsonValue *costExponentValue =
+        findJsonMember(*residualTeacherValue, "cost_exponent");
+    const TinyJsonValue *visibilityWeightValue =
+        findJsonMember(*residualTeacherValue, "visibility_weight");
+    const TinyJsonValue *hitProbabilityWeightValue =
+        findJsonMember(*residualTeacherValue, "hit_probability_weight");
+    if (costExponentValue &&
+        !jsonNumberValue(*costExponentValue,
+                         loadedModel.residualTeacher.costExponent)) {
+      std::printf(
+          "[Renderer] UnifiedNeural residual teacher cost exponent at %s is "
+          "invalid.\n",
+          path.c_str());
+      return false;
+    }
+    if (visibilityWeightValue &&
+        !jsonNumberValue(*visibilityWeightValue,
+                         loadedModel.residualTeacher.visibilityWeight)) {
+      std::printf(
+          "[Renderer] UnifiedNeural residual teacher visibility weight at %s "
+          "is invalid.\n",
+          path.c_str());
+      return false;
+    }
+    if (hitProbabilityWeightValue &&
+        !jsonNumberValue(*hitProbabilityWeightValue,
+                         loadedModel.residualTeacher.hitProbabilityWeight)) {
+      std::printf(
+          "[Renderer] UnifiedNeural residual teacher hit-probability weight at "
+          "%s is invalid.\n",
+          path.c_str());
+      return false;
+    }
+    loadedModel.residualTeacher.enabled = true;
+  }
+
+  const TinyJsonValue *featuresValue =
+      findJsonMember(*inputNormalizationValue, "features");
+  const TinyJsonValue *meanValue =
+      findJsonMember(*inputNormalizationValue, "mean");
+  const TinyJsonValue *stdValue =
+      findJsonMember(*inputNormalizationValue, "std");
+  if (!featuresValue || !meanValue || !stdValue ||
+      !jsonStringArray(*featuresValue, loadedModel.featureNames) ||
+      !jsonNumberArray(*meanValue, loadedModel.mean) ||
+      !jsonNumberArray(*stdValue, loadedModel.stddev)) {
+    std::printf(
+        "[Renderer] UnifiedNeural input normalization block at %s is invalid.\n",
+        path.c_str());
+    return false;
+  }
+
+  if (loadedModel.featureNames.empty() ||
+      loadedModel.featureNames.size() != loadedModel.mean.size() ||
+      loadedModel.featureNames.size() != loadedModel.stddev.size()) {
+    std::printf(
+        "[Renderer] UnifiedNeural feature metadata at %s has inconsistent "
+        "dimensions.\n",
+        path.c_str());
+    return false;
+  }
+
+  const TinyJsonValue *layersValue = findJsonMember(*networkValue, "layers");
+  if (!layersValue || layersValue->type != TinyJsonValue::Type::Array ||
+      layersValue->arrayValue.empty()) {
+    std::printf("[Renderer] UnifiedNeural network at %s has no layers.\n",
+                path.c_str());
+    return false;
+  }
+
+  size_t expectedCols = loadedModel.featureNames.size();
+  for (const TinyJsonValue &layerValue : layersValue->arrayValue) {
+    const TinyJsonValue *typeValue = findJsonMember(layerValue, "type");
+    const TinyJsonValue *activationValue =
+        findJsonMember(layerValue, "activation");
+    const TinyJsonValue *rowsValue = findJsonMember(layerValue, "weight_rows");
+    const TinyJsonValue *colsValue = findJsonMember(layerValue, "weight_cols");
+    const TinyJsonValue *weightsValue = findJsonMember(layerValue, "weights");
+    const TinyJsonValue *biasValue = findJsonMember(layerValue, "bias");
+    if (!typeValue || !activationValue || !rowsValue || !colsValue ||
+        !weightsValue || !biasValue) {
+      std::printf(
+          "[Renderer] UnifiedNeural layer description at %s is missing required "
+          "fields.\n",
+          path.c_str());
+      return false;
+    }
+
+    std::string layerType;
+    std::string activation;
+    float rowsNumber = 0.0f;
+    float colsNumber = 0.0f;
+    if (!jsonStringValue(*typeValue, layerType) ||
+        !jsonStringValue(*activationValue, activation) ||
+        !jsonNumberValue(*rowsValue, rowsNumber) ||
+        !jsonNumberValue(*colsValue, colsNumber) ||
+        layerType != "dense") {
+      std::printf("[Renderer] UnifiedNeural layer metadata at %s is invalid.\n",
+                  path.c_str());
+      return false;
+    }
+
+    const size_t rows = std::max<size_t>(0, static_cast<size_t>(rowsNumber));
+    const size_t cols = std::max<size_t>(0, static_cast<size_t>(colsNumber));
+    if (rows == 0 || cols == 0 || cols != expectedCols ||
+        weightsValue->type != TinyJsonValue::Type::Array) {
+      std::printf(
+          "[Renderer] UnifiedNeural layer dimensions at %s do not match the "
+          "expected network shape.\n",
+          path.c_str());
+      return false;
+    }
+
+    UnifiedNeuralDenseLayer layer;
+    layer.rows = rows;
+    layer.cols = cols;
+    layer.relu = (activation == "relu");
+    layer.weights.reserve(rows * cols);
+
+    if (weightsValue->arrayValue.size() != rows) {
+      std::printf("[Renderer] UnifiedNeural weight matrix at %s has %zu rows, "
+                  "expected %zu.\n",
+                  path.c_str(), weightsValue->arrayValue.size(), rows);
+      return false;
+    }
+    for (const TinyJsonValue &weightRow : weightsValue->arrayValue) {
+      std::vector<float> parsedRow;
+      if (!jsonNumberArray(weightRow, parsedRow) || parsedRow.size() != cols) {
+        std::printf("[Renderer] UnifiedNeural weight matrix row at %s is invalid.\n",
+                    path.c_str());
+        return false;
+      }
+      layer.weights.insert(layer.weights.end(), parsedRow.begin(),
+                           parsedRow.end());
+    }
+
+    if (!jsonNumberArray(*biasValue, layer.bias) || layer.bias.size() != rows) {
+      std::printf("[Renderer] UnifiedNeural bias vector at %s is invalid.\n",
+                  path.c_str());
+      return false;
+    }
+
+    loadedModel.layers.push_back(std::move(layer));
+    expectedCols = rows;
+  }
+
+  loadedModel.valid = true;
+  _unifiedNeuralModel = std::move(loadedModel);
+  std::printf(
+      "[Renderer] Loaded UnifiedNeural model from %s (%zu features, %zu layers, "
+      "target=%s, transform=%s).\n",
+      _unifiedNeuralModel.sourcePath.c_str(),
+      _unifiedNeuralModel.featureNames.size(), _unifiedNeuralModel.layers.size(),
+      _unifiedNeuralModel.target.c_str(),
+      _unifiedNeuralModel.targetTransform.c_str());
+  if (_unifiedNeuralModel.residualTeacher.enabled) {
+    std::printf(
+        "[Renderer] UnifiedNeural residual teacher enabled (%s, scale=%f, "
+        "bias=%f).\n",
+        _unifiedNeuralModel.residualTeacher.kind.c_str(),
+        static_cast<double>(_unifiedNeuralModel.residualTeacher.scale),
+        static_cast<double>(_unifiedNeuralModel.residualTeacher.bias));
+  }
+  return true;
+}
+
+bool Renderer::computeUnifiedNeuralRuntimeSignals(
+    size_t objectIndex, size_t primitiveCount,
+    UnifiedNeuralRuntimeSignals &outSignals) {
+  if (!_unifiedNeuralModel.valid || objectIndex >= _allSceneObjects.size())
+    return false;
+
+  const SceneObject &obj = _allSceneObjects[objectIndex];
+  const size_t first = obj.firstPrimitive;
+  const size_t last =
+      std::min(first + obj.primitiveCount, _primitiveScreenCoverage.size());
+
+  bool visible =
+      objectIndex < _objectVisible.size() && _objectVisible[objectIndex] != 0u;
+  if (!visible && objectIndex < _objectBounds.size())
+    visible = isInView(_objectBounds[objectIndex]);
+
+  double visibleCoverage = 0.0;
+  for (size_t primIndex = first; primIndex < last; ++primIndex)
+    visibleCoverage += std::max(static_cast<double>(_primitiveScreenCoverage[primIndex]), 0.0);
+  if (!visible)
+    visibleCoverage = 0.0;
+
+  double distance = 0.0;
+  if (objectIndex < _objectBounds.size()) {
+    simd::float3 delta = _objectBounds[objectIndex].center - Camera::position;
+    distance = static_cast<double>(simd::length(delta));
+  }
+
+  double hitProbability =
+      objectIndex < _objectHitProbability.size()
+          ? std::clamp(static_cast<double>(_objectHitProbability[objectIndex]), 0.0,
+                       1.0)
+          : 0.5;
+  double rayHitScore =
+      objectIndex < _objectRayHitScore.size()
+          ? std::max(static_cast<double>(_objectRayHitScore[objectIndex]), 0.0)
+          : 0.0;
+  double totalHits =
+      objectIndex < _objectHitLastFrame.size() ? _objectHitLastFrame[objectIndex]
+                                               : 0.0;
+  double totalRaysTested =
+      objectIndex < _objectRaysTestedLastFrame.size()
+          ? _objectRaysTestedLastFrame[objectIndex]
+          : 0.0;
+
+  double estimatedBytes = 0.0;
+  if (objectIndex < _residentObjectGpuResources.size()) {
+    const auto &resident = _residentObjectGpuResources[objectIndex];
+    estimatedBytes = static_cast<double>(resident.byteSize > 0
+                                             ? resident.byteSize
+                                             : resident.resources.currentRequiredBytes());
+  }
+
+  double objectImportance = 0.0;
+  if (objectIndex < _objectImportance.size())
+    objectImportance = std::max(static_cast<double>(_objectImportance[objectIndex]), 0.0);
+  if (!(objectImportance > 0.0)) {
+    const size_t importanceLast =
+        std::min(first + obj.primitiveCount, _primitiveImportance.size());
+    for (size_t primIndex = first; primIndex < importanceLast; ++primIndex)
+      objectImportance += std::max(static_cast<double>(_primitiveImportance[primIndex]), 0.0);
+  }
+
+  outSignals.visible = visible;
+  outSignals.visibleCoverage = visibleCoverage;
+  outSignals.distance = distance;
+  outSignals.hitProbability = hitProbability;
+  outSignals.rayHitScore = rayHitScore;
+  outSignals.totalHits = totalHits;
+  outSignals.totalRaysTested = totalRaysTested;
+  outSignals.estimatedBytes = estimatedBytes;
+  outSignals.objectImportance = objectImportance;
+  (void)primitiveCount;
+  return true;
+}
+
+bool Renderer::buildUnifiedNeuralFeatureVector(
+    size_t objectIndex, size_t primitiveCount, std::vector<float> &outFeatures) {
+  UnifiedNeuralRuntimeSignals signals;
+  if (!computeUnifiedNeuralRuntimeSignals(objectIndex, primitiveCount, signals))
+    return false;
+
+  outFeatures.clear();
+  outFeatures.reserve(_unifiedNeuralModel.featureNames.size());
+  for (const std::string &featureName : _unifiedNeuralModel.featureNames) {
+    double value = 0.0;
+    if (featureName == "total_object_hits") {
+      value = signals.totalHits;
+    } else if (featureName == "mean_object_rayhit_score") {
+      value = signals.rayHitScore;
+    } else if (featureName == "mean_object_importance") {
+      value = signals.objectImportance;
+    } else if (featureName == "mean_hit_probability") {
+      value = signals.hitProbability;
+    } else if (featureName == "total_object_rays_tested") {
+      value = signals.totalRaysTested;
+    } else if (featureName == "mean_distance" ||
+               featureName == "min_distance") {
+      value = signals.distance;
+    } else if (featureName == "mean_visible_coverage" ||
+               featureName == "max_visible_coverage") {
+      value = signals.visibleCoverage;
+    } else if (featureName == "primitive_count") {
+      value = static_cast<double>(primitiveCount);
+    } else if (featureName == "mean_estimated_object_bytes") {
+      value = signals.estimatedBytes;
+    } else {
+      std::printf(
+          "[Renderer] UnifiedNeural model expects unsupported feature '%s'; "
+          "falling back to heuristic unified scoring.\n",
+          featureName.c_str());
+      return false;
+    }
+
+    if (!std::isfinite(value))
+      value = 0.0;
+    outFeatures.push_back(static_cast<float>(value));
+  }
+
+  return true;
+}
+
+float Renderer::computeUnifiedNeuralTeacherRawScore(
+    const UnifiedNeuralRuntimeSignals &signals) const {
+  if (!_unifiedNeuralModel.residualTeacher.enabled)
+    return 0.0f;
+
+  const std::string &kind = _unifiedNeuralModel.residualTeacher.kind;
+  if (kind != "rayhit_efficiency_percentile_v1")
+    return static_cast<float>(std::max(signals.rayHitScore, 0.0));
+
+  const float visibilitySignal =
+      signals.visible ? std::clamp(static_cast<float>(signals.visibleCoverage), 0.0f, 1.0f)
+                      : 0.0f;
+  const float hitProbability =
+      std::clamp(static_cast<float>(signals.hitProbability), 0.0f, 1.0f);
+  const float rayHitScore = std::max(static_cast<float>(signals.rayHitScore), 0.0f);
+  const float estimatedBytes =
+      std::max(static_cast<float>(signals.estimatedBytes), 1.0e-6f);
+  const float costExponent =
+      std::max(_unifiedNeuralModel.residualTeacher.costExponent, 0.0f);
+  const float visibilityBonus =
+      1.0f + visibilitySignal * _unifiedNeuralModel.residualTeacher.visibilityWeight;
+  const float probabilityBonus =
+      1.0f + hitProbability *
+                 _unifiedNeuralModel.residualTeacher.hitProbabilityWeight;
+  const float costTerm = std::pow(estimatedBytes, costExponent);
+  return rayHitScore * visibilityBonus * probabilityBonus /
+         std::max(costTerm, 1.0e-6f);
+}
+
+float Renderer::predictUnifiedNeuralImpact(
+    const std::vector<float> &features) const {
+  if (!_unifiedNeuralModel.valid ||
+      features.size() != _unifiedNeuralModel.featureNames.size()) {
+    return 0.0f;
+  }
+
+  std::vector<float> activations(features.size(), 0.0f);
+  for (size_t i = 0; i < features.size(); ++i) {
+    const float mean = _unifiedNeuralModel.mean[i];
+    const float stddev = _unifiedNeuralModel.stddev[i];
+    if (std::fabs(stddev) <= 1.0e-8f) {
+      activations[i] = 0.0f;
+      continue;
+    }
+    activations[i] = (features[i] - mean) / stddev;
+    if (!std::isfinite(activations[i]))
+      activations[i] = 0.0f;
+  }
+
+  for (const UnifiedNeuralDenseLayer &layer : _unifiedNeuralModel.layers) {
+    if (activations.size() != layer.cols)
+      return 0.0f;
+
+    std::vector<float> next(layer.rows, 0.0f);
+    for (size_t row = 0; row < layer.rows; ++row) {
+      float sum = row < layer.bias.size() ? layer.bias[row] : 0.0f;
+      const size_t rowOffset = row * layer.cols;
+      for (size_t col = 0; col < layer.cols; ++col)
+        sum += layer.weights[rowOffset + col] * activations[col];
+      if (layer.relu)
+        sum = std::max(sum, 0.0f);
+      next[row] = std::isfinite(sum) ? sum : 0.0f;
+    }
+    activations = std::move(next);
+  }
+
+  if (activations.empty())
+    return 0.0f;
+
+  float prediction = activations[0];
+  if (_unifiedNeuralModel.targetTransform == "exp_m1_of_linear_output")
+    prediction = std::exp(prediction) - 1.0f;
+  if (!std::isfinite(prediction))
+    prediction = 0.0f;
+  return prediction;
+}
+
 bool Renderer::updateEnergyImportance(bool forceAllToggles) {
   if (_activePrimitive.empty())
     return false;
@@ -11202,6 +12103,13 @@ bool Renderer::updateUnifiedResidency(bool forceAllToggles) {
   struct UnifiedCandidate {
     size_t objectIndex = 0;
     float utility = 0.0f;
+    float heuristicUtility = 0.0f;
+    float heuristicNorm = 0.0f;
+    float neuralImpact = 0.0f;
+    float neuralNorm = 0.0f;
+    float teacherRaw = 0.0f;
+    float teacherNorm = 0.0f;
+    float teacherMapped = 0.0f;
     float adjustedCost = 1.0f;
     float efficiency = 0.0f;
     size_t primitiveCount = 0;
@@ -11209,6 +12117,14 @@ bool Renderer::updateUnifiedResidency(bool forceAllToggles) {
 
   std::vector<UnifiedCandidate> candidates;
   candidates.reserve(objectCount);
+  const bool wantUnifiedNeural =
+      _frameStrategy == ResidencyStrategy::UnifiedNeural &&
+      _unifiedNeuralModel.valid;
+  const bool residualNeuralMode =
+      wantUnifiedNeural && _unifiedNeuralModel.residualTeacher.enabled;
+  bool useUnifiedNeural = wantUnifiedNeural;
+  std::vector<float> unifiedNeuralFeatures;
+  UnifiedNeuralRuntimeSignals unifiedNeuralSignals;
 
   for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex) {
     const SceneObject &obj = _allSceneObjects[objectIndex];
@@ -11236,8 +12152,91 @@ bool Renderer::updateUnifiedResidency(bool forceAllToggles) {
       adjustedCost *= 0.92f;
 
     float efficiency = utility / std::max(adjustedCost, 1.0e-5f);
-    candidates.push_back(
-        {objectIndex, utility, adjustedCost, efficiency, primitiveCount});
+    float neuralImpact = 0.0f;
+    float teacherRaw = 0.0f;
+    if (useUnifiedNeural) {
+      if (!computeUnifiedNeuralRuntimeSignals(objectIndex, primitiveCount,
+                                             unifiedNeuralSignals) ||
+          !buildUnifiedNeuralFeatureVector(objectIndex, primitiveCount,
+                                           unifiedNeuralFeatures)) {
+        useUnifiedNeural = false;
+      } else {
+        neuralImpact = predictUnifiedNeuralImpact(unifiedNeuralFeatures);
+        if (residualNeuralMode)
+          teacherRaw = computeUnifiedNeuralTeacherRawScore(unifiedNeuralSignals);
+      }
+    }
+    candidates.push_back({objectIndex, utility, utility, 0.0f, neuralImpact,
+                          0.0f, teacherRaw, 0.0f, 0.0f,
+                          adjustedCost, efficiency, primitiveCount});
+  }
+
+  if (wantUnifiedNeural && !useUnifiedNeural) {
+    std::printf(
+        "[Renderer] UnifiedNeural runtime features were unavailable; falling "
+        "back to heuristic unified scoring for this scene.\n");
+  }
+
+  if (useUnifiedNeural && !candidates.empty()) {
+    std::string unifiedNeuralMode = _residencyConfig.unifiedNeuralMode;
+    std::transform(unifiedNeuralMode.begin(), unifiedNeuralMode.end(),
+                   unifiedNeuralMode.begin(), [](unsigned char c) {
+                     return static_cast<char>(std::tolower(c));
+                   });
+    const bool neuralOnlyMode =
+        unifiedNeuralMode == "neural_only" || unifiedNeuralMode == "neural-only" ||
+        unifiedNeuralMode == "neuralonly" || unifiedNeuralMode == "neural";
+    const float blendWeight = neuralOnlyMode
+                                  ? 1.0f
+                                  : std::clamp(
+                                        _residencyConfig.unifiedNeuralBlendWeight,
+                                        0.0f, 1.0f);
+    float minHeuristic = std::numeric_limits<float>::max();
+    float maxHeuristic = std::numeric_limits<float>::lowest();
+    float minNeural = std::numeric_limits<float>::max();
+    float maxNeural = std::numeric_limits<float>::lowest();
+    float minTeacher = std::numeric_limits<float>::max();
+    float maxTeacher = std::numeric_limits<float>::lowest();
+    for (const UnifiedCandidate &candidate : candidates) {
+      minHeuristic = std::min(minHeuristic, candidate.heuristicUtility);
+      maxHeuristic = std::max(maxHeuristic, candidate.heuristicUtility);
+      minTeacher = std::min(minTeacher, candidate.teacherRaw);
+      maxTeacher = std::max(maxTeacher, candidate.teacherRaw);
+    }
+
+    auto normalizeValue = [](float value, float minValue, float maxValue) {
+      const float range = maxValue - minValue;
+      if (!(range > 1.0e-6f))
+        return value > 0.0f ? 1.0f : 0.0f;
+      return std::clamp((value - minValue) / range, 0.0f, 1.0f);
+    };
+
+    for (UnifiedCandidate &candidate : candidates) {
+      candidate.heuristicNorm =
+          normalizeValue(candidate.heuristicUtility, minHeuristic, maxHeuristic);
+      candidate.teacherNorm =
+          normalizeValue(candidate.teacherRaw, minTeacher, maxTeacher);
+      if (residualNeuralMode) {
+        candidate.teacherMapped =
+            candidate.teacherNorm * _unifiedNeuralModel.residualTeacher.scale +
+            _unifiedNeuralModel.residualTeacher.bias;
+        candidate.neuralImpact = candidate.teacherMapped + candidate.neuralImpact;
+      }
+      minNeural = std::min(minNeural, candidate.neuralImpact);
+      maxNeural = std::max(maxNeural, candidate.neuralImpact);
+    }
+
+    for (UnifiedCandidate &candidate : candidates) {
+      const float neuralNorm =
+          normalizeValue(candidate.neuralImpact, minNeural, maxNeural);
+      candidate.neuralNorm = neuralNorm;
+      candidate.utility =
+          neuralOnlyMode
+              ? neuralNorm
+              : lerpFloat(candidate.heuristicNorm, neuralNorm, blendWeight);
+      candidate.efficiency =
+          candidate.utility / std::max(candidate.adjustedCost, 1.0e-5f);
+    }
   }
 
   std::sort(candidates.begin(), candidates.end(),
@@ -11270,6 +12269,66 @@ bool Renderer::updateUnifiedResidency(bool forceAllToggles) {
       selectedPrimitiveCount += candidate.primitiveCount;
       if (selectedPrimitiveCount >= minActivePrimitives)
         break;
+    }
+  }
+
+  if (_unifiedNeuralScoreLoggingEnabled) {
+    ensureUnifiedNeuralScoreStream();
+    if (_unifiedNeuralScoreStream.is_open()) {
+      auto residencyStateName = [&](size_t objectIndex) -> const char * {
+        if (objectIndex >= _residentObjectGpuResources.size())
+          return "unknown";
+        switch (_residentObjectGpuResources[objectIndex].state) {
+        case ResidentObjectGpuResources::ResidencyState::Cold:
+          return "cold";
+        case ResidentObjectGpuResources::ResidencyState::Streaming:
+          return "streaming";
+        case ResidentObjectGpuResources::ResidencyState::Resident:
+          return "resident";
+        }
+        return "unknown";
+      };
+
+      const std::string strategyName = residencyStrategyName(_frameStrategy);
+      const std::string sceneName =
+          _sceneVariantName.empty() ? std::string("unknown_scene")
+                                    : _sceneVariantName;
+      const float blendWeight =
+          useUnifiedNeural
+              ? std::clamp(_residencyConfig.unifiedNeuralBlendWeight, 0.0f, 1.0f)
+              : 0.0f;
+
+      for (const UnifiedCandidate &candidate : candidates) {
+        const size_t objectIndex = candidate.objectIndex;
+        const bool currentlyActive =
+            objectIndex < _objectActive.size() && _objectActive[objectIndex];
+        const bool desiredActive =
+            objectIndex < desiredObjectState.size() && desiredObjectState[objectIndex];
+        bool visible =
+            objectIndex < _objectVisible.size() && _objectVisible[objectIndex] != 0u;
+        if (!visible && objectIndex < _objectBounds.size())
+          visible = isInView(_objectBounds[objectIndex]);
+
+        std::ostringstream row;
+        appendCsvEscaped(row, sceneName);
+        row << ',' << _renderedFrameCount << ',';
+        appendCsvEscaped(row, strategyName);
+        row << ',' << static_cast<int>(_frameStrategy) << ','
+            << objectIndex << ',' << candidate.primitiveCount << ','
+            << (currentlyActive ? 1 : 0) << ',' << (desiredActive ? 1 : 0) << ',';
+        appendCsvEscaped(row, residencyStateName(objectIndex));
+        row << ',' << (visible ? 1 : 0) << ','
+            << formatFixed(candidate.adjustedCost, 6) << ','
+            << formatFixed(candidate.heuristicUtility, 6) << ','
+            << formatFixed(candidate.heuristicNorm, 6) << ','
+            << formatFixed(candidate.neuralImpact, 6) << ','
+            << formatFixed(candidate.neuralNorm, 6) << ','
+            << formatFixed(blendWeight, 6) << ','
+            << formatFixed(candidate.utility, 6) << ','
+            << formatFixed(candidate.efficiency, 6);
+        _unifiedNeuralScoreStream << row.str() << '\n';
+      }
+      _unifiedNeuralScoreStream.flush();
     }
   }
 

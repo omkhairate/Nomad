@@ -190,10 +190,12 @@ void NomadPathTracer::ControllerView::setViewDelegate(ViewDelegate *delegate) {
     if(event.keyCode == 15) NomadPathTracer::InputSystem::resetInput = 1;
 
     if(event.keyCode == 17) { // t - toggle TLAS debug
-        NomadPathTracer::InputSystem::debugAS = (NomadPathTracer::InputSystem::debugAS == 1) ? 0 : 1;
+        NomadPathTracer::InputSystem::toggleDebugAccelerationMode(
+            NomadPathTracer::InputSystem::DebugAccelerationMode::Tlas);
     }
     if(event.keyCode == 11) { // b - toggle BLAS debug
-        NomadPathTracer::InputSystem::debugAS = (NomadPathTracer::InputSystem::debugAS == 2) ? 0 : 2;
+        NomadPathTracer::InputSystem::toggleDebugAccelerationMode(
+            NomadPathTracer::InputSystem::DebugAccelerationMode::Blas);
     }
     if(event.keyCode == 31) { // o - toggle observer camera
         NomadPathTracer::InputSystem::observerToggleRequest = true;

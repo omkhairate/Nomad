@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--app", type=Path, default=None)
     parser.add_argument("--baseline-root", type=Path, default=None)
     parser.add_argument("--baseline-run-dir", type=Path, default=None)
+    parser.add_argument(
+        "--ablation-root",
+        type=Path,
+        default=None,
+        help="Optional ablation root directory. Default: <session-root>/ablations",
+    )
     parser.add_argument("--max-frames", type=int, default=500)
     parser.add_argument("--capture-interval", type=int, default=4)
     parser.add_argument("--video-fps", type=float, default=15.0)
@@ -96,6 +102,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ffmpeg-codec", default="libx264rgb")
     parser.add_argument("--ffmpeg-crf", default="0")
     parser.add_argument("--ffmpeg-preset", default="veryfast")
+    parser.add_argument(
+        "--labels-csv-out",
+        type=Path,
+        default=None,
+        help="Optional output path for the merged training-label CSV. Default: <session-root>/cgvqm/neural_training_labels.csv",
+    )
+    parser.add_argument(
+        "--scores-csv-out",
+        type=Path,
+        default=None,
+        help="Optional output path for the raw CGVQM score CSV. Default: <session-root>/cgvqm/cgvqm_scores.csv",
+    )
     parser.add_argument("--denoise-script", type=Path, default=default_denoise_script)
     parser.add_argument("--sweep-script", type=Path, default=default_sweep_script)
     parser.add_argument("--dry-run", action="store_true")
@@ -443,11 +461,13 @@ def main() -> int:
         print("No manifest rows matched the requested filters.", file=sys.stderr)
         return 2
 
-    ablation_root = session_root / "ablations"
+    ablation_root = args.ablation_root.resolve() if args.ablation_root else (session_root / "ablations")
     output_root = session_root / "cgvqm"
     videos_root = output_root / "videos"
-    labels_csv = output_root / "neural_training_labels.csv"
-    scores_csv = output_root / "cgvqm_scores.csv"
+    labels_csv = args.labels_csv_out.resolve() if args.labels_csv_out else (output_root / "neural_training_labels.csv")
+    scores_csv = args.scores_csv_out.resolve() if args.scores_csv_out else (output_root / "cgvqm_scores.csv")
+    labels_csv.parent.mkdir(parents=True, exist_ok=True)
+    scores_csv.parent.mkdir(parents=True, exist_ok=True)
 
     baseline_run_dir = ensure_baseline_run(args, session_root, repo_root)
     ensure_representation(

@@ -70,6 +70,9 @@ struct ResidencyParameters {
   float unifiedReentryBoost = 3.0f;
   bool unifiedNormalize = true;
   float unifiedTargetMemoryMB = 0.0f;
+  std::string unifiedNeuralModelPath;
+  std::string unifiedNeuralMode = "blend";
+  float unifiedNeuralBlendWeight = 0.5f;
 
   float rayHitDecay = 0.85f;
   float rayHitTargetFraction = 0.54f;

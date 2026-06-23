@@ -757,6 +757,17 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
         root->BoolAttribute("unifiedNormalize", params.unifiedNormalize);
     params.unifiedTargetMemoryMB = root->FloatAttribute(
         "unifiedTargetMemoryMB", params.unifiedTargetMemoryMB);
+    if (const char *unifiedNeuralModelAttr =
+            root->Attribute("unifiedNeuralModel")) {
+        std::filesystem::path modelPath = baseDir / unifiedNeuralModelAttr;
+        params.unifiedNeuralModelPath = modelPath.lexically_normal().string();
+    }
+    if (const char *unifiedNeuralModeAttr =
+            root->Attribute("unifiedNeuralMode")) {
+        params.unifiedNeuralMode = unifiedNeuralModeAttr;
+    }
+    params.unifiedNeuralBlendWeight = root->FloatAttribute(
+        "unifiedNeuralBlendWeight", params.unifiedNeuralBlendWeight);
 
     params.rayHitDecay = root->FloatAttribute("rayHitDecay", params.rayHitDecay);
     params.rayHitTargetFraction =

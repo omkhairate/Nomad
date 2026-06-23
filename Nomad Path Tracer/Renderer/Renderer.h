@@ -168,6 +168,46 @@ private:
   struct NeuralObjectClipAccumulator;
   struct FrameCaptureRequest;
   struct ManagedTextureSlot;
+  struct UnifiedNeuralDenseLayer {
+    size_t rows = 0;
+    size_t cols = 0;
+    bool relu = false;
+    std::vector<float> weights;
+    std::vector<float> bias;
+  };
+  struct UnifiedNeuralTeacherConfig {
+    bool enabled = false;
+    std::string kind;
+    float scale = 1.0f;
+    float bias = 0.0f;
+    float costExponent = 0.5f;
+    float visibilityWeight = 0.25f;
+    float hitProbabilityWeight = 0.25f;
+  };
+  struct UnifiedNeuralModel {
+    bool valid = false;
+    std::string sourcePath;
+    std::string format;
+    std::string target;
+    std::string targetTransform;
+    bool allowNegativeTarget = false;
+    std::vector<std::string> featureNames;
+    std::vector<float> mean;
+    std::vector<float> stddev;
+    std::vector<UnifiedNeuralDenseLayer> layers;
+    UnifiedNeuralTeacherConfig residualTeacher;
+  };
+  struct UnifiedNeuralRuntimeSignals {
+    bool visible = false;
+    double visibleCoverage = 0.0;
+    double distance = 0.0;
+    double hitProbability = 0.5;
+    double rayHitScore = 0.0;
+    double totalHits = 0.0;
+    double totalRaysTested = 0.0;
+    double estimatedBytes = 0.0;
+    double objectImportance = 0.0;
+  };
   void recalculateNodeCounters(const std::vector<bool> &residentMask);
   void rebuildResidentResources(bool forceFullRebuild);
   void ensureBufferCapacity(MTL::Buffer *&buffer, size_t requiredBytes,
@@ -204,6 +244,16 @@ private:
   bool updateLODByDistance(bool forceAllToggles);
   bool updateEnergyImportance(bool forceAllToggles);
   bool updateUnifiedResidency(bool forceAllToggles);
+  void clearUnifiedNeuralModel();
+  bool loadUnifiedNeuralModel(const std::string &path);
+  bool computeUnifiedNeuralRuntimeSignals(size_t objectIndex,
+                                          size_t primitiveCount,
+                                          UnifiedNeuralRuntimeSignals &outSignals);
+  bool buildUnifiedNeuralFeatureVector(size_t objectIndex, size_t primitiveCount,
+                                       std::vector<float> &outFeatures);
+  float computeUnifiedNeuralTeacherRawScore(
+      const UnifiedNeuralRuntimeSignals &signals) const;
+  float predictUnifiedNeuralImpact(const std::vector<float> &features) const;
   bool updateRayHitBudget(bool forceAllToggles);
   bool updateProbabilisticResidency(bool forceAllToggles);
   void resetProbabilisticResidencyState();
@@ -303,6 +353,8 @@ private:
   void writeBenchmarkRow(const BenchmarkSample &sample);
   void initializeNeuralFeatureLogging();
   void ensureNeuralFeatureStream();
+  void initializeUnifiedNeuralScoreLogging();
+  void ensureUnifiedNeuralScoreStream();
   void accumulateNeuralClipFeatures();
   void flushNeuralClipFeatures(bool forcePartialClip);
   bool objectForcedOff(size_t objectIndex) const;
@@ -782,6 +834,8 @@ private:
   size_t _animationFrame = 0;
 
   ResidencyParameters _residencyConfig;
+  UnifiedNeuralModel _unifiedNeuralModel;
+  bool _unifiedNeuralModelLoadAttempted = false;
   bool _rayHitAggressiveLogged = false;
 
   bool _benchmarkEnabled = false;
@@ -854,6 +908,10 @@ private:
   bool _neuralFeatureHeaderWritten = false;
   std::ofstream _neuralFeatureStream;
   std::string _neuralFeatureFilePath;
+  bool _unifiedNeuralScoreLoggingEnabled = false;
+  bool _unifiedNeuralScoreHeaderWritten = false;
+  std::ofstream _unifiedNeuralScoreStream;
+  std::string _unifiedNeuralScoreFilePath;
   std::string _runOutputRoot;
   std::string _sceneVariantName;
   size_t _neuralClipLength = 16;
