@@ -1,5 +1,6 @@
 #include "SceneLoader.h"
 #include "Material.h"
+#include "MaterialUtils.h"
 #include <tinyxml2.h>
 #include <simd/simd.h>
 #include <simd/quaternion.h>
@@ -82,290 +83,6 @@ static simd::float3 rotateVectorEulerXYZ(const simd::float3& v,
 }
 
 namespace {
-
-static float clamp01(float value) {
-    return std::clamp(value, 0.0f, 1.0f);
-}
-
-static simd::float3 toFloat3(const tinyobj::real_t values[3]) {
-    return simd::make_float3(static_cast<float>(values[0]),
-                             static_cast<float>(values[1]),
-                             static_cast<float>(values[2]));
-}
-
-static float luminance(const simd::float3& c) {
-    return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
-}
-
-static bool HasMaterialOverrideAttributes(const XMLElement* element) {
-    if (!element) {
-        return false;
-    }
-
-    return element->Attribute("diffuse") || element->Attribute("albedo") ||
-           element->Attribute("emission") ||
-           element->FindAttribute("emissionPower") ||
-           element->Attribute("specular") || element->Attribute("transmission") ||
-           element->FindAttribute("opacity") || element->FindAttribute("shininess") ||
-           element->FindAttribute("roughness") || element->FindAttribute("ior") ||
-           element->FindAttribute("materialType") ||
-           element->Attribute("diffuseTexture") ||
-           element->Attribute("albedoTexture") ||
-           element->Attribute("specularTexture") ||
-           element->Attribute("normalTexture") ||
-           element->Attribute("normalMap") || element->Attribute("bumpTexture");
-}
-
-static bool NeedsFallbackMaterial(const Material& material) {
-    constexpr float kMinMaterialLuminance = 1.0e-4f;
-    bool hasTextures = material.diffuseTextureIndex >= 0 ||
-                       material.specularTextureIndex >= 0 ||
-                       material.normalTextureIndex >= 0;
-    if (hasTextures) {
-        return false;
-    }
-    return luminance(material.diffuseColor) <= kMinMaterialLuminance &&
-           luminance(material.specularColor) <= kMinMaterialLuminance;
-}
-
-static float computeRoughness(float shininess, float explicitRoughness) {
-    if (explicitRoughness > 0.0f) {
-        return clamp01(explicitRoughness);
-    }
-    if (shininess <= 0.0f) {
-        return 1.0f;
-    }
-    float converted = std::sqrt(2.0f / (shininess + 2.0f));
-    return clamp01(converted);
-}
-
-using TextureCache = std::unordered_map<std::string, int>;
-
-TextureCache& GetTextureCache() {
-    static TextureCache cache;
-    return cache;
-}
-
-static int ResolveTextureIndex(const std::string& texName,
-                               const std::string& baseDir,
-                               Scene* scene,
-                               TextureCache& cache,
-                               TextureUsage usage = TextureUsage::Color) {
-    if (!scene || texName.empty()) {
-        return -1;
-    }
-
-    std::filesystem::path resolved(texName);
-    if (resolved.is_relative()) {
-        resolved = std::filesystem::path(baseDir) / resolved;
-    }
-    resolved = resolved.lexically_normal();
-
-    std::string key = resolved.string();
-    TextureColorSpace colorSpace = DetermineTextureColorSpace(key, usage);
-    std::string cacheKey = key;
-    cacheKey += (colorSpace == TextureColorSpace::Linear) ? "|linear" : "|srgb";
-
-    auto it = cache.find(cacheKey);
-    if (it != cache.end()) {
-        return it->second;
-    }
-
-    LoadedTextureImage image;
-    if (!LoadTextureImage(key, image, usage)) {
-        cache.emplace(cacheKey, -1);
-        return -1;
-    }
-
-    Texture texture;
-    texture.width = static_cast<uint32_t>(image.width);
-    texture.height = static_cast<uint32_t>(image.height);
-    texture.pixels = std::move(image.pixels);
-
-    int index = scene->registerTexture(cacheKey, key, std::move(texture));
-    cache.emplace(cacheKey, index);
-    return index;
-}
-
-static Material ConvertTinyMaterial(const tinyobj::material_t& src,
-                                    Scene* scene,
-                                    TextureCache& textureCache,
-                                    const std::string& baseDir) {
-    Material material{};
-    material.diffuseColor = toFloat3(src.diffuse);
-    material.specularColor = toFloat3(src.specular);
-    material.transmissionColor = toFloat3(src.transmittance);
-    material.emissionColor = toFloat3(src.emission);
-
-    float emissionLum = luminance(material.emissionColor);
-    material.emissionPower = (emissionLum > 0.0f) ? 1.0f : 0.0f;
-
-    material.shininess = static_cast<float>(src.shininess);
-    material.indexOfRefraction = (src.ior != 0.0f) ? static_cast<float>(src.ior)
-                                                   : 1.0f;
-    material.opacity = clamp01(static_cast<float>(src.dissolve));
-    material.roughness = computeRoughness(material.shininess,
-                                          static_cast<float>(src.roughness));
-
-    if (luminance(material.transmissionColor) <= 0.0f && material.opacity < 1.0f) {
-        float trans = 1.0f - material.opacity;
-        material.transmissionColor = simd::make_float3(trans, trans, trans);
-    }
-
-    material.diffuseTextureIndex = ResolveTextureIndex(src.diffuse_texname,
-                                                       baseDir, scene,
-                                                       textureCache,
-                                                       TextureUsage::Color);
-    if (material.diffuseTextureIndex >= 0) {
-        constexpr float kMinDiffuseLuminance = 1.0e-4f;
-        if (luminance(material.diffuseColor) <= kMinDiffuseLuminance) {
-            material.diffuseColor = simd::make_float3(1.0f, 1.0f, 1.0f);
-        }
-    }
-    material.specularTextureIndex = ResolveTextureIndex(src.specular_texname,
-                                                        baseDir, scene,
-                                                        textureCache,
-                                                        TextureUsage::Color);
-    std::string normalTex = src.normal_texname.empty() ? src.bump_texname
-                                                       : src.normal_texname;
-    material.normalTextureIndex = ResolveTextureIndex(normalTex,
-                                                      baseDir, scene,
-                                                      textureCache,
-                                                      TextureUsage::NormalMap);
-
-    return material;
-}
-
-static void ApplyTextureAttributes(const XMLElement* element,
-                                   const std::filesystem::path& baseDir,
-                                   Scene* scene,
-                                   Material& material,
-                                   TextureCache& textureCache) {
-    if (!element || !scene) {
-        return;
-    }
-
-    std::string baseDirStr = baseDir.string();
-
-    auto resolveTexture = [&](const char* attrValue, TextureUsage usage) {
-        if (!attrValue || !attrValue[0]) {
-            return -1;
-        }
-        return ResolveTextureIndex(attrValue, baseDirStr, scene, textureCache, usage);
-    };
-
-    const char* diffuseAttr = element->Attribute("diffuseTexture");
-    if (!diffuseAttr) {
-        diffuseAttr = element->Attribute("albedoTexture");
-    }
-    int diffuseIndex = resolveTexture(diffuseAttr, TextureUsage::Color);
-    if (diffuseIndex >= 0) {
-        material.diffuseTextureIndex = diffuseIndex;
-        constexpr float kMinDiffuseLuminance = 1.0e-4f;
-        if (luminance(material.diffuseColor) <= kMinDiffuseLuminance) {
-            material.diffuseColor = simd::make_float3(1.0f, 1.0f, 1.0f);
-        }
-    }
-
-    const char* specularAttr = element->Attribute("specularTexture");
-    int specularIndex = resolveTexture(specularAttr, TextureUsage::Color);
-    if (specularIndex >= 0) {
-        material.specularTextureIndex = specularIndex;
-    }
-
-    const char* normalAttr = element->Attribute("normalTexture");
-    if (!normalAttr) {
-        normalAttr = element->Attribute("normalMap");
-    }
-    if (!normalAttr) {
-        normalAttr = element->Attribute("bumpTexture");
-    }
-    int normalIndex = resolveTexture(normalAttr, TextureUsage::NormalMap);
-    if (normalIndex >= 0) {
-        material.normalTextureIndex = normalIndex;
-    }
-}
-
-static Material ParseMaterialAttributes(const XMLElement* element) {
-    Material material{};
-
-    bool hasDiffuseAttr = false;
-    if (const char* diffuseAttr = element->Attribute("diffuse")) {
-        material.diffuseColor = parseVec3(diffuseAttr);
-        hasDiffuseAttr = true;
-    }
-    if (const char* albedoAttr = element->Attribute("albedo")) {
-        material.diffuseColor = parseVec3(albedoAttr);
-        hasDiffuseAttr = true;
-    }
-
-    if (const char* emissionAttr = element->Attribute("emission")) {
-        material.emissionColor = parseVec3(emissionAttr);
-    }
-    material.emissionPower = element->FloatAttribute("emissionPower",
-                                                     material.emissionPower);
-
-    bool hasSpecularAttr = false;
-    if (const char* specAttr = element->Attribute("specular")) {
-        material.specularColor = parseVec3(specAttr);
-        hasSpecularAttr = true;
-    }
-
-    bool hasTransmissionAttr = false;
-    if (const char* transAttr = element->Attribute("transmission")) {
-        material.transmissionColor = parseVec3(transAttr);
-        hasTransmissionAttr = true;
-    }
-
-    bool hasOpacityAttr = element->FindAttribute("opacity") != nullptr;
-    material.opacity = element->FloatAttribute("opacity", material.opacity);
-    material.shininess = element->FloatAttribute("shininess", material.shininess);
-    material.roughness = element->FloatAttribute("roughness", material.roughness);
-    material.indexOfRefraction = element->FloatAttribute("ior",
-                                                         material.indexOfRefraction);
-
-    if (!hasTransmissionAttr && material.opacity < 1.0f) {
-        float trans = 1.0f - material.opacity;
-        material.transmissionColor = simd::make_float3(trans, trans, trans);
-    }
-
-    if (const XMLAttribute* typeAttr = element->FindAttribute("materialType")) {
-        float materialType = typeAttr->FloatValue();
-        if (materialType < 0.0f) {
-            if (!hasSpecularAttr) {
-                material.specularColor = simd::make_float3(1.0f, 1.0f, 1.0f);
-            }
-            material.opacity = 1.0f;
-            material.transmissionColor = simd::make_float3(0.0f, 0.0f, 0.0f);
-            material.shininess = std::max(material.shininess, 256.0f);
-            material.roughness = std::min(material.roughness, 0.02f);
-        } else if (materialType > 0.0f) {
-            if (!hasSpecularAttr) {
-                material.specularColor = simd::make_float3(1.0f, 1.0f, 1.0f);
-            }
-            if (!hasTransmissionAttr) {
-                material.transmissionColor = simd::make_float3(1.0f, 1.0f, 1.0f);
-            }
-            material.indexOfRefraction = materialType;
-            if (!hasOpacityAttr) {
-                material.opacity = 0.0f;
-            }
-            material.shininess = std::max(material.shininess, 96.0f);
-            material.roughness = std::min(material.roughness, 0.1f);
-        }
-    }
-
-    material.opacity = clamp01(material.opacity);
-    material.roughness = clamp01(material.roughness);
-    material.shininess = std::max(material.shininess, 1.0f);
-
-    if (!hasDiffuseAttr && material.opacity < 1.0f && luminance(material.diffuseColor) <= 0.0f) {
-        float base = 1.0f - material.opacity;
-        material.diffuseColor = simd::make_float3(base, base, base);
-    }
-
-    return material;
-}
 
 static float AxisValue(const simd::float3& v, int axis) {
     switch (axis) {
@@ -560,10 +277,10 @@ static void LoadOBJ(const std::string& path, CachedMesh& mesh, Scene* scene) {
     }
 
     mesh.materials.reserve(objMaterials.size());
-    TextureCache& textureCache = GetTextureCache();
+    MaterialTextureCache &textureCache = MaterialUtils::GetTextureCache();
     for (const auto& srcMat : objMaterials) {
         mesh.materials.push_back(
-            ConvertTinyMaterial(srcMat, scene, textureCache, mtlSearchPath));
+            MaterialUtils::ConvertTinyMaterial(srcMat, scene, textureCache, mtlSearchPath));
     }
 
     for (const auto& shape : shapes) {
@@ -631,7 +348,7 @@ static void LoadOBJ(const std::string& path, CachedMesh& mesh, Scene* scene) {
 
 void SceneLoader::ClearCache() {
     GetMeshCache().clear();
-    GetTextureCache().clear();
+    MaterialUtils::ClearTextureCache();
 }
 
 bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
@@ -659,7 +376,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
     scene->screenSize.y = root->FloatAttribute("height", scene->screenSize.y);
     scene->maxRayDepth = root->UnsignedAttribute("maxRayDepth", scene->maxRayDepth);
 
-    TextureCache& textureCache = GetTextureCache();
+    MaterialTextureCache &textureCache = MaterialUtils::GetTextureCache();
 
     if (const char* residencyAttr = root->Attribute("residencyStrategy")) {
         std::string value = residencyAttr;
@@ -982,8 +699,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
             p.sphere.center = parseVec3(e->Attribute("position"));
             p.sphere.radius = e->FloatAttribute("radius", 1.0f);
 
-            p.material = ParseMaterialAttributes(e);
-            ApplyTextureAttributes(e, baseDir, scene, p.material, textureCache);
+            p.material = MaterialUtils::ParseMaterialAttributes(e);
+            MaterialUtils::ApplyTextureAttributes(e, baseDir, scene, p.material, textureCache);
 
             scene->addPrimitive(p);
         }
@@ -1000,8 +717,8 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 p.rectangle.v = rotateVectorEulerXYZ(p.rectangle.v, rotationRadians);
             }
 
-            p.material = ParseMaterialAttributes(e);
-            ApplyTextureAttributes(e, baseDir, scene, p.material, textureCache);
+            p.material = MaterialUtils::ParseMaterialAttributes(e);
+            MaterialUtils::ApplyTextureAttributes(e, baseDir, scene, p.material, textureCache);
 
             scene->addPrimitive(p);
         }
@@ -1052,10 +769,10 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
                 basisZ = rotateVectorEulerXYZ(basisZ, rotationRadians);
             }
 
-            Material overrideMaterial = ParseMaterialAttributes(e);
-            ApplyTextureAttributes(e, baseDir, scene, overrideMaterial, textureCache);
+            Material overrideMaterial = MaterialUtils::ParseMaterialAttributes(e);
+            MaterialUtils::ApplyTextureAttributes(e, baseDir, scene, overrideMaterial, textureCache);
             Material fallbackMaterial{};
-            bool hasExplicitOverride = HasMaterialOverrideAttributes(e);
+            bool hasExplicitOverride = MaterialUtils::HasOverrideAttributes(e);
 
             size_t clusterMaxTriangles = static_cast<size_t>(
                 e->Unsigned64Attribute("clusterMaxTriangles", 0));
@@ -1096,7 +813,7 @@ bool SceneLoader::LoadSceneFromXML(const std::string& path, Scene* scene) {
 
                 bool allowFallback = !(usingOverrideMaterial && hasExplicitOverride);
                 if (allowFallback &&
-                    (materialId < 0 || NeedsFallbackMaterial(*chosenMaterial))) {
+                    (materialId < 0 || MaterialUtils::NeedsFallbackMaterial(*chosenMaterial))) {
                     chosenMaterial = &fallbackMaterial;
                 }
 
