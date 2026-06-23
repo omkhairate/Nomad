@@ -1,6 +1,6 @@
 # Nomad Path Tracer
 
-Research-oriented Metal path tracer for macOS, with a strong focus on dynamic geometry residency, GPU memory budgeting, benchmark automation, and data collection for learned residency policies.
+Research-oriented Metal path tracer for macOS, with a strong focus on dynamic geometry residency, GPU memory budgeting, benchmark automation, and data generation for learned residency policies.
 
 ## Project Metadata
 
@@ -12,36 +12,38 @@ Research-oriented Metal path tracer for macOS, with a strong focus on dynamic ge
 | Target platform | macOS with Metal support |
 | Build system | Xcode project (`Nomad Path Tracer.xcodeproj`) |
 | Main target | `Nomad Path Tracer` |
-| Research focus | Geometry residency strategies, memory-aware rendering, visual-quality-driven ablation studies |
+| Research focus | Geometry residency strategies, memory-aware rendering, perceptual-quality-driven policy learning |
 | Current status | Active research prototype |
 | Optional external tools | FFmpeg, Intel Open Image Denoise, Intel Labs CGVQM |
 | License | No license file is currently included in this repository |
 
 ## Overview
 
-This repository combines three pieces of work in one codebase:
+This repository combines three tightly connected pieces of work:
 
 1. A Metal path tracer for macOS.
 2. A residency-management research platform with multiple runtime strategies.
-3. A benchmarking and data-generation pipeline for future learned policies such as `UnifiedNeural`.
+3. A benchmarking and data-generation pipeline for learned residency policies such as `UnifiedNeural`.
 
-The renderer is built to support controlled experiments on how scene geometry should stay resident, stream in, or be deprioritized under memory pressure. Alongside the runtime, the repository includes scripts for:
+The renderer is designed for controlled experiments on how scene geometry should remain resident, stream in, or be deprioritized under memory pressure. Alongside the runtime, the repository includes tooling for:
 
 - repeatable scene sweeps,
 - EXR capture and deferred denoising,
 - timing and memory analysis,
 - object ablation studies,
-- and CGVQM-based label generation for neural training data.
+- CGVQM-based label generation,
+- and lightweight learned-policy training/export workflows.
 
 ## Highlights
 
 - Metal-based path tracer with scene-driven configuration.
 - Multiple geometry residency strategies in one renderer.
-- Unified GPU memory budget experiments with benchmark logging.
+- Unified GPU memory budget experiments with detailed benchmark logging.
 - Automated Bistro sweeps across strategy variants.
 - EXR capture, deferred OIDN denoising, and FFmpeg video assembly.
 - Object-level feature logging for neural residency research.
 - CGVQM label generation using strict `AlwaysResident` baselines plus one-object-off ablations.
+- Modular renderer layout separating residency, neural logic, frame capture, textures, and core rendering flow.
 
 ## Residency Strategies
 
@@ -56,9 +58,9 @@ The renderer currently includes the following residency strategy families:
 - `Unified score`
 - `Predictive environment`
 - `Environment hit`
-- `Unified neural` (research hook / future learned policy path)
+- `Unified neural`
 
-The Bistro study scene variants under `Nomad Path Tracer/` encode these strategies and their conservative/aggressive variants for sweep-based comparison.
+The Bistro study scene variants under `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer` encode these strategies and their conservative/aggressive variants for sweep-based comparison.
 
 ## Repository Layout
 
@@ -68,7 +70,19 @@ The Bistro study scene variants under `Nomad Path Tracer/` encode these strategi
 ├── Nomad Path Tracer.xcodeproj
 ├── Nomad Path Tracer/
 │   ├── Renderer/
+│   │   ├── Renderer.cpp
+│   │   ├── RendererResidency.cpp
+│   │   ├── RendererUnifiedNeural.cpp
+│   │   ├── RendererFrameCapture.cpp
+│   │   ├── RendererTextures.cpp
+│   │   └── README.md
 │   ├── Scene/
+│   │   ├── Scene.cpp
+│   │   ├── SceneBVH.cpp
+│   │   ├── SceneLoader.cpp
+│   │   ├── MaterialUtils.cpp
+│   │   ├── MaterialUtils.h
+│   │   └── README.md
 │   ├── Window/
 │   ├── scene.xml
 │   ├── scene_bistro_test_v2*.xml
@@ -80,10 +94,31 @@ The Bistro study scene variants under `Nomad Path Tracer/` encode these strategi
 │   ├── run_neural_cgvqm_pipeline.py
 │   ├── run_neural_ablation_batch.py
 │   ├── run_neural_cgvqm_labels.py
-│   ├── denoise_exr_batch.py
+│   ├── train_unified_neural_model.py
+│   ├── export_unified_neural_model.py
 │   └── analysis helpers
 └── tests/
 ```
+
+## Renderer Module Structure
+
+The renderer has been split into focused translation units so residency experimentation can evolve without turning `Renderer.cpp` back into a monolith.
+
+- `Renderer.cpp`
+  - core renderer lifecycle, scene setup, frame loop, acceleration-structure orchestration, metrics, and shared runtime plumbing
+- `RendererResidency.cpp`
+  - runtime residency strategies and per-frame object activation/deactivation decisions
+- `RendererUnifiedNeural.cpp`
+  - neural model loading, feature-vector construction, teacher/residual helpers, and runtime prediction logic
+- `RendererFrameCapture.cpp`
+  - EXR capture, deferred denoise helpers, and frame-output processing
+- `RendererTextures.cpp`
+  - texture-slot lifecycle, texture residency, material textures, and environment texture management
+
+For scene-side details, see:
+
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/Renderer/README.md`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/Scene/README.md`
 
 ## Requirements
 
@@ -136,7 +171,7 @@ The Metal runtime library `default.metallib` must remain beside the executable. 
 
 The renderer is driven by scene XML files. A common study entry point is:
 
-- `Nomad Path Tracer/scene_bistro_test_v2.xml`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/scene_bistro_test_v2.xml`
 
 Most automated runs in this repository use the benchmark scripts rather than manual app launch, because those scripts also set output paths, frame limits, capture options, and resumable run folders.
 
@@ -165,15 +200,15 @@ Important runtime environment variables:
 
 For more implementation-specific details, see:
 
-- `Nomad Path Tracer/README.md`
-- `Benchmarks/README.md`
-- `Nomad Path Tracer/StudyNotes.md`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/README.md`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Benchmarks/README.md`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/StudyNotes.md`
 
 ## Benchmarking Workflow
 
 The main sweep driver is:
 
-- `Benchmarks/run_bistro_sweep.py`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Benchmarks/run_bistro_sweep.py`
 
 Example:
 
@@ -204,7 +239,7 @@ The sweep tooling is resumable and writes per-run folders with:
 
 ## Neural Residency Data Pipeline
 
-This repository contains a full research pipeline for generating training data for a future learned residency policy.
+This repository contains a full research pipeline for generating training data for learned residency policies.
 
 ### Goal
 
@@ -245,6 +280,10 @@ flowchart LR
   - backfills deferred denoising
 - `Benchmarks/run_neural_cgvqm_labels.py`
   - assembles videos, runs CGVQM, and writes training labels
+- `Benchmarks/train_unified_neural_model.py`
+  - trains simple exported models such as linear baselines and small MLPs
+- `Benchmarks/export_unified_neural_model.py`
+  - writes compact runtime-consumable model files
 
 ### Object features collected
 
@@ -285,6 +324,17 @@ Interpretation:
 - larger `delta_cgvqm` means the object is more visually important
 - smaller `delta_cgvqm` means the object is safer to demote or offload
 
+### Current learned-policy direction
+
+The repository now supports several research directions for `UnifiedNeural`, including:
+
+- direct CGVQM-supervised object importance prediction
+- teacher-student variants where a heuristic such as ray-hit provides a dense teacher signal
+- residual variants where the model learns a correction over a hand-designed teacher score
+- exported tiny models suitable for runtime inference in the renderer
+
+At the moment, the strongest results should still be treated as scene-specific and path-specific proof-of-concept experiments rather than broadly general policies.
+
 ## Benchmark Metrics
 
 The repository logs standard timing and residency information, plus newer metrics that help separate:
@@ -302,13 +352,14 @@ Examples include:
 - `primitive_rays_tested_last_frame`
 - `primitive_hits_last_frame`
 - `resident_geometry_memory_mb`
+- `strict_resident_geometry_memory_mb`
 - `resident_texture_memory_mb`
 - `residency_memory_mb`
 - `total_memory_cap_mb`
 - `minimum_resident_footprint_mb`
 - `total_memory_cap_relaxed_mb`
 
-These metrics support both runtime debugging and later analysis of CPU/GPU timing behavior.
+These metrics support both runtime debugging and later analysis of CPU/GPU timing and memory behavior.
 
 ## Research Positioning
 
@@ -325,12 +376,16 @@ The current neural dataset workflow is most rigorous as a scene-specific and pat
 
 ## Related Documentation
 
-- `Nomad Path Tracer/README.md`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/README.md`
   - runtime controls and GPU watchdog guardrails
-- `Nomad Path Tracer/StudyNotes.md`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/StudyNotes.md`
   - total memory cap and eviction-stall study notes
-- `Benchmarks/README.md`
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Benchmarks/README.md`
   - benchmark environment variables and CSV metric notes
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/Renderer/README.md`
+  - renderer module boundaries
+- `/Users/apollo/Downloads/MetalPathtracer-dev_alt_4/Nomad Path Tracer/Scene/README.md`
+  - scene/module boundaries
 
 ## Limitations
 
@@ -338,6 +393,7 @@ The current neural dataset workflow is most rigorous as a scene-specific and pat
 - research codebase, not a packaged product
 - benchmark outputs can consume significant disk space
 - CGVQM workflow depends on external tooling not stored in this repository
+- current learned-policy experiments are still scene/path specific
 - no repository license file is currently present
 
 ## Acknowledgments
@@ -345,4 +401,3 @@ The current neural dataset workflow is most rigorous as a scene-specific and pat
 - Apple Metal / Metal C++ ecosystem
 - Intel Open Image Denoise
 - Intel Labs CGVQM for perceptual video quality evaluation
-
